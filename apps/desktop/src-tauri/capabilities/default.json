@@ -1,0 +1,7 @@
+{
+  "$schema": "https://schema.tauri.app/capability/2",
+  "identifier": "main-window",
+  "description": "Minimal capability for the main window. Deny-by-default: grows only with explicit review. Message frames get no capability at all.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

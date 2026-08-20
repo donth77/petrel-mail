@@ -1,0 +1,8 @@
+[package]
+name = "petrel-autoconfig"
+description = "Account autodiscovery: autoconfig XML, ISPDB, MX, SRV, Autodiscover, probing"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]

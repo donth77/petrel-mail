@@ -1,0 +1,8 @@
+[package]
+name = "petrel-testkit"
+description = "Synthetic mailboxes, corpora, and fault-injection helpers for Petrel tests"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]

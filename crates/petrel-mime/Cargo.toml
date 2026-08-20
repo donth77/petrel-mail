@@ -1,0 +1,8 @@
+[package]
+name = "petrel-mime"
+description = "MIME parsing, the HTML sanitization profile, and message building"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]

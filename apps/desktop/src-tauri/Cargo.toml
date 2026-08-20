@@ -1,0 +1,28 @@
+[package]
+name = "petrel-desktop"
+description = "Petrel's Tauri desktop shell"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+name = "petrel_desktop"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+# Tauri decides dev-vs-production on this feature, NOT on cargo's release flag:
+# without it the webview navigates to `build.devUrl` (the Vite dev server) and
+# shows a blank window when no dev server is running. The Tauri CLI passes it
+# for production builds; `cargo petrel` (see .cargo/config.toml) does the same.
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "2.6", features = [] }
+
+[dependencies]
+tauri = { version = "2.11", features = [] }
+serde.workspace = true
+serde_json.workspace = true
+petrel-engine = { path = "../../../crates/petrel-engine" }
+# Demo-mode seeding only; drops out when the IMAP slice replaces synthetic mail.
+petrel-testkit = { path = "../../../crates/petrel-testkit" }

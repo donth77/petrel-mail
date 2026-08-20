@@ -1,0 +1,216 @@
+//! Petrel's desktop shell: a thin window over the engine. All real work
+//! happens in `petrel-engine`; this crate wires typed IPC and (soon) the
+//! `petrel-msg://` custom protocol for sanitized message documents.
+//!
+//! M0 demo mode: until the IMAP slice lands, the store is seeded with
+//! synthetic mail from `petrel-testkit` so the list and live search run
+//! against the real engine end to end.
+
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+
+use petrel_engine::store::{Listing, NewMessage, Store};
+use petrel_testkit::MailboxGen;
+use tauri::State;
+
+mod spike_s2;
+
+const DEMO_MESSAGES: usize = 10_000;
+
+struct AppState {
+    store: Mutex<Store>,
+    seeding: AtomicBool,
+    seeded: AtomicUsize,
+}
+
+#[derive(serde::Serialize)]
+struct Status {
+    seeding: bool,
+    count: usize,
+}
+
+#[tauri::command]
+fn status(state: State<Arc<AppState>>) -> Status {
+    Status {
+        seeding: state.seeding.load(Ordering::Relaxed),
+        count: state.seeded.load(Ordering::Relaxed),
+    }
+}
+
+#[tauri::command]
+fn list_messages(
+    offset: u32,
+    limit: u32,
+    state: State<Arc<AppState>>,
+) -> Result<Vec<Listing>, String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    store
+        .list_recent(offset, limit.min(100))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn search_messages(query: String, state: State<Arc<AppState>>) -> Result<Vec<Listing>, String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    store.search_listing(&query, 50).map_err(|e| e.to_string())
+}
+
+fn spawn_demo_seeding(state: Arc<AppState>, account: i64) {
+    std::thread::spawn(move || {
+        let mut generator = MailboxGen::new(7, DEMO_MESSAGES);
+        loop {
+            let batch: Vec<NewMessage> = generator
+                .by_ref()
+                .take(500)
+                .map(|g| NewMessage {
+                    account_id: account,
+                    date_ms: g.date_ms,
+                    from_addr: g.from_addr,
+                    from_display: g.from_display,
+                    to_addr: g.to_addr,
+                    subject: g.subject,
+                    body_text: g.body,
+                })
+                .collect();
+            if batch.is_empty() {
+                break;
+            }
+            let n = batch.len();
+            match state.store.lock() {
+                Ok(mut store) => {
+                    if store.insert_messages(&batch).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+            state.seeded.fetch_add(n, Ordering::Relaxed);
+        }
+        state.seeding.store(false, Ordering::Relaxed);
+    });
+}
+
+/// Webview-side diagnostics: init scripts run before page scripts and are
+/// exempt from page CSP, so this reports what the webview actually did (loaded
+/// URL, script execution, errors, CSP violations) even when the page itself is
+/// dead. Events land on stderr via `frontend_log`.
+const DIAG: &str = r#"
+(function () {
+  var buf = [];
+  function flush() {
+    if (!window.__TAURI_INTERNALS__ || !window.__TAURI_INTERNALS__.invoke) { setTimeout(flush, 50); return; }
+    while (buf.length) {
+      var e = buf.shift();
+      try { window.__TAURI_INTERNALS__.invoke('frontend_log', { entry: e }); } catch (err) {}
+    }
+  }
+  function send(obj) { try { buf.push(JSON.stringify(obj)); } catch (e) { buf.push('"unserializable"'); } flush(); }
+  try { document.title = 'D:' + String(location.href).slice(0, 48); } catch (e) {}
+  send({ kind: 'boot', href: String(location.href), readyState: document.readyState });
+  window.addEventListener('error', function (e) {
+    if (e && e.target && e.target !== window && (e.target.src || e.target.href)) {
+      send({ kind: 'resource-error', url: String(e.target.src || e.target.href) });
+      return;
+    }
+    send({ kind: 'js-error', msg: String(e.message), src: String(e.filename) + ':' + e.lineno });
+  }, true);
+  window.addEventListener('unhandledrejection', function (e) { send({ kind: 'rejection', msg: String(e.reason) }); });
+  document.addEventListener('securitypolicyviolation', function (e) {
+    send({ kind: 'csp-violation', directive: String(e.violatedDirective), blocked: String(e.blockedURI) });
+  });
+  window.addEventListener('DOMContentLoaded', function () {
+    send({ kind: 'dom', scripts: document.scripts.length, root: !!document.getElementById('root') });
+    setTimeout(function () {
+      var r = document.getElementById('root');
+      send({ kind: 'settled', rootChildren: r ? r.childElementCount : -1,
+             bodyText: ((document.body && document.body.innerText) || '').slice(0, 80) });
+    }, 2000);
+  });
+})();
+"#;
+
+/// Opt-in UI smoke test (`PETREL_SELFTEST=1`): drives the search box the way a
+/// user would — real input events into React — and reports what came back.
+/// Verifies UI → IPC → engine → FTS → UI end to end without needing OS
+/// accessibility permissions. Precursor to the M5 E2E suite.
+const SELFTEST: &str = r#"
+(function () {
+  function log(o) { try { window.__TAURI_INTERNALS__.invoke('frontend_log', { entry: JSON.stringify(o) }); } catch (e) {} }
+  function type(el, text) {
+    var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(el, text);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  function rows() { return document.querySelectorAll('.row').length; }
+  function timing() { var m = document.querySelectorAll('.meta span'); return m.length > 1 ? m[1].textContent : ''; }
+  function firstRow() { var r = document.querySelector('.row'); return r ? r.innerText.replace(/\s+/g, ' ').slice(0, 90) : ''; }
+  var queries = ['meeting', 'zephyrite5000', '東京計', 'quarterly report'];
+  var i = 0;
+  function step() {
+    var input = document.querySelector('.search');
+    if (!input) { setTimeout(step, 300); return; }
+    if (i >= queries.length) { log({ kind: 'selftest-done' }); return; }
+    var q = queries[i++];
+    type(input, q);
+    setTimeout(function () {
+      log({ kind: 'selftest', query: q, results: rows(), timing: timing(), first: firstRow() });
+      step();
+    }, 900);
+  }
+  setTimeout(step, 4000);
+})();
+"#;
+
+#[tauri::command]
+fn frontend_log(entry: String) {
+    eprintln!("[frontend] {entry}");
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let store = Store::open_in_memory().expect("open in-memory store");
+    let account = store.ensure_test_account().expect("create demo account");
+    let state = Arc::new(AppState {
+        store: Mutex::new(store),
+        seeding: AtomicBool::new(true),
+        seeded: AtomicUsize::new(0),
+    });
+    spawn_demo_seeding(state.clone(), account);
+
+    tauri::Builder::default()
+        .manage(state)
+        .invoke_handler(tauri::generate_handler![
+            status,
+            list_messages,
+            search_messages,
+            frontend_log
+        ])
+        .register_uri_scheme_protocol("petrel-msg", |_ctx, request| spike_s2::handle(&request))
+        .setup(|app| {
+            let mut init = DIAG.to_string();
+            if std::env::var("PETREL_SELFTEST").is_ok() {
+                init.push_str(SELFTEST);
+            }
+            if std::env::var("PETREL_SPIKE_S2").is_ok() {
+                let port = spike_s2::start_leak_listener();
+                eprintln!("[s2] leak listener on 127.0.0.1:{port}");
+                init.push_str("window.__PETREL_SPIKE__='s2';");
+            }
+            tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::default())
+                .title("Petrel")
+                .inner_size(1200.0, 800.0)
+                .min_inner_size(720.0, 480.0)
+                .initialization_script(&init)
+                .on_navigation(|url| {
+                    eprintln!("[nav] {url}");
+                    true
+                })
+                .on_page_load(|_webview, payload| {
+                    eprintln!("[pageload] {:?} {}", payload.event(), payload.url());
+                })
+                .build()?;
+            Ok(())
+        })
+        .run(tauri::generate_context!())
+        .expect("error while running petrel");
+}

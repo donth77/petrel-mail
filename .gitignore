@@ -1,0 +1,17 @@
+.claude
+docs
+target/
+node_modules/
+dist/
+.DS_Store
+
+# Local secrets — never committed. See testkit/README.md
+.env
+.env.*
+!.env.example
+
+# Tooling scratch (browser automation captures)
+.playwright-mcp/
+
+# Tauri-generated schemas (build artifacts)
+apps/desktop/src-tauri/gen/

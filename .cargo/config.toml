@@ -1,0 +1,5 @@
+[alias]
+# Run the desktop app standalone (embedded UI assets, no dev server needed).
+# `custom-protocol` is what puts Tauri in production mode — see
+# apps/desktop/src-tauri/Cargo.toml.
+petrel = "run --release -p petrel-desktop --features custom-protocol"

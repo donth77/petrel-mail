@@ -1,0 +1,43 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/petrel-engine",
+    "crates/petrel-providers",
+    "crates/petrel-mime",
+    "crates/petrel-autoconfig",
+    "crates/petrel-testkit",
+    "apps/desktop/src-tauri",
+]
+# The Tauri shell is opt-in (heavy dependency tree); everyday `cargo build/test`
+# covers the engine crates only. Build the app with: cargo build -p petrel-desktop
+default-members = [
+    "crates/petrel-engine",
+    "crates/petrel-providers",
+    "crates/petrel-mime",
+    "crates/petrel-autoconfig",
+    "crates/petrel-testkit",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+rusqlite = { version = "0.40", features = ["bundled"] }
+zstd = "0.13"
+blake3 = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+
+# Benchmarks want release-grade codegen without a full release build's compile time.
+[profile.bench-fast]
+inherits = "release"
+lto = false
+debug = true

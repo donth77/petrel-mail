@@ -1,0 +1,45 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  engine:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.96.1
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --exclude petrel-desktop --all-targets -- -D warnings
+      - run: cargo test
+      # IMAP slice against a throwaway server (synthetic mail only).
+      - name: IMAP integration slice
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          docker run -d --rm --name petrel-greenmail -p 3143:3143 -p 3025:3025 \
+            -e GREENMAIL_OPTS='-Dgreenmail.setup.test.all -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.users=petrel:petrelpass@example.com' \
+            greenmail/standalone:latest
+          for i in $(seq 1 30); do
+            (echo > /dev/tcp/127.0.0.1/3143) >/dev/null 2>&1 && break
+            sleep 2
+          done
+          cargo test -p petrel-providers --features insecure-plaintext --test imap_slice -- --ignored --nocapture
+          # Ambiguous-send reconciliation (audit blocker ARC-03) — serial: it
+          # asserts exact copy counts in a shared mailbox.
+          cargo test -p petrel-providers --features insecure-plaintext --test ambiguous_send -- --ignored --nocapture --test-threads=1
+          docker stop petrel-greenmail
+      # Fast benchmark sanity at reduced scale; the full 100k run is manual.
+      - run: PETREL_BENCH_N=10000 cargo test --release -p petrel-engine --test store_spike -- --ignored --nocapture
+        if: matrix.os == 'ubuntu-latest'

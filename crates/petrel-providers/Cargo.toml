@@ -1,0 +1,27 @@
+[package]
+name = "petrel-providers"
+description = "Provider backends: IMAP/SMTP, Gmail API, Microsoft Graph (JMAP later)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+# Plaintext IMAP exists ONLY for loopback integration tests against a throwaway
+# container. It is never compiled into shipping binaries — the security posture
+# is TLS-always (see docs: no plaintext code paths reachable in production).
+insecure-plaintext = []
+
+[dependencies]
+async-imap = { version = "0.11", default-features = false, features = ["runtime-tokio"] }
+tokio = { version = "1", features = ["net", "rt-multi-thread", "macros", "io-util", "time"] }
+tokio-rustls = "0.26"
+rustls = "0.23"
+webpki-roots = "1"
+futures = "0.3"
+thiserror.workspace = true
+
+[dev-dependencies.petrel-engine]
+path = "../petrel-engine"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
