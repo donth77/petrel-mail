@@ -15,6 +15,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 # shows a blank window when no dev server is running. The Tauri CLI passes it
 # for production builds; `cargo petrel` (see .cargo/config.toml) does the same.
 custom-protocol = ["tauri/custom-protocol"]
+# Lets the app talk to the loopback test server so the real-mail path can be
+# exercised without a live account. Never enabled in a shipping build.
+dev-plaintext-imap = ["petrel-providers/insecure-plaintext"]
 
 [build-dependencies]
 tauri-build = { version = "2.6", features = [] }
@@ -24,5 +27,6 @@ tauri = { version = "2.11", features = [] }
 serde.workspace = true
 serde_json.workspace = true
 petrel-engine = { path = "../../../crates/petrel-engine" }
-# Demo-mode seeding only; drops out when the IMAP slice replaces synthetic mail.
+petrel-providers = { path = "../../../crates/petrel-providers" }
+# Demo-mode seeding only; used when no account is configured.
 petrel-testkit = { path = "../../../crates/petrel-testkit" }

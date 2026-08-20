@@ -11,7 +11,7 @@ type Listing = {
   date_ms: number;
 };
 
-type Status = { seeding: boolean; count: number };
+type Status = { seeding: boolean; count: number; source: string };
 
 const css = `
   :root {
@@ -62,7 +62,7 @@ function Snippet({ text }: { text: string }) {
 function App() {
   const [rows, setRows] = React.useState<Listing[]>([]);
   const [query, setQuery] = React.useState("");
-  const [stat, setStat] = React.useState<Status>({ seeding: true, count: 0 });
+  const [stat, setStat] = React.useState<Status>({ seeding: true, count: 0, source: "…" });
   const [searchMs, setSearchMs] = React.useState<number | null>(null);
   const queryRef = React.useRef(query);
   queryRef.current = query;
@@ -110,8 +110,8 @@ function App() {
         <h1>Petrel</h1>
         <span className={stat.seeding ? "pill live" : "pill"}>
           {stat.seeding
-            ? `syncing demo mailbox… ${stat.count.toLocaleString()}`
-            : `${stat.count.toLocaleString()} messages · synthetic demo data`}
+            ? `${stat.source} · ${stat.count.toLocaleString()}`
+            : `${stat.count.toLocaleString()} messages · ${stat.source}`}
         </span>
       </div>
       <input

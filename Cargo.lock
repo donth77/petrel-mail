@@ -2493,6 +2493,7 @@ name = "petrel-desktop"
 version = "0.0.1"
 dependencies = [
  "petrel-engine",
+ "petrel-providers",
  "petrel-testkit",
  "serde",
  "serde_json",

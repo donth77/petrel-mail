@@ -2,14 +2,16 @@
 //! happens in `petrel-engine`; this crate wires typed IPC and (soon) the
 //! `petrel-msg://` custom protocol for sanitized message documents.
 //!
-//! M0 demo mode: until the IMAP slice lands, the store is seeded with
-//! synthetic mail from `petrel-testkit` so the list and live search run
-//! against the real engine end to end.
+//! Two source modes: with `PETREL_IMAP_*` set it syncs a real mailbox through
+//! the engine's ingest path; without, it seeds synthetic mail so the UI is
+//! exercisable with no account. Both run the same store, index, and queries.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use petrel_engine::blob::BlobStore;
 use petrel_engine::store::{Listing, NewMessage, Store};
+use petrel_providers::imap::{ImapConfig, Security};
 use petrel_testkit::MailboxGen;
 use tauri::State;
 
@@ -19,14 +21,17 @@ const DEMO_MESSAGES: usize = 10_000;
 
 struct AppState {
     store: Mutex<Store>,
+    blobs: BlobStore,
     seeding: AtomicBool,
     seeded: AtomicUsize,
+    source: Mutex<String>,
 }
 
 #[derive(serde::Serialize)]
 struct Status {
     seeding: bool,
     count: usize,
+    source: String,
 }
 
 #[tauri::command]
@@ -34,7 +39,89 @@ fn status(state: State<Arc<AppState>>) -> Status {
     Status {
         seeding: state.seeding.load(Ordering::Relaxed),
         count: state.seeded.load(Ordering::Relaxed),
+        source: state
+            .source
+            .lock()
+            .map(|s| s.clone())
+            .unwrap_or_else(|_| "unknown".into()),
     }
+}
+
+/// Reads account settings from the environment. Credentials never appear in
+/// argv (visible to every process on the machine) or in a config file we wrote;
+/// the keychain replaces this at M4 when account setup exists.
+fn imap_config_from_env() -> Option<ImapConfig> {
+    let host = std::env::var("PETREL_IMAP_HOST").ok()?;
+    let user = std::env::var("PETREL_IMAP_USER").ok()?;
+    let pass = std::env::var("PETREL_IMAP_PASS").ok()?;
+    let plaintext = std::env::var("PETREL_IMAP_TLS")
+        .map(|v| v == "0")
+        .unwrap_or(false);
+
+    #[cfg(feature = "dev-plaintext-imap")]
+    let security = if plaintext {
+        Security::InsecurePlaintext
+    } else {
+        Security::Tls
+    };
+    #[cfg(not(feature = "dev-plaintext-imap"))]
+    let security = {
+        if plaintext {
+            eprintln!(
+                "[sync] PETREL_IMAP_TLS=0 ignored: plaintext is not compiled into this build"
+            );
+        }
+        Security::Tls
+    };
+
+    Some(ImapConfig {
+        host,
+        port: std::env::var("PETREL_IMAP_PORT")
+            .ok()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(if plaintext { 143 } else { 993 }),
+        user,
+        pass,
+        security,
+    })
+}
+
+/// One-shot sync: fetch recent mail and ingest it. Deliberately not a sync
+/// engine — that arrives with the orchestrator; this proves the path end to end
+/// inside the app.
+fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
+    tauri::async_runtime::spawn(async move {
+        *state.source.lock().unwrap() = format!("syncing {}…", cfg.host);
+        match petrel_providers::imap::fetch_raw(&cfg, "INBOX", 200).await {
+            Ok(messages) => {
+                eprintln!("[sync] fetched {} message(s)", messages.len());
+                // Fetch fully, *then* take the lock: holding a database lock
+                // across network I/O would stall every UI query behind the
+                // slowest server in the account list.
+                let mut ok = 0usize;
+                for (uid, raw) in &messages {
+                    let mut store = match state.store.lock() {
+                        Ok(s) => s,
+                        Err(_) => break,
+                    };
+                    match store.ingest_raw(&state.blobs, account, None, Some(*uid), raw) {
+                        Ok(_) => {
+                            ok += 1;
+                            state.seeded.store(ok, Ordering::Relaxed);
+                        }
+                        Err(e) => eprintln!("[sync] skipped one message: {e}"),
+                    }
+                }
+                *state.source.lock().unwrap() = format!("{} · {ok} message(s) synced", cfg.user);
+                eprintln!("[sync] ingested {ok}/{}", messages.len());
+            }
+            Err(e) => {
+                eprintln!("[sync] failed: {e}");
+                *state.source.lock().unwrap() = format!("sync failed: {e}");
+            }
+        }
+        state.seeding.store(false, Ordering::Relaxed);
+    });
 }
 
 #[tauri::command]
@@ -168,14 +255,30 @@ fn frontend_log(entry: String) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // In-memory for now: persistence lands with the account model and schema
+    // migrations, and a half-persisted store is worse than an explicit
+    // ephemeral one.
     let store = Store::open_in_memory().expect("open in-memory store");
-    let account = store.ensure_test_account().expect("create demo account");
+    let account = store.ensure_test_account().expect("create account row");
+    let blob_dir = std::env::temp_dir().join(format!("petrel-blobs-{}", std::process::id()));
     let state = Arc::new(AppState {
         store: Mutex::new(store),
+        blobs: BlobStore::open(&blob_dir).expect("open blob store"),
         seeding: AtomicBool::new(true),
         seeded: AtomicUsize::new(0),
+        source: Mutex::new("starting…".into()),
     });
-    spawn_demo_seeding(state.clone(), account);
+
+    match imap_config_from_env() {
+        Some(cfg) => {
+            eprintln!("[sync] account configured: {} @ {}", cfg.user, cfg.host);
+            spawn_real_sync(state.clone(), account, cfg);
+        }
+        None => {
+            *state.source.lock().unwrap() = "synthetic demo data".into();
+            spawn_demo_seeding(state.clone(), account);
+        }
+    }
 
     tauri::Builder::default()
         .manage(state)
