@@ -20,6 +20,8 @@ webpki-roots = "1"
 futures = "0.3"
 thiserror.workspace = true
 
+tempfile.workspace = true
+
 [dev-dependencies.petrel-engine]
 path = "../petrel-engine"
 

@@ -290,6 +290,54 @@ pub async fn append_message(cfg: &ImapConfig, folder: &str, raw: &[u8]) -> Resul
     Ok(())
 }
 
+/// Fetches whole messages (`RFC822`) with their UIDs — the bytes the engine
+/// stores verbatim and parses. Newest `limit` messages in the folder.
+pub async fn fetch_raw(cfg: &ImapConfig, folder: &str, limit: u32) -> Result<Vec<(u32, Vec<u8>)>> {
+    match cfg.security {
+        Security::Tls => {
+            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
+            fetch_raw_session(client, cfg, folder, limit).await
+        }
+        #[cfg(feature = "insecure-plaintext")]
+        Security::InsecurePlaintext => {
+            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
+            fetch_raw_session(Client::new(tcp), cfg, folder, limit).await
+        }
+    }
+}
+
+async fn fetch_raw_session<S>(
+    client: Client<S>,
+    cfg: &ImapConfig,
+    folder: &str,
+    limit: u32,
+) -> Result<Vec<(u32, Vec<u8>)>>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
+{
+    let mut session = client
+        .login(&cfg.user, &cfg.pass)
+        .await
+        .map_err(|(e, _)| e)?;
+    let mailbox = session.select(folder).await?;
+    let mut out = Vec::new();
+    if mailbox.exists > 0 {
+        let last = mailbox.exists;
+        let first = last.saturating_sub(limit.saturating_sub(1)).max(1);
+        let mut fetches = session
+            .fetch(format!("{first}:{last}"), "(UID RFC822)")
+            .await?;
+        while let Some(fetch) = fetches.next().await {
+            let fetch = fetch?;
+            if let (Some(uid), Some(body)) = (fetch.uid, fetch.body()) {
+                out.push((uid, body.to_vec()));
+            }
+        }
+    }
+    session.logout().await?;
+    Ok(out)
+}
+
 /// Searches a folder for a Message-ID. This is the evidence-gathering half of
 /// the ambiguous-send rule: after a send whose outcome we could not read, we
 /// ask the server whether it actually has the message rather than guessing.

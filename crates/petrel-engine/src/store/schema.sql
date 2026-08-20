@@ -48,6 +48,7 @@ CREATE TABLE messages (
     flags          INTEGER NOT NULL DEFAULT 0,
     size           INTEGER,
     message_id_hdr TEXT,
+    has_attachments INTEGER NOT NULL DEFAULT 0,
     body_state     TEXT NOT NULL DEFAULT 'full',
     doc_json       TEXT NOT NULL DEFAULT '{}'
 ) STRICT;
@@ -72,6 +73,19 @@ CREATE TABLE message_addresses (
 ) STRICT;
 CREATE INDEX idx_addr_lookup ON message_addresses(addr_norm, role);
 CREATE INDEX idx_addr_msg ON message_addresses(message_id);
+
+-- Attachment metadata. The bytes live inside the message's raw blob; this
+-- records where to find them and what to show before anything is decoded.
+CREATE TABLE attachments (
+    id         INTEGER PRIMARY KEY,
+    message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    part_id    INTEGER NOT NULL,
+    filename   TEXT,
+    mime       TEXT,
+    size       INTEGER,
+    blob_hash  TEXT REFERENCES blobs(hash)   -- set only when stored separately
+) STRICT;
+CREATE INDEX idx_attachments_message ON attachments(message_id);
 
 CREATE TABLE actions (
     id           INTEGER PRIMARY KEY,

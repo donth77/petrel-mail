@@ -2531,6 +2531,7 @@ dependencies = [
  "futures",
  "petrel-engine",
  "rustls",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tokio-rustls",
