@@ -6,5 +6,7 @@
 //! original** (parsing produces a view; the raw bytes stay the source of truth).
 
 pub mod parse;
+pub mod sanitize;
 
 pub use parse::{Attachment, ParsedMessage, parse_message};
+pub use sanitize::{SanitizeReport, Sanitized, plain_text_to_html, sanitize_html};

@@ -13,9 +13,12 @@ use petrel_engine::blob::BlobStore;
 use petrel_engine::store::{Listing, NewMessage, Store};
 use petrel_providers::imap::{ImapConfig, Security};
 use petrel_testkit::MailboxGen;
-use tauri::State;
+use tauri::{Manager, State};
 
+mod message_view;
 mod spike_s2;
+
+use message_view::ViewTokens;
 
 const DEMO_MESSAGES: usize = 10_000;
 
@@ -25,6 +28,7 @@ struct AppState {
     seeding: AtomicBool,
     seeded: AtomicUsize,
     source: Mutex<String>,
+    tokens: Arc<ViewTokens>,
 }
 
 #[derive(serde::Serialize)]
@@ -142,6 +146,21 @@ fn search_messages(query: String, state: State<Arc<AppState>>) -> Result<Vec<Lis
     store.search_listing(&query, 50).map_err(|e| e.to_string())
 }
 
+/// Issues a one-message URL for the reading pane. The UI never receives the
+/// body over IPC — bulk bytes go over the custom protocol, and the frame that
+/// renders them has no IPC access at all.
+#[tauri::command]
+fn message_url(message_id: i64, state: State<Arc<AppState>>) -> Result<String, String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    match store.blob_hash_for(message_id).map_err(|e| e.to_string())? {
+        Some(_) => Ok(format!(
+            "petrel-msg://localhost/message/{}",
+            state.tokens.issue(message_id)
+        )),
+        None => Err("message has no stored body".into()),
+    }
+}
+
 fn spawn_demo_seeding(state: Arc<AppState>, account: i64) {
     std::thread::spawn(move || {
         let mut generator = MailboxGen::new(7, DEMO_MESSAGES);
@@ -231,12 +250,25 @@ const SELFTEST: &str = r#"
   function rows() { return document.querySelectorAll('.row').length; }
   function timing() { var m = document.querySelectorAll('.meta span'); return m.length > 1 ? m[1].textContent : ''; }
   function firstRow() { var r = document.querySelector('.row'); return r ? r.innerText.replace(/\s+/g, ' ').slice(0, 90) : ''; }
-  var queries = ['meeting', 'zephyrite5000', '東京計', 'quarterly report'];
+  var queries = (window.__PETREL_SELFTEST_QUERIES__ || ['meeting', 'zephyrite5000', '東京計', 'quarterly report']);
   var i = 0;
   function step() {
     var input = document.querySelector('.search');
     if (!input) { setTimeout(step, 300); return; }
-    if (i >= queries.length) { log({ kind: 'selftest-done' }); return; }
+    if (i >= queries.length) {
+      // Open the first result so the reading pane renders under observation.
+      if (window.__PETREL_SELFTEST_OPEN__) {
+        var row = document.querySelector('.row');
+        if (row) { row.click(); }
+        setTimeout(function () {
+          var f = document.querySelector('.reader iframe');
+          log({ kind: 'selftest-open', opened: !!f, src: f ? f.getAttribute('src') : null,
+                sandbox: f ? f.getAttribute('sandbox') : null });
+        }, 1500);
+      }
+      log({ kind: 'selftest-done' });
+      return;
+    }
     var q = queries[i++];
     type(input, q);
     setTimeout(function () {
@@ -267,6 +299,7 @@ pub fn run() {
         seeding: AtomicBool::new(true),
         seeded: AtomicUsize::new(0),
         source: Mutex::new("starting…".into()),
+        tokens: Arc::new(ViewTokens::new()),
     });
 
     match imap_config_from_env() {
@@ -286,12 +319,34 @@ pub fn run() {
             status,
             list_messages,
             search_messages,
+            message_url,
             frontend_log
         ])
-        .register_uri_scheme_protocol("petrel-msg", |_ctx, request| spike_s2::handle(&request))
+        .register_uri_scheme_protocol("petrel-msg", move |ctx, request| {
+            if request.uri().path().starts_with("/doc/")
+                || request.uri().path().starts_with("/beacon/")
+            {
+                return spike_s2::handle(&request);
+            }
+            let state = ctx.app_handle().state::<Arc<AppState>>();
+            let lookup = |id: i64| {
+                state
+                    .store
+                    .lock()
+                    .ok()
+                    .and_then(|s| s.blob_hash_for(id).ok().flatten())
+            };
+            message_view::handle(&request, &state.tokens, &state.blobs, lookup)
+        })
         .setup(|app| {
             let mut init = DIAG.to_string();
-            if std::env::var("PETREL_SELFTEST").is_ok() {
+            if let Ok(mode) = std::env::var("PETREL_SELFTEST") {
+                if mode == "open" {
+                    init.push_str(
+                        "window.__PETREL_SELFTEST_QUERIES__=['hostile'];\
+                         window.__PETREL_SELFTEST_OPEN__=true;",
+                    );
+                }
                 init.push_str(SELFTEST);
             }
             if std::env::var("PETREL_SPIKE_S2").is_ok() {

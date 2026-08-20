@@ -46,6 +46,18 @@ const css = `
           font-variant-numeric: tabular-nums; }
   mark { background: transparent; color: var(--accent); font-weight: 650; }
   .empty { padding: 28px; text-align: center; color: var(--ink2); }
+  .row { cursor: default; }
+  .row.sel { background: var(--kbdbg, #edf2f2); }
+  .row:hover { background: #f2f6f6; }
+  .reader { border: 1px solid var(--hair); border-radius: 6px; background: var(--surface);
+            margin-top: 12px; overflow: hidden; }
+  .reader header { padding: 12px 14px; border-bottom: 1px solid var(--hair); }
+  .reader h2 { margin: 0 0 3px; font-size: 15px; font-weight: 650; }
+  .reader .who { font-size: 12.5px; color: var(--ink2); }
+  .reader iframe { width: 100%; height: 420px; border: 0; display: block; background: #fff; }
+  .reader .close { float: right; cursor: pointer; color: var(--ink2); font-size: 12px;
+                   border: 1px solid var(--hair); border-radius: 4px; padding: 1px 7px;
+                   background: var(--bg); }
 `;
 
 function Snippet({ text }: { text: string }) {
@@ -64,6 +76,8 @@ function App() {
   const [query, setQuery] = React.useState("");
   const [stat, setStat] = React.useState<Status>({ seeding: true, count: 0, source: "…" });
   const [searchMs, setSearchMs] = React.useState<number | null>(null);
+  const [open, setOpen] = React.useState<{ row: Listing; url: string } | null>(null);
+  const [openErr, setOpenErr] = React.useState<string | null>(null);
   const queryRef = React.useRef(query);
   queryRef.current = query;
 
@@ -96,6 +110,19 @@ function App() {
       alive = false;
     };
   }, [refresh]);
+
+  // Opening a message asks the engine for a single-use URL; the body itself
+  // never crosses IPC and renders in a sandboxed frame with no script access.
+  const openMessage = React.useCallback(async (row: Listing) => {
+    setOpenErr(null);
+    try {
+      const url = await invoke<string>("message_url", { messageId: row.id });
+      setOpen({ row, url });
+    } catch (e) {
+      setOpen(null);
+      setOpenErr(String(e));
+    }
+  }, []);
 
   // Debounced search-as-you-type.
   React.useEffect(() => {
@@ -132,7 +159,11 @@ function App() {
           </div>
         ) : (
           rows.map((r) => (
-            <div className="row" key={r.id}>
+            <div
+              className={open?.row.id === r.id ? "row sel" : "row"}
+              key={r.id}
+              onClick={() => openMessage(r)}
+            >
               <span className="from">{r.from_display || r.from_addr}</span>
               <span className="subj">
                 {r.subject}
@@ -151,6 +182,24 @@ function App() {
           ))
         )}
       </div>
+      {openErr && <div className="meta">could not open message: {openErr}</div>}
+      {open && (
+        <div className="reader">
+          <header>
+            <button className="close" onClick={() => setOpen(null)}>
+              close
+            </button>
+            <h2>{open.row.subject || "(no subject)"}</h2>
+            <div className="who">
+              {open.row.from_display || open.row.from_addr}
+              {open.row.from_display ? ` <${open.row.from_addr}>` : ""}
+            </div>
+          </header>
+          {/* sandbox with no allow-scripts and no allow-same-origin: the
+              message cannot run code, reach IPC, or read this document. */}
+          <iframe title="message" sandbox="" src={open.url} />
+        </div>
+      )}
     </div>
   );
 }

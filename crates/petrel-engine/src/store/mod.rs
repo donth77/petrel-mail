@@ -504,6 +504,18 @@ impl Store {
         Ok(())
     }
 
+    /// The blob backing a message, for the reading pane to fetch and render.
+    pub fn blob_hash_for(&self, message_id: i64) -> Result<Option<String>> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT blob_hash FROM messages WHERE id = ?1")?;
+        let hash = stmt
+            .query_row(params![message_id], |r| r.get::<_, Option<String>>(0))
+            .ok()
+            .flatten();
+        Ok(hash)
+    }
+
     pub fn message_count(&self) -> Result<i64> {
         Ok(self
             .conn

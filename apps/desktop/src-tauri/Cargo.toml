@@ -28,5 +28,6 @@ serde.workspace = true
 serde_json.workspace = true
 petrel-engine = { path = "../../../crates/petrel-engine" }
 petrel-providers = { path = "../../../crates/petrel-providers" }
+petrel-mime = { path = "../../../crates/petrel-mime" }
 # Demo-mode seeding only; used when no account is configured.
 petrel-testkit = { path = "../../../crates/petrel-testkit" }
