@@ -11,6 +11,10 @@ use std::path::{Path, PathBuf};
 pub enum BlobError {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+    /// The stored bytes do not match the hash they are filed under. The blob is
+    /// unusable; the engine's response is to refetch from the server.
+    #[error("corrupt blob: {0}")]
+    Corrupt(String),
 }
 
 pub type Result<T> = std::result::Result<T, BlobError>;
@@ -55,12 +59,31 @@ impl BlobStore {
         Ok((hash, size))
     }
 
+    /// Reads and **verifies** the blob against its own name. Blobs are
+    /// content-addressed, so the filename is a checksum we get for free —
+    /// spending microseconds to check it turns silent corruption (bit rot, a
+    /// truncated restore, an antivirus rewrite) into a clean error the engine
+    /// can heal from by refetching, instead of a wrong message on screen.
     pub fn read(&self, hash: &str) -> Result<Vec<u8>> {
         let compressed = fs::read(self.path_for(hash))?;
-        Ok(zstd::decode_all(compressed.as_slice())?)
+        let bytes = zstd::decode_all(compressed.as_slice())
+            .map_err(|e| BlobError::Corrupt(format!("{hash}: decompression failed: {e}")))?;
+        let actual = blake3::hash(&bytes).to_hex().to_string();
+        if actual != hash {
+            return Err(BlobError::Corrupt(format!(
+                "{hash}: content hash mismatch (found {actual})"
+            )));
+        }
+        Ok(bytes)
     }
 
-    /// Removes orphaned temp files from interrupted writes.
+    /// True when the blob exists and passes verification.
+    pub fn is_intact(&self, hash: &str) -> bool {
+        self.read(hash).is_ok()
+    }
+
+    /// Removes orphaned temp files left by interrupted writes. Safe to run at
+    /// any time: a `.part` file is never referenced by the store.
     pub fn sweep_tmp(&self) -> Result<usize> {
         let mut removed = 0;
         for entry in fs::read_dir(self.root.join("tmp"))? {
@@ -69,6 +92,11 @@ impl BlobStore {
             removed += 1;
         }
         Ok(removed)
+    }
+
+    /// Number of `.part` files awaiting a sweep (diagnostics/tests).
+    pub fn pending_temp_files(&self) -> Result<usize> {
+        Ok(fs::read_dir(self.root.join("tmp"))?.count())
     }
 }
 
