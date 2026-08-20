@@ -35,7 +35,9 @@ jobs:
             (echo > /dev/tcp/127.0.0.1/3143) >/dev/null 2>&1 && break
             sleep 2
           done
-          cargo test -p petrel-providers --features insecure-plaintext --test imap_slice -- --ignored --nocapture
+          # `local::` only — live_provider_probe needs a real account and is
+          # opt-in via PETREL_IMAP_* (it skips rather than fails without them).
+          cargo test -p petrel-providers --features insecure-plaintext --test imap_slice local:: -- --ignored --nocapture
           # Ambiguous-send reconciliation (audit blocker ARC-03) — serial: it
           # asserts exact copy counts in a shared mailbox.
           cargo test -p petrel-providers --features insecure-plaintext --test ambiguous_send -- --ignored --nocapture --test-threads=1

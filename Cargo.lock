@@ -1454,6 +1454,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "hashify"
+version = "0.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd1246c0e5493286aeb2dde35b1f4eb9c4ce00e628641210a5e553fc001a1f26"
+dependencies = [
+ "indexmap 2.14.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "hashlink"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2040,6 +2052,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
+name = "mail-parser"
+version = "0.11.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d1bb2f9fb98d69b0369be719dc8ab2f535a959e3761128c5c044fae97f68c12"
+dependencies = [
+ "hashify",
+]
+
+[[package]]
 name = "markup5ever"
 version = "0.38.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2484,6 +2505,7 @@ name = "petrel-engine"
 version = "0.0.1"
 dependencies = [
  "blake3",
+ "petrel-mime",
  "petrel-testkit",
  "rusqlite",
  "serde",
@@ -2496,6 +2518,10 @@ dependencies = [
 [[package]]
 name = "petrel-mime"
 version = "0.0.1"
+dependencies = [
+ "mail-parser",
+ "thiserror 2.0.20",
+]
 
 [[package]]
 name = "petrel-providers"

@@ -48,11 +48,17 @@ fn redact(s: &str) -> String {
 #[tokio::test]
 #[ignore = "requires a real account: set PETREL_IMAP_* (see .env.example)"]
 async fn live_provider_probe() {
+    // This test needs an external account that only a human can provision, so
+    // absent credentials are "not applicable", not "broken" — a bulk
+    // `--ignored` run (as CI does) must not fail because of it. The skip is
+    // printed loudly: a quiet skip would be indistinguishable from a pass.
     let Some(cfg) = env_config(Security::Tls) else {
-        panic!(
-            "missing credentials: set PETREL_IMAP_HOST / PETREL_IMAP_USER / PETREL_IMAP_PASS \
-             (copy .env.example to .env.local, then `set -a && . ./.env.local && set +a`)"
+        println!(
+            "SKIPPED live_provider_probe: no credentials. Set PETREL_IMAP_HOST / \
+             PETREL_IMAP_USER / PETREL_IMAP_PASS (copy .env.example to .env.local, \
+             then `set -a && . ./.env.local && set +a`) to run it."
         );
+        return;
     };
 
     // Read-only by construction: probe() never appends, moves, or sets flags.
