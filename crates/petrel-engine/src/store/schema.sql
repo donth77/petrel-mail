@@ -49,6 +49,9 @@ CREATE TABLE messages (
     from_addr      TEXT,
     from_display   TEXT,
     subject        TEXT,
+    -- Reply/forward prefixes stripped; the key two messages in one
+    -- conversation should agree on when references are missing.
+    subject_norm   TEXT,
     snippet        TEXT,
     flags          INTEGER NOT NULL DEFAULT 0,
     size           INTEGER,
@@ -64,6 +67,18 @@ CREATE TABLE messages (
 CREATE INDEX idx_messages_account_date ON messages(account_id, date_ms DESC);
 CREATE INDEX idx_messages_deleted ON messages(deleted_at_ms) WHERE deleted_at_ms IS NOT NULL;
 CREATE INDEX idx_messages_msgid ON messages(account_id, message_id_hdr);
+CREATE INDEX idx_messages_thread ON messages(thread_id, date_ms DESC);
+CREATE INDEX idx_messages_subject_norm ON messages(account_id, subject_norm);
+
+-- The reply graph: one row per Message-ID this message references. Threading
+-- unions over these, so a message arriving late can join two chains that were
+-- separate — normal when the middle of a conversation syncs after its ends.
+CREATE TABLE message_refs (
+    message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    ref_msgid  TEXT NOT NULL,
+    PRIMARY KEY (message_id, ref_msgid)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX idx_refs_msgid ON message_refs(ref_msgid);
 
 CREATE TABLE placements (
     message_id  INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,

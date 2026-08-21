@@ -65,6 +65,22 @@ pub struct SearchHit {
     pub snippet: String,
 }
 
+/// One conversation as the message list shows it: the newest message's
+/// details, plus how many messages it stands for.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ThreadListing {
+    pub thread_id: i64,
+    /// Newest message in the conversation — what the row displays.
+    pub id: i64,
+    pub from_display: String,
+    pub from_addr: String,
+    pub subject: String,
+    pub snippet: String,
+    pub date_ms: i64,
+    pub message_count: i64,
+    pub participants: String,
+}
+
 /// A list-ready row shared by recents and search results (UI surfaces).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Listing {
@@ -151,6 +167,106 @@ fn match_expr(query: &str, prefix_last: bool) -> Option<String> {
         })
         .collect();
     Some(parts.join(" "))
+}
+
+/// Assigns `row_id` to a conversation and returns the thread id.
+///
+/// Reference links win; a distinctive subject is a narrow fallback. When a
+/// message links two previously separate threads, they are merged — the common
+/// case where the middle of a conversation arrives after its ends.
+fn assign_thread(
+    tx: &rusqlite::Transaction<'_>,
+    account_id: i64,
+    row_id: i64,
+    msgid: Option<&str>,
+    references: &[String],
+    subject_norm: &str,
+    date_ms: i64,
+) -> Result<i64> {
+    {
+        let mut ins = tx.prepare_cached(
+            "INSERT OR IGNORE INTO message_refs(message_id, ref_msgid) VALUES (?1, ?2)",
+        )?;
+        for r in references {
+            ins.execute(params![row_id, r])?;
+        }
+    }
+
+    let mut candidates: std::collections::BTreeSet<i64> = Default::default();
+
+    // Ancestors: messages this one replies to.
+    if !references.is_empty() {
+        let placeholders = std::iter::repeat_n("?", references.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT DISTINCT thread_id FROM messages
+             WHERE account_id = ?1 AND thread_id IS NOT NULL
+               AND message_id_hdr IN ({placeholders})"
+        );
+        let mut stmt = tx.prepare(&sql)?;
+        let mut args: Vec<&dyn rusqlite::ToSql> = vec![&account_id];
+        for r in references {
+            args.push(r);
+        }
+        let rows = stmt.query_map(args.as_slice(), |r| r.get::<_, i64>(0))?;
+        for t in rows {
+            candidates.insert(t?);
+        }
+    }
+
+    // Descendants: messages already stored that reply to this one.
+    if let Some(id) = msgid {
+        let mut stmt = tx.prepare_cached(
+            "SELECT DISTINCT m.thread_id FROM message_refs r
+             JOIN messages m ON m.id = r.message_id
+             WHERE r.ref_msgid = ?1 AND m.account_id = ?2 AND m.thread_id IS NOT NULL",
+        )?;
+        let rows = stmt.query_map(params![id, account_id], |r| r.get::<_, i64>(0))?;
+        for t in rows {
+            candidates.insert(t?);
+        }
+    }
+
+    // Subject fallback, only for subjects distinctive enough to be evidence and
+    // only within a window. A wrong merge hides mail inside an unrelated
+    // conversation, where nobody thinks to look — worse than an extra thread.
+    if candidates.is_empty() && crate::threading::subject_is_threadable(subject_norm) {
+        let window = crate::threading::SUBJECT_THREAD_WINDOW_MS;
+        let mut stmt = tx.prepare_cached(
+            "SELECT thread_id FROM messages
+             WHERE account_id = ?1 AND subject_norm = ?2 AND thread_id IS NOT NULL
+               AND abs(date_ms - ?3) <= ?4
+             ORDER BY abs(date_ms - ?3) LIMIT 1",
+        )?;
+        if let Ok(t) = stmt.query_row(params![account_id, subject_norm, date_ms, window], |r| {
+            r.get::<_, i64>(0)
+        }) {
+            candidates.insert(t);
+        }
+    }
+
+    let thread_id = match candidates.iter().next().copied() {
+        Some(target) => {
+            // Merge every other candidate into the lowest id, so thread
+            // identity is stable regardless of arrival order.
+            for other in candidates.iter().skip(1) {
+                tx.execute(
+                    "UPDATE messages SET thread_id = ?1 WHERE thread_id = ?2",
+                    params![target, other],
+                )?;
+            }
+            target
+        }
+        // A conversation of one, named after itself.
+        None => row_id,
+    };
+
+    tx.execute(
+        "UPDATE messages SET thread_id = ?2, subject_norm = ?3 WHERE id = ?1",
+        params![row_id, thread_id, subject_norm],
+    )?;
+    Ok(thread_id)
 }
 
 impl Store {
@@ -291,6 +407,10 @@ impl Store {
                     params![id],
                 )?;
                 tx.execute("DELETE FROM attachments WHERE message_id = ?1", params![id])?;
+                tx.execute(
+                    "DELETE FROM message_refs WHERE message_id = ?1",
+                    params![id],
+                )?;
                 id
             }
             None => {
@@ -345,6 +465,18 @@ impl Store {
                 )?;
             }
         }
+
+        let subject_norm =
+            crate::threading::normalize_subject(parsed.subject.as_deref().unwrap_or(""));
+        assign_thread(
+            &tx,
+            account_id,
+            id,
+            parsed.message_id.as_deref(),
+            &parsed.references,
+            &subject_norm,
+            date_ms,
+        )?;
 
         // Same transaction as the message row: the anti-drift invariant.
         tx.execute(
@@ -715,6 +847,78 @@ impl Store {
         Ok(self
             .conn
             .query_row("SELECT count(*) FROM messages", [], |r| r.get(0))?)
+    }
+
+    /// Conversations by most recent activity — the message list's real query.
+    ///
+    /// One row per thread, showing the newest message. `GROUP BY` after the
+    /// join collapses ties where two messages share the newest timestamp,
+    /// which would otherwise show a conversation twice.
+    pub fn list_threads(&self, offset: u32, limit: u32) -> Result<Vec<ThreadListing>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT m.thread_id, m.id, coalesce(m.from_display,''), coalesce(m.from_addr,''),
+                    coalesce(m.subject,''), coalesce(m.snippet,''), m.date_ms, t.n,
+                    coalesce(t.participants,'')
+             FROM messages m
+             JOIN (
+               SELECT thread_id, max(date_ms) AS md, count(*) AS n,
+                      group_concat(DISTINCT coalesce(nullif(from_display,''), from_addr))
+                        AS participants
+               FROM messages WHERE deleted_at_ms IS NULL GROUP BY thread_id
+             ) t ON m.thread_id = t.thread_id AND m.date_ms = t.md
+             WHERE m.deleted_at_ms IS NULL
+             GROUP BY m.thread_id
+             ORDER BY m.date_ms DESC LIMIT ?1 OFFSET ?2",
+        )?;
+        let rows = stmt.query_map(params![limit, offset], |row| {
+            Ok(ThreadListing {
+                thread_id: row.get(0)?,
+                id: row.get(1)?,
+                from_display: row.get(2)?,
+                from_addr: row.get(3)?,
+                subject: row.get(4)?,
+                snippet: row.get(5)?,
+                date_ms: row.get(6)?,
+                message_count: row.get(7)?,
+                participants: row.get(8)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// Every live message in one conversation, oldest first — the reading pane
+    /// renders these in order with earlier ones collapsed.
+    pub fn messages_in_thread(&self, thread_id: i64) -> Result<Vec<Listing>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, coalesce(from_display,''), coalesce(from_addr,''),
+                    coalesce(subject,''), coalesce(snippet,''), date_ms
+             FROM messages WHERE thread_id = ?1 AND deleted_at_ms IS NULL
+             ORDER BY date_ms ASC, id ASC",
+        )?;
+        let rows = stmt.query_map(params![thread_id], |row| {
+            Ok(Listing {
+                id: row.get(0)?,
+                from_display: row.get(1)?,
+                from_addr: row.get(2)?,
+                subject: row.get(3)?,
+                snippet: row.get(4)?,
+                date_ms: row.get(5)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// The conversation a message belongs to.
+    pub fn thread_of(&self, message_id: i64) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT thread_id FROM messages WHERE id = ?1",
+                params![message_id],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .ok()
+            .flatten())
     }
 
     /// Most-recent-activity page for list surfaces.
