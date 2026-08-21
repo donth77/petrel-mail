@@ -27,6 +27,8 @@ export type Thread = {
   unread: boolean;
   starred: boolean;
   has_attachments: boolean;
+  tags: { name: string; colour: string }[];
+  attachment_name: string | null;
 };
 
 export type Status = {
@@ -70,6 +72,13 @@ function mockRows(n: number, offset = 0): Thread[] {
       unread: k % 3 === 2,
       starred: k % 9 === 4,
       has_attachments: k % 5 === 0,
+      tags:
+        k % 4 === 0
+          ? [{ name: 'urgent', colour: '#B0524A' }]
+          : k % 7 === 3
+            ? [{ name: 'receipts', colour: '#5E7C4A' }, { name: 'read later', colour: '#9A6B1F' }]
+            : [],
+      attachment_name: k % 5 === 0 ? 'contract-v3.pdf' : null,
     };
   });
 }

@@ -442,3 +442,37 @@ fn search_collapses_hits_to_one_row_per_conversation() {
     let chain = rows.iter().find(|r| r.subject.contains("Annex review")).unwrap();
     assert_eq!(chain.message_count, 3, "the row reports the whole thread");
 }
+
+/// Mail must never be invisible. A message whose thread was never assigned is a
+/// conversation of one — not a row that silently vanishes because `NULL = NULL`
+/// is false and the join dropped it.
+#[test]
+fn messages_without_a_thread_still_appear_as_single_conversations() {
+    let (_d, mut store, _blobs, account) = setup();
+
+    // insert_messages is the bulk path — it carries no headers, so nothing here
+    // can be threaded even in principle.
+    let msgs: Vec<_> = (0..3)
+        .map(|i| petrel_engine::store::NewMessage {
+            account_id: account,
+            date_ms: T0 + i * DAY,
+            from_addr: "bulk@example.com".into(),
+            from_display: "Bulk".into(),
+            to_addr: "me@example.com".into(),
+            subject: format!("Unthreaded {i}"),
+            body_text: "body".into(),
+        })
+        .collect();
+    let ids = store.insert_messages(&msgs).unwrap();
+    assert_eq!(ids.len(), 3);
+
+    let rows = store.list_threads(0, 50).unwrap();
+    assert_eq!(rows.len(), 3, "every unthreaded message gets its own row");
+    for r in &rows {
+        assert_eq!(r.message_count, 1, "a conversation of one");
+    }
+
+    // And search must not drop them either.
+    let hits = store.search_threads("Unthreaded", 50).unwrap();
+    assert_eq!(hits.len(), 3, "search returns them too");
+}

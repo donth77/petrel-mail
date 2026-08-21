@@ -1,6 +1,6 @@
 import {
   Inbox, Star, Clock, Send, PencilLine, Upload, Archive, ShieldAlert, Trash2, ChevronDown,
-  type LucideIcon,
+  CircleHelp, Settings, type LucideIcon,
 } from 'lucide-react';
 import { Icon } from './Icon';
 import { t, type StringId } from '../lib/strings';
@@ -17,9 +17,17 @@ const MAILBOXES: { id: StringId; key: string; glyph: LucideIcon }[] = [
   { id: 'mailbox-trash', key: 'trash', glyph: Trash2 },
 ];
 
-type Props = { account: string; unread: number; view: string; onView: (v: string) => void };
+type Tag = { name: string; colour: string; thread_count: number };
 
-export function Rail({ account, unread, view, onView }: Props) {
+type Props = {
+  account: string;
+  unread: number;
+  view: string;
+  tags: Tag[];
+  onView: (v: string) => void;
+};
+
+export function Rail({ account, unread, view, tags, onView }: Props) {
   return (
     <nav className="rail" aria-label={t('rail-mailboxes')}>
       {/* One account is active at a time (Q27): the header names it rather than
@@ -51,6 +59,42 @@ export function Rail({ account, unread, view, onView }: Props) {
           {m.key === 'inbox' && unread > 0 && <span className="count">{unread}</span>}
         </button>
       ))}
+
+      {tags.length > 0 && (
+        <>
+          <div className="rail-label">{t('rail-tags')}</div>
+          {tags.map((tag) => (
+            <button
+              key={tag.name}
+              type="button"
+              className="rail-item"
+              aria-current={view === `tag:${tag.name}` ? 'page' : undefined}
+              onClick={() => onView(`tag:${tag.name}`)}
+            >
+              <span
+                className="tag-swatch"
+                style={{ background: tag.colour || 'var(--ink3)' }}
+                aria-hidden="true"
+              />
+              {tag.name}
+              {tag.thread_count > 0 && <span className="count">{tag.thread_count}</span>}
+            </button>
+          ))}
+        </>
+      )}
+
+      {/* Help and Settings sit at the foot of the rail, out of the triage path
+          but always in the same place — not hidden behind a menu. */}
+      <div className="rail-foot">
+        <button type="button" className="rail-item" onClick={() => onView('help')}>
+          <Icon icon={CircleHelp} />
+          {t('rail-help')}
+        </button>
+        <button type="button" className="rail-item" onClick={() => onView('settings')}>
+          <Icon icon={Settings} />
+          {t('rail-settings')}
+        </button>
+      </div>
     </nav>
   );
 }

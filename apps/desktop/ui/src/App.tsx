@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, type Thread, type Status } from './lib/api';
 import { count as fmtCount } from './lib/format';
 import { t } from './lib/strings';
+import { Search } from 'lucide-react';
 import { Rail } from './components/Rail';
+import { TitleBar } from './components/TitleBar';
 import { MessageList } from './components/MessageList';
 import { Reader } from './components/Reader';
 
@@ -94,30 +96,61 @@ export function App() {
   const active = useMemo(() => items.find((m) => m.id === activeId) ?? null, [items, activeId]);
   const unread = useMemo(() => items.filter((m) => m.unread).length, [items]);
 
+  // Rail tags, rolled up from what is loaded. A dedicated per-account endpoint
+  // replaces this once tag sync exists — the shape is already right.
+  const tags = useMemo(() => {
+    const seen = new Map<string, { name: string; colour: string; thread_count: number }>();
+    for (const m of items) {
+      for (const tag of m.tags) {
+        const found = seen.get(tag.name);
+        if (found) found.thread_count += 1;
+        else seen.set(tag.name, { name: tag.name, colour: tag.colour, thread_count: 1 });
+      }
+    }
+    return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }, [items]);
+
+  // status.source is a description, not always an address — do not slice a
+  // sentence at "@" and present the fragment as an account name.
+  const accountLabel = (status?.source ?? '').includes('@')
+    ? status!.source.split('@')[0]
+    : t('app-name');
+
   return (
-    <div className="shell">
+    <div className="app-frame">
+      <TitleBar synced={status?.seeding ? t('status-seeding') : t('titlebar-sync')} />
+      <div className="shell">
       <Rail
         account={status?.source ?? t('app-name')}
         unread={unread}
         view={view}
+        tags={tags}
         onView={setView}
       />
 
       <div className="list-pane">
         <div className="list-head">
-          <span className="chip">
-            <span className="dot" style={{ background: 'var(--accent)' }} />
-            {t('mailbox-inbox')}
-          </span>
-          <input
-            ref={searchRef}
-            className="search"
-            type="search"
-            value={query}
-            placeholder={t('search-placeholder')}
-            onChange={(e) => setQuery(e.target.value)}
-            aria-label={t('search-placeholder')}
-          />
+          <div className="search-box">
+            <Search size={14} strokeWidth={1.8} aria-hidden="true" style={{ color: 'var(--ink3)', flexShrink: 0 }} />
+            <input
+              ref={searchRef}
+              className="search"
+              type="search"
+              value={query}
+              placeholder={t('search-placeholder')}
+              onChange={(e) => setQuery(e.target.value)}
+              aria-label={t('search-placeholder')}
+            />
+            <span className="kbd">{t('search-hint-key')}</span>
+          </div>
+          <div className="view-row">
+            <span className="view-name">{t('mailbox-inbox')}</span>
+            <span className="chip">
+              <span className="dot" style={{ background: 'var(--accent)' }} />
+              {accountLabel}
+            </span>
+            <span className="view-count">{t('list-unread', { count: fmtCount(unread) })}</span>
+          </div>
         </div>
 
         {error ? (
@@ -152,7 +185,7 @@ export function App() {
         )}
       </div>
 
-      <Reader message={active} />
+      <Reader thread={active} />
 
       <footer className="status">
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -171,6 +204,7 @@ export function App() {
           <span className="kbd">/</span> search
         </span>
       </footer>
+      </div>
     </div>
   );
 }

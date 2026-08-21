@@ -456,6 +456,7 @@ pub fn run() {
                 .inner_size(1440.0, 900.0)
                 .min_inner_size(900.0, 560.0)
                 .position(40.0, 40.0)
+                .focused(true)
                 .initialization_script(&init)
                 .on_navigation(|url| {
                     eprintln!("[nav] {url}");
@@ -465,6 +466,18 @@ pub fn run() {
                     eprintln!("[pageload] {:?} {}", payload.event(), payload.url());
                 })
                 .build()?;
+
+            // Say where it actually landed — a window that opens behind another
+            // app looks identical to one that failed to open.
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.set_focus();
+                if let (Ok(pos), Ok(size)) = (w.outer_position(), w.outer_size()) {
+                    eprintln!(
+                        "[window] main at {},{} size {}x{}",
+                        pos.x, pos.y, size.width, size.height
+                    );
+                }
+            }
             Ok(())
         })
         .run(tauri::generate_context!())

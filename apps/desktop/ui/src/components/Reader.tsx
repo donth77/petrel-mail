@@ -1,27 +1,27 @@
 import { useEffect, useState } from 'react';
-import { api, type Listing } from '../lib/api';
-import { fullTime } from '../lib/format';
-import { Archive, Clock } from 'lucide-react';
+import { Archive, MoreVertical, Star } from 'lucide-react';
+import { api, type Thread } from '../lib/api';
+import { count as fmtCount } from '../lib/format';
 import { Icon } from './Icon';
 import { t } from '../lib/strings';
 
-export function Reader({ message }: { message: Listing | null }) {
+export function Reader({ thread }: { thread: Thread | null }) {
   const [url, setUrl] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
     setUrl(null);
-    if (!message) return;
+    if (!thread) return;
     api
-      .messageUrl(message.id)
-      .then((u) => live && setUrl(u))
+      .messageUrl(thread.id)
+      .then((u) => live && setUrl(u || null))
       .catch(() => live && setUrl(null));
     return () => {
       live = false;
     };
-  }, [message?.id]);
+  }, [thread?.id]);
 
-  if (!message) {
+  if (!thread) {
     return (
       <section className="reader" aria-label={t('reader-none-title')}>
         <div className="empty">
@@ -32,28 +32,58 @@ export function Reader({ message }: { message: Listing | null }) {
     );
   }
 
+  const subject = thread.subject || '(no subject)';
   return (
-    <section className="reader" aria-label={message.subject || '(no subject)'}>
+    <section className="reader" aria-label={subject}>
       <header className="reader-head">
-        <h1 className="reader-subject">{message.subject || '(no subject)'}</h1>
-        <div className="reader-meta">
-          <span>{message.from_display || message.from_addr}</span>
-          <span className="mono">{fullTime(message.date_ms)}</span>
-          <span style={{ flexGrow: 1 }} />
-          <button type="button" className="act">
-<Icon icon={Archive} size={13} />
-            {t('reader-archive')} <span className="kbd">E</span>
-          </button>
-          <button type="button" className="act">
-<Icon icon={Clock} size={13} />
-            {t('reader-snooze')} <span className="kbd">B</span>
-          </button>
+        <div className="reader-headrow">
+          <div className="reader-title">
+            <h1 className="reader-subject">{subject}</h1>
+            <div className="reader-meta">
+              {thread.participants || thread.from_display || thread.from_addr}
+              {thread.message_count > 1 && (
+                <>
+                  {' · '}
+                  <span className="mono">
+                    {t('reader-message-count', { count: fmtCount(thread.message_count) })}
+                  </span>
+                </>
+              )}
+            </div>
+          </div>
+          <div className="reader-actions">
+            <button
+              type="button"
+              className={`act-icon${thread.starred ? ' on' : ''}`}
+              aria-label={t('reader-star')}
+              aria-pressed={thread.starred}
+              title={`${t('reader-star')} (S)`}
+            >
+              <Icon icon={Star} />
+            </button>
+            <button
+              type="button"
+              className="act-icon"
+              aria-label={t('reader-archive')}
+              title={`${t('reader-archive')} (E)`}
+            >
+              <Icon icon={Archive} />
+            </button>
+            <button
+              type="button"
+              className="act-icon"
+              aria-label={t('reader-more')}
+              title={t('reader-more')}
+            >
+              <Icon icon={MoreVertical} />
+            </button>
+          </div>
         </div>
       </header>
       <div className="reader-body">
         {/* Mail HTML only ever renders inside the sandboxed custom-scheme frame
             (ADR-0004). Nothing here may widen that. */}
-        {url && <iframe src={url} sandbox="" title={message.subject || '(no subject)'} />}
+        {url && <iframe src={url} sandbox="" title={subject} />}
       </div>
     </section>
   );

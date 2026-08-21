@@ -10,7 +10,7 @@ use rusqlite::functions::FunctionFlags;
 use rusqlite::{Connection, params};
 use std::path::Path;
 
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 /// Bumped whenever text extraction changes; a mismatch forces reindexing.
 pub const EXTRACTOR_VERSION: i64 = 1;
 
@@ -80,6 +80,20 @@ pub mod flags {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
+pub struct TagSummary {
+    pub id: i64,
+    pub name: String,
+    pub colour: String,
+    pub thread_count: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ThreadRowTag {
+    pub name: String,
+    pub colour: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ThreadListing {
     pub thread_id: i64,
     /// Newest message in the conversation — what the row displays.
@@ -96,6 +110,10 @@ pub struct ThreadListing {
     pub unread: bool,
     pub starred: bool,
     pub has_attachments: bool,
+    /// Every tag on any message in the conversation, deduplicated.
+    pub tags: Vec<ThreadRowTag>,
+    /// First attachment filename, for the row chip; the reader lists them all.
+    pub attachment_name: Option<String>,
 }
 
 /// A list-ready row shared by recents and search results (UI surfaces).
@@ -116,6 +134,14 @@ fn is_cjk(c: char) -> bool {
         | 0x4E00..=0x9FFF    // CJK unified
         | 0xF900..=0xFAFF    // CJK compat
         | 0xAC00..=0xD7AF) // hangul
+}
+
+/// SQLite hands the row's tags back as a JSON array; a malformed or absent
+/// value means "no tags", never an error — a row must render even if its tag
+/// join went wrong.
+fn parse_row_tags(json: Option<String>) -> Vec<ThreadRowTag> {
+    json.and_then(|j| serde_json::from_str::<Vec<ThreadRowTag>>(&j).ok())
+        .unwrap_or_default()
 }
 
 fn has_cjk(s: &str) -> bool {
@@ -430,9 +456,18 @@ impl Store {
         let _mode: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
+        // Migrations apply in order from whatever version the file is at, so a
+        // fresh database runs the baseline and then every step, and an existing
+        // one runs only what it is missing. Re-running schema.sql over a
+        // populated store would fail on "table already exists".
         let ver: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if ver < SCHEMA_VERSION {
+        if ver < 1 {
             conn.execute_batch(include_str!("schema.sql"))?;
+        }
+        if ver < 2 {
+            conn.execute_batch(include_str!("migrations/0002-tags.sql"))?;
+        }
+        if ver < SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             conn.execute(
                 "INSERT OR REPLACE INTO meta(key, value) VALUES ('extractor_version', ?1)",
@@ -1040,23 +1075,87 @@ impl Store {
         Ok(())
     }
 
+    /// Creates a tag if it is new, returning its id either way. Names are the
+    /// provider's own (IMAP keyword, Gmail label), so they are matched exactly.
+    pub fn ensure_tag(&self, account_id: i64, name: &str, colour: Option<&str>) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO tags(account_id, name, colour) VALUES (?1, ?2, ?3)
+             ON CONFLICT(account_id, name) DO UPDATE SET colour = coalesce(excluded.colour, colour)",
+            params![account_id, name, colour],
+        )?;
+        Ok(self.conn.query_row(
+            "SELECT id FROM tags WHERE account_id = ?1 AND name = ?2",
+            params![account_id, name],
+            |r| r.get(0),
+        )?)
+    }
+
+    pub fn tag_message(&self, message_id: i64, tag_id: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO message_tags(message_id, tag_id) VALUES (?1, ?2)",
+            params![message_id, tag_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn untag_message(&self, message_id: i64, tag_id: i64) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM message_tags WHERE message_id = ?1 AND tag_id = ?2",
+            params![message_id, tag_id],
+        )?;
+        Ok(())
+    }
+
+    /// Tags for the rail, with how many conversations carry each.
+    pub fn tags_for_account(&self, account_id: i64) -> Result<Vec<TagSummary>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT t.id, t.name, coalesce(t.colour,''),
+                    count(DISTINCT coalesce(m.thread_id, -m.id))
+             FROM tags t
+             LEFT JOIN message_tags mt ON mt.tag_id = t.id
+             LEFT JOIN messages m ON m.id = mt.message_id AND m.deleted_at_ms IS NULL
+             WHERE t.account_id = ?1
+             GROUP BY t.id ORDER BY t.name",
+        )?;
+        let rows = stmt.query_map(params![account_id], |row| {
+            Ok(TagSummary {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                colour: row.get(2)?,
+                thread_count: row.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
     pub fn list_threads(&self, offset: u32, limit: u32) -> Result<Vec<ThreadListing>> {
         let mut stmt = self.conn.prepare_cached(
-            "SELECT m.thread_id, m.id, coalesce(m.from_display,''), coalesce(m.from_addr,''),
+            "SELECT coalesce(m.thread_id, -m.id), m.id, coalesce(m.from_display,''), coalesce(m.from_addr,''),
                     coalesce(m.subject,''), coalesce(m.snippet,''), m.date_ms, t.n,
-                    coalesce(t.participants,''), t.unread, t.starred, t.attach
+                    coalesce(t.participants,''), t.unread, t.starred, t.attach,
+                    (SELECT json_group_array(json_object('name', tg.name, 'colour', coalesce(tg.colour,'')))
+                     FROM (SELECT DISTINCT mt.tag_id FROM message_tags mt
+                           JOIN messages mm ON mm.id = mt.message_id
+                           WHERE coalesce(mm.thread_id, -mm.id) = t.thread_id) d
+                     JOIN tags tg ON tg.id = d.tag_id) AS tags_json,
+                    (SELECT a.filename FROM attachments a
+                     JOIN messages mm ON mm.id = a.message_id
+                     WHERE coalesce(mm.thread_id, -mm.id) = t.thread_id
+                       AND a.filename IS NOT NULL AND a.filename <> ''
+                     ORDER BY a.id LIMIT 1) AS attach_name
              FROM messages m
              JOIN (
-               SELECT thread_id, max(date_ms) AS md, count(*) AS n,
+               SELECT coalesce(thread_id, -id) AS thread_id, max(date_ms) AS md, count(*) AS n,
                       group_concat(DISTINCT coalesce(nullif(from_display,''), from_addr))
                         AS participants,
                       max(CASE WHEN flags & 1 = 0 THEN 1 ELSE 0 END) AS unread,
                       max(CASE WHEN flags & 4 != 0 THEN 1 ELSE 0 END) AS starred,
                       max(has_attachments) AS attach
-               FROM messages WHERE deleted_at_ms IS NULL GROUP BY thread_id
-             ) t ON m.thread_id = t.thread_id AND m.date_ms = t.md
+               FROM messages WHERE deleted_at_ms IS NULL
+               GROUP BY coalesce(thread_id, -id)
+             ) t ON coalesce(m.thread_id, -m.id) = t.thread_id AND m.date_ms = t.md
              WHERE m.deleted_at_ms IS NULL
-             GROUP BY m.thread_id
+             GROUP BY coalesce(m.thread_id, -m.id)
              ORDER BY m.date_ms DESC LIMIT ?1 OFFSET ?2",
         )?;
         let rows = stmt.query_map(params![limit, offset], |row| {
@@ -1073,6 +1172,8 @@ impl Store {
                 unread: row.get::<_, i64>(9)? != 0,
                 starred: row.get::<_, i64>(10)? != 0,
                 has_attachments: row.get::<_, i64>(11)? != 0,
+                tags: parse_row_tags(row.get::<_, Option<String>>(12)?),
+                attachment_name: row.get::<_, Option<String>>(13)?,
             })
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
@@ -1093,9 +1194,8 @@ impl Store {
         let mut order: Vec<i64> = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for h in &hits {
-            if let Some(tid) = self.thread_of(h.id)?
-                && seen.insert(tid)
-            {
+            let tid = self.thread_of(h.id)?.unwrap_or(-h.id);
+            if seen.insert(tid) {
                 order.push(tid);
             }
         }
@@ -1118,21 +1218,32 @@ impl Store {
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!(
-            "SELECT m.thread_id, m.id, coalesce(m.from_display,''), coalesce(m.from_addr,''),
+            "SELECT coalesce(m.thread_id, -m.id), m.id, coalesce(m.from_display,''), coalesce(m.from_addr,''),
                     coalesce(m.subject,''), coalesce(m.snippet,''), m.date_ms, t.n,
-                    coalesce(t.participants,''), t.unread, t.starred, t.attach
+                    coalesce(t.participants,''), t.unread, t.starred, t.attach,
+                    (SELECT json_group_array(json_object('name', tg.name, 'colour', coalesce(tg.colour,'')))
+                     FROM (SELECT DISTINCT mt.tag_id FROM message_tags mt
+                           JOIN messages mm ON mm.id = mt.message_id
+                           WHERE coalesce(mm.thread_id, -mm.id) = t.thread_id) d
+                     JOIN tags tg ON tg.id = d.tag_id) AS tags_json,
+                    (SELECT a.filename FROM attachments a
+                     JOIN messages mm ON mm.id = a.message_id
+                     WHERE coalesce(mm.thread_id, -mm.id) = t.thread_id
+                       AND a.filename IS NOT NULL AND a.filename <> ''
+                     ORDER BY a.id LIMIT 1) AS attach_name
              FROM messages m
              JOIN (
-               SELECT thread_id, max(date_ms) AS md, count(*) AS n,
+               SELECT coalesce(thread_id, -id) AS thread_id, max(date_ms) AS md, count(*) AS n,
                       group_concat(DISTINCT coalesce(nullif(from_display,''), from_addr))
                         AS participants,
                       max(CASE WHEN flags & 1 = 0 THEN 1 ELSE 0 END) AS unread,
                       max(CASE WHEN flags & 4 != 0 THEN 1 ELSE 0 END) AS starred,
                       max(has_attachments) AS attach
-               FROM messages WHERE deleted_at_ms IS NULL GROUP BY thread_id
-             ) t ON m.thread_id = t.thread_id AND m.date_ms = t.md
-             WHERE m.deleted_at_ms IS NULL AND m.thread_id IN ({holes})
-             GROUP BY m.thread_id"
+               FROM messages WHERE deleted_at_ms IS NULL
+               GROUP BY coalesce(thread_id, -id)
+             ) t ON coalesce(m.thread_id, -m.id) = t.thread_id AND m.date_ms = t.md
+             WHERE m.deleted_at_ms IS NULL AND coalesce(m.thread_id, -m.id) IN ({holes})
+             GROUP BY coalesce(m.thread_id, -m.id)"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(rusqlite::params_from_iter(thread_ids), |row| {
@@ -1149,6 +1260,8 @@ impl Store {
                 unread: row.get::<_, i64>(9)? != 0,
                 starred: row.get::<_, i64>(10)? != 0,
                 has_attachments: row.get::<_, i64>(11)? != 0,
+                tags: parse_row_tags(row.get::<_, Option<String>>(12)?),
+                attachment_name: row.get::<_, Option<String>>(13)?,
             })
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)

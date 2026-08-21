@@ -41,7 +41,46 @@ body {
 
 /* ---------------------------------------------------------------- shell */
 
+.titlebar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  block-size: 38px;
+  padding-inline: 14px;
+  border-block-end: 1px solid var(--hair);
+  background: var(--raised);
+  flex-shrink: 0;
+}
+
+.wordmark {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.wordmark span {
+  font-family: var(--display);
+  font-weight: 650;
+  font-size: 14px;
+  letter-spacing: -0.01em;
+}
+
+.titlebar .sync {
+  margin-inline-start: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink3);
+}
+
+.app-frame {
+  display: flex;
+  flex-direction: column;
+  block-size: 100%;
+}
+
 .shell {
+  flex-grow: 1;
+  min-block-size: 0;
   display: grid;
   grid-template-columns: var(--rail-size) minmax(320px, 1fr) minmax(380px, 1.35fr);
   grid-template-rows: 1fr auto;
@@ -131,6 +170,21 @@ body {
   font-weight: 600;
 }
 
+.rail-foot {
+  margin-block-start: auto;
+  padding-block-start: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tag-swatch {
+  inline-size: 8px;
+  block-size: 8px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
 .rail-item .count {
   margin-inline-start: auto;
   font-family: var(--mono);
@@ -151,12 +205,45 @@ body {
 
 .list-head {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 9px;
-  padding: 9px 14px;
+  padding: 11px 14px 9px;
   border-block-end: 1px solid var(--hair);
-  background: var(--raised);
+  background: var(--surface);
   flex-shrink: 0;
+}
+
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--hair);
+  border-radius: 7px;
+  padding: 6px 9px;
+  background: var(--bg);
+}
+
+.search-box:focus-within {
+  border-color: var(--accent);
+}
+
+.view-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.view-name {
+  font-family: var(--display);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.view-count {
+  margin-inline-start: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink3);
 }
 
 .chip {
@@ -173,13 +260,13 @@ body {
 .search {
   flex-grow: 1;
   min-inline-size: 0;
-  padding: 5px 10px;
+  padding: 0;
   font: inherit;
   font-size: 12.5px;
   color: var(--ink);
-  background: var(--bg);
-  border: 1px solid var(--hair);
-  border-radius: 7px;
+  background: none;
+  border: 0;
+  outline: none;
 }
 
 .search::placeholder {
@@ -202,14 +289,13 @@ body {
 .row {
   position: absolute;
   inset-inline: 0;
-  display: flex;
-  gap: 11px;
-  padding: 10px 14px;
+  display: grid;
+  grid-template-columns: 8px 30px 1fr;
+  gap: 10px;
+  padding: 10px 14px 11px 11px;
   border-block-end: 1px solid var(--hair2);
-  align-items: flex-start;
+  align-items: start;
   cursor: default;
-  /* CompositeItem renders a <button>, which centres its text and inherits none
-     of the page font. Both have to be undone explicitly. */
   text-align: start;
   font: inherit;
   color: inherit;
@@ -231,46 +317,6 @@ body {
   background: var(--accent-wash);
 }
 
-/* Quick actions ride the row, appearing on hover or keyboard focus. Hidden with
-   visibility rather than display so they occupy their space from the start —
-   otherwise the subject reflows the moment a pointer crosses the row. */
-.row-actions {
-  display: flex;
-  gap: 4px;
-  align-items: center;
-  align-self: center;
-  flex-shrink: 0;
-  visibility: hidden;
-}
-
-.row:hover .row-actions,
-.row:focus-visible .row-actions,
-.row[data-active='true'] .row-actions {
-  visibility: visible;
-}
-
-.quick {
-  display: grid;
-  place-items: center;
-  inline-size: 26px;
-  block-size: 26px;
-  border-radius: 6px;
-  border: 1px solid transparent;
-  background: none;
-  color: var(--ink3);
-  cursor: default;
-  padding: 0;
-}
-
-.quick:hover {
-  background: var(--surface);
-  border-color: var(--hair);
-  color: var(--ink2);
-}
-
-.quick:active {
-  background: var(--hair2);
-}
 
 .row[data-active='true'] {
   background: var(--accent-wash);
@@ -287,6 +333,15 @@ body {
 
 .row:focus-visible {
   outline-offset: -2px;
+}
+
+.unread-dot {
+  display: block;
+  inline-size: 7px;
+  block-size: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-block-start: 7px;
 }
 
 .avatar {
@@ -311,10 +366,9 @@ body {
 
 .row-main {
   min-inline-size: 0;
-  flex-grow: 1;
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
 }
 
 .row-top {
@@ -326,24 +380,32 @@ body {
 
 .row-from {
   font-size: 13px;
+  font-weight: 500;
   min-inline-size: 0;
-  display: block;
+  flex-grow: 1;
 }
 
 .row[data-unread='true'] .row-from {
   font-weight: 700;
 }
 
+.row[data-unread='true'] .avatar {
+  background: var(--accent-wash);
+  color: var(--accent-ink);
+}
+
 .row-time {
-  margin-inline-start: auto;
   font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
   font-size: 11px;
   color: var(--ink3);
   flex-shrink: 0;
 }
 
 .row-subject {
-  font-size: 12.5px;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
   display: block;
 }
 
@@ -370,8 +432,8 @@ body {
 }
 
 .row-snippet {
-  font-size: 12px;
-  color: var(--ink3);
+  font-size: 12.5px;
+  color: var(--ink2);
   display: block;
 }
 
@@ -379,17 +441,86 @@ body {
   display: none;
 }
 
-.unread-pip {
-  inline-size: 7px;
-  block-size: 7px;
-  border-radius: 50%;
-  background: var(--accent);
-  flex-shrink: 0;
-  align-self: center;
+/* Row chips: the attachment's name and any tags, as the design draws them —
+   naming the file beats a bare paperclip, because "which attachment" is the
+   question people actually have. */
+.row-chips {
+  display: flex;
+  gap: 5px;
+  margin-block-start: 3px;
+  min-inline-size: 0;
 }
+
+.rchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--hair);
+  color: var(--ink3);
+  max-inline-size: 15ch;
+  flex-shrink: 0;
+}
+
+/* Quick actions overlay the row's trailing edge — absolutely positioned, so no
+   gutter is reserved on the 99% of rows nobody is pointing at, and the row's
+   text never reflows when the pointer arrives. The gradient keeps the subject
+   from being chopped mid-word underneath them. */
+.row-actions {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-inline: 28px 10px;
+  background: linear-gradient(to right, transparent, var(--surface) 24%);
+  opacity: 0;
+  transform: translateX(6px);
+  transition: opacity 120ms ease, transform 120ms ease;
+  pointer-events: none;
+}
+
+.row:hover .row-actions,
+.row:focus-visible .row-actions {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+
+.row[data-active='true'] .row-actions {
+  background: linear-gradient(to right, transparent, var(--accent-wash) 24%);
+}
+
+.qact {
+  display: grid;
+  place-items: center;
+  inline-size: 26px;
+  block-size: 26px;
+  border-radius: 6px;
+  border: 1px solid var(--hair);
+  background: var(--surface);
+  color: var(--ink2);
+  cursor: default;
+  padding: 0;
+}
+
+.qact:hover {
+  border-color: var(--ink3);
+  color: var(--ink);
+}
+
+.qact:active {
+  background: var(--hair2);
+}
+
 
 .thread-count {
   font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
   font-size: 10px;
   color: var(--ink3);
   border: 1px solid var(--hair);
@@ -415,14 +546,62 @@ mark {
 }
 
 .reader-head {
-  padding: 14px 18px 11px;
+  padding: 15px 22px 13px;
   border-block-end: 1px solid var(--hair);
   flex-shrink: 0;
 }
 
+.reader-headrow {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.reader-title {
+  min-inline-size: 0;
+  flex-grow: 1;
+}
+
+.reader-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.act-icon {
+  display: grid;
+  place-items: center;
+  inline-size: 28px;
+  block-size: 28px;
+  border-radius: 6px;
+  border: 1px solid var(--hair);
+  background: var(--surface);
+  color: var(--ink2);
+  cursor: default;
+  padding: 0;
+}
+
+.act-icon:hover {
+  border-color: var(--ink3);
+  color: var(--ink);
+}
+
+.act-icon:active {
+  background: var(--hair2);
+}
+
+.act-icon.on {
+  color: var(--amber);
+  border-color: var(--amber-line);
+}
+
+.act-icon.on svg {
+  fill: var(--amber);
+}
+
 .reader-subject {
   font-family: var(--display);
-  font-size: 17px;
+  font-size: 19px;
   font-weight: 650;
   letter-spacing: -0.01em;
   line-height: 1.3;
@@ -430,12 +609,9 @@ mark {
 }
 
 .reader-meta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-block-start: 6px;
-  font-size: 12px;
-  color: var(--ink3);
+  margin-block-start: 4px;
+  font-size: 12.5px;
+  color: var(--ink2);
 }
 
 .act {

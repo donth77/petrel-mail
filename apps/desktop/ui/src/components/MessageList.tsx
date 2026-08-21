@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { Composite, CompositeItem, useCompositeStore } from '@ariakit/react';
 import { useVirtualizer, defaultRangeExtractor, type Range } from '@tanstack/react-virtual';
-import { Archive, Clock, Paperclip, Star } from 'lucide-react';
+import { Archive, Clock, MoreVertical, Paperclip, Star } from 'lucide-react';
 import type { Thread } from '../lib/api';
 import { Icon } from './Icon';
 import { initials, listTime, fullTime } from '../lib/format';
@@ -37,7 +37,9 @@ export function MessageList({ items, activeId, density, onActivate }: Props) {
     focusLoop: false,
   });
 
-  const rowHeight = density === 'compact' ? 44 : 68;
+  // An estimate only — rows carry chips when they have attachments or tags, so
+  // real heights vary and the virtualizer measures each mounted row.
+  const rowHeight = density === 'compact' ? 44 : 74;
   const activeIndex = useMemo(
     () => items.findIndex((m) => m.id === activeId),
     [items, activeId],
@@ -62,6 +64,7 @@ export function MessageList({ items, activeId, density, onActivate }: Props) {
     estimateSize: () => rowHeight,
     overscan: 8,
     rangeExtractor,
+    measureElement: (el) => el.getBoundingClientRect().height,
   });
 
   // Gmail's j/k, mapped onto the composite's own movement so both routes share
@@ -77,9 +80,16 @@ export function MessageList({ items, activeId, density, onActivate }: Props) {
     }
   };
 
-  // Follow the active row when it moves outside the rendered window.
+  // Follow the active row when the *selection* moves — not on every render.
+  // `virtualizer` is a fresh object each render, so depending on it re-ran this
+  // effect constantly and snapped the scroll position back to the active row,
+  // which reads as "the list will not scroll".
+  const lastScrolledTo = useRef(-1);
   useEffect(() => {
-    if (activeIndex >= 0) virtualizer.scrollToIndex(activeIndex, { align: 'auto' });
+    if (activeIndex >= 0 && activeIndex !== lastScrolledTo.current) {
+      lastScrolledTo.current = activeIndex;
+      virtualizer.scrollToIndex(activeIndex, { align: 'auto' });
+    }
   }, [activeIndex, virtualizer]);
 
   const virtualRows = virtualizer.getVirtualItems();
@@ -118,16 +128,21 @@ export function MessageList({ items, activeId, density, onActivate }: Props) {
               className="row"
               data-active={m.id === activeId}
               data-unread={m.unread}
-              style={{ height: v.size, transform: `translateY(${v.start}px)` }}
+              data-index={v.index}
+              ref={virtualizer.measureElement}
+              style={{ transform: `translateY(${v.start}px)` }}
               onClick={() => onActivate(m.id)}
-              onFocus={() => onActivate(m.id)}
             >
+              {/* The unread dot has its own grid column, so a read row does not
+                  shift its avatar and text leftward to fill the gap. */}
+              <span aria-hidden="true">
+                {m.unread && <span className="unread-dot" />}
+              </span>
               <span className="avatar" aria-hidden="true">
                 {initials(m.from_display, m.from_addr)}
               </span>
               <span className="row-main">
                 <span className="row-top">
-                  {m.unread && <span className="unread-pip" aria-hidden="true" />}
                   {/* Participants once a conversation has more than one voice —
                       "who is in this" matters more than "who spoke last". */}
                   <span className="row-from clip">
@@ -142,7 +157,6 @@ export function MessageList({ items, activeId, density, onActivate }: Props) {
                 </span>
                 <span className="row-subject clip">
                   {m.starred && <Icon icon={Star} size={12} className="ic-star" />}
-                  {m.has_attachments && <Icon icon={Paperclip} size={12} className="ic-clip" />}
                   {m.subject || '(no subject)'}
                 </span>
                 {density === 'relaxed' && (
@@ -150,17 +164,43 @@ export function MessageList({ items, activeId, density, onActivate }: Props) {
                     <Snippet text={m.snippet} />
                   </span>
                 )}
+                {density === 'relaxed' && (m.attachment_name || m.tags.length > 0) && (
+                  <span className="row-chips">
+                    {m.attachment_name && (
+                      <span className="rchip">
+                        <Icon icon={Paperclip} size={10} />
+                        <span className="clip">{m.attachment_name}</span>
+                      </span>
+                    )}
+                    {m.tags.map((tag) => (
+                      <span
+                        key={tag.name}
+                        className="rchip"
+                        style={
+                          tag.colour
+                            ? { color: tag.colour, borderColor: tag.colour }
+                            : undefined
+                        }
+                      >
+                        {tag.name}
+                      </span>
+                    ))}
+                  </span>
+                )}
               </span>
-              {/* A div, not buttons: this row is already a button, and nesting
+              {/* Spans, not buttons: the row is already a button and nesting
                   interactive elements is invalid and unreachable by keyboard.
-                  These are pointer affordances for actions the keyboard reaches
-                  with E and B. */}
+                  These are pointer affordances for what E, B and the palette
+                  already do, so they are hidden from assistive tech. */}
               <span className="row-actions" aria-hidden="true">
-                <span className="quick" title="Archive (E)">
+                <span className="qact" title="Archive (E)">
                   <Icon icon={Archive} size={14} />
                 </span>
-                <span className="quick" title="Snooze (B)">
+                <span className="qact" title="Snooze (B)">
                   <Icon icon={Clock} size={14} />
+                </span>
+                <span className="qact" title="More">
+                  <Icon icon={MoreVertical} size={14} />
                 </span>
               </span>
             </CompositeItem>
