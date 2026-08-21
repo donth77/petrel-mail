@@ -4,6 +4,7 @@ import {
   Archive, Bell, CircleHelp, Database, Mail, PencilLine, Shield, SunMoon, User,
   type LucideIcon,
 } from 'lucide-react';
+import { Accounts } from './settings/Accounts';
 import { Appearance } from './settings/Appearance';
 import { Icon } from './Icon';
 import { t, type StringId } from '../lib/strings';
@@ -23,9 +24,14 @@ const PANES: { id: PaneId; label: StringId; icon: LucideIcon }[] = [
   { id: 'help', label: 'rail-help', icon: CircleHelp },
 ];
 
-type Props = { open: boolean; onClose: () => void; onOpenHelp: () => void };
+type Props = {
+  open: boolean;
+  onClose: () => void;
+  onOpenHelp: () => void;
+  onNotImplemented: (label: string) => void;
+};
 
-export function Settings({ open, onClose, onOpenHelp }: Props) {
+export function Settings({ open, onClose, onOpenHelp, onNotImplemented }: Props) {
   const [pane, setPane] = useState<PaneId>('appearance');
 
   return (
@@ -63,7 +69,8 @@ export function Settings({ open, onClose, onOpenHelp }: Props) {
         <div className="settings-pane">
           <DialogDismiss className="kbd settings-esc">esc</DialogDismiss>
           {pane === 'appearance' && <Appearance />}
-          {pane !== 'appearance' && (
+          {pane === 'accounts' && <Accounts onNotImplemented={onNotImplemented} />}
+          {pane !== 'appearance' && pane !== 'accounts' && (
             <div className="empty">
               <h2>{t(PANES.find((p) => p.id === pane)!.label)}</h2>
               <p>{t('settings-not-built')}</p>

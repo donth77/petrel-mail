@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use petrel_engine::blob::BlobStore;
 use petrel_engine::store::{
-    Listing, NewMessage, Store, TagSummary, ThreadListing, ThreadMessage,
+    AccountSummary, Listing, NewMessage, Store, TagSummary, ThreadListing, ThreadMessage,
 };
 use petrel_providers::imap::{ImapConfig, Security};
 use petrel_testkit::DemoMailbox;
@@ -199,6 +199,36 @@ fn thread_detail(
 ) -> Result<Vec<ThreadMessage>, String> {
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
     store.thread_detail(thread_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_accounts(state: State<Arc<AppState>>) -> Result<Vec<AccountSummary>, String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    store.accounts().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_account_color(
+    account_id: i64,
+    color: String,
+    state: State<Arc<AppState>>,
+) -> Result<(), String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    store
+        .set_account_color(account_id, &color)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_account_archive(
+    account_id: i64,
+    enabled: bool,
+    state: State<Arc<AppState>>,
+) -> Result<(), String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    store
+        .set_local_archive(account_id, enabled)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -604,6 +634,9 @@ pub fn run() {
             list_threads,
             list_tags,
             thread_detail,
+            list_accounts,
+            set_account_color,
+            set_account_archive,
             get_settings,
             set_setting,
             search_messages,

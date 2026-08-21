@@ -229,6 +229,7 @@ export function App() {
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         onOpenHelp={() => setHelpOpen(true)}
+        onNotImplemented={(label) => setToast(t('not-implemented', { label }))}
       />
       <Toast message={toast} onDone={() => setToast(null)} />
 

@@ -81,6 +81,30 @@ pub mod flags {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
+pub struct AccountSummary {
+    pub id: i64,
+    pub kind: String,
+    pub email: String,
+    pub display_name: String,
+    pub color: String,
+    /// True when server deletions do not remove local content (Q24).
+    pub local_archive: bool,
+    pub message_count: i64,
+    pub unread_count: i64,
+    /// Newest message we hold, as a stand-in for "last synced" until the sync
+    /// engine records its own timestamp.
+    pub newest_ms: Option<i64>,
+    pub folders: Vec<FolderMapping>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FolderMapping {
+    /// The SPECIAL-USE role: archive, sent, drafts, spam, trash.
+    pub role: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Attachment {
     pub filename: String,
     pub size: i64,
@@ -1069,6 +1093,62 @@ impl Store {
 
     /// Every stored preference, as a map. Read once at start-up rather than
     /// queried per key: there are a few dozen of them and they are all wanted.
+    /// Every account, with the counts and folder mapping the settings pane shows.
+    pub fn accounts(&self) -> Result<Vec<AccountSummary>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT a.id, a.kind, a.email, coalesce(a.display_name,''),
+                    coalesce(a.color,''), a.local_archive,
+                    (SELECT count(*) FROM messages m
+                      WHERE m.account_id = a.id AND m.deleted_at_ms IS NULL),
+                    (SELECT count(*) FROM messages m
+                      WHERE m.account_id = a.id AND m.deleted_at_ms IS NULL
+                        AND m.flags & 1 = 0),
+                    (SELECT max(m.date_ms) FROM messages m
+                      WHERE m.account_id = a.id AND m.deleted_at_ms IS NULL)
+             FROM accounts a ORDER BY a.id",
+        )?;
+        let rows: Vec<AccountSummary> = stmt
+            .query_map([], |r| {
+                Ok(AccountSummary {
+                    id: r.get(0)?,
+                    kind: r.get(1)?,
+                    email: r.get(2)?,
+                    display_name: r.get(3)?,
+                    color: r.get(4)?,
+                    local_archive: r.get::<_, i64>(5)? != 0,
+                    message_count: r.get(6)?,
+                    unread_count: r.get(7)?,
+                    newest_ms: r.get(8)?,
+                    folders: Vec::new(),
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for mut a in rows {
+            let mut f = self.conn.prepare_cached(
+                "SELECT coalesce(role,''), path FROM folders
+                 WHERE account_id = ?1 AND role IS NOT NULL AND role <> ''
+                 ORDER BY role",
+            )?;
+            a.folders = f
+                .query_map(params![a.id], |r| {
+                    Ok(FolderMapping { role: r.get(0)?, path: r.get(1)? })
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            out.push(a);
+        }
+        Ok(out)
+    }
+
+    pub fn set_account_color(&self, account_id: i64, color: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE accounts SET color = ?2 WHERE id = ?1",
+            params![account_id, color],
+        )?;
+        Ok(())
+    }
+
     pub fn settings(&self) -> Result<std::collections::HashMap<String, String>> {
         let mut stmt = self.conn.prepare_cached("SELECT key, value FROM settings")?;
         let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;

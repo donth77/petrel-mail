@@ -47,6 +47,21 @@ export type ThreadMessage = {
   attachments: Attachment[];
 };
 
+export type FolderMapping = { role: string; path: string };
+
+export type Account = {
+  id: number;
+  kind: string;
+  email: string;
+  display_name: string;
+  color: string;
+  local_archive: boolean;
+  message_count: number;
+  unread_count: number;
+  newest_ms: number | null;
+  folders: FolderMapping[];
+};
+
 export type Status = {
   seeding: boolean;
   count: number;
@@ -107,6 +122,22 @@ const mock = {
   threads: async (offset: number, limit: number) => mockRows(Math.min(limit, 2000), offset),
   search: async (q: string) =>
     mockRows(24).filter((r) => r.subject.toLowerCase().includes(q.toLowerCase())),
+  accounts: async (): Promise<Account[]> => [
+    {
+      id: 1, kind: 'imap', email: 'tom@northbay.example', display_name: 'Work',
+      color: '#0E7C86', local_archive: false, message_count: 8421, unread_count: 9,
+      newest_ms: Date.now() - 4 * 60000,
+      folders: [
+        { role: 'archive', path: '[Gmail]/All Mail' },
+        { role: 'drafts', path: '[Gmail]/Drafts' },
+        { role: 'sent', path: '[Gmail]/Sent Mail' },
+        { role: 'spam', path: '[Gmail]/Spam' },
+        { role: 'trash', path: '[Gmail]/Trash' },
+      ],
+    },
+  ],
+  setAccountColor: async () => {},
+  setAccountArchive: async () => {},
   getSettings: async (): Promise<Record<string, string>> => ({}),
   setSetting: async () => {},
   tags: async (): Promise<Tag[]> => [
@@ -141,6 +172,11 @@ const real = {
   threads: (offset: number, limit: number) =>
     invoke<Thread[]>('list_threads', { offset, limit }),
   tags: () => invoke<Tag[]>('list_tags'),
+  accounts: () => invoke<Account[]>('list_accounts'),
+  setAccountColor: (accountId: number, color: string) =>
+    invoke<void>('set_account_color', { accountId, color }),
+  setAccountArchive: (accountId: number, enabled: boolean) =>
+    invoke<void>('set_account_archive', { accountId, enabled }),
   getSettings: () => invoke<Record<string, string>>('get_settings'),
   setSetting: (key: string, value: string) => invoke<void>('set_setting', { key, value }),
   threadDetail: (threadId: number) =>

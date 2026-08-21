@@ -61,3 +61,37 @@ fn settings_survive_reopening_the_store() {
         "a preference that does not outlive the process is not a preference"
     );
 }
+
+#[test]
+fn account_summary_carries_counts_and_folder_mapping() {
+    use petrel_engine::store::{flags, NewMessage};
+
+    let mut store = Store::open_in_memory().unwrap();
+    let account = store.ensure_test_account().unwrap();
+    store.set_account_color(account, "#9A6B1F").unwrap();
+
+    let msgs: Vec<NewMessage> = (0..5)
+        .map(|i| NewMessage {
+            account_id: account,
+            date_ms: 1_000 + i,
+            from_addr: "a@example.com".into(),
+            from_display: "A".into(),
+            to_addr: "me@example.com".into(),
+            subject: format!("m{i}"),
+            body_text: "body".into(),
+        })
+        .collect();
+    let ids = store.insert_messages(&msgs).unwrap();
+    for id in ids.iter().take(3) {
+        store.set_flags(*id, flags::SEEN, 0).unwrap();
+    }
+
+    let accounts = store.accounts().unwrap();
+    let a = accounts.iter().find(|a| a.id == account).expect("the account");
+
+    assert_eq!(a.message_count, 5);
+    assert_eq!(a.unread_count, 2, "three were marked read");
+    assert_eq!(a.color, "#9A6B1F");
+    assert_eq!(a.newest_ms, Some(1_004), "newest message stands in for last sync");
+    assert!(!a.local_archive, "mirror is the default (Q24)");
+}
