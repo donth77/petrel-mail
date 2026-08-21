@@ -1,58 +1,22 @@
-import { key } from './keys';
+import { BINDINGS, displayKeys, GROUP_TITLES, type Binding } from './shortcuts';
 
 /** A shortcut row: what it does, and the keys that do it. */
 export type Shortcut = { label: string; keys: string[] };
 export type Group = { title: string; rows: Shortcut[] };
 
 export function shortcutGroups(): Group[] {
-  return [
-    {
-      title: 'Move around',
-      rows: [
-        { label: 'Next / previous conversation', keys: ['J', 'K'] },
-        { label: 'Open conversation', keys: [key('enter')] },
-        { label: 'Back to the list', keys: ['U'] },
-        { label: 'Next / previous message in thread', keys: ['[', ']'] },
-        { label: 'Cycle panes', keys: ['F6'] },
-        { label: 'Go to Inbox · Starred · Sent · Drafts', keys: ['G', 'I S T D'] },
-        { label: 'Switch active account', keys: [key('account')] },
-      ],
-    },
-    {
-      title: 'Write',
-      rows: [
-        { label: 'Compose', keys: ['C'] },
-        { label: 'Reply · reply all · forward', keys: ['R', 'A', 'F'] },
-        { label: 'Send', keys: [key('send')] },
-        { label: 'Send later', keys: [key('sendLater')] },
-        { label: 'Save draft', keys: [key('save')] },
-        { label: 'Open in its own window', keys: [key('popout')] },
-      ],
-    },
-    {
-      title: 'Act on mail',
-      rows: [
-        { label: 'Archive', keys: ['E'] },
-        { label: 'Move to trash', keys: ['#'] },
-        { label: 'Report spam', keys: ['!'] },
-        { label: 'Star', keys: ['S'] },
-        { label: 'Snooze this conversation', keys: ['B'] },
-        { label: 'Move to folder · tag', keys: ['V', 'L'] },
-        { label: 'Mark read · unread', keys: [key('read'), key('unread')] },
-        { label: 'Select · extend selection', keys: ['X', key('extend')] },
-        { label: 'Undo the last thing', keys: ['Z'] },
-      ],
-    },
-    {
-      title: 'Everywhere',
-      rows: [
-        { label: 'Search', keys: ['/'] },
-        { label: 'Command palette', keys: [key('palette')] },
-        { label: 'This list', keys: ['?'] },
-        { label: 'Settings', keys: [key('settings')] },
-      ],
-    },
-  ];
+  // Rendered from the binding table, filtered to what is actually wired. A
+  // shortcut cannot appear here without existing.
+  const order: Binding['group'][] = ['move', 'write', 'act', 'everywhere'];
+  return order
+    .map((g) => ({
+      title: GROUP_TITLES[g],
+      rows: BINDINGS.filter((b) => b.group === g && b.available).map((b) => ({
+        label: b.label,
+        keys: displayKeys(b),
+      })),
+    }))
+    .filter((g) => g.rows.length > 0);
 }
 
 /**

@@ -4,6 +4,7 @@ import { count as fmtCount } from './lib/format';
 import { t } from './lib/strings';
 import { Search } from 'lucide-react';
 import { Rail } from './components/Rail';
+import { useKeyboard } from './lib/useKeyboard';
 import { TitleBar } from './components/TitleBar';
 import { Palette } from './components/Palette';
 import { Help } from './components/Help';
@@ -28,6 +29,7 @@ export function App() {
   const [helpOpen, setHelpOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [readerOverlay, setReaderOverlay] = useState(false);
 
   useEffect(() => {
     let live = true;
@@ -68,51 +70,43 @@ export function App() {
     };
   }, [query, status?.count, status?.seeding]);
 
-  // Single-key shortcuts pause inside text fields (docs 06 §14).
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const el = e.target as HTMLElement | null;
-      const typing =
-        el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
-      // ⌘K works everywhere, including inside a text field — it is how you get
-      // out of one. Single-key shortcuts do not.
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault();
-        setPaletteOpen(true);
-      } else if ((e.metaKey || e.ctrlKey) && e.key === ',') {
-        e.preventDefault();
-        setSettingsOpen(true);
-      } else if (e.key === '?' && !typing) {
-        e.preventDefault();
-        setHelpOpen(true);
-      } else if (e.key === '/' && !typing) {
-        e.preventDefault();
-        searchRef.current?.focus();
-      } else if (e.key === 'Escape' && typing) {
-        (el as HTMLInputElement).blur();
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  const railRef = useRef<HTMLElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    if (loading || error) return;
-    // Two frames: the virtualizer cannot report rows until it has measured the
-    // scroll element, so probing synchronously always reads zero.
-    const h = requestAnimationFrame(() =>
-      requestAnimationFrame(() => {
-        const sc = document.querySelector('.scroller');
-        const rendered = document.querySelectorAll('.row').length;
-        const setsize = document.querySelector('.row')?.getAttribute('aria-setsize');
-        api.log(
-          `ui-ready items=${items.length} rendered=${rendered} ` +
-            `setsize=${setsize ?? 'none'} scroller=${sc?.clientWidth ?? 0}x${sc?.clientHeight ?? 0}`,
-        );
-      }),
-    );
-    return () => cancelAnimationFrame(h);
-  }, [loading, error, items.length]);
+  useKeyboard({
+    openConversation: () => {
+      // Enter opens what the list has focused; with the reading pane off it is
+      // the only way to see a message at all.
+      if (settings.layout === 'off') setReaderOverlay(true);
+      else document.querySelector<HTMLElement>('.reader')?.focus();
+    },
+    backToList: () => {
+      setReaderOverlay(false);
+      document.querySelector<HTMLElement>('.scroller')?.focus();
+    },
+    cyclePanes: (backwards) => {
+      // F6 is the platform convention for moving between panes, and the only
+      // route into the rail without a pointer.
+      const panes = [railRef.current, listRef.current?.querySelector('.scroller'), document.querySelector('.reader')]
+        .filter(Boolean) as HTMLElement[];
+      if (panes.length === 0) return;
+      const at = panes.findIndex((p) => p.contains(document.activeElement));
+      const next = (at + (backwards ? -1 : 1) + panes.length) % panes.length;
+      const target = panes[next];
+      target.setAttribute('tabindex', '-1');
+      target.focus();
+    },
+    goTo: setView,
+    switchAccount: (n) => {
+      const acc = accounts[n - 1];
+      if (acc) setToast(t('account-switched', { email: acc.email }));
+      else setToast(t('account-none-at', { n: String(n) }));
+    },
+    openPalette: () => setPaletteOpen(true),
+    openHelp: () => setHelpOpen(true),
+    openSettings: () => setSettingsOpen(true),
+    focusSearch: () => searchRef.current?.focus(),
+  });
 
   const active = useMemo(() => items.find((m) => m.id === activeId) ?? null, [items, activeId]);
   const unread = useMemo(() => items.filter((m) => m.unread).length, [items]);
@@ -146,6 +140,7 @@ export function App() {
         unread={unread}
         view={view}
         tags={tags}
+        railRef={railRef}
         onView={(v) => {
           if (v === 'help') setHelpOpen(true);
           else if (v === 'settings') setSettingsOpen(true);
@@ -153,7 +148,7 @@ export function App() {
         }}
       />
 
-      <div className="list-pane">
+      <div className="list-pane" ref={listRef}>
         <div className="list-head">
           <div className="search-box">
             <Search size={14} strokeWidth={1.8} aria-hidden="true" style={{ color: 'var(--ink3)', flexShrink: 0 }} />
@@ -210,7 +205,7 @@ export function App() {
         )}
       </div>
 
-      {settings.layout !== 'off' && <Reader thread={active} />}
+      {(settings.layout !== 'off' || readerOverlay) && <Reader thread={active} />}
 
       <Palette
         open={paletteOpen}

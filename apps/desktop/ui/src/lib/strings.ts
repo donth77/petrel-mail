@@ -146,6 +146,8 @@ const en = {
   'palette-all-shortcuts': 'all shortcuts',
   'palette-more': '{ $count } more results',
   'not-implemented': '{ $label } is not built yet',
+  'account-switched': 'Switched to { $email }',
+  'account-none-at': 'No account at { $n }',
 
   'a11y-message-list': 'Conversations',
   'a11y-row': '{ $unread }{ $from }, { $subject }, { $time }',

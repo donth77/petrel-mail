@@ -26,11 +26,12 @@ type Props = {
   view: string;
   tags: Tag[];
   onView: (v: string) => void;
+  railRef?: React.Ref<HTMLElement>;
 };
 
-export function Rail({ account, accountColor, unread, view, tags, onView }: Props) {
+export function Rail({ account, accountColor, unread, view, tags, onView, railRef }: Props) {
   return (
-    <nav className="rail" aria-label={t('rail-mailboxes')}>
+    <nav className="rail" ref={railRef} aria-label={t('rail-mailboxes')}>
       {/* One account is active at a time (Q27): the header names it rather than
           leaving "which account am I in" to be inferred. */}
       <button className="account" type="button">
