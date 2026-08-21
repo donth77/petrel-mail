@@ -68,6 +68,17 @@ pub struct SearchHit {
 
 /// One conversation as the message list shows it: the newest message's
 /// details, plus how many messages it stands for.
+/// IMAP system flags (RFC 3501 §2.3.2), stored as a bitfield on `messages.flags`.
+/// Named after the wire values rather than the UI words: the server owns these,
+/// and "starred" is our word for `\Flagged`, not a separate concept.
+pub mod flags {
+    pub const SEEN: i64 = 1 << 0;
+    pub const ANSWERED: i64 = 1 << 1;
+    pub const FLAGGED: i64 = 1 << 2;
+    pub const DRAFT: i64 = 1 << 3;
+    pub const DELETED: i64 = 1 << 4;
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ThreadListing {
     pub thread_id: i64,
@@ -80,6 +91,11 @@ pub struct ThreadListing {
     pub date_ms: i64,
     pub message_count: i64,
     pub participants: String,
+    /// Thread-level rollups: a conversation is unread if *any* message in it is,
+    /// which is what makes a reply to a read thread pull it back to attention.
+    pub unread: bool,
+    pub starred: bool,
+    pub has_attachments: bool,
 }
 
 /// A list-ready row shared by recents and search results (UI surfaces).
@@ -1004,16 +1020,39 @@ impl Store {
     /// One row per thread, showing the newest message. `GROUP BY` after the
     /// join collapses ties where two messages share the newest timestamp,
     /// which would otherwise show a conversation twice.
+    /// IMAP STORE semantics: add some flags, remove others, in one statement.
+    /// Modelled on `+FLAGS`/`-FLAGS` rather than a whole-value setter because
+    /// that is what the action queue has to replay against a server, and a
+    /// read-modify-write here would lose a concurrent change from another client.
+    pub fn set_flags(&self, message_id: i64, add: i64, remove: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE messages SET flags = (flags | ?2) & ~?3 WHERE id = ?1",
+            params![message_id, add, remove],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_has_attachments(&self, message_id: i64, yes: bool) -> Result<()> {
+        self.conn.execute(
+            "UPDATE messages SET has_attachments = ?2 WHERE id = ?1",
+            params![message_id, yes as i64],
+        )?;
+        Ok(())
+    }
+
     pub fn list_threads(&self, offset: u32, limit: u32) -> Result<Vec<ThreadListing>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT m.thread_id, m.id, coalesce(m.from_display,''), coalesce(m.from_addr,''),
                     coalesce(m.subject,''), coalesce(m.snippet,''), m.date_ms, t.n,
-                    coalesce(t.participants,'')
+                    coalesce(t.participants,''), t.unread, t.starred, t.attach
              FROM messages m
              JOIN (
                SELECT thread_id, max(date_ms) AS md, count(*) AS n,
                       group_concat(DISTINCT coalesce(nullif(from_display,''), from_addr))
-                        AS participants
+                        AS participants,
+                      max(CASE WHEN flags & 1 = 0 THEN 1 ELSE 0 END) AS unread,
+                      max(CASE WHEN flags & 4 != 0 THEN 1 ELSE 0 END) AS starred,
+                      max(has_attachments) AS attach
                FROM messages WHERE deleted_at_ms IS NULL GROUP BY thread_id
              ) t ON m.thread_id = t.thread_id AND m.date_ms = t.md
              WHERE m.deleted_at_ms IS NULL
@@ -1031,6 +1070,9 @@ impl Store {
                 date_ms: row.get(6)?,
                 message_count: row.get(7)?,
                 participants: row.get(8)?,
+                unread: row.get::<_, i64>(9)? != 0,
+                starred: row.get::<_, i64>(10)? != 0,
+                has_attachments: row.get::<_, i64>(11)? != 0,
             })
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
@@ -1038,6 +1080,80 @@ impl Store {
 
     /// Every live message in one conversation, oldest first — the reading pane
     /// renders these in order with earlier ones collapsed.
+    /// Search, rolled up to conversations. A query matches a *message*, but the
+    /// list shows conversations, so hits are resolved to their threads with
+    /// duplicates collapsed — otherwise a five-message thread where four match
+    /// would fill the results with itself. Rank order is preserved: the thread
+    /// takes the position of its best-matching message.
+    pub fn search_threads(&self, query: &str, limit: u32) -> Result<Vec<ThreadListing>> {
+        let hits = self.search_listing(query, limit.saturating_mul(3).min(600))?;
+        if hits.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut order: Vec<i64> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for h in &hits {
+            if let Some(tid) = self.thread_of(h.id)?
+                && seen.insert(tid)
+            {
+                order.push(tid);
+            }
+        }
+        order.truncate(limit as usize);
+        if order.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut rows = self.threads_by_id(&order)?;
+        // Restore rank order — SQL gave us the rows, not the ranking.
+        let rank: std::collections::HashMap<i64, usize> =
+            order.iter().enumerate().map(|(i, t)| (*t, i)).collect();
+        rows.sort_by_key(|r| rank.get(&r.thread_id).copied().unwrap_or(usize::MAX));
+        Ok(rows)
+    }
+
+    /// The thread-row aggregate, restricted to a set of conversations.
+    fn threads_by_id(&self, thread_ids: &[i64]) -> Result<Vec<ThreadListing>> {
+        let holes = std::iter::repeat_n("?", thread_ids.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT m.thread_id, m.id, coalesce(m.from_display,''), coalesce(m.from_addr,''),
+                    coalesce(m.subject,''), coalesce(m.snippet,''), m.date_ms, t.n,
+                    coalesce(t.participants,''), t.unread, t.starred, t.attach
+             FROM messages m
+             JOIN (
+               SELECT thread_id, max(date_ms) AS md, count(*) AS n,
+                      group_concat(DISTINCT coalesce(nullif(from_display,''), from_addr))
+                        AS participants,
+                      max(CASE WHEN flags & 1 = 0 THEN 1 ELSE 0 END) AS unread,
+                      max(CASE WHEN flags & 4 != 0 THEN 1 ELSE 0 END) AS starred,
+                      max(has_attachments) AS attach
+               FROM messages WHERE deleted_at_ms IS NULL GROUP BY thread_id
+             ) t ON m.thread_id = t.thread_id AND m.date_ms = t.md
+             WHERE m.deleted_at_ms IS NULL AND m.thread_id IN ({holes})
+             GROUP BY m.thread_id"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(thread_ids), |row| {
+            Ok(ThreadListing {
+                thread_id: row.get(0)?,
+                id: row.get(1)?,
+                from_display: row.get(2)?,
+                from_addr: row.get(3)?,
+                subject: row.get(4)?,
+                snippet: row.get(5)?,
+                date_ms: row.get(6)?,
+                message_count: row.get(7)?,
+                participants: row.get(8)?,
+                unread: row.get::<_, i64>(9)? != 0,
+                starred: row.get::<_, i64>(10)? != 0,
+                has_attachments: row.get::<_, i64>(11)? != 0,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
     pub fn messages_in_thread(&self, thread_id: i64) -> Result<Vec<Listing>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT id, coalesce(from_display,''), coalesce(from_addr,''),

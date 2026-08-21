@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use petrel_engine::blob::BlobStore;
-use petrel_engine::store::{Listing, NewMessage, Store};
+use petrel_engine::store::{Listing, NewMessage, Store, ThreadListing};
 use petrel_providers::imap::{ImapConfig, Security};
 use petrel_testkit::MailboxGen;
 use tauri::{Manager, State};
@@ -163,10 +163,24 @@ fn list_messages(
         .map_err(|e| e.to_string())
 }
 
+/// The list shows conversations, not messages — the count chip is the thread
+/// size (docs 06). Flags are rolled up across the thread by the engine.
 #[tauri::command]
-fn search_messages(query: String, state: State<Arc<AppState>>) -> Result<Vec<Listing>, String> {
+fn list_threads(
+    offset: u32,
+    limit: u32,
+    state: State<Arc<AppState>>,
+) -> Result<Vec<ThreadListing>, String> {
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
-    store.search_listing(&query, 50).map_err(|e| e.to_string())
+    store
+        .list_threads(offset, limit.min(2000))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn search_messages(query: String, state: State<Arc<AppState>>) -> Result<Vec<ThreadListing>, String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    store.search_threads(&query, 200).map_err(|e| e.to_string())
 }
 
 /// Issues a one-message URL for the reading pane. The UI never receives the
@@ -400,6 +414,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             status,
             list_messages,
+            list_threads,
             search_messages,
             message_url,
             frontend_log

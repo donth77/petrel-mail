@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { Composite, CompositeItem, useCompositeStore } from '@ariakit/react';
 import { useVirtualizer, defaultRangeExtractor, type Range } from '@tanstack/react-virtual';
-import type { Listing } from '../lib/api';
+import { Archive, Clock, Paperclip, Star } from 'lucide-react';
+import type { Thread } from '../lib/api';
+import { Icon } from './Icon';
 import { initials, listTime, fullTime } from '../lib/format';
 import { t } from '../lib/strings';
 
 type Props = {
-  items: Listing[];
+  items: Thread[];
   activeId: number | null;
   density: 'relaxed' | 'compact';
   onActivate: (id: number) => void;
@@ -95,7 +97,6 @@ export function MessageList({ items, activeId, density, onActivate }: Props) {
         {virtualRows.map((v) => {
           const m = items[v.index];
           if (!m) return null;
-          const unread = m.id % 3 === 0; // engine does not expose flags yet
           return (
             <CompositeItem
               key={m.id}
@@ -109,14 +110,14 @@ export function MessageList({ items, activeId, density, onActivate }: Props) {
               aria-setsize={items.length}
               aria-posinset={v.index + 1}
               aria-label={t('a11y-row', {
-                unread: unread ? t('a11y-unread-prefix') : '',
+                unread: m.unread ? t('a11y-unread-prefix') : '',
                 from: m.from_display || m.from_addr,
                 subject: m.subject || '(no subject)',
                 time: fullTime(m.date_ms),
               })}
               className="row"
               data-active={m.id === activeId}
-              data-unread={unread}
+              data-unread={m.unread}
               style={{ height: v.size, transform: `translateY(${v.start}px)` }}
               onClick={() => onActivate(m.id)}
               onFocus={() => onActivate(m.id)}
@@ -126,16 +127,41 @@ export function MessageList({ items, activeId, density, onActivate }: Props) {
               </span>
               <span className="row-main">
                 <span className="row-top">
-                  {unread && <span className="unread-pip" aria-hidden="true" />}
-                  <span className="row-from clip">{m.from_display || m.from_addr}</span>
+                  {m.unread && <span className="unread-pip" aria-hidden="true" />}
+                  {/* Participants once a conversation has more than one voice —
+                      "who is in this" matters more than "who spoke last". */}
+                  <span className="row-from clip">
+                    {m.message_count > 1 && m.participants
+                      ? m.participants
+                      : m.from_display || m.from_addr}
+                  </span>
+                  {m.message_count > 1 && (
+                    <span className="thread-count">{m.message_count}</span>
+                  )}
                   <span className="row-time">{listTime(m.date_ms)}</span>
                 </span>
-                <span className="row-subject clip">{m.subject || '(no subject)'}</span>
+                <span className="row-subject clip">
+                  {m.starred && <Icon icon={Star} size={12} className="ic-star" />}
+                  {m.has_attachments && <Icon icon={Paperclip} size={12} className="ic-clip" />}
+                  {m.subject || '(no subject)'}
+                </span>
                 {density === 'relaxed' && (
                   <span className="row-snippet clip">
                     <Snippet text={m.snippet} />
                   </span>
                 )}
+              </span>
+              {/* A div, not buttons: this row is already a button, and nesting
+                  interactive elements is invalid and unreachable by keyboard.
+                  These are pointer affordances for actions the keyboard reaches
+                  with E and B. */}
+              <span className="row-actions" aria-hidden="true">
+                <span className="quick" title="Archive (E)">
+                  <Icon icon={Archive} size={14} />
+                </span>
+                <span className="quick" title="Snooze (B)">
+                  <Icon icon={Clock} size={14} />
+                </span>
               </span>
             </CompositeItem>
           );

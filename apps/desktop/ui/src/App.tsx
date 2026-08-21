@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { api, type Listing, type Status } from './lib/api';
+import { api, type Thread, type Status } from './lib/api';
 import { count as fmtCount } from './lib/format';
 import { t } from './lib/strings';
 import { Rail } from './components/Rail';
@@ -8,7 +8,7 @@ import { Reader } from './components/Reader';
 
 export function App() {
   const [status, setStatus] = useState<Status | null>(null);
-  const [items, setItems] = useState<Listing[]>([]);
+  const [items, setItems] = useState<Thread[]>([]);
   const [query, setQuery] = useState('');
   const [activeId, setActiveId] = useState<number | null>(null);
   const [view, setView] = useState('inbox');
@@ -35,14 +35,14 @@ export function App() {
   useEffect(() => {
     let live = true;
     const run = () => {
-      const p = query.trim() ? api.search(query) : api.list(0, 500);
-      p.then((rows) => {
+      const p = query.trim() ? api.search(query) : api.threads(0, 500);
+      p.then((rows: Thread[]) => {
         if (!live) return;
         setError(null);
         setItems(rows);
         setLoading(false);
-        setActiveId((cur) => (rows.some((r) => r.id === cur) ? cur : (rows[0]?.id ?? null)));
-      }).catch((err) => {
+        setActiveId((cur) => (rows.some((r: Thread) => r.id === cur) ? cur : (rows[0]?.id ?? null)));
+      }).catch((err: unknown) => {
         if (!live) return;
         setLoading(false);
         setError(String(err));
@@ -92,7 +92,7 @@ export function App() {
   }, [loading, error, items.length]);
 
   const active = useMemo(() => items.find((m) => m.id === activeId) ?? null, [items, activeId]);
-  const unread = useMemo(() => items.filter((m) => m.id % 3 === 0).length, [items]);
+  const unread = useMemo(() => items.filter((m) => m.unread).length, [items]);
 
   return (
     <div className="shell">

@@ -121,6 +121,10 @@ body {
   background: var(--hair2);
 }
 
+.rail-item:active {
+  background: var(--hair);
+}
+
 .rail-item[aria-current='page'] {
   background: var(--accent-wash);
   color: var(--accent-ink);
@@ -219,6 +223,55 @@ body {
   background: var(--bg);
 }
 
+.row:active {
+  background: var(--hair2);
+}
+
+.row[data-active='true']:hover {
+  background: var(--accent-wash);
+}
+
+/* Quick actions ride the row, appearing on hover or keyboard focus. Hidden with
+   visibility rather than display so they occupy their space from the start —
+   otherwise the subject reflows the moment a pointer crosses the row. */
+.row-actions {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  align-self: center;
+  flex-shrink: 0;
+  visibility: hidden;
+}
+
+.row:hover .row-actions,
+.row:focus-visible .row-actions,
+.row[data-active='true'] .row-actions {
+  visibility: visible;
+}
+
+.quick {
+  display: grid;
+  place-items: center;
+  inline-size: 26px;
+  block-size: 26px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: none;
+  color: var(--ink3);
+  cursor: default;
+  padding: 0;
+}
+
+.quick:hover {
+  background: var(--surface);
+  border-color: var(--hair);
+  color: var(--ink2);
+}
+
+.quick:active {
+  background: var(--hair2);
+}
+
 .row[data-active='true'] {
   background: var(--accent-wash);
 }
@@ -292,6 +345,24 @@ body {
 .row-subject {
   font-size: 12.5px;
   display: block;
+}
+
+/* Indicators sit inline with the subject and shift it, rather than floating in a
+   fixed gutter that is empty on most rows. */
+.ic-star,
+.ic-clip {
+  display: inline-block;
+  vertical-align: -1px;
+  margin-inline-end: 5px;
+}
+
+.ic-star {
+  color: var(--amber);
+  fill: var(--amber);
+}
+
+.ic-clip {
+  color: var(--ink3);
 }
 
 .row[data-unread='true'] .row-subject {
@@ -384,6 +455,15 @@ mark {
 
 .act:hover {
   border-color: var(--ink3);
+  color: var(--ink);
+}
+
+.act:active {
+  background: var(--hair2);
+}
+
+.account:active {
+  background: var(--bg);
 }
 
 .kbd {

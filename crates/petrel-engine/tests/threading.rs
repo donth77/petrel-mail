@@ -375,3 +375,70 @@ fn resyncing_a_thread_does_not_inflate_its_count() {
         "three syncs, still two messages"
     );
 }
+
+/// Thread rows roll flags up from their messages: a conversation is unread if
+/// any message in it is, which is what pulls a replied-to thread back to the top
+/// of attention rather than leaving it looking handled.
+#[test]
+fn thread_rows_roll_up_flags_from_their_messages() {
+    use petrel_engine::store::flags;
+
+    let (_d, mut store, blobs, account) = setup();
+    let a = mail("roll-a@x", "Contract terms", &[], T0, "first");
+    let b = mail("roll-b@x", "Re: Contract terms", &["roll-a@x"], T0 + DAY, "reply");
+
+    let ia = store.ingest_raw(&blobs, account, None, None, &a).unwrap();
+    let ib = store.ingest_raw(&blobs, account, None, None, &b).unwrap();
+    // Older message read; the reply unread, starred, and carrying a file.
+    store.set_flags(ia.message_id, flags::SEEN, 0).unwrap();
+    store.set_flags(ib.message_id, flags::FLAGGED, flags::SEEN).unwrap();
+    store.set_has_attachments(ib.message_id, true).unwrap();
+
+    let rows = store.list_threads(0, 10).unwrap();
+    let row = rows
+        .iter()
+        .find(|r| r.subject.contains("Contract terms"))
+        .expect("the conversation should appear as one row");
+
+    assert_eq!(row.message_count, 2, "two messages, one row");
+    assert!(row.unread, "one unread message makes the whole conversation unread");
+    assert!(row.starred, "flagging any message stars the conversation");
+    assert!(row.has_attachments, "an attachment anywhere shows on the row");
+
+    // And the inverse: reading everything clears it.
+    store.set_flags(ib.message_id, flags::SEEN, 0).unwrap();
+    let rows = store.list_threads(0, 10).unwrap();
+    let row = rows.iter().find(|r| r.subject.contains("Contract terms")).unwrap();
+    assert!(!row.unread, "reading every message clears the conversation");
+    assert!(row.starred, "but the star survives being read");
+}
+
+/// Search shows conversations, so a query matching four messages in one thread
+/// must return that thread once — not four near-identical rows.
+#[test]
+fn search_collapses_hits_to_one_row_per_conversation() {
+    let (_d, mut store, blobs, account) = setup();
+    for (i, id) in ["s1@x", "s2@x", "s3@x"].iter().enumerate() {
+        let refs: Vec<&str> = if i == 0 { vec![] } else { vec!["s1@x"] };
+        let m = mail(
+            id,
+            if i == 0 { "Annex review" } else { "Re: Annex review" },
+            &refs,
+            T0 + i as i64 * DAY,
+            "the annex needs a signature",
+        );
+        store.ingest_raw(&blobs, account, None, None, &m).unwrap();
+    }
+    // A separate conversation that also matches.
+    let other = mail("other@x", "Unrelated annex question", &[], T0 + 9 * DAY, "annex");
+    store.ingest_raw(&blobs, account, None, None, &other).unwrap();
+
+    let msg_hits = store.search_listing("annex", 50).unwrap();
+    assert!(msg_hits.len() >= 4, "the query matches several messages");
+
+    let rows = store.search_threads("annex", 50).unwrap();
+    assert_eq!(rows.len(), 2, "…but only two conversations");
+
+    let chain = rows.iter().find(|r| r.subject.contains("Annex review")).unwrap();
+    assert_eq!(chain.message_count, 3, "the row reports the whole thread");
+}

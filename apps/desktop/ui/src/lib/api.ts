@@ -12,6 +12,23 @@ export type Listing = {
   date_ms: number;
 };
 
+/** A conversation row. The list shows these, not individual messages. */
+export type Thread = {
+  thread_id: number;
+  /** Newest message in the conversation — what the row displays and opens. */
+  id: number;
+  from_display: string;
+  from_addr: string;
+  subject: string;
+  snippet: string;
+  date_ms: number;
+  message_count: number;
+  participants: string;
+  unread: boolean;
+  starred: boolean;
+  has_attachments: boolean;
+};
+
 export type Status = {
   seeding: boolean;
   count: number;
@@ -36,17 +53,23 @@ const SUBJECTS = [
   'Issue 214 — what the rate cut means', 'Your order has shipped',
   'Notes from Tuesday', '東京支社の会議について',
 ];
-function mockRows(n: number, offset = 0): Listing[] {
+function mockRows(n: number, offset = 0): Thread[] {
   return Array.from({ length: n }, (_, i) => {
     const k = offset + i;
     const [display, addr] = NAMES[k % NAMES.length];
     return {
+      thread_id: k + 1,
       id: k + 1,
       from_display: display,
       from_addr: addr,
       subject: `${SUBJECTS[k % SUBJECTS.length]}${k > 5 ? ` (${k})` : ''}`,
       snippet: 'the twelve-month term works, and the volume tier resets annually rather than…',
       date_ms: Date.now() - k * 37 * 60 * 1000,
+      message_count: [1, 1, 4, 1, 2, 1, 7][k % 7],
+      participants: k % 3 === 2 ? `${display}, Dana Wu, you` : display,
+      unread: k % 3 === 2,
+      starred: k % 9 === 4,
+      has_attachments: k % 5 === 0,
     };
   });
 }
@@ -56,17 +79,19 @@ const mock = {
     seeding: false, count: 10000, source: 'tom@northbay.example',
     retention: 'mirror', data_dir: '~/Library/Application Support/Petrel',
   }),
-  list: async (offset: number, limit: number) => mockRows(Math.min(limit, 2000), offset),
-  search: async (q: string) => mockRows(24).filter((r) => r.subject.toLowerCase().includes(q.toLowerCase())),
+  threads: async (offset: number, limit: number) => mockRows(Math.min(limit, 2000), offset),
+  search: async (q: string) =>
+    mockRows(24).filter((r) => r.subject.toLowerCase().includes(q.toLowerCase())),
   messageUrl: async () => '',
   log: async () => {},
 };
 
 const real = {
   status: () => invoke<Status>('status'),
-  list: (offset: number, limit: number) =>
-    invoke<Listing[]>('list_messages', { offset, limit }),
-  search: (query: string) => invoke<Listing[]>('search_messages', { query }),
+  threads: (offset: number, limit: number) =>
+    invoke<Thread[]>('list_threads', { offset, limit }),
+  search: (query: string) => invoke<Thread[]>('search_messages', { query }),
+
   messageUrl: (messageId: number) => invoke<string>('message_url', { messageId }),
   log: (entry: string) => invoke('frontend_log', { entry }).catch(() => {}),
 };
