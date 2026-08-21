@@ -215,3 +215,108 @@ impl Iterator for MailboxGen {
         })
     }
 }
+
+// ---------------------------------------------------------------- demo mail
+
+/// Plausible-looking mail for looking at the app.
+///
+/// Distinct from [`MailboxGen`], which generates deliberate word-salad because
+/// search-recall benchmarks need rare tokens and uniform distribution. This one
+/// optimises for the opposite thing: a list that reads like somebody's actual
+/// inbox, so design problems are visible instead of hidden behind noise.
+pub struct DemoMailbox {
+    rng: Rng,
+    n: usize,
+    produced: usize,
+    now_ms: i64,
+}
+
+const DEMO_PEOPLE: &[(&str, &str)] = &[
+    ("Sam Ortiz", "sam.ortiz@vendorco.example"),
+    ("Dana Wu", "dana@northbay.example"),
+    ("Priya Raman", "priya.raman@clientco.example"),
+    ("Marcus Bell", "m.bell@northbay.example"),
+    ("Yuki Tanaka", "y.tanaka@example.jp"),
+    ("Ana Sousa", "ana@sousa-design.example"),
+    ("Tom Fenwick", "tom.fenwick@lawpartners.example"),
+    ("Rachel Kim", "rachel@kimaccounting.example"),
+    ("The Weekly Ledger", "news@ledger.example"),
+    ("Depot Supply", "orders@depot.example"),
+    ("GitHub", "notifications@github.example"),
+    ("Fastmail Billing", "billing@fastmail.example"),
+    ("会議事務局", "kaigi@example.jp"),
+];
+
+const DEMO_THREADS: &[(&str, &str)] = &[
+    ("Q3 vendor contracts — pricing before Friday",
+     "The twelve-month term works. The volume tier resets annually, not quarterly, so I've added that to page 3."),
+    ("Vendor shortlist",
+     "Narrowed it to three. Two came in under budget; the third is better on support but 18% more."),
+    ("Self-hosted Dovecot — cert pinning question",
+     "The fingerprint changed after their renewal. Is that flow documented anywhere I can point the team at?"),
+    ("Receipt for August",
+     "Your subscription renewed. No action needed — the invoice is attached for your records."),
+    ("Issue 214 — what the rate cut means",
+     "Three things worth your attention this week, and one that isn't but is funny anyway."),
+    ("Your order has shipped",
+     "Tracking is below. Expected Thursday, and no signature is required on delivery."),
+    ("[petrel-mail] Sanitizer profile ready for review (#142)",
+     "17 tests including CSS exfiltration and attribute-selector attacks. Two edge cases still open."),
+    ("Notes from Tuesday",
+     "Rough notes while they're fresh. The bit about retention needs a decision before we go further."),
+    ("東京支社の会議について",
+     "明日の午前中に詳細を確認してください。資料は添付のとおりです。"),
+    ("Annex review",
+     "Marked up section 4 in track changes. Everything else reads fine to me."),
+    ("Invoice 2214 — overdue",
+     "This one slipped past its terms. Could you confirm it's in the run for this week?"),
+    ("Lunch Thursday?",
+     "There's a new place near the office that isn't terrible. 12:30 if that works."),
+    ("Board pack v4",
+     "Final version, incorporating Friday's comments. Slides 8-11 changed the most."),
+    ("Re: Contract terms",
+     "Agreed on all but the indemnity cap. Can we talk it through before signing?"),
+];
+
+impl DemoMailbox {
+    /// `now_ms` anchors the newest message; the rest spread backwards.
+    pub fn new(seed: u64, n: usize, now_ms: i64) -> Self {
+        Self { rng: Rng::new(seed), n, produced: 0, now_ms }
+    }
+}
+
+impl Iterator for DemoMailbox {
+    type Item = GenMessage;
+
+    fn next(&mut self) -> Option<GenMessage> {
+        if self.produced >= self.n {
+            return None;
+        }
+        let i = self.produced;
+        self.produced += 1;
+
+        let (display, addr) = DEMO_PEOPLE[self.rng.below(DEMO_PEOPLE.len())];
+        let (subject, body) = DEMO_THREADS[self.rng.below(DEMO_THREADS.len())];
+
+        // Roughly a third are replies, so the list shows conversations rather
+        // than a flat wall of first-contact mail.
+        let is_reply = self.rng.chance(33);
+        let subject = if is_reply && !subject.starts_with("Re:") {
+            format!("Re: {subject}")
+        } else {
+            subject.to_string()
+        };
+
+        // Newest first, thinning out into the past: dense over recent days,
+        // sparser further back, the way a real mailbox looks.
+        let minutes_back = (i as i64) * (7 + self.rng.below(120) as i64);
+        Some(GenMessage {
+            date_ms: self.now_ms - minutes_back * 60_000,
+            from_addr: addr.to_string(),
+            from_display: display.to_string(),
+            to_addr: "me@example.com".to_string(),
+            subject,
+            body: body.to_string(),
+        })
+    }
+}

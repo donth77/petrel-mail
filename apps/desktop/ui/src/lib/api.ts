@@ -31,6 +31,22 @@ export type Thread = {
   attachment_name: string | null;
 };
 
+export type Tag = { id: number; name: string; colour: string; thread_count: number };
+
+export type Attachment = { filename: string; size: number };
+
+export type ThreadMessage = {
+  id: number;
+  from_display: string;
+  from_addr: string;
+  subject: string;
+  snippet: string;
+  date_ms: number;
+  unread: boolean;
+  recipients: string[];
+  attachments: Attachment[];
+};
+
 export type Status = {
   seeding: boolean;
   count: number;
@@ -91,6 +107,29 @@ const mock = {
   threads: async (offset: number, limit: number) => mockRows(Math.min(limit, 2000), offset),
   search: async (q: string) =>
     mockRows(24).filter((r) => r.subject.toLowerCase().includes(q.toLowerCase())),
+  tags: async (): Promise<Tag[]> => [
+    { id: 1, name: 'read later', colour: '#9A6B1F', thread_count: 12 },
+    { id: 2, name: 'receipts', colour: '#5E7C4A', thread_count: 31 },
+    { id: 3, name: 'urgent', colour: '#B0524A', thread_count: 4 },
+  ],
+  threadDetail: async (): Promise<ThreadMessage[]> => [
+    {
+      id: 1, from_display: 'Dana Wu', from_addr: 'dana@northbay.example',
+      subject: 'Q3 vendor contracts', snippet: 'Sending the draft ahead of Friday so you both have time…',
+      date_ms: Date.now() - 3 * 86400000, unread: false,
+      recipients: ['Sam Ortiz', 'me'], attachments: [],
+    },
+    {
+      id: 2, from_display: 'Sam Ortiz', from_addr: 'sam@vendorco.example',
+      subject: 'Re: Q3 vendor contracts', snippet: 'I have marked up section 4…',
+      date_ms: Date.now() - 90 * 60000, unread: true,
+      recipients: ['Dana Wu', 'me'],
+      attachments: [
+        { filename: 'contract-v3.pdf', size: 2202009 },
+        { filename: 'annex-logistics.xlsx', size: 49152 },
+      ],
+    },
+  ],
   messageUrl: async () => '',
   log: async () => {},
 };
@@ -99,6 +138,9 @@ const real = {
   status: () => invoke<Status>('status'),
   threads: (offset: number, limit: number) =>
     invoke<Thread[]>('list_threads', { offset, limit }),
+  tags: () => invoke<Tag[]>('list_tags'),
+  threadDetail: (threadId: number) =>
+    invoke<ThreadMessage[]>('thread_detail', { threadId }),
   search: (query: string) => invoke<Thread[]>('search_messages', { query }),
 
   messageUrl: (messageId: number) => invoke<string>('message_url', { messageId }),

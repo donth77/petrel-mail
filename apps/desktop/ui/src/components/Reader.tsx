@@ -1,25 +1,83 @@
 import { useEffect, useState } from 'react';
-import { Archive, MoreVertical, Star } from 'lucide-react';
-import { api, type Thread } from '../lib/api';
-import { count as fmtCount } from '../lib/format';
+import { Archive, ChevronDown, CornerUpLeft, MoreVertical, Paperclip, Star } from 'lucide-react';
+import { api, type Thread, type ThreadMessage } from '../lib/api';
+import { count as fmtCount, fileSize, fullTime, initials, listTime } from '../lib/format';
 import { Icon } from './Icon';
+import { MessageBody } from './MessageBody';
 import { t } from '../lib/strings';
 
+/** A message that is not the one you came here to read: one line, expandable. */
+function Collapsed({ m, onExpand }: { m: ThreadMessage; onExpand: () => void }) {
+  return (
+    <button type="button" className="collapsed" onClick={onExpand}>
+      <span className="avatar sm" aria-hidden="true">
+        {initials(m.from_display, m.from_addr)}
+      </span>
+      <span className="collapsed-from">{m.from_display || m.from_addr}</span>
+      <span className="collapsed-snip clip">{m.snippet}</span>
+      <span className="mono collapsed-time">{listTime(m.date_ms)}</span>
+    </button>
+  );
+}
+
+function Expanded({ m }: { m: ThreadMessage }) {
+  return (
+    <article className="msg">
+      <header className="msg-head">
+        <span className="avatar" aria-hidden="true">
+          {initials(m.from_display, m.from_addr)}
+        </span>
+        <span className="msg-who">
+          <span className="msg-name">{m.from_display || m.from_addr}</span>
+          <span className="msg-to">
+            {m.recipients.length > 0 && <>{t('reader-to', { who: m.recipients.join(', ') })} · </>}
+            <span className="mono">{m.from_addr}</span>
+          </span>
+        </span>
+        <span className="mono msg-time">{fullTime(m.date_ms)}</span>
+      </header>
+
+      <MessageBody messageId={m.id} title={m.subject || '(no subject)'} />
+
+      {m.attachments.length > 0 && (
+        <div className="msg-attachments">
+          {m.attachments.map((a) => (
+            <button type="button" className="att" key={a.filename}>
+              <Icon icon={Paperclip} size={12} />
+              {a.filename}
+              <span className="mono att-size">{fileSize(a.size)}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </article>
+  );
+}
+
 export function Reader({ thread }: { thread: Thread | null }) {
-  const [url, setUrl] = useState<string | null>(null);
+  const [messages, setMessages] = useState<ThreadMessage[]>([]);
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
 
   useEffect(() => {
     let live = true;
-    setUrl(null);
+    setMessages([]);
+    setExpanded(new Set());
     if (!thread) return;
     api
-      .messageUrl(thread.id)
-      .then((u) => live && setUrl(u || null))
-      .catch(() => live && setUrl(null));
+      .threadDetail(thread.thread_id)
+      .then((ms) => {
+        if (!live) return;
+        setMessages(ms);
+        // The newest message is what you came for; older ones stay folded until
+        // asked for, so a five-message thread does not open as five walls of text.
+        const last = ms[ms.length - 1];
+        setExpanded(new Set(last ? [last.id] : []));
+      })
+      .catch(() => {});
     return () => {
       live = false;
     };
-  }, [thread?.id]);
+  }, [thread?.thread_id]);
 
   if (!thread) {
     return (
@@ -33,6 +91,10 @@ export function Reader({ thread }: { thread: Thread | null }) {
   }
 
   const subject = thread.subject || '(no subject)';
+  const hidden = messages.filter((m) => !expanded.has(m.id));
+  const foldable = hidden.slice(0, Math.max(0, hidden.length - 1));
+  const showAll = () => setExpanded(new Set(messages.map((m) => m.id)));
+
   return (
     <section className="reader" aria-label={subject}>
       <header className="reader-head">
@@ -57,33 +119,57 @@ export function Reader({ thread }: { thread: Thread | null }) {
               className={`act-icon${thread.starred ? ' on' : ''}`}
               aria-label={t('reader-star')}
               aria-pressed={thread.starred}
-              title={`${t('reader-star')} (S)`}
             >
               <Icon icon={Star} />
             </button>
-            <button
-              type="button"
-              className="act-icon"
-              aria-label={t('reader-archive')}
-              title={`${t('reader-archive')} (E)`}
-            >
+            <button type="button" className="act-icon" aria-label={t('reader-archive')}>
               <Icon icon={Archive} />
             </button>
-            <button
-              type="button"
-              className="act-icon"
-              aria-label={t('reader-more')}
-              title={t('reader-more')}
-            >
+            <button type="button" className="act-icon" aria-label={t('reader-more')}>
               <Icon icon={MoreVertical} />
             </button>
           </div>
         </div>
       </header>
+
       <div className="reader-body">
-        {/* Mail HTML only ever renders inside the sandboxed custom-scheme frame
-            (ADR-0004). Nothing here may widen that. */}
-        {url && <iframe src={url} sandbox="" title={subject} />}
+        {messages.map((m, i) => {
+          const isExpanded = expanded.has(m.id);
+          // Collapse a run of older messages into one row rather than a stack of
+          // near-identical lines.
+          const foldStart = foldable.length > 1 && m.id === foldable[1]?.id;
+          if (foldStart) {
+            return (
+              <button type="button" className="collapsed fold" key={`fold-${m.id}`} onClick={showAll}>
+                <span className="mono collapsed-snip">
+                  {t('reader-earlier', { count: foldable.length })}
+                </span>
+                <Icon icon={ChevronDown} size={14} />
+              </button>
+            );
+          }
+          if (!isExpanded && foldable.some((f, fi) => fi > 1 && f.id === m.id)) return null;
+          return isExpanded ? (
+            <Expanded m={m} key={m.id} />
+          ) : (
+            <Collapsed m={m} key={m.id} onExpand={() => setExpanded((s) => new Set(s).add(m.id))} />
+          );
+        })}
+
+        {messages.length > 0 && (
+          <div className="reply-row">
+            <button type="button" className="reply primary">
+              <Icon icon={CornerUpLeft} size={14} />
+              {t('reader-reply')} <span className="kbd on-accent">R</span>
+            </button>
+            <button type="button" className="reply">
+              {t('reader-reply-all')} <span className="kbd">A</span>
+            </button>
+            <button type="button" className="reply">
+              {t('reader-forward')} <span className="kbd">F</span>
+            </button>
+          </div>
+        )}
       </div>
     </section>
   );

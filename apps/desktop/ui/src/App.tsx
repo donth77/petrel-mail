@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { api, type Thread, type Status } from './lib/api';
+import { api, type Tag, type Thread, type Status } from './lib/api';
 import { count as fmtCount } from './lib/format';
 import { t } from './lib/strings';
 import { Search } from 'lucide-react';
@@ -96,19 +96,16 @@ export function App() {
   const active = useMemo(() => items.find((m) => m.id === activeId) ?? null, [items, activeId]);
   const unread = useMemo(() => items.filter((m) => m.unread).length, [items]);
 
-  // Rail tags, rolled up from what is loaded. A dedicated per-account endpoint
-  // replaces this once tag sync exists — the shape is already right.
-  const tags = useMemo(() => {
-    const seen = new Map<string, { name: string; colour: string; thread_count: number }>();
-    for (const m of items) {
-      for (const tag of m.tags) {
-        const found = seen.get(tag.name);
-        if (found) found.thread_count += 1;
-        else seen.set(tag.name, { name: tag.name, colour: tag.colour, thread_count: 1 });
-      }
-    }
-    return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
-  }, [items]);
+  // Tags come from the account, so one that has no conversation on this page
+  // still appears in the rail.
+  const [tags, setTags] = useState<Tag[]>([]);
+  useEffect(() => {
+    let live = true;
+    api.tags().then((t) => live && setTags(t)).catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [status?.count, status?.seeding]);
 
   // status.source is a description, not always an address — do not slice a
   // sentence at "@" and present the fragment as an account name.

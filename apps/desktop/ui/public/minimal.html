@@ -1,0 +1,12 @@
+<!doctype html><meta charset="utf-8">
+<body style="font:16px system-ui;padding:40px">
+<h1 id="h">minimal — no React, no CSS</h1>
+<button id="b" style="font-size:18px;padding:10px 20px">click me</button>
+<p id="m">move the pointer over this window</p>
+<script>
+  function log(o){try{window.__TAURI_INTERNALS__.invoke('frontend_log',{entry:JSON.stringify(o)})}catch(e){}}
+  document.getElementById('b').onclick=function(){document.getElementById('h').textContent='CLICK WORKS';log({minimal:'click'})};
+  document.addEventListener('mousemove',function(){document.getElementById('m').textContent='POINTER WORKS';log({minimal:'pointermove'})},{once:true});
+  document.addEventListener('keydown',function(e){log({minimal:'key',key:e.key})});
+  setInterval(function(){log({minimal:'tick',hasFocus:document.hasFocus()})},3000);
+</script>

@@ -70,7 +70,41 @@ fn error_response(status: u16, message: &str) -> Response<Vec<u8>> {
 
 /// The document shell. Styling lives here rather than in the message so that a
 /// message cannot restyle the reading pane around it.
-fn document(body: &str, blocked_remote: usize) -> String {
+/// The one script Petrel puts in a message frame: it reports the document height
+/// to the parent so the reading pane can size the frame to its content, instead
+/// of nesting a scroll region inside a scroll region. Admitted by a per-response
+/// nonce — see ADR-0004 Amendment 1. It reads nothing and sends nothing else.
+/// A per-response CSP nonce. Uniqueness is what matters — it is compared against
+/// itself within one response and never reused — so process id, a counter and the
+/// clock's nanoseconds are sufficient without pulling in an RNG dependency.
+fn new_token() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{:x}{n:x}{nanos:x}", std::process::id())
+}
+
+const HEIGHT_REPORTER: &str = r#"
+(function () {
+  function h() {
+    var d = document.documentElement, b = document.body;
+    return Math.max(d.scrollHeight, b ? b.scrollHeight : 0);
+  }
+  function post() { try { parent.postMessage({ petrelHeight: h() }, '*'); } catch (e) {} }
+  addEventListener('load', post);
+  addEventListener('resize', post);
+  if (window.ResizeObserver) { new ResizeObserver(post).observe(document.documentElement); }
+  post();
+  setTimeout(post, 60);
+  setTimeout(post, 400);
+})();
+"#;
+
+fn document(body: &str, blocked_remote: usize, nonce: &str) -> String {
     let banner = if blocked_remote > 0 {
         format!(
             "<div class=\"banner\">Remote content blocked \
@@ -94,7 +128,8 @@ fn document(body: &str, blocked_remote: usize) -> String {
             padding: 8px 10px; border-radius: 4px; font-size: 12.5px; margin-bottom: 12px; }}
   .petrel-plain {{ white-space: pre-wrap; font: 13.5px/1.6 ui-monospace, SFMono-Regular, monospace; }}
   .petrel-plain .q {{ color: #54666e; }}
-</style></head><body>{banner}{body}</body></html>"#
+</style></head><body>{banner}{body}<script nonce="{nonce}">{reporter}</script></body></html>"#,
+        reporter = HEIGHT_REPORTER
     )
 }
 
@@ -134,9 +169,14 @@ pub fn handle(
         ),
     };
 
-    let csp = "default-src 'none'; img-src cid: petrel-msg: http://petrel-msg.localhost; \
-               style-src 'unsafe-inline'; style-src-attr 'unsafe-inline'; script-src 'none'; \
-               form-action 'none'; base-uri 'none'; frame-ancestors 'self'";
+    // Fresh per response: markup that somehow survived sanitization still cannot
+    // carry a matching nonce, so ours stays the only script that runs.
+    let nonce = new_token();
+    let csp = format!(
+        "default-src 'none'; img-src cid: petrel-msg: http://petrel-msg.localhost; \
+         style-src 'unsafe-inline'; style-src-attr 'unsafe-inline'; script-src 'nonce-{nonce}'; \
+         form-action 'none'; base-uri 'none'; frame-ancestors 'self'"
+    );
 
     Response::builder()
         .status(200)
@@ -144,6 +184,6 @@ pub fn handle(
         .header("Content-Security-Policy", csp)
         .header("X-Content-Type-Options", "nosniff")
         .header("Referrer-Policy", "no-referrer")
-        .body(document(&body, report.blocked_remote).into_bytes())
+        .body(document(&body, report.blocked_remote, &nonce).into_bytes())
         .expect("message response")
 }

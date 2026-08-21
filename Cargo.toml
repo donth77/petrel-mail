@@ -41,3 +41,4 @@ lto = "thin"
 inherits = "release"
 lto = false
 debug = true
+

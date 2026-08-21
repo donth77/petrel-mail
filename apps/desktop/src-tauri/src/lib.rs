@@ -10,9 +10,11 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use petrel_engine::blob::BlobStore;
-use petrel_engine::store::{Listing, NewMessage, Store, ThreadListing};
+use petrel_engine::store::{
+    Listing, NewMessage, Store, TagSummary, ThreadListing, ThreadMessage,
+};
 use petrel_providers::imap::{ImapConfig, Security};
-use petrel_testkit::MailboxGen;
+use petrel_testkit::DemoMailbox;
 use tauri::{Manager, State};
 
 mod message_view;
@@ -177,6 +179,27 @@ fn list_threads(
         .map_err(|e| e.to_string())
 }
 
+/// Tags for the rail. Comes from the account, not from whatever rows happen to
+/// be loaded — a tag with no conversation in the current page still exists.
+#[tauri::command]
+fn list_tags(state: State<Arc<AppState>>) -> Result<Vec<TagSummary>, String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    let Some(account) = store.first_account().map_err(|e| e.to_string())? else {
+        return Ok(Vec::new());
+    };
+    store.tags_for_account(account).map_err(|e| e.to_string())
+}
+
+/// The messages of one conversation, for the reading pane.
+#[tauri::command]
+fn thread_detail(
+    thread_id: i64,
+    state: State<Arc<AppState>>,
+) -> Result<Vec<ThreadMessage>, String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    store.thread_detail(thread_id).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn search_messages(query: String, state: State<Arc<AppState>>) -> Result<Vec<ThreadListing>, String> {
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
@@ -200,7 +223,15 @@ fn message_url(message_id: i64, state: State<Arc<AppState>>) -> Result<String, S
 
 fn spawn_demo_seeding(state: Arc<AppState>, account: i64) {
     std::thread::spawn(move || {
-        let mut generator = MailboxGen::new(7, DEMO_MESSAGES);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        // DemoMailbox, not MailboxGen: the latter generates word-salad on
+        // purpose, because search-recall benchmarks need rare tokens and a flat
+        // distribution. That is the wrong corpus for looking at the UI, where
+        // noise hides exactly the problems you are trying to see.
+        let mut generator = DemoMailbox::new(7, DEMO_MESSAGES, now);
         loop {
             let batch: Vec<NewMessage> = generator
                 .by_ref()
@@ -233,6 +264,87 @@ fn spawn_demo_seeding(state: Arc<AppState>, account: i64) {
     });
 }
 
+/// Demo decoration for a store that holds synthetic mail: tags, read state, a
+/// few stars and attachments, so the list shows what the design describes
+/// instead of 10,000 identically-unread rows.
+///
+/// Runs once, guarded by a meta key, and **only when no real account is
+/// configured** — this writes flags, and flags on real mail belong to the
+/// server, not to a demo routine.
+fn reseed_demo_if_stale(state: &Arc<AppState>, account: i64) -> bool {
+    const WANT: &str = "2";
+    let synthetic = {
+        let Ok(store) = state.store.lock() else { return false };
+        if store.meta("demo_seed_version").ok().flatten().as_deref() == Some(WANT) {
+            return false;
+        }
+        // Only ever touches a store that is *entirely* synthetic. One real
+        // message and this does nothing — deleting somebody's mail to improve a
+        // demo would be an unforgivable trade.
+        store.all_messages_synthetic().unwrap_or(false)
+    };
+    if !synthetic {
+        return false;
+    }
+    match state.store.lock() {
+        Ok(store) => {
+            let removed = store.delete_all_messages().unwrap_or(0);
+            let _ = store.set_meta("demo_seed_version", WANT);
+            let _ = store.set_meta("demo_decorated", "");
+            eprintln!("[demo] cleared {removed} synthetic messages for a fresh seed");
+        }
+        Err(_) => return false,
+    }
+    state.seeded.store(0, Ordering::Relaxed);
+    state.seeding.store(true, Ordering::Relaxed);
+    spawn_demo_seeding(state.clone(), account);
+    true
+}
+
+fn decorate_demo_store(state: &Arc<AppState>, account: i64) {
+    let Ok(store) = state.store.lock() else { return };
+    if store.meta("demo_decorated").ok().flatten().is_some_and(|v| !v.is_empty()) {
+        return;
+    }
+    let tags: Vec<(i64, u32)> = [
+        ("urgent", "#B0524A", 7u32),
+        ("receipts", "#5E7C4A", 11),
+        ("read later", "#9A6B1F", 17),
+    ]
+    .iter()
+    .filter_map(|(name, colour, every)| {
+        store
+            .ensure_tag(account, name, Some(colour))
+            .ok()
+            .map(|id| (id, *every))
+    })
+    .collect();
+
+    let ids: Vec<i64> = match store.recent_ids(4000) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    for (i, id) in ids.iter().enumerate() {
+        // Most mail has been read; a scattering has not.
+        if i % 6 != 0 {
+            let _ = store.set_flags(*id, petrel_engine::store::flags::SEEN, 0);
+        }
+        if i % 23 == 0 {
+            let _ = store.set_flags(*id, petrel_engine::store::flags::FLAGGED, 0);
+        }
+        if i % 9 == 0 {
+            let _ = store.set_has_attachments(*id, true);
+        }
+        for (tag_id, every) in &tags {
+            if (i as u32).is_multiple_of(*every) {
+                let _ = store.tag_message(*id, *tag_id);
+            }
+        }
+    }
+    let _ = store.set_meta("demo_decorated", "1");
+    eprintln!("[demo] decorated {} messages with tags and flags", ids.len());
+}
+
 /// Webview-side diagnostics: init scripts run before page scripts and are
 /// exempt from page CSP, so this reports what the webview actually did (loaded
 /// URL, script execution, errors, CSP violations) even when the page itself is
@@ -248,6 +360,51 @@ const DIAG: &str = r#"
     }
   }
   function send(obj) { try { buf.push(JSON.stringify(obj)); } catch (e) { buf.push('"unserializable"'); } flush(); }
+
+  // Input reachability probe: reports the first of each kind of event to land,
+  // and what was under the pointer. A webview that renders but never sees a
+  // click looks identical to a frozen one, so this distinguishes them.
+  var seen = {};
+  function once(kind, extra) {
+    if (seen[kind]) return;
+    seen[kind] = 1;
+    send({ kind: 'input', event: kind, detail: extra || null });
+  }
+  window.addEventListener('pointermove', function (e) {
+    var el = e.target;
+    once('pointermove', el ? (el.className || el.tagName) + '' : 'none');
+  }, true);
+  window.addEventListener('click', function (e) {
+    var el = e.target;
+    once('click', el ? (el.className || el.tagName) + '' : 'none');
+  }, true);
+  window.addEventListener('wheel', function () { once('wheel'); }, true);
+  window.addEventListener('scroll', function (e) {
+    var el = e.target;
+    once('scroll', el && el.className ? el.className + '' : 'document');
+  }, true);
+  window.addEventListener('keydown', function (e) { once('keydown', e.key); }, true);
+
+  // Focus and hit-testing, sampled repeatedly: distinguishes "the webview never
+  // gets focus" from "something invisible is on top of the page".
+  window.addEventListener('focus', function () { send({ kind: 'win', e: 'focus' }); }, true);
+  window.addEventListener('blur', function () { send({ kind: 'win', e: 'blur' }); }, true);
+  var ticks = 0;
+  var beat = setInterval(function () {
+    ticks++;
+    var el = null;
+    try { el = document.elementFromPoint(400, 400); } catch (e) {}
+    send({
+      kind: 'focus-probe',
+      tick: ticks,
+      hasFocus: document.hasFocus(),
+      visibility: document.visibilityState,
+      active: document.activeElement ? document.activeElement.tagName : null,
+      at400x400: el ? (el.className || el.tagName) + '' : 'nothing',
+      events: Object.keys(seen).join(',') || 'none'
+    });
+    // runs for the life of the window
+  }, 3000);
   try { document.title = 'D:' + String(location.href).slice(0, 48); } catch (e) {}
   send({ kind: 'boot', href: String(location.href), readyState: document.readyState });
   window.addEventListener('error', function (e) {
@@ -320,6 +477,14 @@ const SELFTEST: &str = r#"
 #[tauri::command]
 fn frontend_log(entry: String) {
     eprintln!("[frontend] {entry}");
+    // Also to a file: when the app is launched through LaunchServices (an .app
+    // bundle, which is the only way macOS gives it real focus) stderr goes
+    // nowhere readable, and diagnostics that vanish are not diagnostics.
+    let path = data_dir().join("frontend.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        use std::io::Write;
+        let _ = writeln!(f, "{entry}");
+    }
 }
 
 /// Where mail lives on disk. Shown in the UI so "your mail is yours" is a
@@ -402,6 +567,9 @@ pub fn run() {
                 state.seeding.store(false, Ordering::Relaxed);
                 *state.source.lock().unwrap() =
                     "no account configured · showing stored mail".into();
+                if !reseed_demo_if_stale(&state, account) {
+                    decorate_demo_store(&state, account);
+                }
             } else {
                 *state.source.lock().unwrap() = "synthetic demo data".into();
                 spawn_demo_seeding(state.clone(), account);
@@ -415,6 +583,8 @@ pub fn run() {
             status,
             list_messages,
             list_threads,
+            list_tags,
+            thread_detail,
             search_messages,
             message_url,
             frontend_log
@@ -436,6 +606,23 @@ pub fn run() {
             message_view::handle(&request, &state.tokens, &state.blobs, lookup)
         })
         .setup(|app| {
+            // PETREL_MINIMAL=1: a bare window with none of our machinery — no
+            // init script, no custom protocol, no state. If this is also dead,
+            // the problem is the platform/Tauri pairing, not this app.
+            if std::env::var("PETREL_MINIMAL").is_ok() {
+                #[cfg(target_os = "macos")]
+                app.set_activation_policy(tauri::ActivationPolicy::Regular);
+                tauri::WebviewWindowBuilder::new(
+                    app,
+                    "main",
+                    tauri::WebviewUrl::App("minimal.html".into()),
+                )
+                .title("minimal")
+                .inner_size(700.0, 400.0)
+                .build()?;
+                return Ok(());
+            }
+
             let mut init = DIAG.to_string();
             if let Ok(mode) = std::env::var("PETREL_SELFTEST") {
                 if mode == "open" {
@@ -451,6 +638,13 @@ pub fn run() {
                 eprintln!("[s2] leak listener on 127.0.0.1:{port}");
                 init.push_str("window.__PETREL_SPIKE__='s2';");
             }
+            // Run un-bundled (bundle.active = false), macOS gives the process an
+            // accessory activation policy: the window draws and can be dragged,
+            // but never becomes key, so hover and clicks inside the webview go
+            // nowhere. Ask for Regular explicitly.
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Regular);
+
             tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::default())
                 .title("Petrel")
                 .inner_size(1440.0, 900.0)

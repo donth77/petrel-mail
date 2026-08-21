@@ -44,6 +44,10 @@ const en = {
   'titlebar-sync': 'all mail synced',
   'reader-snooze': 'Snooze',
   'reader-reply': 'Reply',
+  'reader-reply-all': 'Reply all',
+  'reader-forward': 'Forward',
+  'reader-to': 'to { $who }',
+  'reader-earlier': '{ $count } earlier messages',
   'reader-none-title': 'Nothing selected',
   'reader-none-body': 'Pick a conversation with J and K, or press Enter to open one.',
 

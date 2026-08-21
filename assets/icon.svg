@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Big Sur grid: the rounded square occupies 824x824 inset 100px, so Petrel
+       sits at the same visual weight as system icons rather than looming over
+       them. Corner radius is ~22.37% of the square, per Apple's template. -->
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#12909B"/>
+      <stop offset="1" stop-color="#0A5A62"/>
+    </linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="184" ry="184" fill="url(#g)"/>
+
+  <!-- The mark: a petrel skimming, over its own wake. Same two strokes as the
+       in-app wordmark, scaled up — one logo, not two that resemble each other. -->
+  <g transform="translate(512 512) scale(15.6) translate(-22 -15)"
+     fill="none" stroke="#FFFFFF" stroke-linecap="round">
+    <path d="M3 20 Q12 6 22 17 Q32 6 41 20" stroke-width="2.8"/>
+    <path d="M14 24 Q22 18 30 24" stroke-width="1.7" stroke-opacity="0.55"/>
+  </g>
+</svg>

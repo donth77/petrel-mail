@@ -6,6 +6,7 @@
 //! via [`Store::fts_integrity_check`] and repairable via [`Store::rebuild_fts`].
 
 use crate::retention::RetentionMode;
+use rusqlite::OptionalExtension;
 use rusqlite::functions::FunctionFlags;
 use rusqlite::{Connection, params};
 use std::path::Path;
@@ -77,6 +78,25 @@ pub mod flags {
     pub const FLAGGED: i64 = 1 << 2;
     pub const DRAFT: i64 = 1 << 3;
     pub const DELETED: i64 = 1 << 4;
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Attachment {
+    pub filename: String,
+    pub size: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ThreadMessage {
+    pub id: i64,
+    pub from_display: String,
+    pub from_addr: String,
+    pub subject: String,
+    pub snippet: String,
+    pub date_ms: i64,
+    pub unread: bool,
+    pub recipients: Vec<String>,
+    pub attachments: Vec<Attachment>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1044,6 +1064,64 @@ impl Store {
         Ok(hash)
     }
 
+    pub fn meta(&self, key: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {
+                r.get(0)
+            })
+            .optional()?)
+    }
+
+    pub fn set_meta(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES (?1, ?2)",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    /// Ids of the most recent messages — used by maintenance and demo paths that
+    /// need to walk the store without materialising whole rows.
+    pub fn recent_ids(&self, limit: u32) -> Result<Vec<i64>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id FROM messages WHERE deleted_at_ms IS NULL
+             ORDER BY date_ms DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit], |r| r.get(0))?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// True when every message came from the synthetic demo generators. Used
+    /// to decide whether a store may be wiped for a re-seed; a single real
+    /// message makes this false.
+    pub fn all_messages_synthetic(&self) -> Result<bool> {
+        let foreign: i64 = self.conn.query_row(
+            "SELECT count(*) FROM messages
+             WHERE from_addr NOT LIKE '%example.com'
+               AND from_addr NOT LIKE '%example.org'
+               AND from_addr NOT LIKE '%example.net'
+               AND from_addr NOT LIKE '%example.io'
+               AND from_addr NOT LIKE '%example.dev'
+               AND from_addr NOT LIKE '%.example'
+               AND from_addr NOT LIKE '%example.jp'",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(foreign == 0)
+    }
+
+    /// Demo-path only: empties the mailbox. Callers must have established that
+    /// the store holds nothing real.
+    pub fn delete_all_messages(&self) -> Result<usize> {
+        let n = self.conn.execute("DELETE FROM messages", [])?;
+        self.conn.execute("DELETE FROM fts_content", [])?;
+        self.conn.execute("DELETE FROM fts_cjk", [])?;
+        self.conn
+            .execute("INSERT INTO fts_messages(fts_messages) VALUES('rebuild')", [])?;
+        Ok(n)
+    }
+
     pub fn message_count(&self) -> Result<i64> {
         Ok(self
             .conn
@@ -1265,6 +1343,58 @@ impl Store {
             })
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// One conversation, message by message, with what the reading pane needs to
+    /// draw a card per message: who it came from, who it went to, and its files.
+    pub fn thread_detail(&self, thread_id: i64) -> Result<Vec<ThreadMessage>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, coalesce(from_display,''), coalesce(from_addr,''),
+                    coalesce(subject,''), coalesce(snippet,''), date_ms, flags
+             FROM messages
+             WHERE coalesce(thread_id, -id) = ?1 AND deleted_at_ms IS NULL
+             ORDER BY date_ms ASC",
+        )?;
+        let rows: Vec<(i64, String, String, String, String, i64, i64)> = stmt
+            .query_map(params![thread_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for (id, from_display, from_addr, subject, snippet, date_ms, flags) in rows {
+            let mut to = self.conn.prepare_cached(
+                "SELECT coalesce(nullif(display,''), addr_norm) FROM message_addresses
+                 WHERE message_id = ?1 AND role IN ('to','cc') ORDER BY id",
+            )?;
+            let recipients: Vec<String> = to
+                .query_map(params![id], |r| r.get(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+
+            let mut att = self.conn.prepare_cached(
+                "SELECT coalesce(filename,''), coalesce(size, 0) FROM attachments
+                 WHERE message_id = ?1 AND filename IS NOT NULL AND filename <> ''
+                 ORDER BY id",
+            )?;
+            let attachments: Vec<Attachment> = att
+                .query_map(params![id], |r| {
+                    Ok(Attachment { filename: r.get(0)?, size: r.get(1)? })
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+
+            out.push(ThreadMessage {
+                id,
+                from_display,
+                from_addr,
+                subject,
+                snippet,
+                date_ms,
+                unread: flags & flags::SEEN == 0,
+                recipients,
+                attachments,
+            });
+        }
+        Ok(out)
     }
 
     pub fn messages_in_thread(&self, thread_id: i64) -> Result<Vec<Listing>> {
