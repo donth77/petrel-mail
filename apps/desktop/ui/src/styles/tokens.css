@@ -22,10 +22,10 @@
   --hair: #d9e1e2;
   --hair2: #e8eeee;
 
-  /* accent — storm teal */
-  --accent: #0e7c86;
-  --accent-ink: #0a5a62;
-  --accent-wash: #e8f3f3;
+  /* accent — storm teal, overridable from Settings via --accent-user */
+  --accent: var(--accent-user, #0e7c86);
+  --accent-ink: color-mix(in oklab, var(--accent-user, #0e7c86) 82%, #000000);
+  --accent-wash: color-mix(in oklab, var(--accent-user, #0e7c86) 11%, #ffffff);
 
   /* semantic, kept separate from the accent on purpose */
   --good: #2e7d5b;
@@ -64,9 +64,9 @@
     --ink3: #7a8d94;
     --hair: #24363d;
     --hair2: #1d2e35;
-    --accent: #48bcc6;
-    --accent-ink: #6fd0d8;
-    --accent-wash: #16323a;
+    --accent: color-mix(in oklab, var(--accent-user, #0e7c86) 62%, #ffffff);
+    --accent-ink: color-mix(in oklab, var(--accent-user, #0e7c86) 44%, #ffffff);
+    --accent-wash: color-mix(in oklab, var(--accent-user, #0e7c86) 26%, #0f1b21);
     --good: #5fb98d;
     --amber: #d2a45b;
     --amber-bg: #2a2416;
@@ -89,9 +89,9 @@
   --ink3: #7a8d94;
   --hair: #24363d;
   --hair2: #1d2e35;
-  --accent: #48bcc6;
-  --accent-ink: #6fd0d8;
-  --accent-wash: #16323a;
+  --accent: color-mix(in oklab, var(--accent-user, #0e7c86) 62%, #ffffff);
+  --accent-ink: color-mix(in oklab, var(--accent-user, #0e7c86) 44%, #ffffff);
+  --accent-wash: color-mix(in oklab, var(--accent-user, #0e7c86) 26%, #0f1b21);
   --good: #5fb98d;
   --amber: #d2a45b;
   --amber-bg: #2a2416;

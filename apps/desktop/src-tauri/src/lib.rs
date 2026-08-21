@@ -6,6 +6,7 @@
 //! the engine's ingest path; without, it seeds synthetic mail so the UI is
 //! exercisable with no account. Both run the same store, index, and queries.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -198,6 +199,24 @@ fn thread_detail(
 ) -> Result<Vec<ThreadMessage>, String> {
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
     store.thread_detail(thread_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_settings(state: State<Arc<AppState>>) -> Result<HashMap<String, String>, String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    store.settings().map_err(|e| e.to_string())
+}
+
+/// An empty value clears the preference, restoring the default rather than
+/// pinning the current one.
+#[tauri::command]
+fn set_setting(key: String, value: String, state: State<Arc<AppState>>) -> Result<(), String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    if value.is_empty() {
+        store.clear_setting(&key).map_err(|e| e.to_string())
+    } else {
+        store.set_setting(&key, &value).map_err(|e| e.to_string())
+    }
 }
 
 #[tauri::command]
@@ -585,6 +604,8 @@ pub fn run() {
             list_threads,
             list_tags,
             thread_detail,
+            get_settings,
+            set_setting,
             search_messages,
             message_url,
             frontend_log

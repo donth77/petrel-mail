@@ -10,7 +10,7 @@ let clock: ClockPref = 'system';
 
 /** Settings override; both default to whatever the OS already says. */
 export function setFormatPrefs(next: { locale?: string; clock?: ClockPref }) {
-  if (next.locale) locale = next.locale;
+  locale = next.locale ?? (typeof navigator !== 'undefined' ? navigator.language || 'en' : 'en');
   if (next.clock) clock = next.clock;
   rebuild();
 }

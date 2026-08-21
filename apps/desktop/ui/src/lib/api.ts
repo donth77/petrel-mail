@@ -107,6 +107,8 @@ const mock = {
   threads: async (offset: number, limit: number) => mockRows(Math.min(limit, 2000), offset),
   search: async (q: string) =>
     mockRows(24).filter((r) => r.subject.toLowerCase().includes(q.toLowerCase())),
+  getSettings: async (): Promise<Record<string, string>> => ({}),
+  setSetting: async () => {},
   tags: async (): Promise<Tag[]> => [
     { id: 1, name: 'read later', colour: '#9A6B1F', thread_count: 12 },
     { id: 2, name: 'receipts', colour: '#5E7C4A', thread_count: 31 },
@@ -139,6 +141,8 @@ const real = {
   threads: (offset: number, limit: number) =>
     invoke<Thread[]>('list_threads', { offset, limit }),
   tags: () => invoke<Tag[]>('list_tags'),
+  getSettings: () => invoke<Record<string, string>>('get_settings'),
+  setSetting: (key: string, value: string) => invoke<void>('set_setting', { key, value }),
   threadDetail: (threadId: number) =>
     invoke<ThreadMessage[]>('thread_detail', { threadId }),
   search: (query: string) => invoke<Thread[]>('search_messages', { query }),

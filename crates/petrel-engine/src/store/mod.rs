@@ -11,7 +11,7 @@ use rusqlite::functions::FunctionFlags;
 use rusqlite::{Connection, params};
 use std::path::Path;
 
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 /// Bumped whenever text extraction changes; a mismatch forces reindexing.
 pub const EXTRACTOR_VERSION: i64 = 1;
 
@@ -486,6 +486,9 @@ impl Store {
         }
         if ver < 2 {
             conn.execute_batch(include_str!("migrations/0002-tags.sql"))?;
+        }
+        if ver < 3 {
+            conn.execute_batch(include_str!("migrations/0003-settings.sql"))?;
         }
         if ver < SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -1062,6 +1065,31 @@ impl Store {
             .ok()
             .flatten();
         Ok(hash)
+    }
+
+    /// Every stored preference, as a map. Read once at start-up rather than
+    /// queried per key: there are a few dozen of them and they are all wanted.
+    pub fn settings(&self) -> Result<std::collections::HashMap<String, String>> {
+        let mut stmt = self.conn.prepare_cached("SELECT key, value FROM settings")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        Ok(rows.collect::<std::result::Result<std::collections::HashMap<_, _>, _>>()?)
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO settings(key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    /// Removing a preference restores its default, which is not the same as
+    /// storing the default: a default that later changes should move with it.
+    pub fn clear_setting(&self, key: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM settings WHERE key = ?1", params![key])?;
+        Ok(())
     }
 
     pub fn meta(&self, key: &str) -> Result<Option<String>> {

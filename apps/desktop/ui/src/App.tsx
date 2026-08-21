@@ -7,22 +7,26 @@ import { Rail } from './components/Rail';
 import { TitleBar } from './components/TitleBar';
 import { Palette } from './components/Palette';
 import { Help } from './components/Help';
+import { Settings } from './components/Settings';
+import { useSettings } from './lib/settings';
 import { Toast } from './components/Toast';
 import { MessageList } from './components/MessageList';
 import { Reader } from './components/Reader';
 
 export function App() {
+  const { settings } = useSettings();
   const [status, setStatus] = useState<Status | null>(null);
   const [items, setItems] = useState<Thread[]>([]);
   const [query, setQuery] = useState('');
   const [activeId, setActiveId] = useState<number | null>(null);
   const [view, setView] = useState('inbox');
-  const [density] = useState<'relaxed' | 'compact'>('relaxed');
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
   useEffect(() => {
@@ -75,6 +79,9 @@ export function App() {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         setPaletteOpen(true);
+      } else if ((e.metaKey || e.ctrlKey) && e.key === ',') {
+        e.preventDefault();
+        setSettingsOpen(true);
       } else if (e.key === '?' && !typing) {
         e.preventDefault();
         setHelpOpen(true);
@@ -130,13 +137,17 @@ export function App() {
   return (
     <div className="app-frame">
       <TitleBar synced={status?.seeding ? t('status-seeding') : t('titlebar-sync')} />
-      <div className="shell">
+      <div className="shell" data-layout={settings.layout === 'off' ? 'no-reader' : settings.layout}>
       <Rail
         account={status?.source ?? t('app-name')}
         unread={unread}
         view={view}
         tags={tags}
-        onView={(v) => (v === 'help' ? setHelpOpen(true) : setView(v))}
+        onView={(v) => {
+          if (v === 'help') setHelpOpen(true);
+          else if (v === 'settings') setSettingsOpen(true);
+          else setView(v);
+        }}
       />
 
       <div className="list-pane">
@@ -190,13 +201,13 @@ export function App() {
           <MessageList
             items={items}
             activeId={activeId}
-            density={density}
+            density={settings.density}
             onActivate={setActiveId}
           />
         )}
       </div>
 
-      <Reader thread={active} />
+      {settings.layout !== 'off' && <Reader thread={active} />}
 
       <Palette
         open={paletteOpen}
@@ -206,6 +217,7 @@ export function App() {
           hasThread: !!active,
           onView: (v) => {
             if (v === 'help') setHelpOpen(true);
+            else if (v === 'settings') setSettingsOpen(true);
             else if (v === 'search') searchRef.current?.focus();
             else setView(v);
           },
@@ -213,6 +225,11 @@ export function App() {
         }}
       />
       <Help open={helpOpen} onClose={() => setHelpOpen(false)} />
+      <Settings
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        onOpenHelp={() => setHelpOpen(true)}
+      />
       <Toast message={toast} onDone={() => setToast(null)} />
 
       <footer className="status">
