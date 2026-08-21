@@ -67,18 +67,52 @@ export function MessageList({ items, activeId, density, onActivate }: Props) {
     measureElement: (el) => el.getBoundingClientRect().height,
   });
 
-  // Gmail's j/k, mapped onto the composite's own movement so both routes share
-  // one notion of "where am I".
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.metaKey || e.ctrlKey || e.altKey) return;
-    if (e.key === 'j') {
-      e.preventDefault();
-      composite.move(composite.next());
-    } else if (e.key === 'k') {
-      e.preventDefault();
-      composite.move(composite.previous());
+  // Gmail's j/k are global, not scoped to whether the list happens to hold
+  // focus. Scoping them to the scroller meant they did nothing until you had
+  // clicked into the list first, which is not how anyone expects them to work.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      // The target is not always an element — a key pressed with nothing
+      // focused reports the document or the window, neither of which has
+      // closest(). Guarding on instanceof keeps this from throwing and
+      // silently killing the handler.
+      const el = e.target instanceof HTMLElement ? e.target : null;
+      if (
+        el &&
+        (el.tagName === 'INPUT' ||
+          el.tagName === 'TEXTAREA' ||
+          el.tagName === 'SELECT' ||
+          el.isContentEditable)
+      ) {
+        return;
+      }
+      // Inside a dialog the list is not what the keys are for.
+      if (el?.closest('[role="dialog"]')) return;
+
+      if (e.key === 'j' || e.key === 'k') {
+        e.preventDefault();
+        // Focus follows, so the *next* arrow key continues from the same place
+        // rather than starting over.
+        scrollRef.current?.focus({ preventScroll: true });
+        composite.move(e.key === 'j' ? composite.next() : composite.previous());
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [composite]);
+
+  // Give the list focus once it has something to show, so arrow keys work
+  // without a click first. Only when nothing else has been focused deliberately.
+  const focused = useRef(false);
+  useEffect(() => {
+    if (focused.current || items.length === 0) return;
+    const active = document.activeElement;
+    if (!active || active === document.body) {
+      scrollRef.current?.focus({ preventScroll: true });
+      focused.current = true;
     }
-  };
+  }, [items.length]);
 
   // Follow the active row when the *selection* moves — not on every render.
   // `virtualizer` is a fresh object each render, so depending on it re-ran this
@@ -101,7 +135,6 @@ export function MessageList({ items, activeId, density, onActivate }: Props) {
       aria-label={t('a11y-message-list')}
       className={`scroller density-${density}`}
       ref={scrollRef}
-      onKeyDown={onKeyDown}
     >
       <div className="rows" style={{ height: virtualizer.getTotalSize() }}>
         {virtualRows.map((v) => {

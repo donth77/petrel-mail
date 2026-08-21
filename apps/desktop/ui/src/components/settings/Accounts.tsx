@@ -102,7 +102,18 @@ export function Accounts({ onNotImplemented }: { onNotImplemented: (label: strin
                       aria-label={c}
                       aria-pressed={account.color === c}
                       onClick={() => {
-                        void api.setAccountColor(account.id, c).then(load);
+                        api
+                          .setAccountColor(account.id, c)
+                          .then(() => {
+                            void api.log(`set_account_color ok account=${account.id} ${c}`);
+                            return load();
+                          })
+                          .catch((err: unknown) => {
+                            // Never silent: a write that fails and a write that
+                            // changes nothing visible look identical otherwise.
+                            setError(String(err));
+                            void api.log(`set_account_color FAILED: ${err}`);
+                          });
                       }}
                     />
                   ))}
@@ -122,7 +133,10 @@ export function Accounts({ onNotImplemented }: { onNotImplemented: (label: strin
                     type="button"
                     className={!account.local_archive ? 'on' : undefined}
                     onClick={() => {
-                      void api.setAccountArchive(account.id, false).then(load);
+                      api
+                        .setAccountArchive(account.id, false)
+                        .then(load)
+                        .catch((err: unknown) => setError(String(err)));
                     }}
                   >
                     {t('accounts-mirror')}
@@ -131,7 +145,10 @@ export function Accounts({ onNotImplemented }: { onNotImplemented: (label: strin
                     type="button"
                     className={account.local_archive ? 'on' : undefined}
                     onClick={() => {
-                      void api.setAccountArchive(account.id, true).then(load);
+                      api
+                        .setAccountArchive(account.id, true)
+                        .then(load)
+                        .catch((err: unknown) => setError(String(err)));
                     }}
                   >
                     {t('accounts-archive')}
