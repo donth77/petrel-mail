@@ -82,6 +82,17 @@ impl BlobStore {
         self.read(hash).is_ok()
     }
 
+    /// Deletes one blob's file. Called only by GC, and only for a hash the
+    /// store has already proven unreachable.
+    pub fn remove(&self, hash: &str) -> Result<()> {
+        match fs::remove_file(self.path_for(hash)) {
+            Ok(()) => Ok(()),
+            // Already gone is success: GC is idempotent by design.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(BlobError::Io(e)),
+        }
+    }
+
     /// Removes orphaned temp files left by interrupted writes. Safe to run at
     /// any time: a `.part` file is never referenced by the store.
     pub fn sweep_tmp(&self) -> Result<usize> {

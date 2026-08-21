@@ -29,6 +29,8 @@ struct AppState {
     seeded: AtomicUsize,
     source: Mutex<String>,
     tokens: Arc<ViewTokens>,
+    account_id: i64,
+    data_dir: String,
 }
 
 #[derive(serde::Serialize)]
@@ -36,6 +38,17 @@ struct Status {
     seeding: bool,
     count: usize,
     source: String,
+    /// The retention mode, in words. Q24's binding rule is that the active
+    /// policy is always stated — never something the user has to infer.
+    retention: String,
+    data_dir: String,
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 #[tauri::command]
@@ -48,6 +61,14 @@ fn status(state: State<Arc<AppState>>) -> Status {
             .lock()
             .map(|s| s.clone())
             .unwrap_or_else(|_| "unknown".into()),
+        retention: state
+            .store
+            .lock()
+            .ok()
+            .and_then(|s| s.retention_mode(state.account_id).ok())
+            .map(|m| m.describe().to_string())
+            .unwrap_or_default(),
+        data_dir: state.data_dir.clone(),
     }
 }
 
@@ -285,22 +306,63 @@ fn frontend_log(entry: String) {
     eprintln!("[frontend] {entry}");
 }
 
+/// Where mail lives on disk. Shown in the UI so "your mail is yours" is a
+/// path the user can open, not a slogan.
+fn data_dir() -> std::path::PathBuf {
+    std::env::var("PETREL_DATA_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            dirs::data_dir()
+                .unwrap_or_else(std::env::temp_dir)
+                .join("Petrel")
+        })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // In-memory for now: persistence lands with the account model and schema
-    // migrations, and a half-persisted store is worse than an explicit
-    // ephemeral one.
-    let store = Store::open_in_memory().expect("open in-memory store");
-    let account = store.ensure_test_account().expect("create account row");
-    let blob_dir = std::env::temp_dir().join(format!("petrel-blobs-{}", std::process::id()));
+    let dir = data_dir();
+    std::fs::create_dir_all(&dir).expect("create data directory");
+    eprintln!("[store] data directory: {}", dir.display());
+
+    let store = Store::open(&dir.join("petrel.db")).expect("open store");
+    // One account row for now; the account model arrives with setup UI.
+    let account = match store.first_account().expect("read accounts") {
+        Some(id) => id,
+        None => store.ensure_test_account().expect("create account row"),
+    };
+    let blobs = BlobStore::open(&dir.join("blobs")).expect("open blob store");
+
+    // Startup housekeeping: clear temp files left by an interrupted write, then
+    // destroy anything whose grace period expired while the app was closed.
+    let _ = blobs.sweep_tmp();
     let state = Arc::new(AppState {
         store: Mutex::new(store),
-        blobs: BlobStore::open(&blob_dir).expect("open blob store"),
+        blobs,
         seeding: AtomicBool::new(true),
         seeded: AtomicUsize::new(0),
         source: Mutex::new("starting…".into()),
         tokens: Arc::new(ViewTokens::new()),
+        account_id: account,
+        data_dir: dir.display().to_string(),
     });
+
+    {
+        let now = now_ms();
+        if let Ok(mut store) = state.store.lock() {
+            match store.gc(
+                &state.blobs,
+                now,
+                petrel_engine::retention::DEFAULT_GRACE_DAYS,
+            ) {
+                Ok(r) if r.messages_purged > 0 || r.blobs_removed > 0 => eprintln!(
+                    "[store] gc purged {} message(s), reclaimed {} blob(s)",
+                    r.messages_purged, r.blobs_removed
+                ),
+                Ok(_) => {}
+                Err(e) => eprintln!("[store] gc failed: {e}"),
+            }
+        }
+    }
 
     match imap_config_from_env() {
         Some(cfg) => {
@@ -308,8 +370,26 @@ pub fn run() {
             spawn_real_sync(state.clone(), account, cfg);
         }
         None => {
-            *state.source.lock().unwrap() = "synthetic demo data".into();
-            spawn_demo_seeding(state.clone(), account);
+            // Demo data is for an empty first run only. Seeding it into a store
+            // that already holds real mail would mix fabricated messages into
+            // someone's actual mailbox — found the hard way when a persistence
+            // test relaunched without credentials and buried a real message
+            // under 10,000 synthetic ones.
+            let existing = state
+                .store
+                .lock()
+                .ok()
+                .and_then(|s| s.message_count().ok())
+                .unwrap_or(0);
+            if existing > 0 {
+                state.seeded.store(existing as usize, Ordering::Relaxed);
+                state.seeding.store(false, Ordering::Relaxed);
+                *state.source.lock().unwrap() =
+                    "no account configured · showing stored mail".into();
+            } else {
+                *state.source.lock().unwrap() = "synthetic demo data".into();
+                spawn_demo_seeding(state.clone(), account);
+            }
         }
     }
 

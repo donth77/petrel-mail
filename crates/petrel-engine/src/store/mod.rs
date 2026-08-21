@@ -5,6 +5,7 @@
 //! row, and only through this API. Index consistency is verifiable at any time
 //! via [`Store::fts_integrity_check`] and repairable via [`Store::rebuild_fts`].
 
+use crate::retention::RetentionMode;
 use rusqlite::{Connection, params};
 use std::path::Path;
 
@@ -20,6 +21,13 @@ pub enum StoreError {
     Integrity(String),
     #[error("ingest failed: {0}")]
     Ingest(String),
+}
+
+/// What a garbage-collection pass destroyed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GcReport {
+    pub messages_purged: usize,
+    pub blobs_removed: usize,
 }
 
 /// Outcome of ingesting one raw message.
@@ -168,6 +176,16 @@ impl Store {
             )?;
         }
         Ok(Store { conn })
+    }
+
+    /// The first account row, if the store has been used before.
+    pub fn first_account(&self) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row("SELECT id FROM accounts ORDER BY id LIMIT 1", [], |r| {
+                r.get(0)
+            })
+            .ok())
     }
 
     pub fn ensure_test_account(&self) -> Result<i64> {
@@ -504,6 +522,183 @@ impl Store {
         Ok(())
     }
 
+    /// Sets an account's retention mode (Q24).
+    pub fn set_local_archive(&self, account_id: i64, enabled: bool) -> Result<()> {
+        self.conn.execute(
+            "UPDATE accounts SET local_archive = ?2 WHERE id = ?1",
+            params![account_id, enabled],
+        )?;
+        Ok(())
+    }
+
+    pub fn retention_mode(&self, account_id: i64) -> Result<RetentionMode> {
+        let flag: bool = self.conn.query_row(
+            "SELECT local_archive FROM accounts WHERE id = ?1",
+            params![account_id],
+            |r| r.get(0),
+        )?;
+        Ok(RetentionMode::from_flag(flag))
+    }
+
+    /// Applies a server's truth to local state: any message we hold for this
+    /// account that the server no longer lists is soft-deleted.
+    ///
+    /// Soft delete removes it from search and lists immediately (the user asked
+    /// for it gone) while keeping the row and blob recoverable until GC. In
+    /// `LocalArchive` mode nothing is removed at all — that is the entire point
+    /// of the mode, so this returns 0 without touching anything.
+    ///
+    /// `present_message_ids` are the dedupe keys still on the server.
+    pub fn reconcile_server_absences(
+        &mut self,
+        account_id: i64,
+        present_message_ids: &[String],
+        now_ms: i64,
+    ) -> Result<usize> {
+        if self.retention_mode(account_id)? == RetentionMode::LocalArchive {
+            return Ok(0);
+        }
+
+        let tx = self.conn.transaction()?;
+        let present: std::collections::HashSet<&str> =
+            present_message_ids.iter().map(|s| s.as_str()).collect();
+
+        let candidates: Vec<(i64, String)> = {
+            let mut stmt = tx.prepare(
+                "SELECT id, coalesce(message_id_hdr, '') FROM messages
+                 WHERE account_id = ?1 AND deleted_at_ms IS NULL",
+            )?;
+            let rows = stmt.query_map(params![account_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        };
+
+        let mut removed = 0;
+        for (id, key) in candidates {
+            if present.contains(key.as_str()) {
+                continue;
+            }
+            tx.execute(
+                "UPDATE messages SET deleted_at_ms = ?2 WHERE id = ?1",
+                params![id, now_ms],
+            )?;
+            // Out of the index immediately: a deleted message must not surface
+            // in search while it waits out the grace period.
+            tx.execute("DELETE FROM fts_content WHERE message_id = ?1", params![id])?;
+            removed += 1;
+        }
+        tx.commit()?;
+        Ok(removed)
+    }
+
+    /// Restores a soft-deleted message and re-indexes it from its stored bytes.
+    /// Possible only while the blob survives — i.e. within the grace period.
+    pub fn restore_message(
+        &mut self,
+        blobs: &crate::blob::BlobStore,
+        message_id: i64,
+    ) -> Result<bool> {
+        let hash: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT blob_hash FROM messages WHERE id = ?1 AND deleted_at_ms IS NOT NULL",
+                params![message_id],
+                |r| r.get(0),
+            )
+            .ok()
+            .flatten();
+        let Some(hash) = hash else {
+            return Ok(false);
+        };
+        let Ok(raw) = blobs.read(&hash) else {
+            return Ok(false);
+        };
+        let Some(parsed) = petrel_mime::parse_message(&raw) else {
+            return Ok(false);
+        };
+
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "UPDATE messages SET deleted_at_ms = NULL WHERE id = ?1",
+            params![message_id],
+        )?;
+        tx.execute(
+            "INSERT INTO fts_content(message_id, subject, body_text, addrs, attachment_names)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(message_id) DO UPDATE SET
+                subject = excluded.subject, body_text = excluded.body_text",
+            params![
+                message_id,
+                parsed.subject.clone().unwrap_or_default(),
+                parsed.index_text(),
+                parsed
+                    .addresses()
+                    .iter()
+                    .map(|(_, a, _)| a.clone())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                parsed
+                    .attachments
+                    .iter()
+                    .filter_map(|a| a.filename.clone())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Destroys soft-deleted mail whose grace period has expired, then reclaims
+    /// any blob no message references any more.
+    ///
+    /// Blob reclamation is reachability-based rather than per-message, because
+    /// blobs are shared by content hash — deleting one message's file could
+    /// otherwise blank an identical message in another account.
+    pub fn gc(
+        &mut self,
+        blobs: &crate::blob::BlobStore,
+        now_ms: i64,
+        grace_days: i64,
+    ) -> Result<GcReport> {
+        let cutoff = now_ms.saturating_sub(grace_days.saturating_mul(crate::retention::MS_PER_DAY));
+
+        let tx = self.conn.transaction()?;
+        let purged = tx.execute(
+            "DELETE FROM messages WHERE deleted_at_ms IS NOT NULL AND deleted_at_ms <= ?1",
+            params![cutoff],
+        )?;
+
+        // Orphans: registered blobs no live row points at.
+        let orphans: Vec<String> = {
+            let mut stmt = tx.prepare(
+                "SELECT b.hash FROM blobs b
+                 WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.blob_hash = b.hash)
+                   AND NOT EXISTS (SELECT 1 FROM attachments a WHERE a.blob_hash = b.hash)",
+            )?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        for hash in &orphans {
+            tx.execute("DELETE FROM blobs WHERE hash = ?1", params![hash])?;
+        }
+        tx.commit()?;
+
+        // Files last: a crash here leaves a registered-but-absent blob, which
+        // reads as corruption and heals by refetch. The reverse order would
+        // delete bytes a live row still points at.
+        let mut blobs_removed = 0;
+        for hash in &orphans {
+            if blobs.remove(hash).is_ok() {
+                blobs_removed += 1;
+            }
+        }
+
+        Ok(GcReport {
+            messages_purged: purged,
+            blobs_removed,
+        })
+    }
+
     /// The blob backing a message, for the reading pane to fetch and render.
     pub fn blob_hash_for(&self, message_id: i64) -> Result<Option<String>> {
         let mut stmt = self
@@ -527,7 +722,8 @@ impl Store {
         let mut stmt = self.conn.prepare_cached(
             "SELECT id, coalesce(from_display,''), coalesce(from_addr,''),
                     coalesce(subject,''), coalesce(snippet,''), date_ms
-             FROM messages ORDER BY date_ms DESC LIMIT ?1 OFFSET ?2",
+             FROM messages WHERE deleted_at_ms IS NULL
+             ORDER BY date_ms DESC LIMIT ?1 OFFSET ?2",
         )?;
         let rows = stmt.query_map(params![limit, offset], |row| {
             Ok(Listing {

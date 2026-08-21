@@ -2542,6 +2542,7 @@ version = "0.0.1"
 name = "petrel-desktop"
 version = "0.0.1"
 dependencies = [
+ "dirs",
  "petrel-engine",
  "petrel-mime",
  "petrel-providers",

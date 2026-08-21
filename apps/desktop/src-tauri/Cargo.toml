@@ -26,6 +26,7 @@ tauri-build = { version = "2.6", features = [] }
 tauri = { version = "2.11", features = [] }
 serde.workspace = true
 serde_json.workspace = true
+dirs = "6"
 petrel-engine = { path = "../../../crates/petrel-engine" }
 petrel-providers = { path = "../../../crates/petrel-providers" }
 petrel-mime = { path = "../../../crates/petrel-mime" }

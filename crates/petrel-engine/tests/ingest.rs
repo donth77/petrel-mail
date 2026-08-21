@@ -183,3 +183,50 @@ fn unparseable_input_does_not_poison_the_store() {
     assert_eq!(store.search("readable", 10).expect("search").len(), 1);
     store.fts_integrity_check().expect("index still consistent");
 }
+
+#[test]
+fn mail_survives_closing_and_reopening_the_store() {
+    // Persistence is the difference between a cache and a mail client. Prove
+    // the store reopens with its mail, its index, and its blobs intact —
+    // including full-text search, which is derived state and therefore the
+    // thing most likely to be silently missing after a restart.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("petrel.db");
+    let blob_dir = dir.path().join("blobs");
+    let raw = fixture(
+        "persist@example.com",
+        "Kept across restarts",
+        "cormorant ledger entry",
+    );
+
+    let (id, hash) = {
+        let mut store = Store::open(&db).expect("store");
+        let blobs = BlobStore::open(&blob_dir).expect("blobs");
+        let account = store.ensure_test_account().expect("account");
+        let out = store
+            .ingest_raw(&blobs, account, None, Some(1), &raw)
+            .expect("ingest");
+        (out.message_id, out.blob_hash)
+    }; // both handles dropped: the process is effectively gone
+
+    let store = Store::open(&db).expect("reopen store");
+    let blobs = BlobStore::open(&blob_dir).expect("reopen blobs");
+
+    assert_eq!(store.message_count().expect("count"), 1);
+    let hits = store.search("cormorant", 10).expect("search");
+    assert_eq!(
+        hits.len(),
+        1,
+        "the index must survive a restart, not just the rows"
+    );
+    assert_eq!(hits[0].message_id, id);
+    assert_eq!(
+        blobs.read(&hash).expect("blob"),
+        raw,
+        "bytes survive verbatim"
+    );
+    assert!(store.first_account().expect("accounts").is_some());
+    store
+        .fts_integrity_check()
+        .expect("index consistent after reopen");
+}

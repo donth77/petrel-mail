@@ -15,7 +15,12 @@ CREATE TABLE accounts (
     email         TEXT NOT NULL,
     display_name  TEXT,
     color         TEXT,
-    settings_json TEXT NOT NULL DEFAULT '{}'
+    settings_json TEXT NOT NULL DEFAULT '{}',
+    -- Retention mode (Q24). 0 = mirror the server: content deleted upstream is
+    -- removed here too, after a recoverable grace period. 1 = local archive:
+    -- server deletions never remove local content, so the archive outlives
+    -- account suspension, closure, or the provider itself.
+    local_archive INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 
 CREATE TABLE folders (
@@ -49,10 +54,15 @@ CREATE TABLE messages (
     size           INTEGER,
     message_id_hdr TEXT,
     has_attachments INTEGER NOT NULL DEFAULT 0,
+    -- Soft delete (Q24): set when the message leaves the server. The row and
+    -- its blob survive the grace period so the deletion is recoverable; GC
+    -- purges both afterwards. NULL means live.
+    deleted_at_ms  INTEGER,
     body_state     TEXT NOT NULL DEFAULT 'full',
     doc_json       TEXT NOT NULL DEFAULT '{}'
 ) STRICT;
 CREATE INDEX idx_messages_account_date ON messages(account_id, date_ms DESC);
+CREATE INDEX idx_messages_deleted ON messages(deleted_at_ms) WHERE deleted_at_ms IS NOT NULL;
 CREATE INDEX idx_messages_msgid ON messages(account_id, message_id_hdr);
 
 CREATE TABLE placements (

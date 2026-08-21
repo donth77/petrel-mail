@@ -11,7 +11,7 @@ type Listing = {
   date_ms: number;
 };
 
-type Status = { seeding: boolean; count: number; source: string };
+type Status = { seeding: boolean; count: number; source: string; retention: string; data_dir: string };
 
 const css = `
   :root {
@@ -46,6 +46,10 @@ const css = `
           font-variant-numeric: tabular-nums; }
   mark { background: transparent; color: var(--accent); font-weight: 650; }
   .empty { padding: 28px; text-align: center; color: var(--ink2); }
+  .policy { margin-top: 14px; padding: 9px 12px; font-size: 11.5px; color: var(--ink2);
+            border: 1px solid var(--hair); border-radius: 6px; background: var(--surface); }
+  .policy .path { display: block; margin-top: 3px; font-family: ui-monospace, monospace;
+                  font-size: 11px; color: #7c8f96; }
   .row { cursor: default; }
   .row.sel { background: var(--kbdbg, #edf2f2); }
   .row:hover { background: #f2f6f6; }
@@ -74,7 +78,7 @@ function Snippet({ text }: { text: string }) {
 function App() {
   const [rows, setRows] = React.useState<Listing[]>([]);
   const [query, setQuery] = React.useState("");
-  const [stat, setStat] = React.useState<Status>({ seeding: true, count: 0, source: "…" });
+  const [stat, setStat] = React.useState<Status>({ seeding: true, count: 0, source: "…", retention: "", data_dir: "" });
   const [searchMs, setSearchMs] = React.useState<number | null>(null);
   const [open, setOpen] = React.useState<{ row: Listing; url: string } | null>(null);
   const [openErr, setOpenErr] = React.useState<string | null>(null);
@@ -183,6 +187,11 @@ function App() {
         )}
       </div>
       {openErr && <div className="meta">could not open message: {openErr}</div>}
+      {stat.retention && (
+        <div className="policy">
+          {stat.retention} <span className="path">{stat.data_dir}</span>
+        </div>
+      )}
       {open && (
         <div className="reader">
           <header>

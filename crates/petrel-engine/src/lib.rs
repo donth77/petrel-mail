@@ -6,4 +6,5 @@
 
 pub mod blob;
 pub mod outbox;
+pub mod retention;
 pub mod store;
