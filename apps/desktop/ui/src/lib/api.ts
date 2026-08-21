@@ -114,6 +114,21 @@ function mockRows(n: number, offset = 0): Thread[] {
   });
 }
 
+const mockAccounts: Account[] = [
+  {
+    id: 1, kind: 'imap', email: 'tom@northbay.example', display_name: 'Work',
+    color: '#0E7C86', local_archive: false, message_count: 8421, unread_count: 9,
+    newest_ms: Date.now() - 4 * 60000,
+    folders: [
+      { role: 'archive', path: '[Gmail]/All Mail' },
+      { role: 'drafts', path: '[Gmail]/Drafts' },
+      { role: 'sent', path: '[Gmail]/Sent Mail' },
+      { role: 'spam', path: '[Gmail]/Spam' },
+      { role: 'trash', path: '[Gmail]/Trash' },
+    ],
+  },
+];
+
 const mock = {
   status: async (): Promise<Status> => ({
     seeding: false, count: 10000, source: 'tom@northbay.example',
@@ -122,22 +137,17 @@ const mock = {
   threads: async (offset: number, limit: number) => mockRows(Math.min(limit, 2000), offset),
   search: async (q: string) =>
     mockRows(24).filter((r) => r.subject.toLowerCase().includes(q.toLowerCase())),
-  accounts: async (): Promise<Account[]> => [
-    {
-      id: 1, kind: 'imap', email: 'tom@northbay.example', display_name: 'Work',
-      color: '#0E7C86', local_archive: false, message_count: 8421, unread_count: 9,
-      newest_ms: Date.now() - 4 * 60000,
-      folders: [
-        { role: 'archive', path: '[Gmail]/All Mail' },
-        { role: 'drafts', path: '[Gmail]/Drafts' },
-        { role: 'sent', path: '[Gmail]/Sent Mail' },
-        { role: 'spam', path: '[Gmail]/Spam' },
-        { role: 'trash', path: '[Gmail]/Trash' },
-      ],
-    },
-  ],
-  setAccountColor: async () => {},
-  setAccountArchive: async () => {},
+  // Fresh objects each call: returning the same reference means React sees no
+  // change and the mock silently misreports whether a write took effect.
+  accounts: async (): Promise<Account[]> => mockAccounts.map((a) => ({ ...a })),
+  setAccountColor: async (id: number, color: string) => {
+    const a = mockAccounts.find((x) => x.id === id);
+    if (a) a.color = color;
+  },
+  setAccountArchive: async (id: number, enabled: boolean) => {
+    const a = mockAccounts.find((x) => x.id === id);
+    if (a) a.local_archive = enabled;
+  },
   getSettings: async (): Promise<Record<string, string>> => ({}),
   setSetting: async () => {},
   tags: async (): Promise<Tag[]> => [

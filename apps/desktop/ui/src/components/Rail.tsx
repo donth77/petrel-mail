@@ -21,19 +21,22 @@ type Tag = { name: string; colour: string; thread_count: number };
 
 type Props = {
   account: string;
+  accountColor: string;
   unread: number;
   view: string;
   tags: Tag[];
   onView: (v: string) => void;
 };
 
-export function Rail({ account, unread, view, tags, onView }: Props) {
+export function Rail({ account, accountColor, unread, view, tags, onView }: Props) {
   return (
     <nav className="rail" aria-label={t('rail-mailboxes')}>
       {/* One account is active at a time (Q27): the header names it rather than
           leaving "which account am I in" to be inferred. */}
       <button className="account" type="button">
-        <span className="dot" style={{ background: 'var(--accent)' }} />
+        {/* The account's own colour, not the app accent — the whole point of
+            setting one is telling accounts apart at a glance. */}
+        <span className="dot" style={{ background: accountColor }} />
         <span style={{ minInlineSize: 0, flexGrow: 1 }}>
           <span className="clip" style={{ display: 'block', fontSize: 12.5, fontWeight: 600 }}>
             {account}

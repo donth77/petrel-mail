@@ -424,6 +424,7 @@ body {
 .row-time {
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
   font-size: 11px;
   color: var(--ink3);
   flex-shrink: 0;
@@ -445,6 +446,17 @@ body {
   margin-inline-end: 5px;
 }
 
+/* In compact the icons are flex siblings, so they must not carry the inline
+   offset that would otherwise grow the row. */
+.ic-star.flat,
+.density-compact .ic-clip {
+  display: block;
+  vertical-align: initial;
+  margin-inline-end: 0;
+  align-self: center;
+  flex-shrink: 0;
+}
+
 .ic-star {
   color: var(--amber);
   fill: var(--amber);
@@ -464,8 +476,63 @@ body {
   display: block;
 }
 
-.density-compact .row-snippet {
-  display: none;
+/* Compact: two columns instead of three (no avatar), tight vertical rhythm —
+   roughly twice the mail per screen, per the density artboard. */
+.density-compact .row {
+  grid-template-columns: 8px 1fr;
+  gap: 9px;
+  padding: 5px 14px 6px 11px;
+  align-items: baseline;
+}
+
+.density-compact .unread-dot {
+  margin-block-start: 0;
+}
+
+.crow {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  min-inline-size: 0;
+}
+
+.crow-from {
+  font-size: 12.5px;
+  font-weight: 500;
+  inline-size: 128px;
+  flex-shrink: 0;
+}
+
+.row[data-unread='true'] .crow-from {
+  font-weight: 700;
+}
+
+.crow-subject {
+  font-size: 12.5px;
+  flex-grow: 1;
+  min-inline-size: 0;
+}
+
+.row[data-unread='true'] .crow-subject {
+  font-weight: 600;
+}
+
+.row[data-active='true'] .crow-subject {
+  color: var(--accent-ink);
+}
+
+/* The design fixes this at 36px, which fits "14:02" and silently wraps "10:34 AM"
+   — a 24-hour assumption that breaks the row height on any 12-hour locale. Sized
+   to its content instead, with a floor so columns still line up. */
+.crow-time {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 10.5px;
+  color: var(--ink3);
+  min-inline-size: 36px;
+  text-align: end;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 /* Row chips: the attachment's name and any tags, as the design draws them —

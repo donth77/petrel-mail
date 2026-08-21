@@ -39,7 +39,7 @@ export function MessageList({ items, activeId, density, onActivate }: Props) {
 
   // An estimate only — rows carry chips when they have attachments or tags, so
   // real heights vary and the virtualizer measures each mounted row.
-  const rowHeight = density === 'compact' ? 44 : 74;
+  const rowHeight = density === 'compact' ? 30 : 74;
   const activeIndex = useMemo(
     () => items.findIndex((m) => m.id === activeId),
     [items, activeId],
@@ -138,56 +138,77 @@ export function MessageList({ items, activeId, density, onActivate }: Props) {
               <span aria-hidden="true">
                 {m.unread && <span className="unread-dot" />}
               </span>
-              <span className="avatar" aria-hidden="true">
-                {initials(m.from_display, m.from_addr)}
-              </span>
-              <span className="row-main">
-                <span className="row-top">
-                  {/* Participants once a conversation has more than one voice —
-                      "who is in this" matters more than "who spoke last". */}
-                  <span className="row-from clip">
+
+              {density === 'compact' ? (
+                // Compact is a different row, not relaxed with things hidden:
+                // no avatar, one line, fixed-width sender and time so the
+                // subjects align into a column the eye can run down.
+                <span className="crow">
+                  <span className="crow-from clip">
                     {m.message_count > 1 && m.participants
                       ? m.participants
                       : m.from_display || m.from_addr}
                   </span>
+                  {/* Siblings, not inline children: an inline icon inside the
+                      subject grows that span's line box and makes the row taller
+                      than the density it is named for. */}
+                  {m.starred && <Icon icon={Star} size={11} className="ic-star flat" />}
+                  <span className="crow-subject clip">{m.subject || '(no subject)'}</span>
+                  {m.attachment_name && <Icon icon={Paperclip} size={11} className="ic-clip" />}
                   {m.message_count > 1 && (
                     <span className="thread-count">{m.message_count}</span>
                   )}
-                  <span className="row-time">{listTime(m.date_ms)}</span>
+                  <span className="crow-time">{listTime(m.date_ms)}</span>
                 </span>
-                <span className="row-subject clip">
-                  {m.starred && <Icon icon={Star} size={12} className="ic-star" />}
-                  {m.subject || '(no subject)'}
-                </span>
-                {density === 'relaxed' && (
-                  <span className="row-snippet clip">
-                    <Snippet text={m.snippet} />
+              ) : (
+                <>
+                  <span className="avatar" aria-hidden="true">
+                    {initials(m.from_display, m.from_addr)}
                   </span>
-                )}
-                {density === 'relaxed' && (m.attachment_name || m.tags.length > 0) && (
-                  <span className="row-chips">
-                    {m.attachment_name && (
-                      <span className="rchip">
-                        <Icon icon={Paperclip} size={10} />
-                        <span className="clip">{m.attachment_name}</span>
+                  <span className="row-main">
+                    <span className="row-top">
+                      {/* Participants once a conversation has more than one voice —
+                          "who is in this" matters more than "who spoke last". */}
+                      <span className="row-from clip">
+                        {m.message_count > 1 && m.participants
+                          ? m.participants
+                          : m.from_display || m.from_addr}
+                      </span>
+                      {m.message_count > 1 && (
+                        <span className="thread-count">{m.message_count}</span>
+                      )}
+                      <span className="row-time">{listTime(m.date_ms)}</span>
+                    </span>
+                    <span className="row-subject clip">
+                      {m.starred && <Icon icon={Star} size={12} className="ic-star" />}
+                      {m.subject || '(no subject)'}
+                    </span>
+                    <span className="row-snippet clip">
+                      <Snippet text={m.snippet} />
+                    </span>
+                    {(m.attachment_name || m.tags.length > 0) && (
+                      <span className="row-chips">
+                        {m.attachment_name && (
+                          <span className="rchip">
+                            <Icon icon={Paperclip} size={10} />
+                            <span className="clip">{m.attachment_name}</span>
+                          </span>
+                        )}
+                        {m.tags.map((tag) => (
+                          <span
+                            key={tag.name}
+                            className="rchip"
+                            style={tag.colour ? { color: tag.colour, borderColor: tag.colour } : undefined}
+                          >
+                            {tag.name}
+                          </span>
+                        ))}
                       </span>
                     )}
-                    {m.tags.map((tag) => (
-                      <span
-                        key={tag.name}
-                        className="rchip"
-                        style={
-                          tag.colour
-                            ? { color: tag.colour, borderColor: tag.colour }
-                            : undefined
-                        }
-                      >
-                        {tag.name}
-                      </span>
-                    ))}
                   </span>
-                )}
-              </span>
+                </>
+              )}
+
               {/* Spans, not buttons: the row is already a button and nesting
                   interactive elements is invalid and unreachable by keyboard.
                   These are pointer affordances for what E, B and the palette

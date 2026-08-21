@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { api, type Tag, type Thread, type Status } from './lib/api';
+import { api, type Account, type Tag, type Thread, type Status } from './lib/api';
 import { count as fmtCount } from './lib/format';
 import { t } from './lib/strings';
 import { Search } from 'lucide-react';
@@ -120,9 +120,11 @@ export function App() {
   // Tags come from the account, so one that has no conversation on this page
   // still appears in the rail.
   const [tags, setTags] = useState<Tag[]>([]);
+  const [accounts, setAccounts] = useState<Account[]>([]);
   useEffect(() => {
     let live = true;
     api.tags().then((t) => live && setTags(t)).catch(() => {});
+    api.accounts().then((a) => live && setAccounts(a)).catch(() => {});
     return () => {
       live = false;
     };
@@ -139,7 +141,8 @@ export function App() {
       <TitleBar synced={status?.seeding ? t('status-seeding') : t('titlebar-sync')} />
       <div className="shell" data-layout={settings.layout === 'off' ? 'no-reader' : settings.layout}>
       <Rail
-        account={status?.source ?? t('app-name')}
+        account={accounts[0]?.email ?? status?.source ?? t('app-name')}
+        accountColor={accounts[0]?.color || 'var(--accent)'}
         unread={unread}
         view={view}
         tags={tags}
@@ -227,7 +230,10 @@ export function App() {
       <Help open={helpOpen} onClose={() => setHelpOpen(false)} />
       <Settings
         open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
+        onClose={() => {
+          setSettingsOpen(false);
+          api.accounts().then(setAccounts).catch(() => {});
+        }}
         onOpenHelp={() => setHelpOpen(true)}
         onNotImplemented={(label) => setToast(t('not-implemented', { label }))}
       />
