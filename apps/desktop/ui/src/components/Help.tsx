@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react';
 import { Dialog, DialogDismiss, Tab, TabList, TabPanel, useTabStore } from '@ariakit/react';
-import { Search } from 'lucide-react';
+import { Search, X } from 'lucide-react';
 import { OPERATOR_GROUPS, shortcutGroups } from '../lib/help';
+import { Icon } from './Icon';
 import { t } from '../lib/strings';
 
 export function Help({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -71,7 +72,9 @@ export function Help({ open, onClose }: { open: boolean; onClose: () => void }) 
               aria-label={t('help-filter-shortcuts')}
             />
           </label>
-          <DialogDismiss className="kbd palette-esc">esc</DialogDismiss>
+          <DialogDismiss className="close-btn palette-esc" aria-label={t('close')} title={t('close-title')}>
+            <Icon icon={X} size={15} />
+          </DialogDismiss>
         </div>
 
         <TabPanel store={tabs} tabId="shortcuts" className="help-panel keys">

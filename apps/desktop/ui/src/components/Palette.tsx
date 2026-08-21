@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { X } from 'lucide-react';
 import {
   Combobox, ComboboxItem, ComboboxList, ComboboxProvider, Dialog, DialogDismiss,
 } from '@ariakit/react';
@@ -107,7 +108,9 @@ export function Palette({ open, onClose, subject, ctx }: Props) {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
-            <DialogDismiss className="kbd palette-esc">esc</DialogDismiss>
+            <DialogDismiss className="close-btn palette-esc" aria-label={t('close')} title={t('close-title')}>
+            <Icon icon={X} size={15} />
+          </DialogDismiss>
           </div>
 
           <ComboboxList className="palette-list">

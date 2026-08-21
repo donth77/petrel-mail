@@ -136,6 +136,8 @@ const en = {
   'help-together': 'Putting it together',
   'help-together-note': 'From Sam, since June, with a file attached, mentioning the annex. The filter buttons type this for you.',
   'help-foot': 'Single-key shortcuts pause while you are typing in a text field. Anything Petrel does not recognise as a filter is searched as ordinary text.',
+  'close': 'Close',
+  'close-title': 'Close (Esc)',
   'palette-placeholder': 'Type a command…',
   'palette-group-conversation': 'This conversation',
   'palette-group-goto': 'Go to',

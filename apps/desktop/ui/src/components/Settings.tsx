@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Dialog, DialogDismiss } from '@ariakit/react';
 import {
-  Archive, Bell, CircleHelp, Database, Mail, PencilLine, Shield, SunMoon, User,
+  Archive, Bell, CircleHelp, Database, Mail, PencilLine, Shield, SunMoon, User, X,
   type LucideIcon,
 } from 'lucide-react';
 import { Accounts } from './settings/Accounts';
@@ -67,7 +67,9 @@ export function Settings({ open, onClose, onOpenHelp, onNotImplemented }: Props)
         </nav>
 
         <div className="settings-pane">
-          <DialogDismiss className="kbd settings-esc">esc</DialogDismiss>
+          <DialogDismiss className="close-btn settings-esc" aria-label={t('close')} title={t('close-title')}>
+            <Icon icon={X} size={15} />
+          </DialogDismiss>
           {pane === 'appearance' && <Appearance />}
           {pane === 'accounts' && <Accounts onNotImplemented={onNotImplemented} />}
           {pane !== 'appearance' && pane !== 'accounts' && (
