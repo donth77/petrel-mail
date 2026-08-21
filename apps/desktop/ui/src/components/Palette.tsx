@@ -2,7 +2,10 @@ import { useMemo, useState } from 'react';
 import {
   Combobox, ComboboxItem, ComboboxList, ComboboxProvider, Dialog, DialogDismiss,
 } from '@ariakit/react';
-import { buildCommands, fuzzyMatch, labelOf, scoreMatch, type Command, type CommandContext } from '../lib/commands';
+import {
+  buildCommands, fuzzyMatch, labelOf, nameOf, scoreMatch, suffixOf,
+  type Command, type CommandContext,
+} from '../lib/commands';
 import { count as fmtCount } from '../lib/format';
 import { Icon } from './Icon';
 import { t } from '../lib/strings';
@@ -131,8 +134,20 @@ export function Palette({ open, onClose, subject, ctx }: Props) {
                     <span className="ico">
                       <Icon icon={cmd.icon} size={16} />
                     </span>
-                    <span className="name">
-                      <Highlight text={labelOf(cmd)} hits={hits} />
+                    <span className="name clip">
+                      <Highlight text={nameOf(cmd)} hits={hits.filter((h) => h < nameOf(cmd).length)} />
+                      {suffixOf(cmd) && (
+                        <span className="alias">
+                          {/* Hits past the name belong to the suffix, offset so
+                              highlighting lands on the right characters. */}
+                          <Highlight
+                            text={suffixOf(cmd)}
+                            hits={hits
+                              .filter((h) => h >= nameOf(cmd).length)
+                              .map((h) => h - nameOf(cmd).length)}
+                          />
+                        </span>
+                      )}
                     </span>
                     {cmd.keys?.map((k) => (
                       <span className="kbd" key={k}>

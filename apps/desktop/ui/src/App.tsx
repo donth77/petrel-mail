@@ -6,6 +6,7 @@ import { Search } from 'lucide-react';
 import { Rail } from './components/Rail';
 import { TitleBar } from './components/TitleBar';
 import { Palette } from './components/Palette';
+import { Help } from './components/Help';
 import { Toast } from './components/Toast';
 import { MessageList } from './components/MessageList';
 import { Reader } from './components/Reader';
@@ -21,6 +22,7 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
   useEffect(() => {
@@ -73,6 +75,9 @@ export function App() {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         setPaletteOpen(true);
+      } else if (e.key === '?' && !typing) {
+        e.preventDefault();
+        setHelpOpen(true);
       } else if (e.key === '/' && !typing) {
         e.preventDefault();
         searchRef.current?.focus();
@@ -131,7 +136,7 @@ export function App() {
         unread={unread}
         view={view}
         tags={tags}
-        onView={setView}
+        onView={(v) => (v === 'help' ? setHelpOpen(true) : setView(v))}
       />
 
       <div className="list-pane">
@@ -199,10 +204,15 @@ export function App() {
         subject={active?.subject ?? null}
         ctx={{
           hasThread: !!active,
-          onView: setView,
+          onView: (v) => {
+            if (v === 'help') setHelpOpen(true);
+            else if (v === 'search') searchRef.current?.focus();
+            else setView(v);
+          },
           onNotImplemented: (label) => setToast(t('not-implemented', { label })),
         }}
       />
+      <Help open={helpOpen} onClose={() => setHelpOpen(false)} />
       <Toast message={toast} onDone={() => setToast(null)} />
 
       <footer className="status">

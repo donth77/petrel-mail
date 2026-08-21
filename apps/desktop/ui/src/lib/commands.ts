@@ -16,8 +16,11 @@ export type Command = {
   id: string;
   scope: CommandScope;
   label: StringId;
-  /** The product's own word for something the user may know by another name. */
+  /** The product's own word for something the user knows by another name. */
   alias?: StringId;
+  /** What kind of thing this is — "Archive" the folder vs "Archive" the action
+   *  both appear in one list, and the group label alone leaves it ambiguous. */
+  hint?: StringId;
   icon: LucideIcon;
   keys?: string[];
   run: () => void;
@@ -43,13 +46,13 @@ export function buildCommands(ctx: CommandContext): Command[] {
   ];
 
   const goto: Command[] = [
-    { id: 'go-inbox', scope: 'goto', label: 'mailbox-inbox', icon: Inbox, keys: ['G', 'I'], run: () => ctx.onView('inbox') },
-    { id: 'go-starred', scope: 'goto', label: 'mailbox-starred', icon: Star, keys: ['G', 'S'], run: () => ctx.onView('starred') },
-    { id: 'go-snoozed', scope: 'goto', label: 'mailbox-snoozed', icon: Clock, run: () => ctx.onView('snoozed') },
-    { id: 'go-sent', scope: 'goto', label: 'mailbox-sent', icon: Send, keys: ['G', 'T'], run: () => ctx.onView('sent') },
-    { id: 'go-drafts', scope: 'goto', label: 'mailbox-drafts', icon: PencilLine, keys: ['G', 'D'], run: () => ctx.onView('drafts') },
-    { id: 'go-archive', scope: 'goto', label: 'mailbox-archive', icon: Archive, run: () => ctx.onView('archive') },
-    { id: 'go-trash', scope: 'goto', label: 'mailbox-trash', icon: Trash2, run: () => ctx.onView('trash') },
+    { id: 'go-inbox', scope: 'goto', label: 'mailbox-inbox', hint: 'hint-folder', icon: Inbox, keys: ['G', 'I'], run: () => ctx.onView('inbox') },
+    { id: 'go-starred', scope: 'goto', label: 'mailbox-starred', hint: 'hint-folder', icon: Star, keys: ['G', 'S'], run: () => ctx.onView('starred') },
+    { id: 'go-snoozed', scope: 'goto', label: 'mailbox-snoozed', hint: 'hint-folder', icon: Clock, run: () => ctx.onView('snoozed') },
+    { id: 'go-sent', scope: 'goto', label: 'mailbox-sent', hint: 'hint-folder', icon: Send, keys: ['G', 'T'], run: () => ctx.onView('sent') },
+    { id: 'go-drafts', scope: 'goto', label: 'mailbox-drafts', hint: 'hint-folder', icon: PencilLine, keys: ['G', 'D'], run: () => ctx.onView('drafts') },
+    { id: 'go-archive', scope: 'goto', label: 'mailbox-archive', hint: 'hint-folder', icon: Archive, run: () => ctx.onView('archive') },
+    { id: 'go-trash', scope: 'goto', label: 'mailbox-trash', hint: 'hint-folder', icon: Trash2, run: () => ctx.onView('trash') },
   ];
 
   const app: Command[] = [
@@ -108,6 +111,19 @@ export function scoreMatch(hits: number[], text: string): number {
   return (atWordStart ? 40 : 0) + contiguous * 4 - start;
 }
 
+/** The plain name, before any alias or hint. */
+export function nameOf(c: Command): string {
+  return t(c.label);
+}
+
+/** The muted trailing part: an alias in parentheses, or a type hint after a dash. */
+export function suffixOf(c: Command): string {
+  if (c.alias) return ` (${t(c.alias)})`;
+  if (c.hint) return ` — ${t(c.hint)}`;
+  return '';
+}
+
+/** What matching runs against: everything the user can see on the row. */
 export function labelOf(c: Command): string {
-  return t(c.label) + (c.alias ? ` (${t(c.alias)})` : '');
+  return nameOf(c) + suffixOf(c);
 }
