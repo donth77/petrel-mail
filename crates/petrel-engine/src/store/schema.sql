@@ -139,33 +139,46 @@ CREATE VIRTUAL TABLE fts_messages USING fts5(
     prefix='2 3'
 );
 
-CREATE VIRTUAL TABLE fts_trigram USING fts5(
+-- CJK index: one token per character, so 1- and 2-character queries match
+-- (07 §5.3). The built-in trigram tokenizer cannot do this — by design it
+-- matches nothing shorter than 3 characters, which silently hides the many
+-- everyday two-character words in Chinese, Japanese and Korean.
+--
+-- Deliberately NOT external-content: the indexed text is a transform of the
+-- original (CJK runs space-separated by petrel_cjk), so pointing FTS5 at
+-- fts_content would make it disagree with what was actually indexed.
+--
+-- Contentless instead, so no second copy of the text is stored — snippets come
+-- from fts_content, which already holds the original. `contentless_delete=1`
+-- (SQLite 3.43+) is what makes rows deletable without that copy. Only messages
+-- containing CJK are inserted, so this stays empty for mailboxes with none.
+CREATE VIRTUAL TABLE fts_cjk USING fts5(
     subject, body_text,
-    content='fts_content', content_rowid='message_id',
-    tokenize="trigram"
+    content='', contentless_delete=1,
+    tokenize="unicode61"
 );
 
 CREATE TRIGGER fts_content_ai AFTER INSERT ON fts_content BEGIN
     INSERT INTO fts_messages(rowid, subject, body_text, addrs, attachment_names)
         VALUES (new.message_id, new.subject, new.body_text, new.addrs, new.attachment_names);
-    INSERT INTO fts_trigram(rowid, subject, body_text)
-        VALUES (new.message_id, new.subject, new.body_text);
+    INSERT INTO fts_cjk(rowid, subject, body_text)
+        SELECT new.message_id, petrel_cjk(new.subject), petrel_cjk(new.body_text)
+        WHERE petrel_has_cjk(new.subject) OR petrel_has_cjk(new.body_text);
 END;
 
 CREATE TRIGGER fts_content_ad AFTER DELETE ON fts_content BEGIN
     INSERT INTO fts_messages(fts_messages, rowid, subject, body_text, addrs, attachment_names)
         VALUES ('delete', old.message_id, old.subject, old.body_text, old.addrs, old.attachment_names);
-    INSERT INTO fts_trigram(fts_trigram, rowid, subject, body_text)
-        VALUES ('delete', old.message_id, old.subject, old.body_text);
+    DELETE FROM fts_cjk WHERE rowid = old.message_id;
 END;
 
 CREATE TRIGGER fts_content_au AFTER UPDATE ON fts_content BEGIN
     INSERT INTO fts_messages(fts_messages, rowid, subject, body_text, addrs, attachment_names)
         VALUES ('delete', old.message_id, old.subject, old.body_text, old.addrs, old.attachment_names);
-    INSERT INTO fts_trigram(fts_trigram, rowid, subject, body_text)
-        VALUES ('delete', old.message_id, old.subject, old.body_text);
+    DELETE FROM fts_cjk WHERE rowid = old.message_id;
     INSERT INTO fts_messages(rowid, subject, body_text, addrs, attachment_names)
         VALUES (new.message_id, new.subject, new.body_text, new.addrs, new.attachment_names);
-    INSERT INTO fts_trigram(rowid, subject, body_text)
-        VALUES (new.message_id, new.subject, new.body_text);
+    INSERT INTO fts_cjk(rowid, subject, body_text)
+        SELECT new.message_id, petrel_cjk(new.subject), petrel_cjk(new.body_text)
+        WHERE petrel_has_cjk(new.subject) OR petrel_has_cjk(new.body_text);
 END;

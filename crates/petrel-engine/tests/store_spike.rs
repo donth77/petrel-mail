@@ -150,10 +150,11 @@ fn as_you_type_prefix_matches() {
     }
 }
 
-/// Documents the built-in trigram limitation that drives open question Q21:
-/// 2-character CJK queries cannot match; 3+ characters can.
+/// Q21: short CJK queries must return results. The built-in trigram tokenizer
+/// could not do this — it matches nothing shorter than 3 characters — so the CJK
+/// path indexes one token per character instead.
 #[test]
-fn cjk_trigram_length_behavior() {
+fn cjk_short_queries_match() {
     let (mut store, account, _) = seeded_store(5, 23);
     let m = NewMessage {
         account_id: account,
@@ -166,17 +167,14 @@ fn cjk_trigram_length_behavior() {
     };
     let id = store.insert_messages(std::slice::from_ref(&m)).unwrap()[0];
 
-    let three = store.search("東京計", 10).unwrap();
-    assert!(
-        three.iter().any(|h| h.message_id == id),
-        "3-char CJK must match via trigram"
-    );
-
-    let two = store.search("東京", 10).unwrap();
-    assert!(
-        !two.iter().any(|h| h.message_id == id),
-        "documented limitation: built-in trigram cannot match 2-char CJK (Q21)"
-    );
+    for q in ["東", "東京", "東京計", "計画"] {
+        let hits = store.search(q, 10).unwrap();
+        assert!(
+            hits.iter().any(|h| h.message_id == id),
+            "CJK query {q:?} ({} chars) must match",
+            q.chars().count()
+        );
+    }
 }
 
 #[test]

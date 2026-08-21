@@ -6,6 +6,7 @@
 //! via [`Store::fts_integrity_check`] and repairable via [`Store::rebuild_fts`].
 
 use crate::retention::RetentionMode;
+use rusqlite::functions::FunctionFlags;
 use rusqlite::{Connection, params};
 use std::path::Path;
 
@@ -99,6 +100,124 @@ fn is_cjk(c: char) -> bool {
         | 0x4E00..=0x9FFF    // CJK unified
         | 0xF900..=0xFAFF    // CJK compat
         | 0xAC00..=0xD7AF) // hangul
+}
+
+fn has_cjk(s: &str) -> bool {
+    s.chars().any(is_cjk)
+}
+
+/// Space-separates CJK characters so `unicode61` emits one token per character.
+/// Non-CJK text passes through untouched, so a mixed subject still tokenises its
+/// Latin words normally. This is what makes 1- and 2-character CJK queries
+/// matchable at all: the built-in trigram tokenizer matches nothing shorter than
+/// three characters ([07 §5.3]).
+fn cjk_spaced(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + s.len() / 2);
+    for c in s.chars() {
+        if is_cjk(c) {
+            out.push(' ');
+            out.push(c);
+            out.push(' ');
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn quote_token(w: &str) -> String {
+    format!("\"{}\"", w.replace('"', "\"\""))
+}
+
+/// The CJK counterpart to `match_expr`: each run of CJK characters becomes a
+/// *phrase* of single-character tokens, so `東京` matches only where the two
+/// characters are adjacent — the precision a per-character index would otherwise
+/// lose. Latin words in the same query are quoted as ordinary tokens.
+fn cjk_match_expr(query: &str) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    let mut run: Vec<char> = Vec::new();
+    let mut word = String::new();
+
+    fn flush_run(run: &mut Vec<char>, parts: &mut Vec<String>) {
+        if !run.is_empty() {
+            let spaced: Vec<String> = run.iter().map(|c| c.to_string()).collect();
+            parts.push(format!("\"{}\"", spaced.join(" ")));
+            run.clear();
+        }
+    }
+    fn flush_word(word: &mut String, parts: &mut Vec<String>) {
+        if word.chars().any(char::is_alphanumeric) {
+            parts.push(quote_token(word));
+        }
+        word.clear();
+    }
+
+    for c in query.chars().filter(|c| !c.is_control()) {
+        if is_cjk(c) {
+            flush_word(&mut word, &mut parts);
+            run.push(c);
+        } else if c.is_whitespace() {
+            flush_run(&mut run, &mut parts);
+            flush_word(&mut word, &mut parts);
+        } else {
+            flush_run(&mut run, &mut parts);
+            word.push(c);
+        }
+    }
+    flush_run(&mut run, &mut parts);
+    flush_word(&mut word, &mut parts);
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" "))
+    }
+}
+
+/// First contiguous CJK run in the query — what a snippet should highlight.
+fn first_cjk_run(query: &str) -> String {
+    let mut run = String::new();
+    for c in query.chars() {
+        if is_cjk(c) {
+            run.push(c);
+        } else if !run.is_empty() {
+            break;
+        }
+    }
+    run
+}
+
+/// Snippets come from the original text in `fts_content`, never from the
+/// space-separated index copy, which would render with gaps between every
+/// character.
+fn cjk_snippet(body: &str, query: &str) -> String {
+    const PAD: usize = 24;
+    let needle = first_cjk_run(query);
+    let chars: Vec<char> = body.chars().collect();
+    let hit = if needle.is_empty() {
+        None
+    } else {
+        body.find(&needle).map(|b| body[..b].chars().count())
+    };
+    let Some(at) = hit else {
+        return chars.iter().take(96).collect();
+    };
+    let n = needle.chars().count();
+    let start = at.saturating_sub(PAD);
+    let end = (at + n + PAD).min(chars.len());
+    let mut out = String::new();
+    if start > 0 {
+        out.push('…');
+    }
+    out.extend(&chars[start..at]);
+    out.push('[');
+    out.extend(&chars[at..at + n]);
+    out.push(']');
+    out.extend(&chars[at + n..end]);
+    if end < chars.len() {
+        out.push('…');
+    }
+    out
 }
 
 /// Build a safe FTS5 MATCH expression: every token is a quoted phrase (internal
@@ -279,6 +398,19 @@ impl Store {
     }
 
     fn init(conn: Connection) -> Result<Self> {
+        // Registered before the schema runs: the FTS triggers call these on
+        // every write, so they must exist on every connection that opens the
+        // store, not only the one that created it.
+        let flags = FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC;
+        conn.create_scalar_function("petrel_cjk", 1, flags, |ctx| {
+            let s: Option<String> = ctx.get(0)?;
+            Ok(s.map(|s| cjk_spaced(&s)))
+        })?;
+        conn.create_scalar_function("petrel_has_cjk", 1, flags, |ctx| {
+            let s: Option<String> = ctx.get(0)?;
+            Ok(s.is_some_and(|s| has_cjk(&s)))
+        })?;
+
         let _mode: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
@@ -565,11 +697,11 @@ impl Store {
         Ok(())
     }
 
-    /// Routed search: CJK queries use the trigram index, everything else the
-    /// unicode61 index with as-you-type prefix on the final token.
+    /// Routed search: CJK queries use the per-character index, everything else
+    /// the unicode61 index with as-you-type prefix on the final token.
     pub fn search(&self, query: &str, limit: u32) -> Result<Vec<SearchHit>> {
         if query.chars().any(is_cjk) {
-            self.search_trigram(query, limit)
+            self.search_cjk(query, limit)
         } else {
             self.search_unicode(query, limit)
         }
@@ -598,27 +730,39 @@ impl Store {
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
-    pub fn search_trigram(&self, query: &str, limit: u32) -> Result<Vec<SearchHit>> {
-        let Some(expr) = match_expr(query, false) else {
+    /// Per-character CJK search. Ranks on the index copy but takes snippets from
+    /// `fts_content`, because the indexed text is space-separated.
+    pub fn search_cjk(&self, query: &str, limit: u32) -> Result<Vec<SearchHit>> {
+        let Some(expr) = cjk_match_expr(query) else {
             return Ok(Vec::new());
         };
         let mut stmt = self.conn.prepare_cached(
-            "SELECT rowid,
-                    bm25(fts_trigram, 4.0, 1.0) AS r,
-                    snippet(fts_trigram, 1, '[', ']', '…', 12)
-             FROM fts_trigram
-             WHERE fts_trigram MATCH ?1
+            "SELECT f.rowid,
+                    bm25(fts_cjk, 4.0, 1.0) AS r,
+                    c.body_text
+             FROM fts_cjk f
+             JOIN fts_content c ON c.message_id = f.rowid
+             WHERE fts_cjk MATCH ?1
              ORDER BY r
              LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![expr, limit], |row| {
+            let body: String = row.get(2)?;
             Ok(SearchHit {
                 message_id: row.get(0)?,
                 rank: row.get(1)?,
-                snippet: row.get(2)?,
+                snippet: cjk_snippet(&body, query),
             })
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// How many messages carry a CJK index entry. Zero for a mailbox with no
+    /// CJK at all — the property that keeps this index from costing everyone.
+    pub fn cjk_indexed_count(&self) -> Result<i64> {
+        Ok(self
+            .conn
+            .query_row("SELECT count(*) FROM fts_cjk", [], |r| r.get(0))?)
     }
 
     pub fn rebuild_fts(&self) -> Result<()> {
@@ -626,8 +770,16 @@ impl Store {
             "INSERT INTO fts_messages(fts_messages) VALUES('rebuild')",
             [],
         )?;
-        self.conn
-            .execute("INSERT INTO fts_trigram(fts_trigram) VALUES('rebuild')", [])?;
+        // Not external-content, so FTS5's 'rebuild' cannot reach it: repopulate
+        // from fts_content, which is the source of truth either way.
+        self.conn.execute("DELETE FROM fts_cjk", [])?;
+        self.conn.execute(
+            "INSERT INTO fts_cjk(rowid, subject, body_text)
+             SELECT message_id, petrel_cjk(subject), petrel_cjk(body_text)
+             FROM fts_content
+             WHERE petrel_has_cjk(subject) OR petrel_has_cjk(body_text)",
+            [],
+        )?;
         Ok(())
     }
 
@@ -636,16 +788,14 @@ impl Store {
             "INSERT INTO fts_messages(fts_messages) VALUES('optimize')",
             [],
         )?;
-        self.conn.execute(
-            "INSERT INTO fts_trigram(fts_trigram) VALUES('optimize')",
-            [],
-        )?;
+        self.conn
+            .execute("INSERT INTO fts_cjk(fts_cjk) VALUES('optimize')", [])?;
         Ok(())
     }
 
     /// Verifies each FTS index against `fts_content`; errors on divergence.
     pub fn fts_integrity_check(&self) -> Result<()> {
-        for t in ["fts_messages", "fts_trigram"] {
+        for t in ["fts_messages", "fts_cjk"] {
             let sql = format!("INSERT INTO {t}({t}) VALUES('integrity-check')");
             if let Err(e) = self.conn.execute(&sql, []) {
                 return Err(StoreError::Integrity(format!("{t}: {e}")));

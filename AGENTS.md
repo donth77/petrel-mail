@@ -60,3 +60,14 @@ is blank.**
 rustfmt + clippy clean (`-D warnings`) · conventional commits · every behavior change
 lands with its tests · benchmarks and provider-quirk suites are part of review, not
 afterthoughts.
+
+**CSS uses logical properties, not physical ones** — `margin-inline-start`, `padding-block`,
+`inset-inline-end`, `text-align: start`. Never `left`/`right`/`margin-left`. Petrel ships
+left-to-right only and has no right-to-left support planned, but logical properties cost
+nothing while a component is being written and are miserable to retrofit across all of them
+later. Physical properties are correct only where the thing genuinely is physical — a drop
+shadow's offset, a spinner's rotation.
+
+**User-facing strings are never literals in components.** They come from the Fluent bundle,
+even while English is the only locale. A string committed inline is invisible to translation
+and to the pseudolocale check that catches truncation.
