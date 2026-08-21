@@ -1,0 +1,104 @@
+/* Design tokens — the single source for colour and type, lifted from the design
+   canvas (docs/design). Components reference tokens only; a literal colour in a
+   component is a bug, because it will be right in one theme and wrong in the other.
+
+   Theme has three states, matching the Appearance setting: Light, Dark, and
+   System (the default). System stamps nothing on the root and resolves through
+   prefers-color-scheme; an explicit choice stamps data-theme and must win in
+   both directions. */
+
+:root {
+  /* surfaces */
+  --bg: #f7f9f9;
+  --surface: #ffffff;
+  --raised: #fdfefe;
+
+  /* ink */
+  --ink: #182730;
+  --ink2: #54666e;
+  --ink3: #7c8f96;
+
+  /* lines */
+  --hair: #d9e1e2;
+  --hair2: #e8eeee;
+
+  /* accent — storm teal */
+  --accent: #0e7c86;
+  --accent-ink: #0a5a62;
+  --accent-wash: #e8f3f3;
+
+  /* semantic, kept separate from the accent on purpose */
+  --good: #2e7d5b;
+  --amber: #9a6b1f;
+  --amber-bg: #f8f1e2;
+  --amber-line: #e7d6b4;
+  --danger: #a8544b;
+  --danger-bg: #f9edeb;
+  --danger-line: #e3cbc7;
+
+  --kbd: #edf2f2;
+  --hit: #fbf0c9;
+
+  /* type */
+  --display: 'Bricolage Grotesque', 'Avenir Next', system-ui, sans-serif;
+  --body: 'Public Sans', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --mono: 'Spline Sans Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* metrics */
+  --row-relaxed: 68px;
+  --row-compact: 44px;
+  --rail-size: 232px;
+  --focus-ring: 2px;
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --bg: #0f1b21;
+    --surface: #142329;
+    --raised: #17282f;
+    --ink: #e4edee;
+    --ink2: #96a9af;
+    --ink3: #7a8d94;
+    --hair: #24363d;
+    --hair2: #1d2e35;
+    --accent: #48bcc6;
+    --accent-ink: #6fd0d8;
+    --accent-wash: #16323a;
+    --good: #5fb98d;
+    --amber: #d2a45b;
+    --amber-bg: #2a2416;
+    --amber-line: #443a22;
+    --danger: #e0938a;
+    --danger-bg: #2c1b18;
+    --danger-line: #4a2f2b;
+    --kbd: #1c2e35;
+    --hit: #3a3417;
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme='dark'] {
+  --bg: #0f1b21;
+  --surface: #142329;
+  --raised: #17282f;
+  --ink: #e4edee;
+  --ink2: #96a9af;
+  --ink3: #7a8d94;
+  --hair: #24363d;
+  --hair2: #1d2e35;
+  --accent: #48bcc6;
+  --accent-ink: #6fd0d8;
+  --accent-wash: #16323a;
+  --good: #5fb98d;
+  --amber: #d2a45b;
+  --amber-bg: #2a2416;
+  --amber-line: #443a22;
+  --danger: #e0938a;
+  --danger-bg: #2c1b18;
+  --danger-line: #4a2f2b;
+  --kbd: #1c2e35;
+  --hit: #3a3417;
+  color-scheme: dark;
+}

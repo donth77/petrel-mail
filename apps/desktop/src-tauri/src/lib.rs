@@ -157,7 +157,9 @@ fn list_messages(
 ) -> Result<Vec<Listing>, String> {
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
     store
-        .list_recent(offset, limit.min(100))
+        // A virtualized list wants a real window, not 100 rows. The proper fix is
+        // fetching windows as the user scrolls; this cap is the interim.
+        .list_recent(offset, limit.min(2000))
         .map_err(|e| e.to_string())
 }
 
@@ -436,8 +438,9 @@ pub fn run() {
             }
             tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::default())
                 .title("Petrel")
-                .inner_size(1200.0, 800.0)
-                .min_inner_size(720.0, 480.0)
+                .inner_size(1440.0, 900.0)
+                .min_inner_size(900.0, 560.0)
+                .position(40.0, 40.0)
                 .initialization_script(&init)
                 .on_navigation(|url| {
                     eprintln!("[nav] {url}");
