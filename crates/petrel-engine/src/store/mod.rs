@@ -1364,8 +1364,10 @@ impl Store {
         let mut out = Vec::with_capacity(rows.len());
         for (id, from_display, from_addr, subject, snippet, date_ms, flags) in rows {
             let mut to = self.conn.prepare_cached(
+                // message_addresses has no surrogate key; rowid preserves the
+                // order the parser inserted them, which is the header's order.
                 "SELECT coalesce(nullif(display,''), addr_norm) FROM message_addresses
-                 WHERE message_id = ?1 AND role IN ('to','cc') ORDER BY id",
+                 WHERE message_id = ?1 AND role IN ('to','cc') ORDER BY rowid",
             )?;
             let recipients: Vec<String> = to
                 .query_map(params![id], |r| r.get(0))?

@@ -476,3 +476,43 @@ fn messages_without_a_thread_still_appear_as_single_conversations() {
     let hits = store.search_threads("Unthreaded", 50).unwrap();
     assert_eq!(hits.len(), 3, "search returns them too");
 }
+
+/// thread_detail is what the reading pane renders from, so it gets exercised
+/// against a real ingested message rather than trusted to compile. The first
+/// version of this query referenced a column that does not exist, and only the
+/// running app found out.
+#[test]
+fn thread_detail_returns_recipients_and_files() {
+    let (_d, mut store, blobs, account) = setup();
+    let raw = format!(
+        "From: Sam Ortiz <sam@vendorco.example>\r\n\
+         To: Dana Wu <dana@northbay.example>, me@example.com\r\n\
+         Cc: Legal <legal@northbay.example>\r\n\
+         Subject: Contract terms\r\n\
+         Message-ID: <detail-1@x>\r\n\
+         Date: {}\r\n\r\nbody text\r\n",
+        httpdate(T0)
+    );
+    let ing = store
+        .ingest_raw(&blobs, account, None, None, raw.as_bytes())
+        .unwrap();
+    let tid = store.thread_of(ing.message_id).unwrap().unwrap_or(-ing.message_id);
+
+    let msgs = store.thread_detail(tid).unwrap();
+    assert_eq!(msgs.len(), 1, "one message in this conversation");
+
+    let m = &msgs[0];
+    assert_eq!(m.id, ing.message_id);
+    assert!(m.from_display.contains("Sam"), "sender display: {:?}", m.from_display);
+    assert!(
+        m.recipients.iter().any(|r| r.contains("Dana")),
+        "To recipients must be present: {:?}",
+        m.recipients
+    );
+    assert!(
+        m.recipients.iter().any(|r| r.contains("Legal")),
+        "Cc recipients count as recipients too: {:?}",
+        m.recipients
+    );
+    assert!(m.attachments.is_empty(), "this message carries no files");
+}

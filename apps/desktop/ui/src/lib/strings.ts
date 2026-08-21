@@ -46,6 +46,7 @@ const en = {
   'reader-reply': 'Reply',
   'reader-reply-all': 'Reply all',
   'reader-forward': 'Forward',
+  'reader-failed': 'Could not open this conversation',
   'reader-to': 'to { $who }',
   'reader-earlier': '{ $count } earlier messages',
   'reader-none-title': 'Nothing selected',

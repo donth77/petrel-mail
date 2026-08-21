@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Archive, ChevronDown, CornerUpLeft, MoreVertical, Paperclip, Star } from 'lucide-react';
 import { api, type Thread, type ThreadMessage } from '../lib/api';
-import { count as fmtCount, fileSize, fullTime, initials, listTime } from '../lib/format';
+import { count as fmtCount, fileSize, fullTime, initials, listTime, messageTime } from '../lib/format';
 import { Icon } from './Icon';
 import { MessageBody } from './MessageBody';
 import { t } from '../lib/strings';
@@ -15,7 +15,9 @@ function Collapsed({ m, onExpand }: { m: ThreadMessage; onExpand: () => void }) 
       </span>
       <span className="collapsed-from">{m.from_display || m.from_addr}</span>
       <span className="collapsed-snip clip">{m.snippet}</span>
-      <span className="mono collapsed-time">{listTime(m.date_ms)}</span>
+      <time className="mono collapsed-time" dateTime={new Date(m.date_ms).toISOString()} title={fullTime(m.date_ms)}>
+        {messageTime(m.date_ms)}
+      </time>
     </button>
   );
 }
@@ -34,7 +36,9 @@ function Expanded({ m }: { m: ThreadMessage }) {
             <span className="mono">{m.from_addr}</span>
           </span>
         </span>
-        <span className="mono msg-time">{fullTime(m.date_ms)}</span>
+        <time className="mono msg-time" dateTime={new Date(m.date_ms).toISOString()} title={fullTime(m.date_ms)}>
+          {messageTime(m.date_ms)}
+        </time>
       </header>
 
       <MessageBody messageId={m.id} title={m.subject || '(no subject)'} />
@@ -57,23 +61,32 @@ function Expanded({ m }: { m: ThreadMessage }) {
 export function Reader({ thread }: { thread: Thread | null }) {
   const [messages, setMessages] = useState<ThreadMessage[]>([]);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
     setMessages([]);
     setExpanded(new Set());
+    setError(null);
     if (!thread) return;
     api
       .threadDetail(thread.thread_id)
       .then((ms) => {
         if (!live) return;
+        api.log(`thread_detail ok thread=${thread.thread_id} messages=${ms.length}`);
         setMessages(ms);
         // The newest message is what you came for; older ones stay folded until
         // asked for, so a five-message thread does not open as five walls of text.
         const last = ms[ms.length - 1];
         setExpanded(new Set(last ? [last.id] : []));
       })
-      .catch(() => {});
+      // Never swallow this: an empty reading pane and a failed call look
+      // identical to the user, and only one of them is worth reporting.
+      .catch((err: unknown) => {
+        if (!live) return;
+        setError(String(err));
+        api.log(`thread_detail FAILED thread=${thread.thread_id}: ${err}`);
+      });
     return () => {
       live = false;
     };
@@ -133,7 +146,13 @@ export function Reader({ thread }: { thread: Thread | null }) {
       </header>
 
       <div className="reader-body">
-        {messages.map((m, i) => {
+        {error && (
+          <div className="empty">
+            <h2 style={{ color: 'var(--danger)' }}>{t('reader-failed')}</h2>
+            <p className="mono" style={{ fontSize: 11.5 }}>{error}</p>
+          </div>
+        )}
+        {messages.map((m) => {
           const isExpanded = expanded.has(m.id);
           // Collapse a run of older messages into one row rather than a stack of
           // near-identical lines.

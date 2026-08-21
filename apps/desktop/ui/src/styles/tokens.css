@@ -47,7 +47,8 @@
   /* metrics */
   --row-relaxed: 68px;
   --row-compact: 44px;
-  --rail-size: 232px;
+  --rail-size: 236px;
+  --list-size: 430px;
   --focus-ring: 2px;
 
   color-scheme: light;

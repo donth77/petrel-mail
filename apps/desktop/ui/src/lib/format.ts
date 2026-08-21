@@ -53,6 +53,34 @@ export function listTime(ms: number, now = Date.now()): string {
   return withYear.format(d);
 }
 
+/**
+ * The time on a message card: enough to place it, no more. The full date belongs
+ * on hover and in the accessible name, not in the header, where it crowds out the
+ * sender it sits beside.
+ *   today          → Today 14:02
+ *   yesterday      → Yesterday 09:14
+ *   last 7 days    → Mon 09:14
+ *   this year      → 20 Aug 14:02
+ *   older          → 20 Aug 2025
+ */
+export function messageTime(ms: number, now = Date.now()): string {
+  const d = new Date(ms);
+  const n = new Date(now);
+  const startOfToday = new Date(n.getFullYear(), n.getMonth(), n.getDate()).getTime();
+  const clock = timeOnly.format(d);
+
+  // "today"/"yesterday" come from the locale rather than being spelled here —
+  // every other user-facing string does, and these are no different.
+  const rel = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' });
+  const capitalise = (w: string) => w.charAt(0).toLocaleUpperCase(locale) + w.slice(1);
+
+  if (ms >= startOfToday) return `${capitalise(rel.format(0, 'day'))} ${clock}`;
+  if (ms >= startOfToday - DAY) return `${capitalise(rel.format(-1, 'day'))} ${clock}`;
+  if (ms > startOfToday - 6 * DAY) return `${weekday.format(d)} ${clock}`;
+  if (d.getFullYear() === n.getFullYear()) return `${dayMonth.format(d)} ${clock}`;
+  return withYear.format(d);
+}
+
 /** Unabbreviated, for screen readers and tooltips — "Tue" reads as nothing. */
 export function fullTime(ms: number): string {
   return full.format(new Date(ms));
