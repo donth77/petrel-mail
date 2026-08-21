@@ -7,6 +7,6 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-(cd apps/desktop/ui && npm run build >/dev/null)
+(cd apps/desktop/ui && pnpm run build >/dev/null)
 cargo build --release -p petrel-desktop --features custom-protocol 2>&1 | tail -1
 "$ROOT/scripts/make-app-bundle.sh"

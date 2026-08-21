@@ -5,6 +5,8 @@ import { t } from './lib/strings';
 import { Search } from 'lucide-react';
 import { Rail } from './components/Rail';
 import { TitleBar } from './components/TitleBar';
+import { Palette } from './components/Palette';
+import { Toast } from './components/Toast';
 import { MessageList } from './components/MessageList';
 import { Reader } from './components/Reader';
 
@@ -18,6 +20,8 @@ export function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -64,7 +68,12 @@ export function App() {
       const el = e.target as HTMLElement | null;
       const typing =
         el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
-      if (e.key === '/' && !typing) {
+      // ⌘K works everywhere, including inside a text field — it is how you get
+      // out of one. Single-key shortcuts do not.
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setPaletteOpen(true);
+      } else if (e.key === '/' && !typing) {
         e.preventDefault();
         searchRef.current?.focus();
       } else if (e.key === 'Escape' && typing) {
@@ -184,6 +193,18 @@ export function App() {
 
       <Reader thread={active} />
 
+      <Palette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        subject={active?.subject ?? null}
+        ctx={{
+          hasThread: !!active,
+          onView: setView,
+          onNotImplemented: (label) => setToast(t('not-implemented', { label })),
+        }}
+      />
+      <Toast message={toast} onDone={() => setToast(null)} />
+
       <footer className="status">
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
           <span className="dot" style={{ background: 'var(--good)', inlineSize: 6, blockSize: 6 }} />
@@ -199,6 +220,9 @@ export function App() {
         </span>
         <span>
           <span className="kbd">/</span> search
+        </span>
+        <span>
+          <span className="kbd">⌘K</span> commands
         </span>
       </footer>
       </div>
