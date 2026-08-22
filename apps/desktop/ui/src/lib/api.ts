@@ -257,6 +257,7 @@ const mock = {
   ],
   viewCounts: async (mode: string): Promise<[string, number][]> =>
     mode === 'off' ? [] : [['inbox', 3], ['drafts', 1], ['spam', 2]],
+  popoutMessage: async () => {},
   remoteStatus: async (): Promise<RemoteStatus> => ({
     from_addr: 'sam@example.com', allowed: false, because_written_to: false,
   }),
@@ -314,6 +315,7 @@ const real = {
     invoke<Thread[]>('list_threads', { view, offset, limit }),
   tags: () => invoke<Tag[]>('list_tags'),
   viewCounts: (mode: string) => invoke<[string, number][]>('view_counts', { mode }),
+  popoutMessage: (threadId: number) => invoke<void>('popout_message', { threadId }),
   remoteStatus: (messageId: number) => invoke<RemoteStatus>('remote_status', { messageId }),
   showRemoteOnce: (messageId: number) => invoke<void>('show_remote_once', { messageId }),
   trustSender: (messageId: number) => invoke<string>('trust_sender', { messageId }),

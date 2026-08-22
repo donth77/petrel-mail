@@ -131,6 +131,11 @@ export function App() {
   // dialog opens rather than read when it closes: the selection can change
   // underneath an open dialog, and deleting something other than what the
   // dialog named is the worst possible outcome for the one action with no undo.
+  // The reading pane with the window to itself. Not a saved preference: it is
+  // a thing you do to one long message, not a way you like the app arranged —
+  // and coming back tomorrow to a hidden list would read as a broken window.
+  const [readerFull, setReaderFull] = useState(false);
+
   const [pendingDelete, setPendingDelete] = useState<number[] | null>(null);
   const askDelete = (ids?: number[]) => {
     const list = ids ?? targets(selected, activeId);
@@ -180,6 +185,11 @@ export function App() {
       if (selected.size > 0) setSelected(new Set());
     },
     toggleStar: () => triage.toggleStar(),
+    // Only where there is a reading pane to fill. With the layout off there is
+    // no pane, and with nothing open there would be nothing to look at.
+    toggleReaderFull: () => {
+      if (settings.layout !== 'off' && activeRef.current) setReaderFull((f) => !f);
+    },
     undo: () => {
       // A pending send outranks the last triage action: it is the thing with a
       // deadline, and it is what the countdown just told you Z would do.
@@ -227,6 +237,14 @@ export function App() {
       setActiveId(next.id);
     },
     clearSelection: () => {
+      // Escape backs out of the most recent thing first. Filling the window is
+      // more recent than a selection made before it, and leaving someone in a
+      // list-less window because Escape went to the selection instead is the
+      // kind of dead end that sends people back to the mouse.
+      if (readerFull) {
+        setReaderFull(false);
+        return;
+      }
       setSelected(new Set());
       setAnchor(null);
     },
@@ -572,7 +590,18 @@ export function App() {
           <span className="sync-error-note">{t('sync-failed-body')}</span>
         </div>
       )}
-      <div className="shell" data-layout={settings.layout === 'off' ? 'no-reader' : settings.layout}>
+      <div
+        className="shell"
+        data-layout={
+          // Only while something is open. Filling the window with an empty
+          // reading pane would hide the list to show nothing.
+          readerFull && active && settings.layout !== 'off'
+            ? 'reader-only'
+            : settings.layout === 'off'
+              ? 'no-reader'
+              : settings.layout
+        }
+      >
       <Rail
         account={accounts[0]?.email ?? status?.source ?? t('app-name')}
         accounts={accounts}
@@ -697,6 +726,14 @@ export function App() {
         <Reader
           thread={active}
           view={view}
+          full={readerFull}
+          onToggleFull={() => setReaderFull((f) => !f)}
+          onPopOut={() => {
+            if (!active) return;
+            void api
+              .popoutMessage(active.thread_id)
+              .catch((e) => setToast(t('popout-failed', { error: String(e) })));
+          }}
           onAction={(kind) => (kind === 'delete_forever' ? askDelete() : void triage.run(kind))}
           onMove={() => setPicker('folder')}
           onTag={() => setPicker('tag')}

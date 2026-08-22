@@ -58,6 +58,9 @@ export const BINDINGS: Binding[] = [
   { id: 'popout', group: 'write', label: 'Open in its own window', display: 'popout',
     chords: [{ key: 'o', meta: true, shift: true }], available: true },
 
+  { id: 'reader-full', group: 'move', label: 'Fill the window with the message', display: ['\\'],
+    chords: [{ key: '\\' }], available: true },
+
   // ---- act on mail
   { id: 'archive', group: 'act', label: 'Archive', display: ['E'],
     chords: [{ key: 'e' }], available: true },

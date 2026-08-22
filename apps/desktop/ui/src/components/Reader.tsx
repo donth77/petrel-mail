@@ -3,8 +3,11 @@ import {
   Archive,
   ChevronDown,
   CornerUpLeft,
+  ExternalLink,
   Mail,
   MailOpen,
+  Maximize2,
+  Minimize2,
   Paperclip,
   Star,
 } from 'lucide-react';
@@ -102,6 +105,9 @@ function Expanded({
 export function Reader({
   thread,
   view,
+  full,
+  onToggleFull,
+  onPopOut,
   onAction,
   onMove,
   onTag,
@@ -110,6 +116,14 @@ export function Reader({
   thread: Thread | null;
   /** Which view is open, so the destructive action can mean the right thing. */
   view: string;
+  /** Reading pane has the window to itself. */
+  full: boolean;
+  /** Both optional, and omitted rather than disabled where they mean nothing —
+   *  a conversation already alone in its own window can be neither expanded
+   *  nor popped out again, and a button that does nothing is worse than one
+   *  that is not there. */
+  onToggleFull?: () => void;
+  onPopOut?: () => void;
   onAction: (kind: ActionKind) => void;
   onMove: () => void;
   onTag: () => void;
@@ -273,6 +287,35 @@ export function Reader({
                 <Icon icon={thread.unread ? MailOpen : Mail} />
               </button>
             </Tip>
+            {/* Reading room, then a room of its own. Two different needs:
+                one long message wants the width this window can give it, and
+                a message you are working *from* wants to stay open while you
+                do something else in the app. */}
+            {onToggleFull && (
+              <Tip label={full ? t('reader-shrink') : t('reader-expand')} keys={['\\']}>
+                <button
+                  type="button"
+                  className="act-icon"
+                  aria-label={full ? t('reader-shrink') : t('reader-expand')}
+                  aria-pressed={full}
+                  onClick={onToggleFull}
+                >
+                  <Icon icon={full ? Minimize2 : Maximize2} />
+                </button>
+              </Tip>
+            )}
+            {onPopOut && (
+              <Tip label={t('reader-popout')}>
+                <button
+                  type="button"
+                  className="act-icon"
+                  aria-label={t('reader-popout')}
+                  onClick={onPopOut}
+                >
+                  <Icon icon={ExternalLink} />
+                </button>
+              </Tip>
+            )}
             <MoreMenu
               thread={thread}
               view={view}

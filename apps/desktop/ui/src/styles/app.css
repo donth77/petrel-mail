@@ -2888,3 +2888,31 @@ body.resizing {
   color: var(--danger);
   text-decoration: none;
 }
+
+/* ------------------------------------------------------- expanded reading */
+
+/* The reading pane with the window to itself. The rail and list are removed
+   from the grid rather than hidden in place, so the pane actually gets the
+   width — a `visibility: hidden` column still occupies its track. */
+.shell[data-layout='reader-only'] {
+  grid-template-columns: 1fr;
+}
+
+.shell[data-layout='reader-only'] .rail,
+.shell[data-layout='reader-only'] .list-pane {
+  display: none;
+}
+
+/* A conversation popped out on its own. The reader fills it, because there is
+   nothing else in the window to share with. */
+.message-window {
+  display: flex;
+  flex-direction: column;
+  block-size: 100vh;
+  background: var(--surface);
+}
+
+.message-window .reader {
+  flex-grow: 1;
+  min-block-size: 0;
+}

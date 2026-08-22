@@ -1035,6 +1035,36 @@ fn popout_compose(draft_id: i64, app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Opens one conversation in a window of its own.
+///
+/// The same bundle with a query parameter, as the popped-out composer is: a
+/// second rail, list and sync loop would cost real memory and a second poll
+/// against the mail server to show one thread.
+#[tauri::command]
+fn popout_message(thread_id: i64, app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+
+    let label = format!("message-{thread_id}");
+    // Already open: focus it. A second window onto the same conversation is
+    // never what was meant, and both would drift as it is triaged.
+    if let Some(existing) = app.get_webview_window(&label) {
+        let _ = existing.set_focus();
+        return Ok(());
+    }
+
+    WebviewWindowBuilder::new(
+        &app,
+        &label,
+        WebviewUrl::App(format!("index.html?message={thread_id}").into()),
+    )
+    .title("Petrel")
+    .inner_size(780.0, 700.0)
+    .min_inner_size(420.0, 360.0)
+    .build()
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Marks a draft to go later, or pulls it back.
 #[tauri::command]
 fn schedule_send(
@@ -1768,6 +1798,7 @@ pub fn run() {
             attachment_info,
             schedule_send,
             popout_compose,
+            popout_message,
             save_draft,
             load_draft,
             delete_draft,

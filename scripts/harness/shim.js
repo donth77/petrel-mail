@@ -297,6 +297,10 @@
     export_mbox: function () {
       return rows.length + '/0';
     },
+    popout_message: function () {
+      // No second window in a browser; recording the call is the assertion.
+      return null;
+    },
     create_tag: function (a) {
       var id = 300 + tags.length;
       tags.push({ id: id, name: a.name, colour: '', thread_count: 0 });

@@ -21,6 +21,7 @@ export type KeyActions = {
   openMove: () => void;
   openTag: () => void;
   toggleStar: () => void;
+  toggleReaderFull: () => void;
   undo: () => void;
 };
 
@@ -161,6 +162,9 @@ export function useKeyboard(actions: KeyActions) {
             return a.extendSelection(false);
           }
           break;
+        case '\\':
+          e.preventDefault();
+          return a.toggleReaderFull();
         case 'Escape':
           // Only meaningful when something is selected; dialogs handle their
           // own Escape and never reach here.
