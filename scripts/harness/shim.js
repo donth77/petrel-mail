@@ -204,6 +204,26 @@
       if (!a.to || a.to.length === 0) throw 'no recipient';
       return 'test-' + Date.now() + '@example.com';
     },
+    // The dialog plugin's commands, so the attach and export flows can be
+    // driven without a real file panel. Set window.__PETREL_PICK__ to the
+    // paths a pick should return, or null to simulate cancelling.
+    'plugin:dialog|open': function () {
+      return window.__PETREL_PICK__ === undefined ? null : window.__PETREL_PICK__;
+    },
+    'plugin:dialog|save': function () {
+      return window.__PETREL_SAVE__ === undefined ? null : window.__PETREL_SAVE__;
+    },
+    attachment_info: function (a) {
+      // Sizes chosen to exercise the limit: the second file alone is fine and
+      // the two together are not.
+      return (a.paths || []).map(function (path, i) {
+        return {
+          path: path,
+          name: path.split('/').pop() || path,
+          size: i === 0 ? 1024 : 15 * 1024 * 1024,
+        };
+      });
+    },
     get_identity: function () {
       return identity;
     },

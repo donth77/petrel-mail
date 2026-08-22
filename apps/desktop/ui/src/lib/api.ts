@@ -217,6 +217,8 @@ const mock = {
     address: 'you@example.com', display_name: 'You', signature: '', signature_on_reply: false,
   }),
   setIdentity: async () => {},
+  attachmentInfo: async (paths: string[]) =>
+    paths.map((path) => ({ path, name: path.split('/').pop() || path, size: 1024 })),
   accounts: async (): Promise<Account[]> => mockAccounts.map((a) => ({ ...a })),
   setAccountColor: async (id: number, color: string) => {
     const a = mockAccounts.find((x) => x.id === id);
@@ -286,13 +288,18 @@ const real = {
   createTag: (name: string) => invoke<number>('create_tag', { name }),
   send: (
     to: string[], cc: string[], subject: string, body: string,
-    inReplyTo: string | null, references: string[],
-  ) => invoke<string>('send_message', { to, cc, subject, body, inReplyTo, references }),
+    inReplyTo: string | null, references: string[], attachments: string[],
+  ) =>
+    invoke<string>('send_message', {
+      to, cc, subject, body, inReplyTo, references, attachments,
+    }),
   storage: () => invoke<StorageReport>('storage_report'),
   exportMbox: (view: string, path: string) => invoke<string>('export_mbox', { view, path }),
   identity: () => invoke<Identity>('get_identity'),
   setIdentity: (displayName: string, signature: string, signatureOnReply: boolean) =>
     invoke<void>('set_identity', { displayName, signature, signatureOnReply }),
+  attachmentInfo: (paths: string[]) =>
+    invoke<{ path: string; name: string; size: number }[]>('attachment_info', { paths }),
   accounts: () => invoke<Account[]>('list_accounts'),
   setAccountColor: (accountId: number, color: string) =>
     invoke<void>('set_account_color', { accountId, color }),

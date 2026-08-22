@@ -52,6 +52,25 @@ fn code_of(reply: &str) -> u16 {
     reply.get(0..3).and_then(|c| c.parse().ok()).unwrap_or(0)
 }
 
+/// A file travelling with a message.
+#[derive(Debug, Clone)]
+pub struct Attachment {
+    pub filename: String,
+    pub content_type: String,
+    pub bytes: Vec<u8>,
+}
+
+/// Roughly what a file costs on the wire.
+///
+/// base64 turns three bytes into four and wraps every 76 characters, so a file
+/// arrives about 37% larger than it is on disk. A limit checked against the
+/// size in Finder lets people attach something that is under it and watch the
+/// send fail — the check has to be against what is actually transmitted.
+pub fn encoded_size(raw_len: usize) -> usize {
+    let base64 = raw_len.div_ceil(3) * 4;
+    base64 + base64.div_ceil(76) * 2
+}
+
 /// What to send, before it becomes bytes.
 #[derive(Debug, Clone)]
 pub struct Outgoing {
@@ -66,6 +85,7 @@ pub struct Outgoing {
     /// omits them starts a new conversation in every client that receives it.
     pub in_reply_to: Option<String>,
     pub references: Vec<String>,
+    pub attachments: Vec<Attachment>,
 }
 
 impl Outgoing {
@@ -93,6 +113,14 @@ impl Outgoing {
             .subject(self.subject.as_str())
             .text_body(self.body_text.as_str())
             .message_id(message_id.as_str());
+
+        for a in &self.attachments {
+            b = b.attachment(
+                a.content_type.as_str(),
+                a.filename.as_str(),
+                a.bytes.as_slice(),
+            );
+        }
 
         for addr in &self.to {
             b = b.to(addr.as_str());

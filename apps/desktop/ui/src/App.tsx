@@ -8,7 +8,7 @@ import {
   type Tag,
   type Thread,
 } from './lib/api';
-import { count as fmtCount } from './lib/format';
+import { count as fmtCount, fileSize } from './lib/format';
 import { t, type StringId } from './lib/strings';
 import { Search } from 'lucide-react';
 import { Rail } from './components/Rail';
@@ -21,6 +21,7 @@ import { Compose, addresses, type Draft } from './components/Compose';
 import { snoozeOptions } from './lib/snooze';
 import { promisesMissingAttachment } from './lib/compose-checks';
 import { startingBody } from './lib/signature';
+import { ATTACHMENT_LIMIT, fits, type Attached } from './lib/attachments';
 import { notifiable, postDesktopNotification } from './lib/notify';
 import { Help } from './components/Help';
 import { Settings } from './components/Settings';
@@ -51,6 +52,9 @@ export function App() {
   const [draft, setDraft] = useState<Draft | null>(null);
   // Reset per composer, so each message gets its own single warning.
   const attachmentWarned = useRef(false);
+  // The picker awaits, so the draft may have moved on by the time it returns.
+  const draftRef = useRef<Draft | null>(null);
+  draftRef.current = draft;
   // A message waiting out its undo window. It is held here, in the window, and
   // has not touched the network — which is the whole reason undo can cancel it
   // rather than chase it.
@@ -237,6 +241,52 @@ export function App() {
 
   const active = useMemo(() => items.find((m) => m.id === activeId) ?? null, [items, activeId]);
 
+  /**
+   * Attaches files the user picks.
+   *
+   * The size check happens here rather than at send, which is what the design
+   * asks for and the only version that helps: refusing at send means the
+   * message is written, the recipient chosen, and the failure arrives at the
+   * moment there is nothing to do about it.
+   */
+  const attach = async () => {
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const picked = await open({ multiple: true });
+      if (!picked) return;
+      const paths = Array.isArray(picked) ? picked : [picked];
+
+      const info = await api.attachmentInfo(paths);
+      const current = draftRef.current;
+      if (!current) return;
+
+      // Decided out here, not inside the state updater. An updater has to be
+      // pure — React is free to run it twice — and a setToast in there would
+      // announce the same rejection twice for no reason anyone could see.
+      const kept = [...(current.attachments ?? [])];
+      const rejected: string[] = [];
+      for (const f of info) {
+        if (kept.some((a) => a.path === f.path)) continue;
+        if (!fits(kept, f.size)) {
+          rejected.push(f.name);
+          continue;
+        }
+        kept.push(f satisfies Attached);
+      }
+      setDraft({ ...current, attachments: kept });
+      if (rejected.length > 0) {
+        setToast(
+          t('compose-too-large', {
+            name: rejected.join(', '),
+            limit: fileSize(ATTACHMENT_LIMIT),
+          }),
+        );
+      }
+    } catch (e) {
+      setToast(t('compose-attach-failed', { error: String(e) }));
+    }
+  };
+
   // The undo-send countdown. Nothing has been sent while this runs.
   useEffect(() => {
     if (!outgoing) return;
@@ -251,6 +301,7 @@ export function App() {
           d.body,
           d.inReplyTo ?? null,
           d.references ?? [],
+          (d.attachments ?? []).map((a) => a.path),
         )
         .then(() => setToast(t('compose-sent')))
         .catch((e) => {
@@ -528,7 +579,7 @@ export function App() {
           account={accounts[0]?.email ?? ''}
           onChange={setDraft}
           onClose={() => setDraft(null)}
-          onNotImplemented={(label) => setToast(t('not-implemented', { label }))}
+          onAttach={() => void attach()}
           onSend={() => {
             if (addresses(draft.to).length === 0) {
               setToast(t('compose-no-recipient'));
@@ -540,7 +591,7 @@ export function App() {
             if (
               settings.warnMissingAttachment === 'on' &&
               !attachmentWarned.current &&
-              promisesMissingAttachment(draft.subject, draft.body, 0)
+              promisesMissingAttachment(draft.subject, draft.body, draft.attachments?.length ?? 0)
             ) {
               attachmentWarned.current = true;
               setToast(t('compose-missing-attachment'));

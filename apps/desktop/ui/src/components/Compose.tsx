@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Paperclip, X } from 'lucide-react';
+import { fileSize } from '../lib/format';
+import type { Attached } from '../lib/attachments';
 import { Icon } from './Icon';
 import { key } from '../lib/keys';
 import { t } from '../lib/strings';
@@ -12,6 +14,7 @@ export type Draft = {
   /** Set when this is a reply, so the thread survives at the other end. */
   inReplyTo?: string | null;
   references?: string[];
+  attachments?: Attached[];
 };
 
 type Props = {
@@ -20,7 +23,7 @@ type Props = {
   onChange: (d: Draft) => void;
   onClose: () => void;
   onSend: () => void;
-  onNotImplemented: (label: string) => void;
+  onAttach: () => void;
 };
 
 /** Splits a recipient field into addresses, forgiving the separators people
@@ -41,7 +44,7 @@ export function addresses(field: string): string[] {
  * are reading, and taking over the screen to write two lines loses the thing
  * being replied to. Popping out is a deliberate escalation, not the default.
  */
-export function Compose({ draft, account, onChange, onClose, onSend, onNotImplemented }: Props) {
+export function Compose({ draft, account, onChange, onClose, onSend, onAttach }: Props) {
   const toRef = useRef<HTMLInputElement>(null);
   const bodyRef = useRef<HTMLTextAreaElement>(null);
   const [showCc, setShowCc] = useState(draft.cc.length > 0);
@@ -131,17 +134,36 @@ export function Compose({ draft, account, onChange, onClose, onSend, onNotImplem
         aria-label={t('compose-body')}
       />
 
+      {(draft.attachments?.length ?? 0) > 0 && (
+        <div className="compose-files">
+          {draft.attachments!.map((a) => (
+            <span className="att-chip" key={a.path}>
+              <Icon icon={Paperclip} size={11} />
+              <span className="clip">{a.name}</span>
+              <span className="mono att-size">{fileSize(a.size)}</span>
+              <button
+                type="button"
+                className="att-remove"
+                aria-label={t('compose-remove-attachment', { name: a.name })}
+                onClick={() =>
+                  onChange({
+                    ...draft,
+                    attachments: draft.attachments!.filter((x) => x.path !== a.path),
+                  })
+                }
+              >
+                <Icon icon={X} size={11} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
       <footer className="compose-foot">
         <button type="button" className="reply primary" onClick={onSend}>
           {t('compose-send')} <span className="kbd on-accent">{key('send')}</span>
         </button>
-        {/* Attachments are designed but not built; saying so beats a button
-            that does nothing when clicked. */}
-        <button
-          type="button"
-          className="reply"
-          onClick={() => onNotImplemented(t('compose-attach'))}
-        >
+        <button type="button" className="reply" onClick={onAttach}>
           <Icon icon={Paperclip} size={14} />
           {t('compose-attach')}
         </button>

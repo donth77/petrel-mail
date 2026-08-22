@@ -2532,3 +2532,49 @@ body.resizing {
   font-size: 11.5px;
   color: var(--ink3);
 }
+
+/* Attached files, above the send row so they are visible while writing rather
+   than something you have to remember you did. */
+.compose-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 16px 0;
+}
+
+.att-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-inline-size: 240px;
+  padding: 3px 4px 3px 8px;
+  border: 1px solid var(--hair);
+  border-radius: 999px;
+  background: var(--bg);
+  font-size: 12px;
+}
+
+.att-chip .att-size {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink3);
+  flex: none;
+}
+
+.att-remove {
+  display: grid;
+  place-items: center;
+  inline-size: 18px;
+  block-size: 18px;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--ink3);
+  cursor: pointer;
+  flex: none;
+}
+
+.att-remove:hover {
+  background: var(--hair2);
+  color: var(--ink);
+}

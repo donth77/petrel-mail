@@ -105,6 +105,10 @@ const en = {
   'compose-body': 'Message',
   'compose-send': 'Send',
   'compose-attach': 'Attach',
+  'compose-remove-attachment': 'Remove { $name }',
+  'compose-too-large':
+    '{ $name } does not fit. Messages can carry about { $limit } once encoded, and attachments grow by roughly a third on the way.',
+  'compose-attach-failed': 'Could not attach that — { $error }',
   'compose-missing-attachment': 'This mentions an attachment and has none. Send again to send anyway.',
   'compose-no-recipient': 'Add someone to send to.',
   'compose-sending': 'Sending in { $count }s',

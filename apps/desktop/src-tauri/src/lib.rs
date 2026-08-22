@@ -645,9 +645,10 @@ async fn send_message(
     body: String,
     in_reply_to: Option<String>,
     references: Vec<String>,
+    attachments: Vec<String>,
     state: State<'_, Arc<AppState>>,
 ) -> Result<String, String> {
-    use petrel_providers::smtp::{Outgoing, SendResult, SmtpConfig, send_tls};
+    use petrel_providers::smtp::{Attachment, Outgoing, SendResult, SmtpConfig, send_tls};
 
     let cfg = imap_config_from_env().ok_or("no account is configured")?;
     let smtp = SmtpConfig::for_imap_host(&cfg.host, &cfg.user, &cfg.pass);
@@ -666,6 +667,23 @@ async fn send_message(
             .flatten()
             .and_then(|a| store.identity(a).ok())
     };
+    // Read here rather than shuttled through the bridge. A 20MB file becomes a
+    // 27MB JSON string on the way across, held twice in memory and slow enough
+    // to notice; the path costs nothing and the file is read once.
+    let mut files = Vec::new();
+    for path in &attachments {
+        let p = std::path::Path::new(path);
+        let bytes = std::fs::read(p).map_err(|e| format!("Could not read {path}: {e}"))?;
+        files.push(Attachment {
+            filename: p
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "attachment".into()),
+            content_type: guess_content_type(p),
+            bytes,
+        });
+    }
+
     let msg = Outgoing {
         from_addr: cfg.user.clone(),
         from_name: identity.map(|i| i.display_name).unwrap_or_default(),
@@ -675,6 +693,7 @@ async fn send_message(
         body_text: body,
         in_reply_to,
         references,
+        attachments: files,
     };
     if msg.recipients().is_empty() {
         return Err("a message needs at least one recipient".into());
@@ -727,6 +746,67 @@ async fn send_message(
     }
     log_sync(&format!("sent {message_id}"));
     Ok(message_id)
+}
+
+/// Name and size for files the user picked, so the composer can refuse an
+/// oversized one before the message is written.
+///
+/// Statted here rather than in the window: the file picker hands back paths,
+/// and asking the OS for a size is something the backend can already do
+/// without a second plugin and a second capability to review.
+#[tauri::command]
+fn attachment_info(paths: Vec<String>) -> Vec<AttachmentInfo> {
+    paths
+        .into_iter()
+        .map(|path| {
+            let p = std::path::Path::new(&path);
+            AttachmentInfo {
+                name: p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.clone()),
+                // Unreadable reports zero rather than failing the whole pick;
+                // the send will report it properly if it is still a problem.
+                size: std::fs::metadata(p).map(|m| m.len()).unwrap_or(0),
+                path,
+            }
+        })
+        .collect()
+}
+
+#[derive(serde::Serialize)]
+struct AttachmentInfo {
+    path: String,
+    name: String,
+    size: u64,
+}
+
+/// A content type from the file extension.
+///
+/// Deliberately a short list plus a catch-all. Guessing wrong is harmless —
+/// application/octet-stream always works and every client offers to save it —
+/// whereas a large mapping table is a lot of lines that can only be subtly
+/// wrong. The types here are the ones people actually attach.
+fn guess_content_type(path: &std::path::Path) -> String {
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "pdf" => "application/pdf",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "heic" => "image/heic",
+        "txt" | "md" => "text/plain",
+        "csv" => "text/csv",
+        "zip" => "application/zip",
+        "doc" | "docx" => "application/msword",
+        "xls" | "xlsx" => "application/vnd.ms-excel",
+        _ => "application/octet-stream",
+    }
+    .to_string()
 }
 
 /// Who mail is sent as, and what goes underneath it.
@@ -1333,6 +1413,7 @@ pub fn run() {
             export_mbox,
             get_identity,
             set_identity,
+            attachment_info,
             list_accounts,
             set_account_color,
             set_account_archive,
