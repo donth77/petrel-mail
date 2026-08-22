@@ -33,9 +33,37 @@ export function MessageBody({ messageId, title }: { messageId: number; title: st
       // Only accept the shape we defined, and only from our own frame: the
       // window is addressable by anything that can post to it.
       if (e.source !== frameRef.current?.contentWindow) return;
-      const h = (e.data as { petrelHeight?: unknown })?.petrelHeight;
+      const data = e.data as {
+        petrelHeight?: unknown;
+        petrelKey?: {
+          key: string;
+          metaKey: boolean;
+          ctrlKey: boolean;
+          shiftKey: boolean;
+          altKey: boolean;
+        };
+      };
+
+      const h = data?.petrelHeight;
       if (typeof h === 'number' && h > 0 && h < 20000) {
         setHeight(Math.ceil(h));
+      }
+
+      // A focused frame swallows keydown, so every shortcut in the app dies the
+      // moment you click a message. The frame forwards key identity and we
+      // replay it here, on the window the rest of the app listens to.
+      const k = data?.petrelKey;
+      if (k && typeof k.key === 'string') {
+        window.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key: k.key,
+            metaKey: !!k.metaKey,
+            ctrlKey: !!k.ctrlKey,
+            shiftKey: !!k.shiftKey,
+            altKey: !!k.altKey,
+            bubbles: true,
+          }),
+        );
       }
     }
     window.addEventListener('message', onMessage);

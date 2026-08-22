@@ -173,7 +173,25 @@ const mock = {
       ],
     },
   ],
-  messageUrl: async () => '',
+  // A real document carrying the same injected script the petrel-msg: handler
+  // adds, so the browser reproduces the app's structure — including a focused
+  // frame that would otherwise swallow every shortcut. Returning '' meant the
+  // browser had no iframe at all, which hid that entire class of bug.
+  messageUrl: async () =>
+    'data:text/html,' +
+    encodeURIComponent(
+      '<!doctype html><meta charset=utf-8>' +
+        '<body style="margin:0;padding:14px 16px;font:14px/1.6 system-ui;color:#182730">' +
+        '<p>Sam — the twelve-month term works. I will get the annex signed off today.</p>' +
+        '<p>On the volume tier: it resets annually, not quarterly.</p>' +
+        '<script>' +
+        'function h(){var d=document.documentElement;return d.scrollHeight}' +
+        "addEventListener('load',function(){parent.postMessage({petrelHeight:h()},'*')});" +
+        "addEventListener('keydown',function(e){parent.postMessage({petrelKey:{" +
+        'key:e.key,metaKey:e.metaKey,ctrlKey:e.ctrlKey,shiftKey:e.shiftKey,altKey:e.altKey' +
+        "}},'*')});" +
+        '<\/script></body>',
+    ),
   log: async () => {},
 };
 

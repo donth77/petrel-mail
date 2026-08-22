@@ -70,10 +70,18 @@ fn error_response(status: u16, message: &str) -> Response<Vec<u8>> {
 
 /// The document shell. Styling lives here rather than in the message so that a
 /// message cannot restyle the reading pane around it.
-/// The one script Petrel puts in a message frame: it reports the document height
-/// to the parent so the reading pane can size the frame to its content, instead
-/// of nesting a scroll region inside a scroll region. Admitted by a per-response
-/// nonce — see ADR-0004 Amendment 1. It reads nothing and sends nothing else.
+/// The one script Petrel puts in a message frame. Two jobs, both structural:
+///
+///  1. Report the document height, so the reading pane can size the frame to its
+///     content instead of nesting a scroll region inside a scroll region.
+///  2. Forward keystrokes back out. A focused iframe swallows every keydown —
+///     they reach the frame's document, never the parent — so once you click a
+///     message, every shortcut in the application stops working. The frame holds
+///     sanitized mail with no inputs, so nothing here is typing.
+///
+/// Admitted by a per-response nonce (ADR-0004 Amendment 1). It forwards key
+/// identity only: never characters typed, never content, never anything read
+/// from the document.
 /// A per-response CSP nonce. Uniqueness is what matters — it is compared against
 /// itself within one response and never reused — so process id, a counter and the
 /// clock's nanoseconds are sufficient without pulling in an RNG dependency.
@@ -101,6 +109,19 @@ const HEIGHT_REPORTER: &str = r#"
   post();
   setTimeout(post, 60);
   setTimeout(post, 400);
+
+  addEventListener('keydown', function (e) {
+    // Identity only — which key, which modifiers. Nothing about the document.
+    try {
+      parent.postMessage({
+        petrelKey: {
+          key: e.key,
+          metaKey: e.metaKey, ctrlKey: e.ctrlKey,
+          shiftKey: e.shiftKey, altKey: e.altKey
+        }
+      }, '*');
+    } catch (err) {}
+  });
 })();
 "#;
 
