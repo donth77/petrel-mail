@@ -120,6 +120,18 @@ export function MessageList({ items, activeId, density, onActivate }: Props) {
     }
   }, [items.length]);
 
+  // Ariakit owns "which item is active"; the app owns "which conversation is
+  // open". Keyboard movement only touches the first, so without this the
+  // highlight never moves and the reading pane never changes — you just watch
+  // the list scroll. Clicks were unaffected, which is why this looked like a
+  // keyboard-only fault.
+  const activeItemId = composite.useState('activeId');
+  useEffect(() => {
+    if (!activeItemId?.startsWith('msg-')) return;
+    const id = Number(activeItemId.slice(4));
+    if (Number.isFinite(id) && id !== activeId) onActivate(id);
+  }, [activeItemId, activeId, onActivate]);
+
   // Follow the active row when the *selection* moves — not on every render.
   // `virtualizer` is a fresh object each render, so depending on it re-ran this
   // effect constantly and snapped the scroll position back to the active row,
