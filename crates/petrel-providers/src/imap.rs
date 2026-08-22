@@ -292,6 +292,70 @@ pub async fn append_message(cfg: &ImapConfig, folder: &str, raw: &[u8]) -> Resul
 
 /// Fetches whole messages (`RFC822`) with their UIDs — the bytes the engine
 /// stores verbatim and parses. Newest `limit` messages in the folder.
+/// Fetches recent messages, handing each one to `on_message` as it arrives.
+///
+/// The buffering version holds every message in memory and returns only once
+/// the last one lands, so a caller can show no progress and hold no mail until
+/// the whole batch is done — which reads as a hang, and on a large mailbox is
+/// one in every sense that matters. Streaming lets the store take each message
+/// as it comes and the UI count climb while it does.
+pub async fn fetch_raw_each<F>(
+    cfg: &ImapConfig,
+    folder: &str,
+    limit: u32,
+    on_message: F,
+) -> Result<usize>
+where
+    F: FnMut(u32, &[u8]),
+{
+    match cfg.security {
+        Security::Tls => {
+            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
+            fetch_each_session(client, cfg, folder, limit, on_message).await
+        }
+        #[cfg(feature = "insecure-plaintext")]
+        Security::InsecurePlaintext => {
+            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
+            fetch_each_session(Client::new(tcp), cfg, folder, limit, on_message).await
+        }
+    }
+}
+
+async fn fetch_each_session<S, F>(
+    client: Client<S>,
+    cfg: &ImapConfig,
+    folder: &str,
+    limit: u32,
+    mut on_message: F,
+) -> Result<usize>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
+    F: FnMut(u32, &[u8]),
+{
+    let mut session = client
+        .login(&cfg.user, &cfg.pass)
+        .await
+        .map_err(|(e, _)| e)?;
+    let mailbox = session.select(folder).await?;
+    let mut n = 0usize;
+    if mailbox.exists > 0 {
+        let last = mailbox.exists;
+        let first = last.saturating_sub(limit.saturating_sub(1)).max(1);
+        let mut fetches = session
+            .fetch(format!("{first}:{last}"), "(UID RFC822)")
+            .await?;
+        while let Some(fetch) = fetches.next().await {
+            let fetch = fetch?;
+            if let (Some(uid), Some(body)) = (fetch.uid, fetch.body()) {
+                on_message(uid, body);
+                n += 1;
+            }
+        }
+    }
+    session.logout().await?;
+    Ok(n)
+}
+
 pub async fn fetch_raw(cfg: &ImapConfig, folder: &str, limit: u32) -> Result<Vec<(u32, Vec<u8>)>> {
     match cfg.security {
         Security::Tls => {

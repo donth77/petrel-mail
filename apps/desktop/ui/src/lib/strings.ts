@@ -70,6 +70,7 @@ const en = {
   'empty-search-title': 'No matches for “{ $query }”',
   'empty-search-body': 'All { $count } messages were searched.',
   'empty-loading': 'Loading your mail…',
+  'empty-syncing': 'Fetching your mail — { $count } so far…',
 
   'sync-failed-title': 'Could not reach your mail',
   'sync-failed-body': 'Showing what Petrel already had — nothing is lost. Details in sync.log.',

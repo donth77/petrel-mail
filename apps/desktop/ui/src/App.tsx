@@ -263,9 +263,12 @@ export function App() {
             <h2 style={{ color: 'var(--danger)' }}>Could not load this mailbox</h2>
             <p className="mono" style={{ fontSize: 11.5 }}>{error}</p>
           </div>
-        ) : loading ? (
+        ) : loading || (status?.seeding && items.length === 0) ? (
+          // A sync in flight with nothing ingested yet is not an empty mailbox,
+          // and saying "Inbox is clear" while mail is arriving is the most
+          // convincing possible way to report a working sync as a broken one.
           <div className="empty">
-            <p>{t('empty-loading')}</p>
+            <p>{status?.seeding ? t('empty-syncing', { count: fmtCount(status.count) }) : t('empty-loading')}</p>
           </div>
         ) : items.length === 0 ? (
           <div className="empty">

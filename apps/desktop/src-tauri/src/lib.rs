@@ -230,31 +230,43 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
             .ok()
             .and_then(|s| s.folder_for_role(account, "inbox").ok().flatten());
 
-        match petrel_providers::imap::fetch_raw(&cfg, "INBOX", 200).await {
-            Ok(messages) => {
-                log_sync(&format!("fetched {} message(s)", messages.len()));
-                // Fetch fully, *then* take the lock: holding a database lock
-                // across network I/O would stall every UI query behind the
-                // slowest server in the account list.
-                let mut ok = 0usize;
-                for (uid, raw) in &messages {
-                    let mut store = match state.store.lock() {
-                        Ok(s) => s,
-                        Err(_) => break,
-                    };
-                    match store.ingest_raw(&state.blobs, account, inbox_id, Some(*uid), raw) {
-                        Ok(_) => {
-                            ok += 1;
-                            state.seeded.store(ok, Ordering::Relaxed);
-                        }
-                        Err(e) => log_sync(&format!("skipped one message: {e}")),
+        // Ingest as each message lands rather than after all of them do. The
+        // buffering version showed nothing for the whole fetch, which on a real
+        // mailbox is indistinguishable from a hang — and left the list saying
+        // the inbox was empty the entire time.
+        let limit: u32 = std::env::var("PETREL_SYNC_LIMIT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(200);
+        let mut ok = 0usize;
+        let mut failed = 0usize;
+        let result = {
+            let state = Arc::clone(&state);
+            petrel_providers::imap::fetch_raw_each(&cfg, "INBOX", limit, |uid, raw| {
+                let Ok(mut store) = state.store.lock() else {
+                    return;
+                };
+                match store.ingest_raw(&state.blobs, account, inbox_id, Some(uid), raw) {
+                    Ok(_) => {
+                        ok += 1;
+                        state.seeded.store(ok, Ordering::Relaxed);
                     }
+                    Err(_) => failed += 1,
                 }
+            })
+            .await
+        };
+
+        match result {
+            Ok(seen) => {
+                if failed > 0 {
+                    log_sync(&format!("{failed} message(s) could not be ingested"));
+                }
+                log_sync(&format!("ingested {ok}/{seen}"));
                 *state.source.lock().unwrap() = format!("{} · {ok} message(s) synced", cfg.user);
-                log_sync(&format!("ingested {ok}/{}", messages.len()));
             }
             Err(e) => {
-                log_sync(&format!("fetch FAILED: {e}"));
+                log_sync(&format!("fetch FAILED after {ok} message(s): {e}"));
                 *state.source.lock().unwrap() = format!("sync failed: {e}");
                 *state.sync_error.lock().unwrap() = Some(friendly_sync_error(&format!("{e}")));
             }
