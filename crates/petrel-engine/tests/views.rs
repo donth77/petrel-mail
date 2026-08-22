@@ -7,7 +7,7 @@
 //! production, which is the failure this file exists to prevent.
 
 use petrel_engine::actions::{ActionKind, PlacementPolicy};
-use petrel_engine::store::{ListView, NewMessage, Store, flags};
+use petrel_engine::store::{CountMode, ListView, NewMessage, Store, flags};
 
 fn seeded() -> (Store, i64, Vec<i64>) {
     let mut store = Store::open_in_memory().unwrap();
@@ -193,4 +193,49 @@ fn archive_excludes_anything_still_in_the_inbox() {
         ["m2", "m3"],
         "inbox mail must not read as archived"
     );
+}
+
+/// The rail's numbers. Unread where unread means something, a waiting count
+/// where it does not, and nothing at all for Sent.
+#[test]
+fn view_counts_report_per_mailbox_and_by_conversation() {
+    let (store, account, ids) = seeded();
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+    let spam = store.ensure_folder(account, "spam", "[Gmail]/Spam").unwrap();
+    let sent = store.ensure_folder(account, "sent", "[Gmail]/Sent Mail").unwrap();
+
+    for id in &ids {
+        store.place_message(*id, inbox).unwrap();
+        store.set_flags(*id, 0, flags::SEEN).unwrap(); // unread
+    }
+    let counts = |s: &Store| -> std::collections::HashMap<String, i64> {
+        s.view_counts(CountMode::Unread).unwrap().into_iter().collect()
+    };
+    assert_eq!(counts(&store).get("inbox"), Some(&4));
+
+    // Reading one drops the count by one, and only that one.
+    store.set_flags(ids[0], flags::SEEN, 0).unwrap();
+    assert_eq!(counts(&store).get("inbox"), Some(&3));
+
+    // A view with nothing unread is absent rather than present-and-zero, so
+    // the rail has nothing to render.
+    store.place_message(ids[1], spam).unwrap();
+    store.set_flags(ids[1], flags::SEEN, 0).unwrap();
+    assert_eq!(counts(&store).get("spam"), None);
+
+    // Sent never reports an unread count: mail you wrote is not unread in any
+    // useful sense, and a number that never changes is furniture.
+    store.place_message(ids[2], sent).unwrap();
+    assert_eq!(counts(&store).get("sent"), None);
+
+    // Asking for totals is a different question, and Sent can answer that one.
+    let totals: std::collections::HashMap<String, i64> =
+        store.view_counts(CountMode::Total).unwrap().into_iter().collect();
+    assert_eq!(totals.get("sent"), Some(&1));
+    // Two, not four: the ones filed into Spam and Sent have left the inbox.
+    // Totals ignore read state, not placement.
+    assert_eq!(totals.get("inbox"), Some(&2));
+
+    // Off means off, not zeroes.
+    assert!(store.view_counts(CountMode::Off).unwrap().is_empty());
 }

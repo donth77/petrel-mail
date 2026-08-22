@@ -32,6 +32,14 @@ export const DEFAULTS = {
   /// being forgotten in the off position.
   notifyPausedUntil: '0',
 
+  /// The numbers beside the rail's mailboxes.
+  ///
+  /// Unread by default, because the question a mailbox has to answer is
+  /// usually "is there anything here for me". Total is for anyone who wants
+  /// the rail to say how big each mailbox is; off is for anyone who would
+  /// rather not be counted at.
+  badges: 'unread' as 'unread' | 'total' | 'off',
+
   /// Seconds to hold a message before it goes. Nothing reaches the server while
   /// the countdown runs, which is what makes undo a cancel rather than a recall
   /// — the only kind that actually works (docs/design Compose).

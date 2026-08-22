@@ -485,6 +485,7 @@ export function App() {
   // Tags come from the account, so one that has no conversation on this page
   // still appears in the rail.
   const [tags, setTags] = useState<Tag[]>([]);
+  const [counts, setCounts] = useState<Record<string, number>>({});
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [identity, setIdentity] = useState<Identity | null>(null);
 
@@ -517,6 +518,24 @@ export function App() {
     };
   }, [status?.count, status?.seeding]);
 
+  // The rail's numbers come from the engine, not from the loaded page: counting
+  // the rows in view told the inbox badge whatever the *current* view's unread
+  // count was, so opening Spam relabelled the inbox with Spam's number.
+  //
+  // Recounted after every triage as well as every sync, because archiving the
+  // last unread message and watching the badge keep its old number is the kind
+  // of small lie that makes the whole rail untrustworthy.
+  useEffect(() => {
+    let live = true;
+    api
+      .viewCounts(settings.badges)
+      .then((rows) => live && setCounts(Object.fromEntries(rows)))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [status?.count, status?.seeding, settings.badges, items]);
+
   // status.source is a description, not always an address — do not slice a
   // sentence at "@" and present the fragment as an account name.
   const accountLabel = (status?.source ?? '').includes('@')
@@ -541,6 +560,7 @@ export function App() {
         accounts={accounts}
         accountColor={accounts[0]?.color || 'var(--accent)'}
         unread={unread}
+        counts={counts}
         view={view}
         tags={tags}
         railRef={railRef}
@@ -795,7 +815,6 @@ export function App() {
           setSettingsOpen(null);
           api.accounts().then(setAccounts).catch(() => {});
         }}
-        onOpenHelp={() => setHelpOpen(true)}
         onMessage={setToast}
       />
       {outgoing && (

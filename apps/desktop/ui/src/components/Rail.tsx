@@ -34,6 +34,9 @@ type Props = {
   onSettings: () => void;
   accountColor: string;
   unread: number;
+  /** Per-mailbox numbers, keyed by rail key. Absent means nothing to show —
+   *  the engine omits empty ones rather than sending zeroes. */
+  counts: Record<string, number>;
   view: string;
   tags: Tag[];
   onView: (v: string) => void;
@@ -45,6 +48,7 @@ export function Rail({
   accounts,
   accountColor,
   unread,
+  counts,
   view,
   tags,
   collapsed,
@@ -112,7 +116,12 @@ export function Rail({
           >
             <Icon icon={m.glyph} />
             <span className="rail-text">{t(m.id)}</span>
-            {m.key === 'inbox' && unread > 0 && <span className="count">{unread}</span>}
+            {/* Collapsed, there is no room for a number beside a 16px icon,
+                and a dot that only says "something" is not worth the pixels —
+                the tooltip carries the label, and expanding carries the count. */}
+            {!collapsed && counts[m.key] > 0 && (
+              <span className="count">{counts[m.key]}</span>
+            )}
           </button>
         </Tip>
       ))}
@@ -134,7 +143,9 @@ export function Rail({
                 aria-hidden="true"
               />
               <span className="rail-text">{tag.name}</span>
-              {tag.thread_count > 0 && <span className="count">{tag.thread_count}</span>}
+              {!collapsed && tag.thread_count > 0 && (
+                <span className="count">{tag.thread_count}</span>
+              )}
             </button>
             </Tip>
           ))}

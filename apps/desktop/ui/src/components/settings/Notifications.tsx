@@ -92,6 +92,30 @@ export function Notifications() {
       </section>
 
       <section className="field">
+        <div className="flabel">{t('badges')}</div>
+        <p className="fhelp">{t('badges-help')}</p>
+        <div className="seg" role="group">
+          {(
+            [
+              ['unread', t('badges-unread')],
+              ['total', t('badges-total')],
+              ['off', t('badges-off')],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              className={settings.badges === value ? 'on' : undefined}
+              aria-pressed={settings.badges === value}
+              onClick={() => set('badges', value)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section className="field">
         <div className="flabel">{t('notify-desktop')}</div>
         <p className="fhelp">{t('notify-desktop-help')}</p>
         <div className="seg" role="group">

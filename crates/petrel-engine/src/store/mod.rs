@@ -620,6 +620,29 @@ pub enum ListView {
     Tag(String),
 }
 
+/// What the numbers beside the rail's mailboxes count.
+///
+/// Unread by default, because the question a mailbox usually has to answer is
+/// "is there anything here for me". Total suits anyone who wants the rail to
+/// say how big each mailbox is, and off suits anyone who finds counts noisy —
+/// this is a client that would rather not badge people at things.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CountMode {
+    Unread,
+    Total,
+    Off,
+}
+
+impl CountMode {
+    pub fn parse(s: &str) -> CountMode {
+        match s {
+            "total" => CountMode::Total,
+            "off" => CountMode::Off,
+            _ => CountMode::Unread,
+        }
+    }
+}
+
 impl ListView {
     /// Rail keys are the wire format, so this is the only place that knows them.
     pub fn parse(key: &str) -> ListView {
@@ -2468,6 +2491,85 @@ impl Store {
             })
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// The numbers beside the rail's mailboxes.
+    ///
+    /// Counted per *conversation*, not per message: the list shows
+    /// conversations, so a five-message thread holding one unread message is
+    /// one unread row. A badge saying five would not match anything the user
+    /// can point at.
+    ///
+    /// Not every mailbox counts the same thing, because "unread" does not mean
+    /// the same thing everywhere. Mail you wrote is not unread in any useful
+    /// sense — a Drafts badge stuck at zero while three drafts sit there would
+    /// simply be wrong — so Drafts and the Outbox report how many are waiting.
+    /// Sent reports nothing at all: there is no pending work in a sent message,
+    /// and a number that never moves is furniture.
+    pub fn view_counts(&self, mode: CountMode) -> Result<Vec<(String, i64)>> {
+        // Mail you wrote yourself is never meaningfully unread, so these two
+        // report how many are waiting even in unread mode — a Drafts badge
+        // stuck at zero with three drafts sitting there would simply be wrong.
+        const ALWAYS_TOTAL: [&str; 2] = ["drafts", "outbox"];
+        const UNREAD: [&str; 6] = ["inbox", "starred", "snoozed", "archive", "spam", "trash"];
+
+        let mut out = Vec::new();
+        if mode == CountMode::Off {
+            return Ok(out);
+        }
+        for key in UNREAD.iter().chain(ALWAYS_TOTAL.iter()).chain(
+            // Sent only earns a number when the number is a total. There is no
+            // pending work in a sent message, and a count that never moves is
+            // furniture.
+            ["sent"]
+                .iter()
+                .filter(|_| mode == CountMode::Total),
+        ) {
+            let view = ListView::parse(key);
+            let total = mode == CountMode::Total || ALWAYS_TOTAL.contains(key);
+            let n = self.count_view(&view, total)?;
+            if n > 0 {
+                out.push(((*key).to_string(), n));
+            }
+        }
+        // Tags are left out: their rail rows already carry a count, and it is
+        // a total rather than an unread one. "How much is tagged Urgent" is the
+        // question a tag answers, and swapping it for an unread count would
+        // lose that to make two different things look alike.
+        Ok(out)
+    }
+
+    /// Conversations in a view: all of them, or only those holding something
+    /// unread.
+    fn count_view(&self, view: &ListView, total: bool) -> Result<i64> {
+        let having = if total {
+            String::new()
+        } else {
+            format!(
+                "HAVING max(CASE WHEN flags & {seen} = 0 THEN 1 ELSE 0 END) = 1",
+                seen = flags::SEEN
+            )
+        };
+        let sql = format!(
+            "SELECT count(*) FROM (
+               SELECT coalesce(thread_id, -id) AS tid
+               FROM messages
+               WHERE deleted_at_ms IS NULL AND {pred}
+               GROUP BY coalesce(thread_id, -id)
+               {having}
+             )",
+            pred = view.predicate("messages"),
+        );
+        let mut stmt = self.conn.prepare_cached(&sql)?;
+        // The predicate binds its folder role or tag name as ?3, so the two
+        // lower slots have to exist even though nothing reads them.
+        Ok(match view.bound() {
+            Some(b) => stmt.query_row(
+                rusqlite::params![rusqlite::types::Null, rusqlite::types::Null, b],
+                |r| r.get(0),
+            )?,
+            None => stmt.query_row([], |r| r.get(0))?,
+        })
     }
 
     /// Every live message in one conversation, oldest first — the reading pane

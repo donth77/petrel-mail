@@ -647,6 +647,19 @@ fn list_tags(state: State<Arc<AppState>>) -> Result<Vec<TagSummary>, String> {
     store.tags_for_account(account).map_err(|e| e.to_string())
 }
 
+/// The numbers beside the rail's mailboxes.
+///
+/// The mode comes from the caller rather than from stored settings because the
+/// setting lives in the renderer with the rest of them, and a second copy in
+/// the engine is a second thing to keep in step.
+#[tauri::command]
+fn view_counts(mode: String, state: State<Arc<AppState>>) -> Result<Vec<(String, i64)>, String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    store
+        .view_counts(petrel_engine::store::CountMode::parse(&mode))
+        .map_err(|e| e.to_string())
+}
+
 /// The messages of one conversation, for the reading pane.
 #[tauri::command]
 fn thread_detail(
@@ -1580,6 +1593,7 @@ pub fn run() {
             list_messages,
             list_threads,
             list_tags,
+            view_counts,
             thread_detail,
             triage,
             undo_triage,

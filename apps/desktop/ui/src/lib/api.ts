@@ -243,6 +243,8 @@ const mock = {
     { id: 2, name: 'receipts', colour: '#5E7C4A', thread_count: 31 },
     { id: 3, name: 'urgent', colour: '#B0524A', thread_count: 4 },
   ],
+  viewCounts: async (mode: string): Promise<[string, number][]> =>
+    mode === 'off' ? [] : [['inbox', 3], ['drafts', 1], ['spam', 2]],
   threadDetail: async (): Promise<ThreadMessage[]> => [
     {
       id: 1, from_display: 'Dana Wu', from_addr: 'dana@northbay.example',
@@ -292,6 +294,7 @@ const real = {
   threads: (view: string, offset: number, limit: number) =>
     invoke<Thread[]>('list_threads', { view, offset, limit }),
   tags: () => invoke<Tag[]>('list_tags'),
+  viewCounts: (mode: string) => invoke<[string, number][]>('view_counts', { mode }),
   triage: (threadId: number, kind: ActionKind, target?: number) =>
     invoke<ActionReceipt>('triage', { threadId, kind, target: target ?? null }),
   undoTriage: (actionId: number) => invoke<boolean>('undo_triage', { actionId }),

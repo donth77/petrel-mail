@@ -102,6 +102,17 @@
     list_tags: function () {
       return tags;
     },
+    view_counts: function (a) {
+      // Modelled, not faked: a shim that always returned the same numbers
+      // would let a badge that ignores its setting look correct.
+      if (a.mode === 'off') return [];
+      var now = Date.now();
+      var live = rows.filter(function (r) { return !r.filed && !(r.snoozed > now); });
+      var n = a.mode === 'total'
+        ? live.length
+        : live.filter(function (r) { return r.unread; }).length;
+      return n > 0 ? [['inbox', n]] : [];
+    },
     list_accounts: function () {
       return [
         { id: 1, kind: 'gmail', email: 'you@example.com', display_name: '',

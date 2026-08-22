@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Dialog, DialogDismiss } from '@ariakit/react';
 import {
-  Bell, CircleHelp, Database, Mail, PencilLine, Shield, SunMoon, User, X,
+  Bell, Database, Mail, PencilLine, Shield, SunMoon, User, X,
   type LucideIcon,
 } from 'lucide-react';
 import { Accounts } from './settings/Accounts';
@@ -17,7 +17,7 @@ import { t, type StringId } from '../lib/strings';
 
 type PaneId =
   | 'accounts' | 'identities' | 'composing' | 'notifications'
-  | 'appearance' | 'privacy' | 'storage' | 'help';
+  | 'appearance' | 'privacy' | 'storage';
 
 const PANES: { id: PaneId; label: StringId; icon: LucideIcon }[] = [
   { id: 'accounts', label: 'settings-accounts', icon: Mail },
@@ -27,8 +27,13 @@ const PANES: { id: PaneId; label: StringId; icon: LucideIcon }[] = [
   { id: 'appearance', label: 'settings-appearance', icon: SunMoon },
   { id: 'privacy', label: 'settings-privacy', icon: Shield },
   { id: 'storage', label: 'settings-storage', icon: Database },
-  { id: 'help', label: 'rail-help', icon: CircleHelp },
 ];
+
+// Help is deliberately not in this list. Settings is where things are
+// configured, and the shortcut map has nothing to configure — it was a nav item
+// that closed the dialog and opened an overlay instead of showing a pane, which
+// is a row that lies about what it is. The rail has its own Help. If shortcuts
+// ever become remappable, that pane belongs here; the reference does not.
 
 type Props = {
   open: boolean;
@@ -37,13 +42,12 @@ type Props = {
    *  every other shortcut in the app. */
   pane?: PaneId;
   onClose: () => void;
-  onOpenHelp: () => void;
   /** A plain status line. Not the "not built" channel — routing a
    *  successful export through that reported it as a missing feature. */
   onMessage: (text: string) => void;
 };
 
-export function Settings({ open, pane: requested, onClose, onOpenHelp, onMessage }: Props) {
+export function Settings({ open, pane: requested, onClose, onMessage }: Props) {
   const [pane, setPane] = useState<PaneId>(requested ?? 'appearance');
 
   // Follow the request each time the dialog opens, not once on mount: the
@@ -70,14 +74,7 @@ export function Settings({ open, pane: requested, onClose, onOpenHelp, onMessage
               type="button"
               className="navitem"
               aria-current={pane === p.id ? 'page' : undefined}
-              onClick={() => {
-                // Help is the overlay we already have, not a pane that
-                // duplicates it — one keyboard map, one place to fix it.
-                if (p.id === 'help') {
-                  onClose();
-                  onOpenHelp();
-                } else setPane(p.id);
-              }}
+              onClick={() => setPane(p.id)}
             >
               <Icon icon={p.icon} />
               {t(p.label)}
