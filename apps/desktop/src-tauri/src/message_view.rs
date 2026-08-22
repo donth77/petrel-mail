@@ -1,7 +1,7 @@
 //! Serves sanitized message bodies over the `petrel-msg` custom protocol.
 //!
 //! This is the reading pane's supply line, and it applies the layered defense
-//! the S2 spike validated on this platform (ADR-0004):
+//! measured to hold on this platform:
 //!   1. the body is sanitized here (allowlist; hostile constructs removed),
 //!   2. the response carries a per-message CSP that blocks network egress,
 //!   3. the UI renders it in a `sandbox`ed iframe with no scripts and no IPC.
@@ -79,7 +79,7 @@ fn error_response(status: u16, message: &str) -> Response<Vec<u8>> {
 ///     message, every shortcut in the application stops working. The frame holds
 ///     sanitized mail with no inputs, so nothing here is typing.
 ///
-/// Admitted by a per-response nonce (ADR-0004 Amendment 1). It forwards key
+/// Admitted by a per-response nonce. It forwards key
 /// identity only: never characters typed, never content, never anything read
 /// from the document.
 /// A per-response CSP nonce. Uniqueness is what matters — it is compared against

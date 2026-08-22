@@ -1,5 +1,5 @@
 /* The IPC seam. Every call into the engine goes through here, so the surface the
-   UI depends on is one file wide (ADR-0005). Types mirror the Rust structs. */
+   UI depends on is one file wide. Types mirror the Rust structs. */
 
 import { invoke } from '@tauri-apps/api/core';
 

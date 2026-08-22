@@ -1,11 +1,11 @@
 //! HTML sanitization for message display.
 //!
 //! This is the layer that stands between a stranger's HTML and the user's
-//! screen. It is one of three independent defenses (see ADR-0004): the
+//! screen. It is one of three independent defenses: the
 //! sanitizer removes hostile constructs, the sandboxed frame blocks scripts and
-//! same-origin access, and the per-message CSP blocks network egress. The S2
-//! spike established that each blocks a class the others do not — so this code
-//! must not assume the others will catch what it misses.
+//! same-origin access, and the per-message CSP blocks network egress. Each
+//! was measured to block a class the others do not, so this code must not
+//! assume the others will catch what it misses.
 //!
 //! Design rules:
 //! * **Allowlist, never blocklist.** Anything not explicitly permitted is gone.
@@ -340,8 +340,8 @@ mod tests {
         assert!(res.html.contains("cdn.example/logo.png"));
     }
 
-    /// CSS is an exfiltration channel, not just styling — the S2 spike watched
-    /// a `url()` in a stylesheet phone home from inside a sandboxed frame.
+    /// CSS is an exfiltration channel, not just styling: a `url()` in a
+    /// stylesheet was observed phoning home from inside a sandboxed frame.
     #[test]
     fn css_cannot_fetch_or_reposition() {
         let out = clean(

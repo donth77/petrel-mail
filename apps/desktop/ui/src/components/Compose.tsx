@@ -43,7 +43,7 @@ export function addresses(field: string): string[] {
 }
 
 /**
- * The docked composer (docs/design Compose).
+ * The docked composer.
  *
  * Docked rather than a separate window: a reply is a response to something you
  * are reading, and taking over the screen to write two lines loses the thing

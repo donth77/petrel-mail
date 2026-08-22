@@ -2,7 +2,7 @@ import { t } from './strings';
 import type { PickerOption } from '../components/Picker';
 
 /**
- * The snooze presets, resolved against the current time (docs/design Pickers).
+ * The snooze presets, resolved against the current time.
  *
  * Each option carries the instant it resolves to as its id, and shows that
  * instant beside its name: "Tomorrow" is not a time, and a picker that hides

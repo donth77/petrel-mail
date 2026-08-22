@@ -18,7 +18,7 @@ export const DEFAULTS = {
   language: 'system',
   clock: 'system' as ClockPref,
 
-  // Notifications (docs/design SettingsNotifications).
+  // Notifications.
   //
   // What earns an interruption, rather than a bare on/off: "all new mail" is
   // the setting people turn off entirely after a week, and turning it off is
@@ -42,7 +42,7 @@ export const DEFAULTS = {
 
   /// Seconds to hold a message before it goes. Nothing reaches the server while
   /// the countdown runs, which is what makes undo a cancel rather than a recall
-  /// — the only kind that actually works (docs/design Compose).
+  /// — the only kind that actually works.
   undoSendSeconds: '10',
   /// Warn before sending a message that mentions an attachment and has none.
   warnMissingAttachment: 'on' as 'on' | 'off',

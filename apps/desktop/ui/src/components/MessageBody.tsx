@@ -7,7 +7,7 @@ import { api } from '../lib/api';
  * The frame sizes itself: it posts its height out, and we set the iframe to
  * match, so the conversation scrolls as one column instead of nesting a scroll
  * region inside a scroll region. That requires one script *we* inject, admitted
- * by a per-response CSP nonce — ADR-0004 Amendment 1. Sender script is stripped
+ * by a per-response CSP nonce. Sender script is stripped
  * by the sanitizer and could never carry a matching nonce anyway; the frame is
  * still opaque-origin, still network-blocked by CSP, still cut off from IPC.
  */

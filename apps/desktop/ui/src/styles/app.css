@@ -748,7 +748,7 @@ mark {
 }
 
 /* The conversation scrolls as one column. Each message frame is sized to its own
-   content (ADR-0004 Amendment 1), so there is no scroll region inside a scroll
+   content, so there is no scroll region inside a scroll
    region. */
 .reader-body {
   flex-grow: 1;
@@ -1859,7 +1859,7 @@ mark {
   border-color: var(--ink3);
 }
 
-/* Move (V) and Tag (L) pickers — docs/design Pickers.
+/* Move (V) and Tag (L) pickers.
    Values lifted from the mockup's .pop/.head/.opt/.foot rather than
    re-derived, so the two cannot drift apart. */
 .picker {
@@ -2103,7 +2103,7 @@ mark {
   border-color: var(--ink3);
 }
 
-/* Docked composer (docs/design Compose). Bottom-right rather than a window:
+/* Docked composer. Bottom-right rather than a window:
    a reply answers something you are reading, and taking over the screen to
    write two lines loses the thing being replied to. */
 .compose {

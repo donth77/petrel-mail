@@ -1,5 +1,5 @@
 /* Design tokens — the single source for colour and type, lifted from the design
-   canvas (docs/design). Components reference tokens only; a literal colour in a
+   canvas. Components reference tokens only; a literal colour in a
    component is a bug, because it will be right in one theme and wrong in the other.
 
    Theme has three states, matching the Appearance setting: Light, Dark, and

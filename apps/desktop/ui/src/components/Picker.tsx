@@ -47,7 +47,7 @@ function Highlight({ text, hits }: { text: string; hits: number[] }) {
 
 /**
  * The move and tag pickers, which are the same control with two selection
- * models (docs/design Pickers).
+ * models.
  *
  * Typing filters and ↵ takes the top match, so the common case — a folder you
  * already know the name of — is one keystroke and a few letters rather than a

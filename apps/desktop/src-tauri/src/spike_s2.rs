@@ -1,4 +1,4 @@
-//! Spike S2 — webview isolation matrix (ADR-0004 gate).
+//! Webview isolation matrix: which layer actually blocks what.
 //!
 //! Serves deliberately hostile "message" documents over the `petrel-msg`
 //! custom protocol and observes, **from the Rust side**, what the webview
@@ -113,7 +113,7 @@ pub fn handle(request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
     }
 
     eprintln!("[s2] DOC request {uri}");
-    // The per-message policy from ADR-0004 (corrected form): no default source,
+    // The per-message policy: no default source,
     // images only via our own scheme, and the sanitizer's inline styles allowed.
     let strict = "default-src 'none'; img-src petrel-msg: http://petrel-msg.localhost; \
                   style-src 'unsafe-inline'; style-src-attr 'unsafe-inline'; script-src 'none'; \
