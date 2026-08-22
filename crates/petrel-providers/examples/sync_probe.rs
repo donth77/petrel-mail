@@ -89,6 +89,34 @@ async fn main() {
         }
         Err(e) => println!("fetch FAILED after {:?}: {e}", t1.elapsed()),
     }
+
+    // IDLE is the part most likely to be wrong in a way nothing notices, so it
+    // gets exercised here rather than discovered in production silence.
+    let idle_secs: u64 = std::env::args()
+        .nth(2)
+        .and_then(|a| a.parse().ok())
+        .unwrap_or(0);
+    if idle_secs > 0 {
+        probe_idle(&cfg, idle_secs).await;
+    }
+}
+
+async fn probe_idle(cfg: &ImapConfig, secs: u64) {
+    use std::time::Duration;
+    println!();
+    println!("idle      : holding the connection for up to {secs}s…");
+    let t = Instant::now();
+    match petrel_providers::imap::idle_once(cfg, "INBOX", Duration::from_secs(secs)).await {
+        Ok(true) => println!(
+            "idle      : server reported activity after {:?}",
+            t.elapsed()
+        ),
+        Ok(false) => println!(
+            "idle      : clean timeout after {:?} (connection held, no news)",
+            t.elapsed()
+        ),
+        Err(e) => println!("idle FAILED after {:?}: {e}", t.elapsed()),
+    }
 }
 
 fn env(key: &str) -> String {

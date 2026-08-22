@@ -6,8 +6,10 @@
 //! CONDSTORE, so the bottom rung is the common case, not an edge case.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_imap::Client;
+use async_imap::extensions::idle::IdleResponse;
 use futures::StreamExt;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
@@ -435,6 +437,73 @@ where
     }
     session.logout().await?;
     Ok(out)
+}
+
+/// Waits on the server for something to happen, or until `timeout`.
+///
+/// This is IMAP's push (RFC 2177): the connection is held open and the server
+/// speaks first when mail arrives, so delivery is immediate instead of however
+/// long is left on a poll interval.
+///
+/// Returns true when the server reported activity, false on a clean timeout.
+/// The caller treats both the same way — go and look — because IDLE says only
+/// that *something* changed, never what: a new message, a flag set from
+/// another client, an expunge. Deciding what happened is the resync's job.
+///
+/// The 29-minute ceiling in RFC 2177 is why this returns rather than looping
+/// internally. A connection held longer is one many servers quietly drop, and a
+/// dropped IDLE fails in the worst way — it simply stops delivering, with no
+/// error to notice. Coming back up for air on a timer makes that failure a
+/// reconnect rather than a silence.
+pub async fn idle_once(cfg: &ImapConfig, folder: &str, timeout: Duration) -> Result<bool> {
+    match cfg.security {
+        Security::Tls => {
+            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
+            idle_session(client, cfg, folder, timeout).await
+        }
+        #[cfg(feature = "insecure-plaintext")]
+        Security::InsecurePlaintext => {
+            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
+            idle_session(Client::new(tcp), cfg, folder, timeout).await
+        }
+    }
+}
+
+async fn idle_session<S>(
+    client: Client<S>,
+    cfg: &ImapConfig,
+    folder: &str,
+    timeout: Duration,
+) -> Result<bool>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug + 'static,
+{
+    let mut session = client
+        .login(&cfg.user, &cfg.pass)
+        .await
+        .map_err(|(e, _)| e)?;
+    session.select(folder).await?;
+
+    let mut handle = session.idle();
+    handle.init().await?;
+    let woke = {
+        // Two timeouts, because the library's is an *inactivity* timeout: it is
+        // reset by any response, including the "* OK Still here" keepalives
+        // Gmail sends. Left to itself a 20-minute idle can outlive RFC 2177's
+        // 29-minute ceiling indefinitely, which is precisely the case that ends
+        // in a silently dropped connection. The outer one is wall-clock and
+        // cannot be reset by anything the server says.
+        let (idle_wait, _interrupt) = handle.wait_with_timeout(timeout);
+        match tokio::time::timeout(timeout, idle_wait).await {
+            Ok(r) => matches!(r?, IdleResponse::NewData(_)),
+            Err(_) => false,
+        }
+    };
+    // DONE before logout: leaving a connection in IDLE and dropping it makes
+    // the server hold resources until its own timeout expires.
+    let mut session = handle.done().await?;
+    session.logout().await?;
+    Ok(woke)
 }
 
 /// Fetches everything above `since_uid`, streaming each message as it arrives.

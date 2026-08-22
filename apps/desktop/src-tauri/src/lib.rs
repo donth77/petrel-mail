@@ -299,6 +299,7 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
         *state.source.lock().unwrap() = format!("syncing {}…", cfg.host);
 
         let mut has_move = false;
+        let mut has_idle = false;
         // Folders first. Without them every message ingests with no placement,
         // so the rail's views have nothing to filter on and archiving has
         // nowhere to put anything — which is how a sync can look like it worked
@@ -306,10 +307,10 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
         match petrel_providers::imap::probe(&cfg, 0).await {
             Ok(report) => {
                 has_move = report.greeting_capabilities.move_;
+                has_idle = report.greeting_capabilities.idle;
                 log_sync(&format!(
-                    "probe ok: {} folder(s), MOVE={}",
+                    "probe ok: {} folder(s), MOVE={has_move}, IDLE={has_idle}",
                     report.folders.len(),
-                    has_move
                 ));
                 let rows: Vec<(String, Option<String>)> = report
                     .folders
@@ -417,8 +418,30 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
                 .filter(|s| *s >= 15)
                 .unwrap_or(120),
         );
+        // RFC 2177 puts the ceiling at 29 minutes; 20 leaves room for a server
+        // that is stricter than the standard without making reconnects frequent.
+        let idle_ceiling = std::time::Duration::from_secs(20 * 60);
+        log_sync(&format!(
+            "watching for new mail via {}",
+            if has_idle { "IDLE" } else { "poll" }
+        ));
+
         loop {
-            tokio::time::sleep(every).await;
+            if has_idle {
+                // Held open until the server speaks, so mail lands immediately
+                // rather than on the next tick. A failure here drops through to
+                // the poll below rather than ending the loop: losing push is a
+                // reason to check more slowly, not to stop checking.
+                match petrel_providers::imap::idle_once(&cfg, "INBOX", idle_ceiling).await {
+                    Ok(_) => {}
+                    Err(e) => {
+                        log_sync(&format!("idle failed, falling back to poll: {e}"));
+                        tokio::time::sleep(every).await;
+                    }
+                }
+            } else {
+                tokio::time::sleep(every).await;
+            }
 
             // Deliver first, so the fetch that follows confirms local state
             // rather than contradicting it — the same ordering as startup.
