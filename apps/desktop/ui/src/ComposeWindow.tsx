@@ -34,7 +34,7 @@ export function ComposeWindow({ draftId }: { draftId: number }) {
       .loadDraft(draftId)
       .then((d) => {
         if (!live) return;
-        setDraft({ to: d.to, cc: '', subject: d.subject, body: d.body, savedId: d.id });
+        setDraft({ to: d.to, cc: '', subject: d.subject, body: d.body, html: d.html, savedId: d.id });
       })
       .catch((e) => live && setError(String(e)));
     api
@@ -57,7 +57,7 @@ export function ComposeWindow({ draftId }: { draftId: number }) {
 
   const save = async (d: Draft) => {
     try {
-      const id = await api.saveDraft(d.savedId ?? null, d.to, d.subject, d.body);
+      const id = await api.saveDraft(d.savedId ?? null, d.to, d.subject, d.body, d.html);
       setDraft({ ...d, savedId: id });
       return id;
     } catch (e) {
@@ -109,6 +109,7 @@ export function ComposeWindow({ draftId }: { draftId: number }) {
               addresses(draft.cc),
               draft.subject,
               draft.body,
+              draft.html || null,
               draft.inReplyTo ?? null,
               draft.references ?? [],
               (draft.attachments ?? []).map((a) => a.path),

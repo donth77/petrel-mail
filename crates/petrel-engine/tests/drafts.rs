@@ -15,7 +15,7 @@ fn store() -> (Store, i64) {
 #[test]
 fn a_saved_draft_appears_in_the_drafts_view_and_nowhere_else() {
     let (s, account) = store();
-    s.save_draft(account, None, "sam@example.com", "Hello", "Body text")
+    s.save_draft(account, None, "sam@example.com", "Hello", "Body text", "")
         .unwrap();
 
     let drafts = s
@@ -33,7 +33,7 @@ fn a_draft_comes_back_with_every_word_that_was_written() {
     // Longer than the snippet, which is where a truncated column would show.
     let body = "x".repeat(5_000);
     let id = s
-        .save_draft(account, None, "sam@example.com", "Long", &body)
+        .save_draft(account, None, "sam@example.com", "Long", &body, "")
         .unwrap();
 
     let back = s.load_draft(id).unwrap();
@@ -50,10 +50,10 @@ fn a_draft_comes_back_with_every_word_that_was_written() {
 fn saving_again_updates_rather_than_multiplying() {
     let (s, account) = store();
     let id = s
-        .save_draft(account, None, "a@example.com", "First", "one")
+        .save_draft(account, None, "a@example.com", "First", "one", "")
         .unwrap();
     let same = s
-        .save_draft(account, Some(id), "b@example.com", "Second", "two")
+        .save_draft(account, Some(id), "b@example.com", "Second", "two", "")
         .unwrap();
 
     assert_eq!(id, same);
@@ -75,7 +75,7 @@ fn saving_again_updates_rather_than_multiplying() {
 fn a_draft_is_marked_as_one_and_counts_as_read() {
     let (s, account) = store();
     let id = s
-        .save_draft(account, None, "a@example.com", "S", "b")
+        .save_draft(account, None, "a@example.com", "S", "b", "")
         .unwrap();
     let f = s.flags_of(id).unwrap();
     assert!(f & flags::DRAFT != 0, "not flagged as a draft");
@@ -88,7 +88,7 @@ fn a_draft_is_marked_as_one_and_counts_as_read() {
 fn deleting_a_draft_removes_it() {
     let (s, account) = store();
     let id = s
-        .save_draft(account, None, "a@example.com", "S", "b")
+        .save_draft(account, None, "a@example.com", "S", "b", "")
         .unwrap();
     s.delete_draft(id).unwrap();
     assert!(
@@ -113,7 +113,7 @@ mod outbox {
     fn scheduling_moves_a_draft_from_drafts_to_the_outbox() {
         let (s, account) = store();
         let id = s
-            .save_draft(account, None, "a@example.com", "Later", "body")
+            .save_draft(account, None, "a@example.com", "Later", "body", "")
             .unwrap();
         assert_eq!(
             s.list_threads(&ListView::Folder("drafts".into()), 0, 50)
@@ -139,7 +139,7 @@ mod outbox {
     fn a_scheduled_send_can_be_pulled_back() {
         let (s, account) = store();
         let id = s
-            .save_draft(account, None, "a@example.com", "Later", "body")
+            .save_draft(account, None, "a@example.com", "Later", "body", "")
             .unwrap();
         s.schedule_send(id, Some(now_ms() + 600_000)).unwrap();
         s.schedule_send(id, None).unwrap();
@@ -159,10 +159,10 @@ mod outbox {
     fn only_messages_whose_time_has_come_are_due() {
         let (s, account) = store();
         let soon = s
-            .save_draft(account, None, "a@example.com", "Soon", "b")
+            .save_draft(account, None, "a@example.com", "Soon", "b", "")
             .unwrap();
         let later = s
-            .save_draft(account, None, "b@example.com", "Later", "b")
+            .save_draft(account, None, "b@example.com", "Later", "b", "")
             .unwrap();
         s.schedule_send(soon, Some(now_ms() - 1_000)).unwrap();
         s.schedule_send(later, Some(now_ms() + 600_000)).unwrap();
@@ -176,10 +176,45 @@ mod outbox {
     fn one_missed_while_the_app_was_shut_is_still_due() {
         let (s, account) = store();
         let id = s
-            .save_draft(account, None, "a@example.com", "Yesterday", "b")
+            .save_draft(account, None, "a@example.com", "Yesterday", "b", "")
             .unwrap();
         // Due long ago. Nothing ran in between, and nothing needed to.
         s.schedule_send(id, Some(now_ms() - 86_400_000)).unwrap();
         assert_eq!(s.due_sends(account, now_ms()).unwrap().len(), 1);
     }
+}
+
+/// A draft keeps both halves, because the one that sends it may have no editor.
+///
+/// A scheduled message goes out hours later from a background pass; there is
+/// nothing to ask for the rich text then. Deriving it back from stored text
+/// would flatten the message the user actually wrote.
+#[test]
+fn a_draft_remembers_its_formatting() {
+    let mut s = Store::open_in_memory().unwrap();
+    let account = s.ensure_test_account().unwrap();
+    let id = s
+        .save_draft(
+            account,
+            None,
+            "sam@example.com",
+            "Plan",
+            "Here is the plan <https://x.example/p>.",
+            r#"<p>Here is the <a href="https://x.example/p">plan</a>.</p>"#,
+        )
+        .unwrap();
+
+    let back = s.load_draft(id).unwrap();
+    assert!(
+        back.body.contains("<https://x.example/p>"),
+        "text half lost"
+    );
+    assert!(back.html.contains("<a href="), "rich half lost");
+
+    // And a draft written before there was a rich half reads back empty rather
+    // than failing, so old drafts still open.
+    let plain = s
+        .save_draft(account, None, "a@example.com", "Old", "just words", "")
+        .unwrap();
+    assert_eq!(s.load_draft(plain).unwrap().html, "");
 }

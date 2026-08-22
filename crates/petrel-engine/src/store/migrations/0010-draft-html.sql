@@ -1,0 +1,12 @@
+-- The rich-text half of a draft.
+--
+-- `draft_body` keeps the plain text, which is what the list snippets, the
+-- missing-attachment check and search all want, and what goes out as the text
+-- half of every message. This holds the HTML the editor produced.
+--
+-- Both are stored rather than one being derived from the other. The text is
+-- generated from the editor's document tree, which exists only while the editor
+-- is open — a draft sent later by the scheduler has no editor to ask, and
+-- turning stored HTML back into good text means re-deriving structure that was
+-- already known and getting the awkward cases wrong.
+ALTER TABLE messages ADD COLUMN draft_html TEXT;

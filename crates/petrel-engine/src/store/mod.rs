@@ -11,7 +11,7 @@ use rusqlite::functions::FunctionFlags;
 use rusqlite::{Connection, params};
 use std::path::Path;
 
-pub const SCHEMA_VERSION: i64 = 9;
+pub const SCHEMA_VERSION: i64 = 10;
 /// Bumped whenever text extraction changes; a mismatch forces reindexing.
 pub const EXTRACTOR_VERSION: i64 = 1;
 
@@ -211,7 +211,11 @@ pub struct DraftRecord {
     pub id: i64,
     pub to: String,
     pub subject: String,
+    /// Plain text: the snippet, the search index, and the text half of the
+    /// message that goes out.
     pub body: String,
+    /// The rich-text half, empty for a draft written before there was one.
+    pub html: String,
 }
 
 /// Who a message is sent as.
@@ -810,6 +814,9 @@ impl Store {
         if ver < 9 {
             conn.execute_batch(include_str!("migrations/0009-remote-senders.sql"))?;
         }
+        if ver < 10 {
+            conn.execute_batch(include_str!("migrations/0010-draft-html.sql"))?;
+        }
         if ver < SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             conn.execute(
@@ -1391,6 +1398,19 @@ impl Store {
     }
 
     /// The blob backing a message, for the reading pane to fetch and render.
+    /// Who sent a message and when — the two facts an attribution line needs.
+    pub fn message_header(&self, message_id: i64) -> Result<Option<(String, i64)>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT coalesce(nullif(from_display, ''), coalesce(from_addr, '')), date_ms
+                 FROM messages WHERE id = ?1",
+                params![message_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?)
+    }
+
     pub fn blob_hash_for(&self, message_id: i64) -> Result<Option<String>> {
         let mut stmt = self
             .conn
@@ -1739,6 +1759,7 @@ impl Store {
         to: &str,
         subject: &str,
         body: &str,
+        html: &str,
     ) -> Result<i64> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1753,17 +1774,18 @@ impl Store {
             Some(id) => {
                 self.conn.execute(
                     "UPDATE messages
-                     SET date_ms = ?2, subject = ?3, snippet = ?4, draft_body = ?5
+                     SET date_ms = ?2, subject = ?3, snippet = ?4, draft_body = ?5,
+                         draft_html = ?6
                      WHERE id = ?1",
-                    params![id, now, subject, snippet, body],
+                    params![id, now, subject, snippet, body, html],
                 )?;
                 id
             }
             None => {
                 self.conn.execute(
                     "INSERT INTO messages(account_id, date_ms, from_addr, from_display,
-                                          subject, snippet, draft_body, flags)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                                          subject, snippet, draft_body, draft_html, flags)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                     params![
                         account_id,
                         now,
@@ -1772,6 +1794,7 @@ impl Store {
                         subject,
                         snippet,
                         body,
+                        html,
                         flags::DRAFT | flags::SEEN
                     ],
                 )?;
@@ -1836,10 +1859,11 @@ impl Store {
 
     /// Reads a draft back for editing.
     pub fn load_draft(&self, id: i64) -> Result<DraftRecord> {
-        let (subject, body): (String, String) = self.conn.query_row(
-            "SELECT coalesce(subject,''), coalesce(draft_body,'') FROM messages WHERE id = ?1",
+        let (subject, body, html): (String, String, String) = self.conn.query_row(
+            "SELECT coalesce(subject,''), coalesce(draft_body,''), coalesce(draft_html,'')
+             FROM messages WHERE id = ?1",
             params![id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?;
         let mut stmt = self.conn.prepare(
             "SELECT addr_norm FROM message_addresses WHERE message_id = ?1 AND role = 'to'",
@@ -1852,6 +1876,7 @@ impl Store {
             to: to.join(", "),
             subject,
             body,
+            html,
         })
     }
 

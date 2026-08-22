@@ -14,6 +14,7 @@ fn base() -> Outgoing {
         cc: vec![],
         subject: "Hello".into(),
         body_text: "Body text.".into(),
+        body_html: None,
         in_reply_to: None,
         references: vec![],
         attachments: vec![],
@@ -125,4 +126,42 @@ mod attachments {
             assert!(encoded_size(n) >= n, "shrank at {n}");
         }
     }
+}
+
+/// A rich-text message goes out as both halves or not at all.
+///
+/// HTML alone is unreadable in a text client, opaque to anything that indexes
+/// mail, and a spam signal at more than one provider. The two parts are
+/// generated from the same document, so they cannot describe different
+/// messages — this checks the envelope actually carries both.
+#[test]
+fn rich_text_sends_multipart_alternative_with_both_halves() {
+    let mut msg = base();
+    msg.body_text = "Hello, and here is the plan <https://x.example/plan>.".into();
+    msg.body_html =
+        Some(r#"<p>Hello, and here is the <a href="https://x.example/plan">plan</a>.</p>"#.into());
+
+    let (_, bytes) = msg.render("example.com");
+    let raw = String::from_utf8_lossy(&bytes);
+
+    assert!(raw.contains("multipart/alternative"), "{raw}");
+    assert!(
+        raw.contains("text/plain"),
+        "the text half is missing: {raw}"
+    );
+    assert!(raw.contains("text/html"), "the html half is missing: {raw}");
+    assert!(raw.contains("here is the plan"), "text body missing: {raw}");
+    assert!(
+        raw.contains("x.example/plan"),
+        "the link survived neither half: {raw}"
+    );
+}
+
+/// Without HTML it stays a plain message. Nobody sending two lines of text
+/// should pay for a multipart envelope.
+#[test]
+fn plain_text_alone_is_not_wrapped_in_multipart() {
+    let (_, bytes) = base().render("example.com");
+    let raw = String::from_utf8_lossy(&bytes);
+    assert!(!raw.contains("multipart/alternative"), "{raw}");
 }

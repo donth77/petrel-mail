@@ -80,6 +80,14 @@ pub struct Outgoing {
     pub cc: Vec<String>,
     pub subject: String,
     pub body_text: String,
+    /// The rich-text half, when there is one.
+    ///
+    /// Both parts always go out together as `multipart/alternative` — never
+    /// HTML alone. A message with no text alternative is unreadable in a text
+    /// client, illegible to anything that indexes mail, and treated as a spam
+    /// signal by more than one provider. The text is generated from the same
+    /// document as the HTML, so the two cannot describe different messages.
+    pub body_html: Option<String>,
     /// Set when replying, so the thread survives at the other end. Threading is
     /// a property of these headers, not of the subject line, and a reply that
     /// omits them starts a new conversation in every client that receives it.
@@ -113,6 +121,12 @@ impl Outgoing {
             .subject(self.subject.as_str())
             .text_body(self.body_text.as_str())
             .message_id(message_id.as_str());
+
+        // mail_builder assembles the tree: text plus html becomes
+        // multipart/alternative, and attachments wrap that in multipart/mixed.
+        if let Some(html) = &self.body_html {
+            b = b.html_body(html.as_str());
+        }
 
         for a in &self.attachments {
             b = b.attachment(

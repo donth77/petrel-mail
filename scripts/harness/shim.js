@@ -328,10 +328,23 @@
         return p.addr.indexOf(q) === 0 || p.display.toLowerCase().indexOf(q) === 0;
       });
     },
+    quote_message: function () {
+      return {
+        html: '<p>Could you take a look before Friday?</p><p>Thanks,<br>Dana</p>',
+        text: 'Could you take a look before Friday?\n\nThanks,\nDana',
+        from: 'Dana Wu',
+        date_ms: Date.now() - 3600000,
+      };
+    },
     popout_message: function () {
       // No second window in a browser; recording the call is the assertion.
       return null;
     },
+    save_draft: function () { return 1; },
+    load_draft: function () {
+      return { id: 1, to: '', subject: '', body: '', html: '' };
+    },
+    delete_draft: function () { return null; },
     create_tag: function (a) {
       var id = 300 + tags.length;
       tags.push({ id: id, name: a.name, colour: '', thread_count: 0 });

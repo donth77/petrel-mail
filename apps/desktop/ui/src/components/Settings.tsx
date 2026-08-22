@@ -12,7 +12,6 @@ import { Identities } from './settings/Identities';
 import { Privacy } from './settings/Privacy';
 import { Storage } from './settings/Storage';
 import { Icon } from './Icon';
-import { Tip } from './Tip';
 import { clickAway } from '../lib/dialog';
 import { t, type StringId } from '../lib/strings';
 
@@ -85,11 +84,9 @@ export function Settings({ open, pane: requested, onClose, onMessage }: Props) {
         </nav>
 
         <div className="settings-pane">
-          <Tip label={t('close-title')} placement="bottom">
             <DialogDismiss className="close-btn settings-esc" aria-label={t('close')}>
               <Icon icon={X} size={15} />
             </DialogDismiss>
-          </Tip>
           {pane === 'appearance' && <Appearance />}
           {pane === 'accounts' && <Accounts />}
           {pane === 'notifications' && <Notifications />}

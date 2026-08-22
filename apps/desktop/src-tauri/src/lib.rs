@@ -866,6 +866,7 @@ async fn send_message(
     cc: Vec<String>,
     subject: String,
     body: String,
+    html: Option<String>,
     in_reply_to: Option<String>,
     references: Vec<String>,
     attachments: Vec<String>,
@@ -877,6 +878,7 @@ async fn send_message(
         cc,
         subject,
         body,
+        html,
         in_reply_to,
         references,
         attachments,
@@ -896,6 +898,7 @@ async fn deliver(
     cc: Vec<String>,
     subject: String,
     body: String,
+    html: Option<String>,
     in_reply_to: Option<String>,
     references: Vec<String>,
     attachments: Vec<String>,
@@ -943,6 +946,7 @@ async fn deliver(
         cc,
         subject,
         body_text: body,
+        body_html: html.filter(|h| !h.trim().is_empty()),
         in_reply_to,
         references,
         attachments: files,
@@ -1127,6 +1131,9 @@ async fn send_due(state: Arc<AppState>, account: i64) {
             Vec::new(),
             d.subject,
             d.body,
+            // Stored alongside the text, so a message posted hours ago goes out
+            // in the form it was written rather than flattened by the wait.
+            Some(d.html).filter(|h| !h.trim().is_empty()),
             None,
             Vec::new(),
             Vec::new(),
@@ -1152,6 +1159,7 @@ fn save_draft(
     to: String,
     subject: String,
     body: String,
+    html: String,
     state: State<Arc<AppState>>,
 ) -> Result<i64, String> {
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
@@ -1160,7 +1168,7 @@ fn save_draft(
         .map_err(|e| e.to_string())?
         .ok_or("no account")?;
     store
-        .save_draft(account, draft_id, &to, &subject, &body)
+        .save_draft(account, draft_id, &to, &subject, &body, &html)
         .map_err(|e| e.to_string())
 }
 
@@ -1407,6 +1415,55 @@ fn search_messages(
 /// Issues a one-message URL for the reading pane. The UI never receives the
 /// body over IPC — bulk bytes go over the custom protocol, and the frame that
 /// renders them has no IPC access at all.
+/// The original of a message, ready to be quoted in a reply.
+#[derive(serde::Serialize)]
+struct Quoted {
+    html: String,
+    text: String,
+    from: String,
+    date_ms: i64,
+}
+
+/// Reads a message back for quoting.
+///
+/// Sanitized before it leaves, and with remote content stripped — not because
+/// the composer would render it, but because whatever is quoted is about to be
+/// *sent*. Quoting a tracked message with its pixel intact would forward that
+/// pixel to everyone on the reply and fire it again for each of them, turning
+/// the person replying into the tracker's delivery mechanism.
+#[tauri::command]
+fn quote_message(message_id: i64, state: State<Arc<AppState>>) -> Result<Quoted, String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    let hash = store
+        .blob_hash_for(message_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("message has no stored body")?;
+    let raw = state
+        .blobs
+        .read(&hash)
+        .map_err(|_| "message body unavailable")?;
+    let parsed = petrel_mime::parse_message(&raw).ok_or("message could not be parsed")?;
+
+    let (from, date_ms) = store
+        .message_header(message_id)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+
+    let html = match parsed.body_html.as_deref() {
+        Some(h) => petrel_mime::sanitize_html(h, false).html,
+        // No HTML half: the text becomes the quote, escaped into paragraphs so
+        // it arrives as prose rather than as one run-on line.
+        None => petrel_mime::plain_text_to_html(&parsed.body_text),
+    };
+
+    Ok(Quoted {
+        html,
+        text: parsed.body_text,
+        from,
+        date_ms,
+    })
+}
+
 #[tauri::command]
 fn message_url(message_id: i64, state: State<Arc<AppState>>) -> Result<String, String> {
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
@@ -1815,6 +1872,7 @@ pub fn run() {
             popout_compose,
             popout_message,
             complete_addresses,
+            quote_message,
             save_draft,
             load_draft,
             delete_draft,

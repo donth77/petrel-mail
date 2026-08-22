@@ -21,7 +21,8 @@ import { Compose, addresses, type Draft } from './components/Compose';
 import { snoozeOptions } from './lib/snooze';
 import { promisesMissingAttachment } from './lib/compose-checks';
 import { replyTargets } from './lib/reply';
-import { startingBody } from './lib/signature';
+import { replyBody } from './lib/quote';
+import { startingBody, startingHtml } from './lib/signature';
 import { ATTACHMENT_LIMIT, pickAttachments } from './lib/attachments';
 import { extend, prune, targets, toggle } from './lib/selection';
 import { notifiable, postDesktopNotification } from './lib/notify';
@@ -214,7 +215,13 @@ export function App() {
     },
     compose: () => {
       attachmentWarned.current = false;
-      setDraft({ to: '', cc: '', subject: '', body: startingBody(identity, false) });
+      setDraft({
+        to: '',
+        cc: '',
+        subject: '',
+        body: startingBody(identity, false),
+        html: startingHtml(identity, false),
+      });
     },
     reply: (all) => {
       // R follows the configured default; A always means reply-all.
@@ -227,6 +234,7 @@ export function App() {
         cc: '',
         subject: active.subject.match(/^fwd:/i) ? active.subject : `Fwd: ${active.subject}`,
         body: startingBody(identity, true),
+        html: startingHtml(identity, true),
       });
     },
     snooze: () => setPicker('snooze'),
@@ -313,6 +321,10 @@ export function App() {
       if (!last) return;
       const { to, cc } = replyTargets(last, identity?.address ?? '', all);
       attachmentWarned.current = false;
+      // The original, quoted. Fetched rather than taken from the row, which
+      // carries a 120-character snippet — a reply quoting a preview would be
+      // worse than one quoting nothing.
+      const quoted = await api.quoteMessage(last.id).catch(() => null);
       setDraft({
         to: to.join(', '),
         cc: cc.join(', '),
@@ -320,6 +332,15 @@ export function App() {
         // what people expect to read.
         subject: row.subject.match(/^re:/i) ? row.subject : `Re: ${row.subject}`,
         body: startingBody(identity, true),
+        html: quoted
+          ? replyBody(
+              startingHtml(identity, true),
+              quoted.from,
+              quoted.date_ms,
+              quoted.html,
+              settings.language === 'system' ? undefined : settings.language,
+            )
+          : startingHtml(identity, true),
         inReplyTo: null,
         references: [],
       });
@@ -338,6 +359,7 @@ export function App() {
         cc: '',
         subject: d.subject,
         body: d.body,
+        html: d.html,
         savedId: d.id,
       });
     } catch (e) {
@@ -351,7 +373,7 @@ export function App() {
    */
   const saveDraft = async (d: Draft) => {
     try {
-      const id = await api.saveDraft(d.savedId ?? null, d.to, d.subject, d.body);
+      const id = await api.saveDraft(d.savedId ?? null, d.to, d.subject, d.body, d.html);
       setDraft((cur) => (cur ? { ...cur, savedId: id } : cur));
       setToast(t('compose-saved'));
       // The Drafts view is a query, so it only changes when the list reloads.
@@ -401,6 +423,7 @@ export function App() {
           addresses(d.cc),
           d.subject,
           d.body,
+          d.html || null,
           d.inReplyTo ?? null,
           d.references ?? [],
           (d.attachments ?? []).map((a) => a.path),
@@ -623,7 +646,13 @@ export function App() {
         collapsed={settings.railCollapsed === 'on'}
         onCompose={() => {
           attachmentWarned.current = false;
-          setDraft({ to: '', cc: '', subject: '', body: startingBody(identity, false) });
+          setDraft({
+            to: '',
+            cc: '',
+            subject: '',
+            body: startingBody(identity, false),
+            html: startingHtml(identity, false),
+          });
         }}
         onToggleCollapsed={() =>
           set('railCollapsed', settings.railCollapsed === 'on' ? 'off' : 'on')
@@ -841,7 +870,7 @@ export function App() {
             setPicker(null);
             if (!d) return;
             void api
-              .saveDraft(d.savedId ?? null, d.to, d.subject, d.body)
+              .saveDraft(d.savedId ?? null, d.to, d.subject, d.body, d.html)
               .then((saved) => api.scheduleSend(saved, id))
               .then(() => {
                 setDraft(null);
@@ -892,7 +921,14 @@ export function App() {
           onSnooze: () => setPicker('snooze'),
           onMove: () => setPicker('folder'),
           onTag: () => setPicker('tag'),
-          onCompose: () => setDraft({ to: '', cc: '', subject: '', body: startingBody(identity, false) }),
+          onCompose: () =>
+            setDraft({
+              to: '',
+              cc: '',
+              subject: '',
+              body: startingBody(identity, false),
+              html: startingHtml(identity, false),
+            }),
           onReply: () => {
             if (active) void startReply(active.id, settings.replyDefault === 'reply-all');
           },

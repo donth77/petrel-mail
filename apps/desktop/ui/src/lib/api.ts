@@ -35,6 +35,9 @@ export type Tag = { id: number; name: string; colour: string; thread_count: numb
 
 export type Attachment = { filename: string; size: number };
 
+/** A message read back for quoting: sanitized, with remote content stripped. */
+export type Quoted = { html: string; text: string; from: string; date_ms: number };
+
 /** Somebody worth offering while a recipient is typed. */
 export type Correspondent = { addr: string; display: string; written_to: boolean };
 
@@ -75,7 +78,15 @@ export type Account = {
   folders: FolderMapping[];
 };
 
-export type DraftRecord = { id: number; to: string; subject: string; body: string };
+export type DraftRecord = {
+  id: number;
+  to: string;
+  subject: string;
+  /** Plain text: the snippet, the search index, and the text half that is sent. */
+  body: string;
+  /** The rich half; empty for a draft written before there was one. */
+  html: string;
+};;
 
 export type Identity = {
   address: string;
@@ -236,7 +247,7 @@ const mock = {
   }),
   setIdentity: async () => {},
   saveDraft: async () => 1,
-  loadDraft: async (): Promise<DraftRecord> => ({ id: 1, to: '', subject: '', body: '' }),
+  loadDraft: async (): Promise<DraftRecord> => ({ id: 1, to: '', subject: '', body: '', html: '' }),
   deleteDraft: async () => {},
   scheduleSend: async () => {},
   popoutCompose: async () => {},
@@ -261,6 +272,12 @@ const mock = {
   viewCounts: async (mode: string): Promise<[string, number][]> =>
     mode === 'off' ? [] : [['inbox', 3], ['drafts', 1], ['spam', 2]],
   popoutMessage: async () => {},
+  quoteMessage: async (): Promise<Quoted> => ({
+    html: '<p>The original message, as it was written.</p>',
+    text: 'The original message, as it was written.',
+    from: 'Dana Wu',
+    date_ms: Date.now() - 3600_000,
+  }),
   completeAddresses: async (prefix: string): Promise<Correspondent[]> =>
     [
       { addr: 'nadia@example.com', display: 'Nadia Okafor', written_to: true },
@@ -324,6 +341,7 @@ const real = {
   tags: () => invoke<Tag[]>('list_tags'),
   viewCounts: (mode: string) => invoke<[string, number][]>('view_counts', { mode }),
   popoutMessage: (threadId: number) => invoke<void>('popout_message', { threadId }),
+  quoteMessage: (messageId: number) => invoke<Quoted>('quote_message', { messageId }),
   completeAddresses: (prefix: string) =>
     invoke<Correspondent[]>('complete_addresses', { prefix }),
   remoteStatus: (messageId: number) => invoke<RemoteStatus>('remote_status', { messageId }),
@@ -338,19 +356,20 @@ const real = {
   createFolder: (path: string) => invoke<number>('create_folder', { path }),
   createTag: (name: string) => invoke<number>('create_tag', { name }),
   send: (
-    to: string[], cc: string[], subject: string, body: string,
+    to: string[], cc: string[], subject: string, body: string, html: string | null,
     inReplyTo: string | null, references: string[], attachments: string[],
   ) =>
     invoke<string>('send_message', {
-      to, cc, subject, body, inReplyTo, references, attachments,
+      to, cc, subject, body, html, inReplyTo, references, attachments,
     }),
   storage: () => invoke<StorageReport>('storage_report'),
   exportMbox: (view: string, path: string) => invoke<string>('export_mbox', { view, path }),
   identity: () => invoke<Identity>('get_identity'),
   setIdentity: (displayName: string, signature: string, signatureOnReply: boolean) =>
     invoke<void>('set_identity', { displayName, signature, signatureOnReply }),
-  saveDraft: (draftId: number | null, to: string, subject: string, body: string) =>
-    invoke<number>('save_draft', { draftId, to, subject, body }),
+  saveDraft: (
+    draftId: number | null, to: string, subject: string, body: string, html: string,
+  ) => invoke<number>('save_draft', { draftId, to, subject, body, html }),
   loadDraft: (id: number) => invoke<DraftRecord>('load_draft', { id }),
   deleteDraft: (id: number) => invoke<void>('delete_draft', { id }),
   scheduleSend: (draftId: number, atMs: number | null) =>

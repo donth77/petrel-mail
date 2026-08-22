@@ -9,7 +9,6 @@ import {
 } from '../lib/commands';
 import { count as fmtCount } from '../lib/format';
 import { Icon } from './Icon';
-import { Tip } from './Tip';
 import { clickAway } from '../lib/dialog';
 import { t } from '../lib/strings';
 
@@ -111,11 +110,9 @@ export function Palette({ open, onClose, subject, ctx }: Props) {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
-            <Tip label={t('close-title')} placement="bottom">
               <DialogDismiss className="close-btn palette-esc" aria-label={t('close')}>
               <Icon icon={X} size={15} />
             </DialogDismiss>
-            </Tip>
           </div>
 
           <ComboboxList className="palette-list">

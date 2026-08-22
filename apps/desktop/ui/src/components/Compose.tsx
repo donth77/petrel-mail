@@ -4,6 +4,8 @@ import { fileSize } from '../lib/format';
 import type { Attached } from '../lib/attachments';
 import { Icon } from './Icon';
 import { Recipients } from './Recipients';
+import { RichText } from './RichText';
+import { plainTextFromDoc } from '../lib/plain-text';
 import { key } from '../lib/keys';
 import { t } from '../lib/strings';
 
@@ -11,7 +13,11 @@ export type Draft = {
   to: string;
   cc: string;
   subject: string;
+  /** Plain text, generated from the editor's document. What the
+   *  missing-attachment check reads and what goes out as the text half. */
   body: string;
+  /** The rich half, as the editor produced it. */
+  html: string;
   /** Set when this is a reply, so the thread survives at the other end. */
   inReplyTo?: string | null;
   references?: string[];
@@ -48,14 +54,13 @@ export { splitRecipients as addresses } from '../lib/recipients';
  */
 export function Compose({ draft, account, onChange, onClose, onSend, onAttach, onSaveDraft, onSendLater, onPopOut }: Props) {
   const toRef = useRef<HTMLInputElement>(null);
-  const bodyRef = useRef<HTMLTextAreaElement>(null);
   const [showCc, setShowCc] = useState(draft.cc.length > 0);
 
   // Focus where the work is: a fresh message needs a recipient, a reply already
-  // has one and needs words.
+  // has one and needs words. The body half is the editor's own autoFocus, which
+  // has to wait for it to exist.
   useEffect(() => {
-    if (draft.to) bodyRef.current?.focus();
-    else toRef.current?.focus();
+    if (!draft.to) toRef.current?.focus();
     // Once, on open — moving focus as the draft changes would fight the typist.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -103,7 +108,10 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
 
       <div className="hdrow">
         <span className="lab">{t('compose-from')}</span>
-        <span className="clip">{account}</span>
+        {/* Read-only, and shaped to say so rather than explained. In the same
+            row as To and Subject it read as a field to click into; a filled
+            chip reads as a value that was decided elsewhere. */}
+        <span className="clip compose-from-value">{account}</span>
       </div>
 
       <div className="hdrow">
@@ -138,12 +146,13 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
         />
       </div>
 
-      <textarea
-        ref={bodyRef}
-        className="compose-body"
-        value={draft.body}
-        onChange={(e) => field('body', e.target.value)}
-        aria-label={t('compose-body')}
+      {/* Both halves come out of one change: the HTML that is sent, and the
+          text generated from the same document. Deriving one from the other
+          later would mean two descriptions of one message that can disagree. */}
+      <RichText
+        html={draft.html}
+        autoFocus={Boolean(draft.to)}
+        onChange={(html, doc) => onChange({ ...draft, html, body: plainTextFromDoc(doc) })}
       />
 
       {(draft.attachments?.length ?? 0) > 0 && (

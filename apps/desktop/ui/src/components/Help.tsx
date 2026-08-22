@@ -3,7 +3,6 @@ import { Dialog, DialogDismiss, Tab, TabList, TabPanel, useTabStore } from '@ari
 import { Search, X } from 'lucide-react';
 import { OPERATOR_GROUPS, shortcutGroups } from '../lib/help';
 import { Icon } from './Icon';
-import { Tip } from './Tip';
 import { clickAway } from '../lib/dialog';
 import { t } from '../lib/strings';
 
@@ -75,11 +74,9 @@ export function Help({ open, onClose }: { open: boolean; onClose: () => void }) 
               aria-label={t('help-filter-shortcuts')}
             />
           </label>
-          <Tip label={t('close-title')} placement="bottom">
             <DialogDismiss className="close-btn" aria-label={t('close')}>
               <Icon icon={X} size={15} />
             </DialogDismiss>
-          </Tip>
         </div>
 
         <TabPanel store={tabs} tabId="shortcuts" className="help-panel keys">

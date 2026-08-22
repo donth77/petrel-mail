@@ -3113,3 +3113,255 @@ body.resizing {
   background: var(--accent);
   border-color: var(--accent);
 }
+
+/* ------------------------------------------------------------- rich text */
+
+/* The editor takes the space the textarea had, and keeps its own scroll: a
+   long message should not push Send off the bottom of the composer. */
+.rich-shell {
+  position: relative;
+  flex-grow: 1;
+  min-block-size: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.rich-tools {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 5px 12px;
+  border-block-end: 1px solid var(--hair2);
+  flex-shrink: 0;
+}
+
+.rich-btn {
+  display: grid;
+  place-items: center;
+  inline-size: 26px;
+  block-size: 26px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--ink2);
+  cursor: pointer;
+  padding: 0;
+}
+
+.rich-btn:hover {
+  background: var(--hair2);
+  color: var(--ink);
+}
+
+/* On, not merely hovered: the state of the text under the caret. */
+.rich-btn.on {
+  background: color-mix(in oklab, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
+
+.rich-sep {
+  inline-size: 1px;
+  block-size: 16px;
+  margin-inline: 5px;
+  background: var(--hair);
+}
+
+/* The link card floats over the body instead of taking a row of its own.
+   Inserted into the flow it pushed the message down every time it opened,
+   moving the very words the link was being attached to. */
+.rich-link-card {
+  /* Placed against the selection in JS — see openLink. A fixed corner sat on
+     top of the first line, which is often the line being linked. */
+  position: absolute;
+  z-index: 20;
+  inline-size: min(330px, calc(100% - 24px));
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 12px 30px rgba(24, 39, 48, 0.18);
+}
+
+.rich-link-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 9px;
+  border: 1px solid var(--hair);
+  border-radius: 7px;
+  color: var(--ink3);
+}
+
+.rich-link-row:focus-within {
+  border-color: var(--accent);
+  color: var(--ink2);
+}
+
+.rich-link-row .compose-input {
+  flex-grow: 1;
+  min-inline-size: 0;
+  font-size: 13px;
+}
+
+/* The second row pairs a boxed field with Apply beside it, unboxed — Apply
+   acts on both fields, so it belongs to neither box. */
+.rich-link-apply-row {
+  display: flex;
+  align-items: center;
+}
+
+.rich-link-apply-row .rich-link-row {
+  flex-grow: 1;
+  min-inline-size: 0;
+}
+
+.rich-apply {
+  flex-shrink: 0;
+  margin-inline-start: 8px;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 550;
+  cursor: pointer;
+}
+
+.rich-apply:disabled {
+  color: var(--ink3);
+  cursor: default;
+}
+
+.rich-apply:not(:disabled):hover {
+  background: var(--hair2);
+}
+
+/* The two font controls. Kept narrow: the composer is 420px and the toolbar
+   has nine buttons to fit beside them. */
+.rich-select {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  inline-size: 92px;
+  padding: 4px 5px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--ink2);
+  font: inherit;
+  font-size: 12px;
+  text-align: start;
+  cursor: pointer;
+}
+
+.rich-select .clip {
+  flex-grow: 1;
+  min-inline-size: 0;
+}
+
+.rich-select.narrow {
+  inline-size: 72px;
+}
+
+.rich-select:hover,
+.rich-select[aria-expanded='true'] {
+  background: var(--hair2);
+  color: var(--ink);
+}
+
+/* The preview list. Items are drawn in the face and size they apply, so the
+   row heights vary — that is the information, not a layout fault. */
+.rich-menu {
+  min-inline-size: 150px;
+}
+
+.rich-menu .menu-item {
+  min-block-size: 0;
+  padding-block: 6px;
+}
+
+.rich-menu .menu-label {
+  line-height: 1.25;
+}
+
+.rich-content {
+  flex-grow: 1;
+  min-block-size: 0;
+  overflow-y: auto;
+}
+
+.rich-body {
+  min-block-size: 160px;
+  padding: 14px 16px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--ink);
+  outline: none;
+}
+
+/* The editor's own markup. Paragraph spacing is margin rather than a gap,
+   because this is also roughly what the HTML will do in the recipient's
+   client — what is written should look like what arrives. */
+.rich-body p {
+  margin: 0 0 0.75em;
+}
+
+.rich-body p:last-child {
+  margin-block-end: 0;
+}
+
+.rich-body ul,
+.rich-body ol {
+  margin: 0 0 0.75em;
+  padding-inline-start: 1.4em;
+}
+
+.rich-body blockquote {
+  margin: 0 0 0.75em;
+  padding-inline-start: 12px;
+  border-inline-start: 2px solid var(--hair);
+  color: var(--ink2);
+}
+
+.rich-body a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.rich-body code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--hair2);
+  font-family: var(--mono);
+  font-size: 0.92em;
+}
+
+/* ProseMirror needs a visible caret position in an empty document. */
+.rich-body:focus {
+  outline: none;
+}
+
+/* Removal, inside the link menu. The menu is where the decision about a link
+   is made, and "none" is one of the answers. */
+.rich-apply.danger {
+  color: var(--danger);
+}
+
+/* The From value is information, not a field.
+   Set into the row rather than sitting on it: a filled, rounded chip reads as
+   a value that was decided elsewhere, where the bare text in an identical row
+   to To and Subject read as something to click into. */
+.compose-from-value {
+  align-self: center;
+  padding: 2px 8px;
+  border-radius: 11px;
+  background: var(--hair2);
+  color: var(--ink2);
+  font-size: 12.5px;
+  cursor: default;
+}
