@@ -2374,6 +2374,9 @@ body.resizing {
 /* Tooltip for a collapsed rail item. Small, immediate, and out of the way:
    its whole job is naming an icon you are already pointing at. */
 .tip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   z-index: 70;
   padding: 5px 9px;
   border: 1px solid var(--hair);

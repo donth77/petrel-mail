@@ -14,6 +14,7 @@ import { Icon } from './Icon';
 import { MessageBody } from './MessageBody';
 import { MoreMenu } from './MoreMenu';
 import { Tip } from './Tip';
+import { key } from '../lib/keys';
 import { t } from '../lib/strings';
 
 /** A message that is not the one you came here to read: one line, expandable. */
@@ -171,34 +172,43 @@ export function Reader({
             </div>
           </div>
           <div className="reader-actions">
-            <button
-              type="button"
-              className={`act-icon${thread.starred ? ' on' : ''}`}
-              aria-label={t('reader-star')}
-              aria-pressed={thread.starred}
-              onClick={() => onAction(thread.starred ? 'unstar' : 'star')}
-            >
-              <Icon icon={Star} />
-            </button>
-            <button
-              type="button"
-              className="act-icon"
-              aria-label={t('reader-archive')}
-              onClick={() => onAction('archive')}
-            >
-              <Icon icon={Archive} />
-            </button>
+            <Tip label={thread.starred ? t('menu-unstar') : t('menu-star')} keys={['S']}>
+              <button
+                type="button"
+                className={`act-icon${thread.starred ? ' on' : ''}`}
+                aria-label={t('reader-star')}
+                aria-pressed={thread.starred}
+                onClick={() => onAction(thread.starred ? 'unstar' : 'star')}
+              >
+                <Icon icon={Star} />
+              </button>
+            </Tip>
+            <Tip label={t('reader-archive')} keys={['E']}>
+              <button
+                type="button"
+                className="act-icon"
+                aria-label={t('reader-archive')}
+                onClick={() => onAction('archive')}
+              >
+                <Icon icon={Archive} />
+              </button>
+            </Tip>
             {/* A conversation you are reading is read by definition, so in
                 practice this is the "put it back, I will deal with it later"
                 gesture — which is why it belongs here and not only on the row. */}
-            <button
-              type="button"
-              className="act-icon"
-              aria-label={thread.unread ? t('reader-mark-read') : t('reader-mark-unread')}
-              onClick={() => onAction(thread.unread ? 'mark_read' : 'mark_unread')}
+            <Tip
+              label={thread.unread ? t('reader-mark-read') : t('reader-mark-unread')}
+              keys={[thread.unread ? key('read') : key('unread')]}
             >
-              <Icon icon={thread.unread ? MailOpen : Mail} />
-            </button>
+              <button
+                type="button"
+                className="act-icon"
+                aria-label={thread.unread ? t('reader-mark-read') : t('reader-mark-unread')}
+                onClick={() => onAction(thread.unread ? 'mark_read' : 'mark_unread')}
+              >
+                <Icon icon={thread.unread ? MailOpen : Mail} />
+              </button>
+            </Tip>
             <MoreMenu
               thread={thread}
               onAction={onAction}

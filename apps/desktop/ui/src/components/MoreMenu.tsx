@@ -9,6 +9,7 @@ import type { ActionKind, Thread } from '../lib/api';
 import { Icon } from './Icon';
 import { key } from '../lib/keys';
 import { t } from '../lib/strings';
+import { Tip } from './Tip';
 
 type Props = {
   thread: Thread;
@@ -34,9 +35,11 @@ type Props = {
 export function MoreMenu({ thread, onAction, onMove, onTag, onSnooze }: Props) {
   return (
     <MenuProvider placement="bottom-end">
-      <MenuButton className="act-icon" aria-label={t('reader-more')}>
-        <Icon icon={MoreVertical} />
-      </MenuButton>
+      <Tip label={t('reader-more')}>
+        <MenuButton className="act-icon" aria-label={t('reader-more')}>
+          <Icon icon={MoreVertical} />
+        </MenuButton>
+      </Tip>
       <Menu portal gutter={6} className="menu" aria-label={t('reader-more')}>
         <MenuItem className="menu-item" onClick={() => onAction(thread.starred ? 'unstar' : 'star')}>
           <Icon icon={Star} size={14} />

@@ -319,7 +319,7 @@ export function MessageList({
               <span className="row-actions" aria-hidden="true">
                 {/* stopPropagation, or the click also lands on the row behind
                     and selects the conversation we are about to archive. */}
-                <Tip label={t('qact-archive')}>
+                <Tip label={t('qact-archive')} keys={['E']}>
                   <span
                     className="qact"
                     onClick={(e) => {
@@ -339,11 +339,8 @@ export function MessageList({
                     direction that matters — flagging something to come back
                     to — would have no target at all. */}
                 <Tip
-                  label={
-                    m.unread
-                      ? t('qact-mark-read', { key: key('read') })
-                      : t('qact-mark-unread', { key: key('unread') })
-                  }
+                  label={m.unread ? t('qact-mark-read') : t('qact-mark-unread')}
+                  keys={[m.unread ? key('read') : key('unread')]}
                 >
                   <span
                     className="qact"
@@ -355,7 +352,7 @@ export function MessageList({
                     <Icon icon={m.unread ? MailOpen : Mail} size={14} />
                   </span>
                 </Tip>
-                <Tip label={t('qact-snooze')}>
+                <Tip label={t('qact-snooze')} keys={['B']}>
                   <span
                     className="qact"
                     onClick={(e) => {

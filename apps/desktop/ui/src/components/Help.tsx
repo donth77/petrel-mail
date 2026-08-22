@@ -133,7 +133,6 @@ export function Help({ open, onClose }: { open: boolean; onClose: () => void }) 
           )}
         </TabPanel>
 
-        <div className="help-foot">{t('help-foot')}</div>
       </div>
     </Dialog>
   );
