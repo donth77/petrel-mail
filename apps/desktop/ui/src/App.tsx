@@ -565,6 +565,28 @@ export function App() {
         subject={active?.subject ?? null}
         ctx={{
           hasThread: !!active,
+          // Every one of these is the same call the keyboard makes. The palette
+          // finds a command; it does not reimplement one.
+          onAction: (kind) => void triage.run(kind),
+          onSnooze: () => setPicker('snooze'),
+          onMove: () => setPicker('folder'),
+          onTag: () => setPicker('tag'),
+          onCompose: () => setDraft({ to: '', cc: '', subject: '', body: '' }),
+          onReply: () => {
+            if (!active) return;
+            setDraft({
+              to: active.from_addr,
+              cc: '',
+              subject: active.subject.match(/^re:/i) ? active.subject : `Re: ${active.subject}`,
+              body: '',
+              inReplyTo: null,
+              references: [],
+            });
+          },
+          onPauseNotifications: () => {
+            set('notifyPausedUntil', String(Date.now() + 60 * 60 * 1000));
+            setToast(t('notify-paused-toast'));
+          },
           onView: (v) => {
             if (v === 'help') setHelpOpen(true);
             else if (v === 'settings') setSettingsOpen('appearance');

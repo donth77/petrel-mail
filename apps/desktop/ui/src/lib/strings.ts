@@ -98,6 +98,7 @@ const en = {
   'compose-sent': 'Sent',
   'compose-cancelled': 'Held — nothing was sent',
   'compose-failed': 'Not sent — { $error }',
+  'notify-paused-toast': 'Notifications paused for an hour',
   'notify-pause': 'Pause notifications',
   'notify-pause-help': 'Nothing will interrupt you while paused. Mail still arrives.',
   'notify-paused-until': 'Paused until { $when }.',

@@ -3,6 +3,7 @@ import {
   Archive, ArrowRight, BellOff, Clock, Inbox, PencilLine, Reply, Search, Settings,
   Star, Tag, Trash2, CircleHelp, Send, FolderInput,
 } from 'lucide-react';
+import type { ActionKind } from './api';
 import { t, type StringId } from './strings';
 
 /**
@@ -29,6 +30,16 @@ export type Command = {
 export type CommandContext = {
   hasThread: boolean;
   onView: (view: string) => void;
+  /** The same action the keyboard runs. The palette is a way to *find* a
+   *  command, not a second implementation of it — routing it anywhere else is
+   *  how the two drift until one of them is quietly wrong. */
+  onAction: (kind: ActionKind) => void;
+  onSnooze: () => void;
+  onMove: () => void;
+  onTag: () => void;
+  onCompose: () => void;
+  onReply: () => void;
+  onPauseNotifications: () => void;
   onNotImplemented: (label: string) => void;
 };
 
@@ -36,13 +47,13 @@ export function buildCommands(ctx: CommandContext): Command[] {
   const todo = (label: string) => () => ctx.onNotImplemented(label);
 
   const conversation: Command[] = [
-    { id: 'archive', scope: 'conversation', label: 'cmd-archive', alias: 'cmd-archive-alias', icon: Archive, keys: ['E'], run: todo('Archive') },
-    { id: 'snooze', scope: 'conversation', label: 'cmd-snooze', icon: Clock, keys: ['B'], run: todo('Snooze') },
-    { id: 'star', scope: 'conversation', label: 'cmd-star', icon: Star, keys: ['S'], run: todo('Star') },
-    { id: 'tag', scope: 'conversation', label: 'cmd-tag', icon: Tag, keys: ['L'], run: todo('Tag') },
-    { id: 'move', scope: 'conversation', label: 'cmd-move', icon: FolderInput, keys: ['V'], run: todo('Move') },
-    { id: 'reply', scope: 'conversation', label: 'cmd-reply', icon: Reply, keys: ['R'], run: todo('Reply') },
-    { id: 'trash', scope: 'conversation', label: 'cmd-trash', icon: Trash2, keys: ['#'], run: todo('Trash') },
+    { id: 'archive', scope: 'conversation', label: 'cmd-archive', alias: 'cmd-archive-alias', icon: Archive, keys: ['E'], run: () => ctx.onAction('archive') },
+    { id: 'snooze', scope: 'conversation', label: 'cmd-snooze', icon: Clock, keys: ['B'], run: ctx.onSnooze },
+    { id: 'star', scope: 'conversation', label: 'cmd-star', icon: Star, keys: ['S'], run: () => ctx.onAction('star') },
+    { id: 'tag', scope: 'conversation', label: 'cmd-tag', icon: Tag, keys: ['L'], run: ctx.onTag },
+    { id: 'move', scope: 'conversation', label: 'cmd-move', icon: FolderInput, keys: ['V'], run: ctx.onMove },
+    { id: 'reply', scope: 'conversation', label: 'cmd-reply', icon: Reply, keys: ['R'], run: ctx.onReply },
+    { id: 'trash', scope: 'conversation', label: 'cmd-trash', icon: Trash2, keys: ['#'], run: () => ctx.onAction('trash') },
   ];
 
   const goto: Command[] = [
@@ -56,9 +67,9 @@ export function buildCommands(ctx: CommandContext): Command[] {
   ];
 
   const app: Command[] = [
-    { id: 'compose', scope: 'app', label: 'cmd-compose', icon: PencilLine, keys: ['C'], run: todo('Compose') },
+    { id: 'compose', scope: 'app', label: 'cmd-compose', icon: PencilLine, keys: ['C'], run: ctx.onCompose },
     { id: 'search', scope: 'app', label: 'cmd-search', icon: Search, keys: ['/'], run: () => ctx.onView('search') },
-    { id: 'pause', scope: 'app', label: 'cmd-pause-notifications', icon: BellOff, run: todo('Pause notifications') },
+    { id: 'pause', scope: 'app', label: 'cmd-pause-notifications', icon: BellOff, run: ctx.onPauseNotifications },
     { id: 'help', scope: 'app', label: 'rail-help', icon: CircleHelp, keys: ['?'], run: () => ctx.onView('help') },
     { id: 'settings', scope: 'app', label: 'rail-settings', icon: Settings, run: () => ctx.onView('settings') },
   ];
