@@ -159,6 +159,10 @@ pub fn handle(
     tokens: &Arc<ViewTokens>,
     blobs: &BlobStore,
     lookup_blob: impl Fn(i64) -> Option<String>,
+    // From the user's Privacy setting. Passed in rather than read here so the
+    // render path keeps no opinion about where preferences live — and so the
+    // default when anything goes wrong is the safe one.
+    allow_remote: bool,
 ) -> Response<Vec<u8>> {
     let path = request.uri().path().to_string();
     let Some(token) = path.strip_prefix("/message/") else {
@@ -181,7 +185,7 @@ pub fn handle(
     // Prefer HTML; fall back to the plain part. Fail closed to text.
     let (body, report) = match parsed.body_html.as_deref() {
         Some(html) => {
-            let s = petrel_mime::sanitize_html(html, false);
+            let s = petrel_mime::sanitize_html(html, allow_remote);
             (s.html, s.report)
         }
         None => (
@@ -193,8 +197,18 @@ pub fn handle(
     // Fresh per response: markup that somehow survived sanitization still cannot
     // carry a matching nonce, so ours stays the only script that runs.
     let nonce = new_token();
+    // Two layers, not one. The sanitizer has already removed remote sources
+    // when they are blocked; this makes the browser refuse them as well, so a
+    // URL that slips through the rewriter still cannot reach the network.
+    // Allowing remote content widens exactly one directive and nothing else —
+    // scripts, forms and frames stay refused however the setting is left.
+    let img_src = if allow_remote {
+        "cid: petrel-msg: http://petrel-msg.localhost https:"
+    } else {
+        "cid: petrel-msg: http://petrel-msg.localhost"
+    };
     let csp = format!(
-        "default-src 'none'; img-src cid: petrel-msg: http://petrel-msg.localhost; \
+        "default-src 'none'; img-src {img_src}; \
          style-src 'unsafe-inline'; style-src-attr 'unsafe-inline'; script-src 'nonce-{nonce}'; \
          form-action 'none'; base-uri 'none'; frame-ancestors 'self'"
     );

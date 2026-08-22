@@ -2459,3 +2459,31 @@ body.resizing {
   opacity: 0.5;
   cursor: default;
 }
+
+/* Statements of fact about the sandbox, not switches. */
+.privacy-facts {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.privacy-facts li {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12.5px;
+  color: var(--ink2);
+}
+
+.privacy-facts svg {
+  color: var(--good);
+  flex: none;
+}
+
+.fhelp.warn {
+  color: var(--amber);
+  margin-block-start: 9px;
+}

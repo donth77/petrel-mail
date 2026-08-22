@@ -43,6 +43,11 @@ export const DEFAULTS = {
 
   /// Sidebar width in pixels, and whether it is collapsed to icons. Stored as
   /// strings like every other setting so the persistence layer stays one shape.
+  /// Remote images and other external resources in message bodies. On by
+  /// default because loading one tells the sender the message was opened, by
+  /// whom, and when — the default has to be the private one.
+  blockRemoteContent: 'on' as 'on' | 'off',
+
   railWidth: '236',
   railCollapsed: 'off' as 'on' | 'off',
 };

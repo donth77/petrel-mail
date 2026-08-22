@@ -42,3 +42,8 @@ petrel-providers = { path = "../../../crates/petrel-providers" }
 petrel-mime = { path = "../../../crates/petrel-mime" }
 # Demo-mode seeding only; used when no account is configured.
 petrel-testkit = { path = "../../../crates/petrel-testkit" }
+
+[dev-dependencies]
+http = "1"
+tempfile.workspace = true
+petrel-engine = { path = "../../../crates/petrel-engine" }

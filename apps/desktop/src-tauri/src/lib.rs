@@ -20,7 +20,9 @@ use petrel_providers::imap::{ImapConfig, Security};
 use petrel_testkit::DemoMailbox;
 use tauri::{Manager, State};
 
-mod message_view;
+// Public so the render path can be tested directly. The privacy guarantees
+// live in this module, and they are worth asserting on rather than trusting.
+pub mod message_view;
 mod spike_s2;
 
 use message_view::ViewTokens;
@@ -1316,7 +1318,18 @@ pub fn run() {
                     .ok()
                     .and_then(|s| s.blob_hash_for(id).ok().flatten())
             };
-            message_view::handle(&request, &state.tokens, &state.blobs, lookup)
+            // Read per request, so changing the setting takes effect on the
+            // next message rather than the next launch. Anything unreadable
+            // falls back to blocking: the safe answer is the one a failure
+            // should produce.
+            let allow_remote = state
+                .store
+                .lock()
+                .ok()
+                .and_then(|s| s.settings().ok())
+                .map(|s| s.get("blockRemoteContent").map(String::as_str) == Some("off"))
+                .unwrap_or(false);
+            message_view::handle(&request, &state.tokens, &state.blobs, lookup, allow_remote)
         })
         .setup(|app| {
             // PETREL_MINIMAL=1: a bare window with none of our machinery — no

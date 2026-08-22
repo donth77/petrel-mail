@@ -157,6 +157,18 @@ const en = {
   'settings-appearance': 'Appearance',
   'settings-privacy': 'Privacy & Security',
   'settings-storage': 'Storage & Data',
+  'privacy-remote': 'Remote content',
+  'privacy-remote-help':
+    'Images and other files a message loads from the internet. Blocking them is why a message can be read without the sender learning anything about you.',
+  'privacy-remote-block': 'Block',
+  'privacy-remote-allow': 'Allow',
+  'privacy-remote-warning':
+    'Senders will be able to tell when you opened a message, how often, and roughly where from.',
+  'privacy-always': 'Always true of every message',
+  'privacy-fact-scripts': 'Scripts in messages never run.',
+  'privacy-fact-links': 'Links open in your browser, never inside Petrel.',
+  'privacy-fact-forms': 'Forms in messages cannot submit anywhere.',
+  'privacy-fact-referrer': 'Nothing a message loads carries a referrer.',
   'storage-on-this-mac': 'On this Mac',
   'storage-messages': 'Messages',
   'storage-attachments': 'Attachments',
