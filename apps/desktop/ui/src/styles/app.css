@@ -775,6 +775,7 @@ mark {
 /* --- collapsed messages --- */
 
 .collapsed {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -830,6 +831,12 @@ mark {
   border-radius: 10px;
   background: var(--raised);
   overflow: hidden;
+  /* The reading pane is a column flex container, so without this a message
+     taller than the pane is *compressed* to fit rather than making the pane
+     scroll — and since this box also clips, the bottom of every long email
+     became unreachable. The frame inside sizes itself to its content; this is
+     what lets it. */
+  flex-shrink: 0;
 }
 
 .msg-head {
