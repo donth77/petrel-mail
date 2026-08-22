@@ -33,6 +33,11 @@ struct AppState {
     seeding: AtomicBool,
     seeded: AtomicUsize,
     source: Mutex<String>,
+    /// Set when a sync fails. Separate from `source` because a failure has to
+    /// reach the screen, and `source` is a label the UI is free to ignore —
+    /// which is exactly what it did, leaving a failed login looking like an
+    /// empty mailbox.
+    sync_error: Mutex<Option<String>>,
     tokens: Arc<ViewTokens>,
     account_id: i64,
     data_dir: String,
@@ -47,6 +52,26 @@ struct Status {
     /// policy is always stated — never something the user has to infer.
     retention: String,
     data_dir: String,
+    sync_error: Option<String>,
+}
+
+/// Appends a line to a log file in the data directory.
+///
+/// Under LaunchServices — which is the only way the app gets real keyboard
+/// focus on macOS — stderr goes nowhere readable, so `eprintln!` diagnostics
+/// vanish precisely when the app is being run the way a user runs it. Anything
+/// worth printing during a sync is worth writing here.
+fn log_sync(msg: &str) {
+    eprintln!("[sync] {msg}");
+    let path = data_dir().join("sync.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        use std::io::Write;
+        let _ = writeln!(f, "{} {msg}", now_ms());
+    }
 }
 
 fn now_ms() -> i64 {
@@ -74,6 +99,7 @@ fn status(state: State<Arc<AppState>>) -> Status {
             .map(|m| m.describe().to_string())
             .unwrap_or_default(),
         data_dir: state.data_dir.clone(),
+        sync_error: state.sync_error.lock().ok().and_then(|e| e.clone()),
     }
 }
 
@@ -129,6 +155,7 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
         // while leaving the app unable to file a single message.
         match petrel_providers::imap::probe(&cfg, 0).await {
             Ok(report) => {
+                log_sync(&format!("probe ok: {} folder(s)", report.folders.len()));
                 let rows: Vec<(String, Option<String>)> = report
                     .folders
                     .iter()
@@ -147,15 +174,18 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
                     || report.folders.iter().any(|f| f.name.starts_with("[Gmail]"));
                 if let Ok(store) = state.store.lock() {
                     match store.sync_folders(account, &rows) {
-                        Ok(n) => eprintln!("[sync] {n} folder(s) discovered"),
-                        Err(e) => eprintln!("[sync] folder sync failed: {e}"),
+                        Ok(n) => log_sync(&format!("{n} folder(s) stored")),
+                        Err(e) => log_sync(&format!("folder sync failed: {e}")),
                     }
                     if looks_like_gmail {
                         let _ = store.set_account_kind(account, "gmail");
                     }
                 }
             }
-            Err(e) => eprintln!("[sync] folder discovery failed: {e}"),
+            Err(e) => {
+                log_sync(&format!("folder discovery FAILED: {e}"));
+                *state.sync_error.lock().unwrap() = Some(format!("{e}"));
+            }
         }
 
         let inbox_id = state
@@ -166,7 +196,7 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
 
         match petrel_providers::imap::fetch_raw(&cfg, "INBOX", 200).await {
             Ok(messages) => {
-                eprintln!("[sync] fetched {} message(s)", messages.len());
+                log_sync(&format!("fetched {} message(s)", messages.len()));
                 // Fetch fully, *then* take the lock: holding a database lock
                 // across network I/O would stall every UI query behind the
                 // slowest server in the account list.
@@ -181,15 +211,16 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
                             ok += 1;
                             state.seeded.store(ok, Ordering::Relaxed);
                         }
-                        Err(e) => eprintln!("[sync] skipped one message: {e}"),
+                        Err(e) => log_sync(&format!("skipped one message: {e}")),
                     }
                 }
                 *state.source.lock().unwrap() = format!("{} · {ok} message(s) synced", cfg.user);
-                eprintln!("[sync] ingested {ok}/{}", messages.len());
+                log_sync(&format!("ingested {ok}/{}", messages.len()));
             }
             Err(e) => {
-                eprintln!("[sync] failed: {e}");
+                log_sync(&format!("fetch FAILED: {e}"));
                 *state.source.lock().unwrap() = format!("sync failed: {e}");
+                *state.sync_error.lock().unwrap() = Some(format!("{e}"));
             }
         }
         state.seeding.store(false, Ordering::Relaxed);
@@ -722,6 +753,7 @@ pub fn run() {
         seeding: AtomicBool::new(true),
         seeded: AtomicUsize::new(0),
         source: Mutex::new("starting…".into()),
+        sync_error: Mutex::new(None),
         tokens: Arc::new(ViewTokens::new()),
         account_id: account,
         data_dir: dir.display().to_string(),

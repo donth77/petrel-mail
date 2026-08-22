@@ -210,6 +210,16 @@ export function App() {
     <div className="app-frame">
       <TitleBar synced={status?.seeding ? t('status-seeding') : t('titlebar-sync')} />
       <div className="shell" data-layout={settings.layout === 'off' ? 'no-reader' : settings.layout}>
+      {status?.sync_error && (
+        // Loud on purpose. A sync that fails silently is indistinguishable from
+        // an account with no mail in it, and that ambiguity cost real time.
+        <div className="sync-error" role="alert">
+          <strong>{t('sync-failed-title')}</strong>
+          <span className="mono">{status.sync_error}</span>
+          <span>{t('sync-failed-body')}</span>
+        </div>
+      )}
+
       <Rail
         account={accounts[0]?.email ?? status?.source ?? t('app-name')}
         accountColor={accounts[0]?.color || 'var(--accent)'}

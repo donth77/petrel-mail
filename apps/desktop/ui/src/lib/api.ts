@@ -79,6 +79,9 @@ export type ActionReceipt = {
 };
 
 export type Status = {
+  /** Present when a sync failed. A login that fails must not read as an empty
+   *  mailbox — the two look identical until something says so. */
+  sync_error?: string | null;
   seeding: boolean;
   count: number;
   source: string;

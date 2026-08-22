@@ -71,6 +71,8 @@ const en = {
   'empty-search-body': 'All { $count } messages were searched.',
   'empty-loading': 'Loading your mail…',
 
+  'sync-failed-title': 'Could not reach your mail',
+  'sync-failed-body': 'Petrel is showing what it already had. Nothing has been lost.',
   'status-synced': 'Synced just now',
   'status-seeding': 'Building your mailbox…',
   'status-counts': '{ $count } conversations · { $unread } unread',
