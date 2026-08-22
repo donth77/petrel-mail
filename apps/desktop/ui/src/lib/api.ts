@@ -279,6 +279,9 @@ const mock = {
         "addEventListener('keydown',function(e){parent.postMessage({petrelKey:{" +
         'key:e.key,metaKey:e.metaKey,ctrlKey:e.ctrlKey,shiftKey:e.shiftKey,altKey:e.altKey' +
         "}},'*')});" +
+        // The backslash is what stops this literal ending the <script> block it
+        // is written inside.
+        // eslint-disable-next-line no-useless-escape
         '<\/script></body>',
     ),
   log: async () => {},

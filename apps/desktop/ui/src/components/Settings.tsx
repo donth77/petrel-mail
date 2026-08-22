@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Dialog, DialogDismiss } from '@ariakit/react';
 import {
-  Archive, Bell, CircleHelp, Database, Mail, PencilLine, Shield, SunMoon, User, X,
+  Bell, CircleHelp, Database, Mail, PencilLine, Shield, SunMoon, User, X,
   type LucideIcon,
 } from 'lucide-react';
 import { Accounts } from './settings/Accounts';

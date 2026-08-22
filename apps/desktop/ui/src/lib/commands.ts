@@ -1,6 +1,6 @@
 import type { LucideIcon } from 'lucide-react';
 import {
-  Archive, ArrowRight, BellOff, Clock, Inbox, PencilLine, Reply, Search, Settings,
+  Archive, BellOff, Clock, Inbox, PencilLine, Reply, Search, Settings,
   Star, Tag, Trash2, CircleHelp, Send, FolderInput,
 } from 'lucide-react';
 import type { ActionKind } from './api';

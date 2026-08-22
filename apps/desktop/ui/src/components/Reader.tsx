@@ -9,7 +9,7 @@ import {
   Star,
 } from 'lucide-react';
 import { api, type ActionKind, type Thread, type ThreadMessage } from '../lib/api';
-import { count as fmtCount, fileSize, fullTime, initials, listTime, messageTime } from '../lib/format';
+import { count as fmtCount, fileSize, fullTime, initials, messageTime } from '../lib/format';
 import { Icon } from './Icon';
 import { MessageBody } from './MessageBody';
 import { MoreMenu } from './MoreMenu';
@@ -149,18 +149,6 @@ export function Reader({
     };
   }, [thread?.thread_id]);
 
-  if (!thread) {
-    return (
-      <section className="reader" aria-label={t('reader-none-title')}>
-        <div className="empty">
-          <h2>{t('reader-none-title')}</h2>
-          <p>{t('reader-none-body')}</p>
-        </div>
-      </section>
-    );
-  }
-
-  const subject = thread.subject || '(no subject)';
   // [ and ] walk the conversation. Handled here rather than in the global map
   // for the same reason j/k live in the list: the keys mean "within the thing
   // in front of you", and the component holding that thing is the only one
@@ -208,6 +196,19 @@ export function Reader({
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
+
+  if (!thread) {
+    return (
+      <section className="reader" aria-label={t('reader-none-title')}>
+        <div className="empty">
+          <h2>{t('reader-none-title')}</h2>
+          <p>{t('reader-none-body')}</p>
+        </div>
+      </section>
+    );
+  }
+
+  const subject = thread.subject || '(no subject)';
 
   const hidden = messages.filter((m) => !expanded.has(m.id));
   const foldable = hidden.slice(0, Math.max(0, hidden.length - 1));

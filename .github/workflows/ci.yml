@@ -26,6 +26,9 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm --dir apps/desktop/ui exec tsc --noEmit
+      # rules-of-hooks specifically: a hook after an early return blanks the
+      # whole app at runtime and is invisible to tsc and to the tests.
+      - run: pnpm --dir apps/desktop/ui lint
       - run: pnpm --dir apps/desktop/ui test
   engine:
     strategy:
