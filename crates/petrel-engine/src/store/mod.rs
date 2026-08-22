@@ -11,7 +11,7 @@ use rusqlite::functions::FunctionFlags;
 use rusqlite::{Connection, params};
 use std::path::Path;
 
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 /// Bumped whenever text extraction changes; a mismatch forces reindexing.
 pub const EXTRACTOR_VERSION: i64 = 1;
 
@@ -188,6 +188,15 @@ fn format_asctime(ms: i64) -> String {
         s,
         year
     )
+}
+
+/// A draft, as the composer needs it back.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DraftRecord {
+    pub id: i64,
+    pub to: String,
+    pub subject: String,
+    pub body: String,
 }
 
 /// Who a message is sent as.
@@ -572,11 +581,17 @@ fn assign_thread(
 /// NULL `thread_id`. Search deliberately does *not* use this: archived mail is
 /// exactly what people search for.
 fn not_filed(alias: &str) -> String {
+    // Every role except the inbox itself. Listing only archive/trash/spam let a
+    // draft sit in the Drafts folder and in the inbox at the same time, and
+    // would have done the same for sent mail the moment a Sent copy was filed.
+    // Roles are the closed set the provider mapping produces, so naming them is
+    // exact rather than a guess — and a user folder has no role at all, which
+    // is why moving something out of the inbox still hides it.
     format!(
         "NOT EXISTS (SELECT 1 FROM placements p
                      JOIN folders f ON f.id = p.folder_id
                      WHERE p.message_id = {alias}.id
-                       AND f.role IN ('archive','trash','spam'))"
+                       AND f.role IN ('archive','trash','spam','drafts','sent'))"
     )
 }
 
@@ -719,6 +734,9 @@ impl Store {
         }
         if ver < 6 {
             conn.execute_batch(include_str!("migrations/0006-identity.sql"))?;
+        }
+        if ver < 7 {
+            conn.execute_batch(include_str!("migrations/0007-draft-body.sql"))?;
         }
         if ver < SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -1624,6 +1642,113 @@ impl Store {
             "UPDATE messages SET flags = ?2 WHERE id = ?1",
             params![message_id, flags],
         )?;
+        Ok(())
+    }
+
+    /// Saves a draft, or updates one already saved.
+    ///
+    /// Stored as an ordinary message row carrying the \Draft flag and placed in
+    /// the drafts folder, rather than in a table of its own. That is what makes
+    /// the Drafts view, search, and every triage action work on drafts without
+    /// any of them learning a second kind of thing — and it is how a draft
+    /// reaches the server the day sync learns to APPEND one.
+    pub fn save_draft(
+        &self,
+        account_id: i64,
+        draft_id: Option<i64>,
+        to: &str,
+        subject: &str,
+        body: &str,
+    ) -> Result<i64> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        // The list shows a snippet; an empty draft still needs to be findable,
+        // so it gets a placeholder rather than a blank row.
+        let snippet: String = body.chars().take(200).collect();
+        let identity = self.identity(account_id)?;
+
+        let id = match draft_id {
+            Some(id) => {
+                self.conn.execute(
+                    "UPDATE messages
+                     SET date_ms = ?2, subject = ?3, snippet = ?4, draft_body = ?5
+                     WHERE id = ?1",
+                    params![id, now, subject, snippet, body],
+                )?;
+                id
+            }
+            None => {
+                self.conn.execute(
+                    "INSERT INTO messages(account_id, date_ms, from_addr, from_display,
+                                          subject, snippet, draft_body, flags)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    params![
+                        account_id,
+                        now,
+                        identity.address,
+                        identity.display_name,
+                        subject,
+                        snippet,
+                        body,
+                        flags::DRAFT | flags::SEEN
+                    ],
+                )?;
+                self.conn.last_insert_rowid()
+            }
+        };
+
+        // Recipients live where every other message keeps them, so the list can
+        // show who a draft is to without a special case.
+        self.conn.execute(
+            "DELETE FROM message_addresses WHERE message_id = ?1",
+            params![id],
+        )?;
+        for addr in to
+            .split([',', ';'])
+            .map(str::trim)
+            .filter(|a| !a.is_empty())
+        {
+            self.conn.execute(
+                "INSERT INTO message_addresses(message_id, role, addr_norm, display)
+                 VALUES (?1, 'to', ?2, ?2)",
+                params![id, addr],
+            )?;
+        }
+
+        let folder = self.ensure_folder(account_id, "drafts", "drafts")?;
+        self.conn
+            .execute("DELETE FROM placements WHERE message_id = ?1", params![id])?;
+        self.place_message(id, folder)?;
+        Ok(id)
+    }
+
+    /// Reads a draft back for editing.
+    pub fn load_draft(&self, id: i64) -> Result<DraftRecord> {
+        let (subject, body): (String, String) = self.conn.query_row(
+            "SELECT coalesce(subject,''), coalesce(draft_body,'') FROM messages WHERE id = ?1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let mut stmt = self.conn.prepare(
+            "SELECT addr_norm FROM message_addresses WHERE message_id = ?1 AND role = 'to'",
+        )?;
+        let to: Vec<String> = stmt
+            .query_map(params![id], |r| r.get(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(DraftRecord {
+            id,
+            to: to.join(", "),
+            subject,
+            body,
+        })
+    }
+
+    /// Removes a draft once it has been sent or discarded.
+    pub fn delete_draft(&self, id: i64) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM messages WHERE id = ?1", params![id])?;
         Ok(())
     }
 

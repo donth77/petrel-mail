@@ -54,7 +54,7 @@ export const BINDINGS: Binding[] = [
   { id: 'send-later', group: 'write', label: 'Send later', display: 'sendLater',
     chords: [{ key: 'Enter', meta: true, shift: true }], available: false },
   { id: 'save-draft', group: 'write', label: 'Save draft', display: 'save',
-    chords: [{ key: 's', meta: true }], available: false },
+    chords: [{ key: 's', meta: true }], available: true },
   { id: 'popout', group: 'write', label: 'Open in its own window', display: 'popout',
     chords: [{ key: 'o', meta: true, shift: true }], available: false },
 

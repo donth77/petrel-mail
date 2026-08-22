@@ -15,6 +15,8 @@ export type Draft = {
   inReplyTo?: string | null;
   references?: string[];
   attachments?: Attached[];
+  /** Set once saved, so saving again updates rather than multiplying. */
+  savedId?: number | null;
 };
 
 type Props = {
@@ -24,6 +26,7 @@ type Props = {
   onClose: () => void;
   onSend: () => void;
   onAttach: () => void;
+  onSaveDraft: () => void;
 };
 
 /** Splits a recipient field into addresses, forgiving the separators people
@@ -44,7 +47,7 @@ export function addresses(field: string): string[] {
  * are reading, and taking over the screen to write two lines loses the thing
  * being replied to. Popping out is a deliberate escalation, not the default.
  */
-export function Compose({ draft, account, onChange, onClose, onSend, onAttach }: Props) {
+export function Compose({ draft, account, onChange, onClose, onSend, onAttach, onSaveDraft }: Props) {
   const toRef = useRef<HTMLInputElement>(null);
   const bodyRef = useRef<HTMLTextAreaElement>(null);
   const [showCc, setShowCc] = useState(draft.cc.length > 0);
@@ -70,10 +73,18 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach }:
           e.stopPropagation();
           onSend();
         }
+        if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+          e.preventDefault();
+          e.stopPropagation();
+          onSaveDraft();
+        }
       }}
     >
       <header className="compose-head">
         <span className="compose-title">{draft.inReplyTo ? t('compose-reply') : t('compose-new')}</span>
+        {/* Closing keeps the message. Discarding what someone wrote because
+            they hit the wrong corner is unforgivable, and a confirmation
+            dialog for every close is worse than just keeping it. */}
         <button type="button" className="close-btn" onClick={onClose} aria-label={t('close')}>
           <Icon icon={X} size={15} />
         </button>

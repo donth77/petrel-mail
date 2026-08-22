@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex};
 use petrel_engine::actions::{ActionKind, ActionReceipt};
 use petrel_engine::blob::BlobStore;
 use petrel_engine::store::{
-    AccountSummary, FolderSummary, Identity, ListView, Listing, NewMessage, StorageReport, Store,
-    TagSummary, ThreadListing, ThreadMessage,
+    AccountSummary, DraftRecord, FolderSummary, Identity, ListView, Listing, NewMessage,
+    StorageReport, Store, TagSummary, ThreadListing, ThreadMessage,
 };
 use petrel_providers::imap::{ImapConfig, Security};
 use petrel_testkit::DemoMailbox;
@@ -748,6 +748,37 @@ async fn send_message(
     Ok(message_id)
 }
 
+/// Saves the composer's contents so they survive closing it.
+#[tauri::command]
+fn save_draft(
+    draft_id: Option<i64>,
+    to: String,
+    subject: String,
+    body: String,
+    state: State<Arc<AppState>>,
+) -> Result<i64, String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    let account = store
+        .first_account()
+        .map_err(|e| e.to_string())?
+        .ok_or("no account")?;
+    store
+        .save_draft(account, draft_id, &to, &subject, &body)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn load_draft(id: i64, state: State<Arc<AppState>>) -> Result<DraftRecord, String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    store.load_draft(id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_draft(id: i64, state: State<Arc<AppState>>) -> Result<(), String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    store.delete_draft(id).map_err(|e| e.to_string())
+}
+
 /// Name and size for files the user picked, so the composer can refuse an
 /// oversized one before the message is written.
 ///
@@ -1414,6 +1445,9 @@ pub fn run() {
             get_identity,
             set_identity,
             attachment_info,
+            save_draft,
+            load_draft,
+            delete_draft,
             list_accounts,
             set_account_color,
             set_account_archive,

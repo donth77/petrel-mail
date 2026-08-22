@@ -62,6 +62,8 @@ export type Account = {
   folders: FolderMapping[];
 };
 
+export type DraftRecord = { id: number; to: string; subject: string; body: string };
+
 export type Identity = {
   address: string;
   display_name: string;
@@ -217,6 +219,9 @@ const mock = {
     address: 'you@example.com', display_name: 'You', signature: '', signature_on_reply: false,
   }),
   setIdentity: async () => {},
+  saveDraft: async () => 1,
+  loadDraft: async (): Promise<DraftRecord> => ({ id: 1, to: '', subject: '', body: '' }),
+  deleteDraft: async () => {},
   attachmentInfo: async (paths: string[]) =>
     paths.map((path) => ({ path, name: path.split('/').pop() || path, size: 1024 })),
   accounts: async (): Promise<Account[]> => mockAccounts.map((a) => ({ ...a })),
@@ -298,6 +303,10 @@ const real = {
   identity: () => invoke<Identity>('get_identity'),
   setIdentity: (displayName: string, signature: string, signatureOnReply: boolean) =>
     invoke<void>('set_identity', { displayName, signature, signatureOnReply }),
+  saveDraft: (draftId: number | null, to: string, subject: string, body: string) =>
+    invoke<number>('save_draft', { draftId, to, subject, body }),
+  loadDraft: (id: number) => invoke<DraftRecord>('load_draft', { id }),
+  deleteDraft: (id: number) => invoke<void>('delete_draft', { id }),
   attachmentInfo: (paths: string[]) =>
     invoke<{ path: string; name: string; size: number }[]>('attachment_info', { paths }),
   accounts: () => invoke<Account[]>('list_accounts'),

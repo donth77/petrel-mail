@@ -271,6 +271,39 @@ export function App() {
 
   const active = useMemo(() => items.find((m) => m.id === activeId) ?? null, [items, activeId]);
 
+  /** Reopens a saved draft in the composer. */
+  const resumeDraft = async (id: number) => {
+    try {
+      const d = await api.loadDraft(id);
+      attachmentWarned.current = false;
+      setDraft({
+        to: d.to,
+        cc: '',
+        subject: d.subject,
+        body: d.body,
+        savedId: d.id,
+      });
+    } catch (e) {
+      setToast(t('compose-resume-failed', { error: String(e) }));
+    }
+  };
+
+  /**
+   * Saves the composer's contents, and remembers the id so saving again
+   * updates the same draft rather than leaving a trail of near-identical ones.
+   */
+  const saveDraft = async (d: Draft) => {
+    try {
+      const id = await api.saveDraft(d.savedId ?? null, d.to, d.subject, d.body);
+      setDraft((cur) => (cur ? { ...cur, savedId: id } : cur));
+      setToast(t('compose-saved'));
+      // The Drafts view is a query, so it only changes when the list reloads.
+      if (view === 'drafts') api.threads(view, 0, 500).then(setItems).catch(() => {});
+    } catch (e) {
+      setToast(t('compose-save-failed', { error: String(e) }));
+    }
+  };
+
   /**
    * Attaches files the user picks.
    *
@@ -333,7 +366,11 @@ export function App() {
           d.references ?? [],
           (d.attachments ?? []).map((a) => a.path),
         )
-        .then(() => setToast(t('compose-sent')))
+        .then(() => {
+          // It has gone; leaving it in Drafts would offer to send it twice.
+          if (d.savedId != null) void api.deleteDraft(d.savedId).catch(() => {});
+          setToast(t('compose-sent'));
+        })
         .catch((e) => {
           // The draft comes back rather than evaporating: a failed send that
           // loses what you wrote is unforgivable, and the error text is often
@@ -591,7 +628,13 @@ export function App() {
               setAnchor(id);
             }}
             density={settings.density}
-            onActivate={setActiveId}
+            onActivate={(id) => {
+              setActiveId(id);
+              // In Drafts, selecting one means resuming it. Showing an
+              // unfinished message in a reading pane is showing it to the
+              // person who wrote it, in the one form they cannot edit.
+              if (view === 'drafts') void resumeDraft(id);
+            }}
             onAction={(kind, threadId) => void triage.run(kind, threadId)}
             onSnooze={(threadId) => {
               setActiveId(threadId);
@@ -617,8 +660,15 @@ export function App() {
           draft={draft}
           account={accounts[0]?.email ?? ''}
           onChange={setDraft}
-          onClose={() => setDraft(null)}
+          onClose={() => {
+            // Keeping it, not discarding it. Losing what someone wrote because
+            // they hit the wrong corner is unforgivable, and a confirmation on
+            // every close is worse than simply keeping the message.
+            if (draft.to || draft.subject || draft.body.trim()) void saveDraft(draft);
+            setDraft(null);
+          }}
           onAttach={() => void attach()}
+          onSaveDraft={() => void saveDraft(draft)}
           onSend={() => {
             if (addresses(draft.to).length === 0) {
               setToast(t('compose-no-recipient'));
