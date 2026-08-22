@@ -15,6 +15,18 @@ export type KeyActions = {
   undo: () => void;
 };
 
+/** True while a modal is up. Single-key commands must not reach the list
+ *  behind it: archiving a conversation you cannot see, with the toast hidden
+ *  under the dialog, is the worst possible version of a shortcut firing.
+ *
+ *  The `:not([hidden])` is load-bearing. Ariakit keeps every dialog mounted and
+ *  marks the closed ones `hidden`, so a bare `[role="dialog"]` matches even
+ *  when nothing is open — a guard that would silently disable every shortcut in
+ *  the app, permanently. */
+function modalOpen(): boolean {
+  return document.querySelector('[role="dialog"]:not([hidden])') !== null;
+}
+
 /** Where a keystroke means text, not a command. */
 function isTyping(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null;
@@ -61,6 +73,10 @@ export function useKeyboard(actions: KeyActions) {
         return;
       }
 
+      // Escape still belongs to the dialog itself, which handles it; everything
+      // else stops here.
+      if (modalOpen()) return;
+
       // A pending chord takes the next key, if it arrives promptly.
       if (chord.current) {
         const pending = chord.current;
@@ -73,6 +89,19 @@ export function useKeyboard(actions: KeyActions) {
             return;
           }
         }
+      }
+
+      if ('eE#!sSzZIU'.includes(e.key)) {
+        void import('./api').then(({ api }) =>
+          api.log(
+            JSON.stringify({
+              kind: 'key',
+              key: e.key,
+              shift: e.shiftKey,
+              target: (e.target as HTMLElement | null)?.className ?? String(e.target),
+            }),
+          ),
+        );
       }
 
       // Triage. Single keys, so they yield to text fields like everything else.

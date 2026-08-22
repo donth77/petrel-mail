@@ -102,8 +102,12 @@ export function MessageList({
       ) {
         return;
       }
-      // Inside a dialog the list is not what the keys are for.
-      if (el?.closest('[role="dialog"]')) return;
+      // Inside a dialog the list is not what the keys are for — and testing the
+      // event target is not enough, because with nothing focused the target is
+      // the body, which has no dialog ancestor. Ask whether a dialog is *open*,
+      // not where the keystroke came from: Ariakit keeps closed dialogs mounted
+      // and `hidden`, so the selector has to exclude those or it always matches.
+      if (document.querySelector('[role="dialog"]:not([hidden])')) return;
 
       const down = e.key === 'j' || e.key === 'ArrowDown';
       const up = e.key === 'k' || e.key === 'ArrowUp';

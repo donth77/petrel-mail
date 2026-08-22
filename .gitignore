@@ -15,3 +15,4 @@ dist/
 
 # Tauri-generated schemas (build artifacts)
 apps/desktop/src-tauri/gen/
+.harness/

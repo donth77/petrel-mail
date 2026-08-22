@@ -40,10 +40,22 @@ export function useTriage(opts: {
 
   const run = useCallback(
     async (kind: ActionKind, threadId?: number) => {
+      const k = kind;
       const target = threadId ?? activeId;
-      if (target == null) return;
+      if (target == null) {
+        void api.log(JSON.stringify({ kind: 'triage', stage: 'no-target', k, activeId }));
+        return;
+      }
       const row = items.find((m) => m.id === target || m.thread_id === target);
-      if (!row) return;
+      if (!row) {
+        void api.log(
+          JSON.stringify({ kind: 'triage', stage: 'no-row', k, target, rows: items.length }),
+        );
+        return;
+      }
+      void api.log(
+        JSON.stringify({ kind: 'triage', stage: 'start', k, target, threadId: row.thread_id }),
+      );
 
       const removes = kind === 'archive' || kind === 'trash' || kind === 'spam';
       const before = items;
@@ -77,6 +89,7 @@ export function useTriage(opts: {
       setPending(true);
       try {
         const receipt = await api.triage(row.thread_id, kind);
+        void api.log(JSON.stringify({ kind: 'triage', stage: 'ok', id: receipt.action_id }));
         lastUndo.current = {
           actionId: receipt.action_id,
           description: receipt.description,
@@ -87,6 +100,9 @@ export function useTriage(opts: {
         };
         onMessage(receipt.description, lastUndo.current);
       } catch (err) {
+        // A triage failure that only shows a toast is a failure nobody can
+        // diagnose afterwards. It goes to the log as well.
+        void api.log(JSON.stringify({ kind: 'triage', stage: 'failed', k, error: String(err) }));
         // Put it back. A row that vanished and did not actually move is worse
         // than one that never moved.
         setItems(() => before);
