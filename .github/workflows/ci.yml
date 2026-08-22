@@ -9,6 +9,24 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  ui:
+    # The UI had no test runner at all, so pure logic — snooze times, the
+    # notification rules, recipient parsing — was verified by looking at the
+    # running app. That found two date bugs and would not have found a third.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --dir apps/desktop/ui exec tsc --noEmit
+      - run: pnpm --dir apps/desktop/ui test
   engine:
     strategy:
       matrix:
