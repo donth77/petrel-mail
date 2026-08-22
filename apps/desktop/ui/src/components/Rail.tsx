@@ -31,7 +31,6 @@ type Props = {
   onResize: (xOrDelta: number) => void;
   onSwitchAccount: (index: number) => void;
   onSettings: () => void;
-  onNotImplemented: (label: string) => void;
   accountColor: string;
   unread: number;
   view: string;
@@ -53,7 +52,6 @@ export function Rail({
   onResize,
   onSwitchAccount,
   onSettings,
-  onNotImplemented,
   railRef,
 }: Props) {
   // Pointer drag, with the listeners on the window rather than the handle: a

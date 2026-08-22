@@ -28,3 +28,35 @@ export function fits(existing: Attached[], addition: number): boolean {
   const used = existing.reduce((n, a) => n + encodedSize(a.size), 0);
   return used + encodedSize(addition) <= ATTACHMENT_LIMIT;
 }
+
+/**
+ * Runs the file picker and works out what may be kept.
+ *
+ * Shared by the docked composer and the popped-out one so a pop-out is not
+ * quietly a lesser composer — and so the size rule has one definition rather
+ * than two that can disagree about what fits.
+ *
+ * Returns null when the picker was cancelled, which is an answer rather than
+ * a failure and must not be reported as one.
+ */
+export async function pickAttachments(
+  existing: readonly Attached[],
+  info: (paths: string[]) => Promise<Attached[]>,
+): Promise<{ kept: Attached[]; rejected: string[] } | null> {
+  const { open } = await import('@tauri-apps/plugin-dialog');
+  const picked = await open({ multiple: true });
+  if (!picked) return null;
+
+  const files = await info(Array.isArray(picked) ? picked : [picked]);
+  const kept = [...existing];
+  const rejected: string[] = [];
+  for (const f of files) {
+    if (kept.some((a) => a.path === f.path)) continue;
+    if (!fits(kept, f.size)) {
+      rejected.push(f.name);
+      continue;
+    }
+    kept.push(f);
+  }
+  return { kept, rejected };
+}

@@ -28,6 +28,7 @@ type Props = {
   onAttach: () => void;
   onSaveDraft: () => void;
   onSendLater: () => void;
+  onPopOut: () => void;
 };
 
 /** Splits a recipient field into addresses, forgiving the separators people
@@ -48,7 +49,7 @@ export function addresses(field: string): string[] {
  * are reading, and taking over the screen to write two lines loses the thing
  * being replied to. Popping out is a deliberate escalation, not the default.
  */
-export function Compose({ draft, account, onChange, onClose, onSend, onAttach, onSaveDraft, onSendLater }: Props) {
+export function Compose({ draft, account, onChange, onClose, onSend, onAttach, onSaveDraft, onSendLater, onPopOut }: Props) {
   const toRef = useRef<HTMLInputElement>(null);
   const bodyRef = useRef<HTMLTextAreaElement>(null);
   const [showCc, setShowCc] = useState(draft.cc.length > 0);
@@ -78,6 +79,12 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
           e.preventDefault();
           e.stopPropagation();
           onSendLater();
+          return;
+        }
+        if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'o') {
+          e.preventDefault();
+          e.stopPropagation();
+          onPopOut();
           return;
         }
         if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {

@@ -2606,3 +2606,19 @@ body.resizing {
   outline: 1px solid var(--accent);
   outline-offset: 1px;
 }
+
+/* A popped-out composer owns its window: no corner to dock to, and the
+   rounded top and shadow of the docked one would be pretending otherwise. */
+.compose-window {
+  block-size: 100%;
+}
+
+.compose-window .compose {
+  position: static;
+  inline-size: 100%;
+  max-block-size: none;
+  block-size: 100%;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}

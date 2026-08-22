@@ -18,7 +18,6 @@ type Props = {
   onActivate: (id: number) => void;
   onAction: (kind: ActionKind, threadId: number) => void;
   onSnooze: (threadId: number) => void;
-  onNotImplemented: (label: string) => void;
 };
 
 /** Marks up `[bracketed]` spans from the engine's snippet as search hits. */
@@ -42,7 +41,6 @@ export function MessageList({
   onActivate,
   onAction,
   onSnooze,
-  onNotImplemented,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const composite = useCompositeStore({

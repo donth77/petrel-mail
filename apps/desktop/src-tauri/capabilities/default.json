@@ -3,11 +3,14 @@
   "identifier": "main-window",
   "description": "Minimal capability for the main window. Deny-by-default: grows only with explicit review. Message frames get no capability at all. Notifications are listed because the window asks the OS to post them; the OS still decides.",
   "windows": [
-    "main"
+    "main",
+    "compose-*"
   ],
   "permissions": [
     "core:default",
     "notification:default",
-    "dialog:default"
+    "dialog:default",
+    "core:window:allow-close",
+    "core:window:allow-set-focus"
   ]
 }

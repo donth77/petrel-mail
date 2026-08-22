@@ -782,6 +782,41 @@ async fn deliver(
     Ok(message_id)
 }
 
+/// Opens a saved draft in a window of its own.
+///
+/// The window loads the app with `?compose=<id>`, which renders the composer
+/// alone rather than a second copy of the whole client. A pop-out exists so a
+/// long message can have the screen; giving it another rail and message list
+/// would defeat the point and cost a second sync loop.
+///
+/// The draft must already be saved — the id is the only thing the new window
+/// gets, and it is also what stops the two windows from being separate
+/// unsaved copies of the same message.
+#[tauri::command]
+fn popout_compose(draft_id: i64, app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+
+    let label = format!("compose-{draft_id}");
+    // Already open: focus it rather than making a second window onto the same
+    // draft, which would leave two editors racing to save over each other.
+    if let Some(existing) = app.get_webview_window(&label) {
+        let _ = existing.set_focus();
+        return Ok(());
+    }
+
+    WebviewWindowBuilder::new(
+        &app,
+        &label,
+        WebviewUrl::App(format!("index.html?compose={draft_id}").into()),
+    )
+    .title("Petrel")
+    .inner_size(720.0, 620.0)
+    .min_inner_size(420.0, 360.0)
+    .build()
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Marks a draft to go later, or pulls it back.
 #[tauri::command]
 fn schedule_send(
@@ -1545,6 +1580,7 @@ pub fn run() {
             set_identity,
             attachment_info,
             schedule_send,
+            popout_compose,
             save_draft,
             load_draft,
             delete_draft,

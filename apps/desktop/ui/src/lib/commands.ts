@@ -40,12 +40,9 @@ export type CommandContext = {
   onCompose: () => void;
   onReply: () => void;
   onPauseNotifications: () => void;
-  onNotImplemented: (label: string) => void;
 };
 
 export function buildCommands(ctx: CommandContext): Command[] {
-  const todo = (label: string) => () => ctx.onNotImplemented(label);
-
   const conversation: Command[] = [
     { id: 'archive', scope: 'conversation', label: 'cmd-archive', alias: 'cmd-archive-alias', icon: Archive, keys: ['E'], run: () => ctx.onAction('archive') },
     { id: 'snooze', scope: 'conversation', label: 'cmd-snooze', icon: Clock, keys: ['B'], run: ctx.onSnooze },

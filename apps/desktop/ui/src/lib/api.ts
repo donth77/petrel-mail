@@ -44,6 +44,7 @@ export type ThreadMessage = {
   date_ms: number;
   unread: boolean;
   recipients: string[];
+  recipient_addrs: string[];
   attachments: Attachment[];
 };
 
@@ -223,6 +224,7 @@ const mock = {
   loadDraft: async (): Promise<DraftRecord> => ({ id: 1, to: '', subject: '', body: '' }),
   deleteDraft: async () => {},
   scheduleSend: async () => {},
+  popoutCompose: async () => {},
   attachmentInfo: async (paths: string[]) =>
     paths.map((path) => ({ path, name: path.split('/').pop() || path, size: 1024 })),
   accounts: async (): Promise<Account[]> => mockAccounts.map((a) => ({ ...a })),
@@ -246,13 +248,14 @@ const mock = {
       id: 1, from_display: 'Dana Wu', from_addr: 'dana@northbay.example',
       subject: 'Q3 vendor contracts', snippet: 'Sending the draft ahead of Friday so you both have time…',
       date_ms: Date.now() - 3 * 86400000, unread: false,
-      recipients: ['Sam Ortiz', 'me'], attachments: [],
+      recipients: ['Sam Ortiz', 'me'], recipient_addrs: ['sam@example.com', 'you@example.com'], attachments: [],
     },
     {
       id: 2, from_display: 'Sam Ortiz', from_addr: 'sam@vendorco.example',
       subject: 'Re: Q3 vendor contracts', snippet: 'I have marked up section 4…',
       date_ms: Date.now() - 90 * 60000, unread: true,
       recipients: ['Dana Wu', 'me'],
+      recipient_addrs: ['dana@example.com', 'you@example.com'],
       attachments: [
         { filename: 'contract-v3.pdf', size: 2202009 },
         { filename: 'annex-logistics.xlsx', size: 49152 },
@@ -310,6 +313,7 @@ const real = {
   deleteDraft: (id: number) => invoke<void>('delete_draft', { id }),
   scheduleSend: (draftId: number, atMs: number | null) =>
     invoke<void>('schedule_send', { draftId, atMs }),
+  popoutCompose: (draftId: number) => invoke<void>('popout_compose', { draftId }),
   attachmentInfo: (paths: string[]) =>
     invoke<{ path: string; name: string; size: number }[]>('attachment_info', { paths }),
   accounts: () => invoke<Account[]>('list_accounts'),

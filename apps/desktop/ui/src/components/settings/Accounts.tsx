@@ -8,7 +8,7 @@ import { t } from '../../lib/strings';
 const COLORS = ['#0E7C86', '#9A6B1F', '#6B7F87', '#3B6EA5', '#6B5CA5', '#5E7C4A'];
 const ROLES = ['archive', 'sent', 'drafts', 'spam', 'trash'] as const;
 
-export function Accounts({ onNotImplemented }: { onNotImplemented: (label: string) => void }) {
+export function Accounts() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [selected, setSelected] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);

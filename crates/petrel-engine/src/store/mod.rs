@@ -128,7 +128,11 @@ pub struct ThreadMessage {
     pub snippet: String,
     pub date_ms: i64,
     pub unread: bool,
+    /// Display names, for reading — "to Sam Ortiz, Dana Wu".
     pub recipients: Vec<String>,
+    /// The same people as addresses, for replying to them. Kept separate
+    /// because a reply-all built from display names sends to nobody.
+    pub recipient_addrs: Vec<String>,
     pub attachments: Vec<Attachment>,
 }
 
@@ -2568,12 +2572,15 @@ impl Store {
             let mut to = self.conn.prepare_cached(
                 // message_addresses has no surrogate key; rowid preserves the
                 // order the parser inserted them, which is the header's order.
-                "SELECT coalesce(nullif(display,''), addr_norm) FROM message_addresses
+                "SELECT coalesce(nullif(display,''), addr_norm), addr_norm
+                 FROM message_addresses
                  WHERE message_id = ?1 AND role IN ('to','cc') ORDER BY rowid",
             )?;
-            let recipients: Vec<String> = to
-                .query_map(params![id], |r| r.get(0))?
+            let pairs: Vec<(String, String)> = to
+                .query_map(params![id], |r| Ok((r.get(0)?, r.get(1)?)))?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
+            let recipients: Vec<String> = pairs.iter().map(|(d, _)| d.clone()).collect();
+            let recipient_addrs: Vec<String> = pairs.into_iter().map(|(_, a)| a).collect();
 
             let mut att = self.conn.prepare_cached(
                 "SELECT coalesce(filename,''), coalesce(size, 0) FROM attachments
@@ -2598,6 +2605,7 @@ impl Store {
                 date_ms,
                 unread: flags & flags::SEEN == 0,
                 recipients,
+                recipient_addrs,
                 attachments,
             });
         }

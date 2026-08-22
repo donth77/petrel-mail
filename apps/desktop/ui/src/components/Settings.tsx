@@ -38,10 +38,12 @@ type Props = {
   pane?: PaneId;
   onClose: () => void;
   onOpenHelp: () => void;
-  onNotImplemented: (label: string) => void;
+  /** A plain status line. Not the "not built" channel — routing a
+   *  successful export through that reported it as a missing feature. */
+  onMessage: (text: string) => void;
 };
 
-export function Settings({ open, pane: requested, onClose, onOpenHelp, onNotImplemented }: Props) {
+export function Settings({ open, pane: requested, onClose, onOpenHelp, onMessage }: Props) {
   const [pane, setPane] = useState<PaneId>(requested ?? 'appearance');
 
   // Follow the request each time the dialog opens, not once on mount: the
@@ -90,12 +92,12 @@ export function Settings({ open, pane: requested, onClose, onOpenHelp, onNotImpl
             </DialogDismiss>
           </Tip>
           {pane === 'appearance' && <Appearance />}
-          {pane === 'accounts' && <Accounts onNotImplemented={onNotImplemented} />}
+          {pane === 'accounts' && <Accounts />}
           {pane === 'notifications' && <Notifications />}
           {pane === 'composing' && <Composing />}
-          {pane === 'storage' && <Storage onMessage={onNotImplemented} />}
+          {pane === 'storage' && <Storage onMessage={onMessage} />}
           {pane === 'privacy' && <Privacy />}
-          {pane === 'identities' && <Identities onMessage={onNotImplemented} />}
+          {pane === 'identities' && <Identities onMessage={onMessage} />}
           {pane !== 'appearance' && pane !== 'accounts' && pane !== 'notifications' && pane !== 'composing' && pane !== 'storage' && pane !== 'privacy' && pane !== 'identities' && (
             <div className="empty">
               <h2>{t(PANES.find((p) => p.id === pane)!.label)}</h2>

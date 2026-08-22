@@ -56,7 +56,7 @@ export const BINDINGS: Binding[] = [
   { id: 'save-draft', group: 'write', label: 'Save draft', display: 'save',
     chords: [{ key: 's', meta: true }], available: true },
   { id: 'popout', group: 'write', label: 'Open in its own window', display: 'popout',
-    chords: [{ key: 'o', meta: true, shift: true }], available: false },
+    chords: [{ key: 'o', meta: true, shift: true }], available: true },
 
   // ---- act on mail
   { id: 'archive', group: 'act', label: 'Archive', display: ['E'],

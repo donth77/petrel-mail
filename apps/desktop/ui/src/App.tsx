@@ -20,8 +20,9 @@ import { Picker, type PickerOption } from './components/Picker';
 import { Compose, addresses, type Draft } from './components/Compose';
 import { snoozeOptions } from './lib/snooze';
 import { promisesMissingAttachment } from './lib/compose-checks';
+import { replyTargets } from './lib/reply';
 import { startingBody } from './lib/signature';
-import { ATTACHMENT_LIMIT, fits, type Attached } from './lib/attachments';
+import { ATTACHMENT_LIMIT, pickAttachments } from './lib/attachments';
 import { extend, prune, targets, toggle } from './lib/selection';
 import { notifiable, postDesktopNotification } from './lib/notify';
 import { Help } from './components/Help';
@@ -182,21 +183,8 @@ export function App() {
       setDraft({ to: '', cc: '', subject: '', body: startingBody(identity, false) });
     },
     reply: (all) => {
-      if (!active) return;
       // R follows the configured default; A always means reply-all.
-      const replyAll = all || settings.replyDefault === 'reply-all';
-      const who = active.from_addr;
-      setDraft({
-        to: who,
-        cc: '',
-        // Reply threading rides on the headers, not the subject; the Re: is
-        // only what people expect to read.
-        subject: active.subject.match(/^re:/i) ? active.subject : `Re: ${active.subject}`,
-        body: startingBody(identity, true),
-        inReplyTo: null,
-        references: [],
-      });
-      if (replyAll) setToast(t('not-implemented', { label: t('reader-reply-all') }));
+      if (active) void startReply(active.id, all || settings.replyDefault === 'reply-all');
     },
     forward: () => {
       if (!active) return;
@@ -267,6 +255,37 @@ export function App() {
 
   const active = useMemo(() => items.find((m) => m.id === activeId) ?? null, [items, activeId]);
 
+  /**
+   * Opens a reply to the newest message in a conversation.
+   *
+   * Recipients come from the message rather than the list row: the row only
+   * knows who spoke last, so a reply-all built from it would leave off
+   * everyone else who was on the thread.
+   */
+  const startReply = async (id: number, all: boolean) => {
+    const row = items.find((m) => m.id === id);
+    if (!row) return;
+    try {
+      const messages = await api.threadDetail(row.thread_id);
+      const last = messages[messages.length - 1];
+      if (!last) return;
+      const { to, cc } = replyTargets(last, identity?.address ?? '', all);
+      attachmentWarned.current = false;
+      setDraft({
+        to: to.join(', '),
+        cc: cc.join(', '),
+        // Threading rides on the headers, not the subject; the Re: is only
+        // what people expect to read.
+        subject: row.subject.match(/^re:/i) ? row.subject : `Re: ${row.subject}`,
+        body: startingBody(identity, true),
+        inReplyTo: null,
+        references: [],
+      });
+    } catch (e) {
+      setToast(t('compose-resume-failed', { error: String(e) }));
+    }
+  };
+
   /** Reopens a saved draft in the composer. */
   const resumeDraft = async (id: number) => {
     try {
@@ -310,33 +329,15 @@ export function App() {
    */
   const attach = async () => {
     try {
-      const { open } = await import('@tauri-apps/plugin-dialog');
-      const picked = await open({ multiple: true });
-      if (!picked) return;
-      const paths = Array.isArray(picked) ? picked : [picked];
-
-      const info = await api.attachmentInfo(paths);
       const current = draftRef.current;
       if (!current) return;
-
-      // Decided out here, not inside the state updater. An updater has to be
-      // pure — React is free to run it twice — and a setToast in there would
-      // announce the same rejection twice for no reason anyone could see.
-      const kept = [...(current.attachments ?? [])];
-      const rejected: string[] = [];
-      for (const f of info) {
-        if (kept.some((a) => a.path === f.path)) continue;
-        if (!fits(kept, f.size)) {
-          rejected.push(f.name);
-          continue;
-        }
-        kept.push(f satisfies Attached);
-      }
-      setDraft({ ...current, attachments: kept });
-      if (rejected.length > 0) {
+      const result = await pickAttachments(current.attachments ?? [], api.attachmentInfo);
+      if (!result) return;
+      setDraft({ ...current, attachments: result.kept });
+      if (result.rejected.length > 0) {
         setToast(
           t('compose-too-large', {
-            name: rejected.join(', '),
+            name: result.rejected.join(', '),
             limit: fileSize(ATTACHMENT_LIMIT),
           }),
         );
@@ -562,7 +563,6 @@ export function App() {
           else setToast(t('account-none-at', { n: String(n) }));
         }}
         onSettings={() => setSettingsOpen('accounts')}
-        onNotImplemented={(label) => setToast(t('not-implemented', { label }))}
         onView={(v) => {
           if (v === 'help') setHelpOpen(true);
           else if (v === 'settings') setSettingsOpen('appearance');
@@ -638,8 +638,7 @@ export function App() {
               setActiveId(threadId);
               setPicker('snooze');
             }}
-            onNotImplemented={(label) => setToast(t('not-implemented', { label }))}
-          />
+              />
         )}
       </div>
 
@@ -668,6 +667,16 @@ export function App() {
           onAttach={() => void attach()}
           onSaveDraft={() => void saveDraft(draft)}
           onSendLater={() => setPicker('send-later')}
+          onPopOut={() => {
+            // Saved first: the new window is given an id, and that id is also
+            // what stops the two windows becoming separate unsaved copies of
+            // the same message.
+            const d = draft;
+            void saveDraft(d)
+              .then(() => api.popoutCompose(draftRef.current?.savedId ?? d.savedId ?? 0))
+              .then(() => setDraft(null))
+              .catch((e) => setToast(t('compose-popout-failed', { error: String(e) })));
+          }}
           onSend={() => {
             if (addresses(draft.to).length === 0) {
               setToast(t('compose-no-recipient'));
@@ -760,15 +769,7 @@ export function App() {
           onTag: () => setPicker('tag'),
           onCompose: () => setDraft({ to: '', cc: '', subject: '', body: startingBody(identity, false) }),
           onReply: () => {
-            if (!active) return;
-            setDraft({
-              to: active.from_addr,
-              cc: '',
-              subject: active.subject.match(/^re:/i) ? active.subject : `Re: ${active.subject}`,
-              body: startingBody(identity, true),
-              inReplyTo: null,
-              references: [],
-            });
+            if (active) void startReply(active.id, settings.replyDefault === 'reply-all');
           },
           onPauseNotifications: () => {
             set('notifyPausedUntil', String(Date.now() + 60 * 60 * 1000));
@@ -780,7 +781,6 @@ export function App() {
             else if (v === 'search') searchRef.current?.focus();
             else setView(v);
           },
-          onNotImplemented: (label) => setToast(t('not-implemented', { label })),
         }}
       />
       <Help open={helpOpen} onClose={() => setHelpOpen(false)} />
@@ -792,7 +792,7 @@ export function App() {
           api.accounts().then(setAccounts).catch(() => {});
         }}
         onOpenHelp={() => setHelpOpen(true)}
-        onNotImplemented={(label) => setToast(t('not-implemented', { label }))}
+        onMessage={setToast}
       />
       {outgoing && (
         // Its own bar, not the toast: this one is a control with a deadline,
