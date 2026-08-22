@@ -22,6 +22,7 @@ import { snoozeOptions } from './lib/snooze';
 import { promisesMissingAttachment } from './lib/compose-checks';
 import { startingBody } from './lib/signature';
 import { ATTACHMENT_LIMIT, fits, type Attached } from './lib/attachments';
+import { extend, prune, targets, toggle } from './lib/selection';
 import { notifiable, postDesktopNotification } from './lib/notify';
 import { Help } from './components/Help';
 import { Settings } from './components/Settings';
@@ -49,6 +50,9 @@ export function App() {
   const [undoOffer, setUndoOffer] = useState<UndoOffer | null>(null);
   const [readerOverlay, setReaderOverlay] = useState(false);
   const [picker, setPicker] = useState<'folder' | 'tag' | 'snooze' | null>(null);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  // Where a range grows from, so reversing direction shrinks it again.
+  const [anchor, setAnchor] = useState<number | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   // Reset per composer, so each message gets its own single warning.
   const attachmentWarned = useRef(false);
@@ -92,6 +96,9 @@ export function App() {
         setItems(rows);
         setLoading(false);
         setActiveId((cur) => (rows.some((r: Thread) => r.id === cur) ? cur : (rows[0]?.id ?? null)));
+        // A selection pointing at rows that have gone would make the next
+        // action target nothing and look broken.
+        setSelected((cur) => (cur.size === 0 ? cur : prune(cur, rows.map((r: Thread) => r.id))));
       }).catch((err: unknown) => {
         if (!live) return;
         setLoading(false);
@@ -145,7 +152,14 @@ export function App() {
       target.focus();
     },
     goTo: setView,
-    triage: (kind) => void triage.run(kind),
+    triage: (kind) => {
+      // One key, more things. Acting on the selection when there is one is
+      // what makes X worth having: nothing new to learn, it just applies to
+      // more than one conversation.
+      const ids = targets(selected, activeId);
+      ids.forEach((id) => void triage.run(kind, id));
+      if (selected.size > 0) setSelected(new Set());
+    },
     toggleStar: () => triage.toggleStar(),
     undo: () => {
       // A pending send outranks the last triage action: it is the thing with a
@@ -194,6 +208,22 @@ export function App() {
       });
     },
     snooze: () => setPicker('snooze'),
+    select: () => {
+      if (activeId == null) return;
+      setSelected((cur) => toggle(cur, activeId));
+      setAnchor(activeId);
+    },
+    extendSelection: (down) => {
+      const at = items.findIndex((m) => m.id === activeId);
+      const next = items[at + (down ? 1 : -1)];
+      if (!next) return;
+      setSelected((cur) => extend(cur, items.map((m) => m.id), anchor ?? activeId, next.id));
+      setActiveId(next.id);
+    },
+    clearSelection: () => {
+      setSelected(new Set());
+      setAnchor(null);
+    },
     openMove: () => setPicker('folder'),
     openTag: () => setPicker('tag'),
     openPalette: () => setPaletteOpen(true),
@@ -526,7 +556,11 @@ export function App() {
               <span className="dot" style={{ background: 'var(--accent)' }} />
               {accountLabel}
             </span>
-            <span className="view-count">{t('list-unread', { count: fmtCount(unread) })}</span>
+            <span className="view-count">
+              {selected.size > 0
+                ? t('list-selected', { count: fmtCount(selected.size) })
+                : t('list-unread', { count: fmtCount(unread) })}
+            </span>
           </div>
         </div>
 
@@ -551,6 +585,11 @@ export function App() {
           <MessageList
             items={items}
             activeId={activeId}
+            selected={selected}
+            onToggleSelect={(id) => {
+              setSelected((cur) => toggle(cur, id));
+              setAnchor(id);
+            }}
             density={settings.density}
             onActivate={setActiveId}
             onAction={(kind, threadId) => void triage.run(kind, threadId)}

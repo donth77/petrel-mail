@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { Composite, CompositeItem, useCompositeStore } from '@ariakit/react';
 import { useVirtualizer, defaultRangeExtractor, type Range } from '@tanstack/react-virtual';
-import { Archive, Clock, Mail, MailOpen, MoreVertical, Paperclip, Star } from 'lucide-react';
+import { Archive, Check, Clock, Mail, MailOpen, Paperclip, Star } from 'lucide-react';
 import type { ActionKind, Thread } from '../lib/api';
 import { Icon } from './Icon';
 import { initials, listTime, fullTime } from '../lib/format';
@@ -12,6 +12,8 @@ import { key } from '../lib/keys';
 type Props = {
   items: Thread[];
   activeId: number | null;
+  selected: ReadonlySet<number>;
+  onToggleSelect: (id: number) => void;
   density: 'relaxed' | 'compact';
   onActivate: (id: number) => void;
   onAction: (kind: ActionKind, threadId: number) => void;
@@ -34,6 +36,8 @@ function Snippet({ text }: { text: string }) {
 export function MessageList({
   items,
   activeId,
+  selected,
+  onToggleSelect,
   density,
   onActivate,
   onAction,
@@ -218,6 +222,7 @@ export function MessageList({
               })}
               className="row"
               data-active={m.id === activeId}
+              data-selected={selected.has(m.id) || undefined}
               data-unread={m.unread}
               data-index={v.index}
               ref={virtualizer.measureElement}
@@ -258,8 +263,18 @@ export function MessageList({
                 </span>
               ) : (
                 <>
-                  <span className="avatar" aria-hidden="true">
-                    {initials(m.from_display, m.from_addr)}
+                  {/* The avatar is the selection target, as it is in Gmail:
+                      a checkbox column would cost every row width it only
+                      needs while selecting. */}
+                  <span
+                    className="avatar selectable"
+                    aria-hidden="true"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onToggleSelect(m.id);
+                    }}
+                  >
+                    {selected.has(m.id) ? <Icon icon={Check} size={14} /> : initials(m.from_display, m.from_addr)}
                   </span>
                   <span className="row-main">
                     <span className="row-top">

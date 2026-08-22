@@ -74,7 +74,7 @@ export const BINDINGS: Binding[] = [
   { id: 'read-unread', group: 'act', label: 'Mark read · unread', display: ['read', 'unread'],
     chords: [{ key: 'i', shift: true }, { key: 'u', shift: true }], available: true },
   { id: 'select', group: 'act', label: 'Select · extend selection', display: ['X', 'extend'],
-    chords: [{ key: 'x' }], available: false },
+    chords: [{ key: 'x' }], available: true },
   { id: 'undo', group: 'act', label: 'Undo the last thing', display: ['Z'],
     chords: [{ key: 'z' }], available: true },
 

@@ -31,6 +31,7 @@ const en = {
   'search-placeholder': 'Search this account…',
   'list-conversations': '{ $count } conversations',
   'list-unread': '{ $count } unread',
+  'list-selected': '{ $count } selected',
 
   'reader-archive': 'Archive',
   'reader-star': 'Star',

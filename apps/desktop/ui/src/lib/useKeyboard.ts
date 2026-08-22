@@ -15,6 +15,9 @@ export type KeyActions = {
   reply: (all: boolean) => void;
   forward: () => void;
   snooze: () => void;
+  select: () => void;
+  extendSelection: (down: boolean) => void;
+  clearSelection: () => void;
   openMove: () => void;
   openTag: () => void;
   toggleStar: () => void;
@@ -97,7 +100,7 @@ export function useKeyboard(actions: KeyActions) {
         }
       }
 
-      if ('eE#!sSzZIUvVlLcCrRaAfFbB'.includes(e.key)) {
+      if ('eE#!sSzZIUvVlLcCrRaAfFbBxXJK'.includes(e.key)) {
         void import('./api').then(({ api }) =>
           api.log(
             JSON.stringify({
@@ -142,6 +145,26 @@ export function useKeyboard(actions: KeyActions) {
         case 'F':
           e.preventDefault();
           return a.forward();
+        case 'x':
+        case 'X':
+          e.preventDefault();
+          return a.select();
+        case 'J':
+          if (e.shiftKey) {
+            e.preventDefault();
+            return a.extendSelection(true);
+          }
+          break;
+        case 'K':
+          if (e.shiftKey) {
+            e.preventDefault();
+            return a.extendSelection(false);
+          }
+          break;
+        case 'Escape':
+          // Only meaningful when something is selected; dialogs handle their
+          // own Escape and never reach here.
+          return a.clearSelection();
         case 'b':
         case 'B':
           e.preventDefault();
