@@ -35,6 +35,9 @@ export type Tag = { id: number; name: string; colour: string; thread_count: numb
 
 export type Attachment = { filename: string; size: number };
 
+/** Somebody worth offering while a recipient is typed. */
+export type Correspondent = { addr: string; display: string; written_to: boolean };
+
 /** Whether a message's remote content may load, and on what grounds. */
 export type RemoteStatus = {
   from_addr: string;
@@ -258,6 +261,11 @@ const mock = {
   viewCounts: async (mode: string): Promise<[string, number][]> =>
     mode === 'off' ? [] : [['inbox', 3], ['drafts', 1], ['spam', 2]],
   popoutMessage: async () => {},
+  completeAddresses: async (prefix: string): Promise<Correspondent[]> =>
+    [
+      { addr: 'nadia@example.com', display: 'Nadia Okafor', written_to: true },
+      { addr: 'news@example.com', display: 'News Digest', written_to: false },
+    ].filter((c) => c.addr.startsWith(prefix) || c.display.toLowerCase().includes(prefix)),
   remoteStatus: async (): Promise<RemoteStatus> => ({
     from_addr: 'sam@example.com', allowed: false, because_written_to: false,
   }),
@@ -316,6 +324,8 @@ const real = {
   tags: () => invoke<Tag[]>('list_tags'),
   viewCounts: (mode: string) => invoke<[string, number][]>('view_counts', { mode }),
   popoutMessage: (threadId: number) => invoke<void>('popout_message', { threadId }),
+  completeAddresses: (prefix: string) =>
+    invoke<Correspondent[]>('complete_addresses', { prefix }),
   remoteStatus: (messageId: number) => invoke<RemoteStatus>('remote_status', { messageId }),
   showRemoteOnce: (messageId: number) => invoke<void>('show_remote_once', { messageId }),
   trustSender: (messageId: number) => invoke<string>('trust_sender', { messageId }),

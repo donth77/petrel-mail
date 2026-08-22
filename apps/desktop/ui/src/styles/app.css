@@ -2916,3 +2916,123 @@ body.resizing {
   flex-grow: 1;
   min-block-size: 0;
 }
+
+/* ------------------------------------------------------------- recipients */
+
+/* Chips and the live input share one line and wrap together, so a field with
+   six recipients grows downward instead of scrolling sideways past the ones
+   you cannot see. */
+.recipients {
+  flex-grow: 1;
+  min-inline-size: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.rcpt-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-inline-size: 100%;
+  padding: 2px 4px 2px 8px;
+  border: 1px solid var(--hair);
+  border-radius: 11px;
+  background: var(--hair2);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+/* Not an error — a doubt. The address may be perfectly good and merely
+   unusual, so this is a raised eyebrow rather than a red flag, and nothing
+   about it blocks sending. */
+.rcpt-chip.suspect {
+  border-color: color-mix(in oklab, var(--danger) 45%, var(--hair));
+  border-style: dashed;
+  background: transparent;
+}
+
+.rcpt-x {
+  display: grid;
+  place-items: center;
+  inline-size: 15px;
+  block-size: 15px;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--ink3);
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.rcpt-x:hover {
+  background: var(--hair);
+  color: var(--ink);
+}
+
+/* The entry is positioned so the completion list can hang off it. It keeps a
+   minimum width so the caret never ends up in a one-character slot at the end
+   of a full row of chips. */
+.recipient-entry {
+  position: relative;
+  flex-grow: 1;
+  min-inline-size: 8ch;
+}
+
+.completions {
+  position: absolute;
+  inset-block-start: calc(100% + 4px);
+  inset-inline-start: 0;
+  z-index: 30;
+  min-inline-size: 260px;
+  max-inline-size: 380px;
+  max-block-size: 240px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  border: 1px solid var(--hair);
+  border-radius: 9px;
+  background: var(--surface);
+  box-shadow: 0 10px 28px rgba(24, 39, 48, 0.14);
+}
+
+.completions button {
+  inline-size: 100%;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.completions button.on {
+  background: var(--hair2);
+}
+
+.completion-name {
+  font-size: 13px;
+  min-inline-size: 0;
+}
+
+.completion-addr {
+  font-size: 11.5px;
+  color: var(--ink3);
+  min-inline-size: 0;
+}
+
+.completion-note {
+  margin-inline-start: auto;
+  flex-shrink: 0;
+  font-size: 10.5px;
+  color: var(--accent);
+  white-space: nowrap;
+}

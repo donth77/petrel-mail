@@ -3,6 +3,7 @@ import { Paperclip, X } from 'lucide-react';
 import { fileSize } from '../lib/format';
 import type { Attached } from '../lib/attachments';
 import { Icon } from './Icon';
+import { Recipients } from './Recipients';
 import { key } from '../lib/keys';
 import { t } from '../lib/strings';
 
@@ -31,16 +32,12 @@ type Props = {
   onPopOut: () => void;
 };
 
-/** Splits a recipient field into addresses, forgiving the separators people
- *  actually type. Validation belongs at send, not between keystrokes: telling
- *  someone their address is wrong while they are halfway through typing it is
- *  how a form gets in the way of being filled in. */
-export function addresses(field: string): string[] {
-  return field
-    .split(/[,;]/)
-    .map((a) => a.trim())
-    .filter(Boolean);
-}
+/** Splits a recipient field into addresses.
+ *
+ * Re-exported rather than reimplemented: the chip field and the send path have
+ * to agree about what counts as a recipient, and two copies of one rule is how
+ * they stop agreeing. */
+export { splitRecipients as addresses } from '../lib/recipients';
 
 /**
  * The docked composer.
@@ -111,14 +108,11 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
 
       <div className="hdrow">
         <span className="lab">{t('compose-to')}</span>
-        <input
-          ref={toRef}
-          className="compose-input"
+        <Recipients
+          label={t('compose-to')}
           value={draft.to}
-          onChange={(e) => field('to', e.target.value)}
-          aria-label={t('compose-to')}
-          autoComplete="off"
-          spellCheck={false}
+          onChange={(v) => field('to', v)}
+          inputRef={toRef}
         />
         {!showCc && (
           <button type="button" className="compose-cc-toggle" onClick={() => setShowCc(true)}>
@@ -130,14 +124,7 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
       {showCc && (
         <div className="hdrow">
           <span className="lab">{t('compose-cc')}</span>
-          <input
-            className="compose-input"
-            value={draft.cc}
-            onChange={(e) => field('cc', e.target.value)}
-            aria-label={t('compose-cc')}
-            autoComplete="off"
-            spellCheck={false}
-          />
+          <Recipients label={t('compose-cc')} value={draft.cc} onChange={(v) => field('cc', v)} />
         </div>
       )}
 

@@ -136,6 +136,17 @@ pub struct ThreadMessage {
     pub attachments: Vec<Attachment>,
 }
 
+/// Somebody worth offering while a recipient is typed.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Correspondent {
+    pub addr: String,
+    pub display: String,
+    /// Whether the user has written to them, which the list shows: "you have
+    /// emailed this person" is the single most useful thing to know about a
+    /// suggestion, and it is also what decides the ordering.
+    pub written_to: bool,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TagSummary {
     pub id: i64,
@@ -2642,6 +2653,95 @@ impl Store {
             return Ok(false);
         }
         Ok(self.sender_trusted(account_id, &from)? || self.has_written_to(account_id, &from)?)
+    }
+
+    /// Addresses to offer while a recipient is being typed, best first.
+    ///
+    /// Harvested from mail already synced — there is no lookup anywhere else,
+    /// which is the point: a composer that phones a server to ask who you might
+    /// be writing to has told it who you are writing to.
+    ///
+    /// Ranked by frecency rather than either half alone. Frequency by itself
+    /// buries the person you emailed twice this morning under a mailing list
+    /// from three years ago; recency by itself puts whoever mailed you last
+    /// above your closest colleague. The weights below are deliberately blunt:
+    ///
+    /// * **Written to, hugely.** Somebody you have sent mail to is a different
+    ///   kind of thing from an address that has appeared in your inbox, and no
+    ///   amount of newsletter volume should outrank one.
+    /// * **Seen often**, linearly, capped so a mailing list cannot dominate.
+    /// * **Seen lately**, in two coarse steps rather than a curve — the
+    ///   difference between last week and last month matters, the difference
+    ///   between fourteen and fifteen months does not.
+    ///
+    /// Spam is excluded, and so is the user's own address: a completion list
+    /// that offers to send mail to yourself is answering a question nobody
+    /// asked.
+    pub fn complete_addresses(
+        &self,
+        account_id: i64,
+        prefix: &str,
+        now_ms: i64,
+        limit: u32,
+    ) -> Result<Vec<Correspondent>> {
+        let needle = prefix.trim().to_lowercase();
+        if needle.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Matched at the start of the address, of its domain, or of any word in
+        // the display name — the three places people begin typing. Not a bare
+        // substring: "an" should not offer everyone with "an" mid-surname.
+        let starts = format!("{needle}%");
+        let word = format!("% {needle}%");
+        let at = format!("%@{needle}%");
+        let month = now_ms - 30 * crate::retention::MS_PER_DAY;
+        let quarter = now_ms - 90 * crate::retention::MS_PER_DAY;
+
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT ma.addr_norm,
+                    coalesce(max(nullif(ma.display, '')), '') AS display,
+                    max(CASE WHEN EXISTS (
+                          SELECT 1 FROM placements p
+                          JOIN folders f ON f.id = p.folder_id
+                          WHERE p.message_id = m.id AND f.role = 'sent')
+                        AND ma.role IN ('to', 'cc')
+                        THEN 1 ELSE 0 END) AS written,
+                    count(*) AS seen,
+                    max(m.date_ms) AS last_ms
+             FROM message_addresses ma
+             JOIN messages m ON m.id = ma.message_id
+             WHERE m.account_id = ?1
+               AND m.deleted_at_ms IS NULL
+               AND ma.addr_norm <> ''
+               AND NOT EXISTS (SELECT 1 FROM placements p
+                               JOIN folders f ON f.id = p.folder_id
+                               WHERE p.message_id = m.id AND f.role = 'spam')
+               AND ma.addr_norm <> coalesce(
+                     (SELECT lower(email) FROM accounts WHERE id = ?1), '')
+               AND (ma.addr_norm LIKE ?2
+                    OR lower(ma.display) LIKE ?2
+                    OR lower(ma.display) LIKE ?3
+                    OR ma.addr_norm LIKE ?4)
+             GROUP BY ma.addr_norm
+             ORDER BY written DESC,
+                      min(seen, 20)
+                        + CASE WHEN last_ms > ?5 THEN 25
+                               WHEN last_ms > ?6 THEN 10
+                               ELSE 0 END DESC,
+                      last_ms DESC
+             LIMIT ?7",
+        )?;
+        let rows = stmt.query_map(
+            params![account_id, starts, word, at, month, quarter, limit],
+            |r| {
+                Ok(Correspondent {
+                    addr: r.get(0)?,
+                    display: r.get(1)?,
+                    written_to: r.get::<_, i64>(2)? != 0,
+                })
+            },
+        )?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
     /// Who sent a message, normalised the way the trust list stores addresses.

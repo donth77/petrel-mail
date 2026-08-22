@@ -297,6 +297,18 @@
     export_mbox: function () {
       return rows.length + '/0';
     },
+    complete_addresses: function (a) {
+      var people = [
+        { addr: 'nadia@example.com', display: 'Nadia Okafor', written_to: true },
+        { addr: 'news@example.com', display: 'News Digest', written_to: false },
+        { addr: 'nathan@other.example', display: '', written_to: false },
+      ];
+      var q = (a.prefix || '').toLowerCase();
+      if (!q) return [];
+      return people.filter(function (p) {
+        return p.addr.indexOf(q) === 0 || p.display.toLowerCase().indexOf(q) === 0;
+      });
+    },
     popout_message: function () {
       // No second window in a browser; recording the call is the assertion.
       return null;

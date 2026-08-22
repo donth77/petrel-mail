@@ -1035,6 +1035,21 @@ fn popout_compose(draft_id: i64, app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Addresses to offer while a recipient is being typed.
+#[tauri::command]
+fn complete_addresses(
+    prefix: String,
+    state: State<Arc<AppState>>,
+) -> Result<Vec<petrel_engine::store::Correspondent>, String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    let Some(account) = store.first_account().map_err(|e| e.to_string())? else {
+        return Ok(Vec::new());
+    };
+    store
+        .complete_addresses(account, &prefix, now_ms(), 8)
+        .map_err(|e| e.to_string())
+}
+
 /// Opens one conversation in a window of its own.
 ///
 /// The same bundle with a query parameter, as the popped-out composer is: a
@@ -1799,6 +1814,7 @@ pub fn run() {
             schedule_send,
             popout_compose,
             popout_message,
+            complete_addresses,
             save_draft,
             load_draft,
             delete_draft,
