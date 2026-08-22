@@ -37,10 +37,10 @@ export function MoreMenu({ thread, onAction, onMove, onTag, onSnooze }: Props) {
       <MenuButton className="act-icon" aria-label={t('reader-more')}>
         <Icon icon={MoreVertical} />
       </MenuButton>
-      <Menu gutter={6} className="menu" aria-label={t('reader-more')}>
+      <Menu portal gutter={6} className="menu" aria-label={t('reader-more')}>
         <MenuItem className="menu-item" onClick={() => onAction(thread.starred ? 'unstar' : 'star')}>
           <Icon icon={Star} size={14} />
-          <span>{thread.starred ? t('menu-unstar') : t('menu-star')}</span>
+          <span className="menu-label">{thread.starred ? t('menu-unstar') : t('menu-star')}</span>
           <span className="menu-key">S</span>
         </MenuItem>
         <MenuItem
@@ -48,7 +48,7 @@ export function MoreMenu({ thread, onAction, onMove, onTag, onSnooze }: Props) {
           onClick={() => onAction(thread.unread ? 'mark_read' : 'mark_unread')}
         >
           <Icon icon={thread.unread ? MailOpen : Mail} size={14} />
-          <span>{thread.unread ? t('reader-mark-read') : t('reader-mark-unread')}</span>
+          <span className="menu-label">{thread.unread ? t('reader-mark-read') : t('reader-mark-unread')}</span>
           <span className="menu-key">{thread.unread ? key('read') : key('unread')}</span>
         </MenuItem>
 
@@ -56,22 +56,22 @@ export function MoreMenu({ thread, onAction, onMove, onTag, onSnooze }: Props) {
 
         <MenuItem className="menu-item" onClick={onMove}>
           <Icon icon={FolderClosed} size={14} />
-          <span>{t('picker-folder-title')}</span>
+          <span className="menu-label">{t('picker-folder-title')}</span>
           <span className="menu-key">V</span>
         </MenuItem>
         <MenuItem className="menu-item" onClick={onTag}>
           <Icon icon={TagIcon} size={14} />
-          <span>{t('picker-tag-title')}</span>
+          <span className="menu-label">{t('picker-tag-title')}</span>
           <span className="menu-key">L</span>
         </MenuItem>
         <MenuItem className="menu-item" onClick={onSnooze}>
           <Icon icon={Clock} size={14} />
-          <span>{t('reader-snooze')}</span>
+          <span className="menu-label">{t('reader-snooze')}</span>
           <span className="menu-key">B</span>
         </MenuItem>
         <MenuItem className="menu-item" onClick={() => onAction('archive')}>
           <Icon icon={Archive} size={14} />
-          <span>{t('reader-archive')}</span>
+          <span className="menu-label">{t('reader-archive')}</span>
           <span className="menu-key">E</span>
         </MenuItem>
 
@@ -81,12 +81,12 @@ export function MoreMenu({ thread, onAction, onMove, onTag, onSnooze }: Props) {
             over "move to trash" on its way to something harmless. */}
         <MenuItem className="menu-item" onClick={() => onAction('spam')}>
           <Icon icon={ShieldAlert} size={14} />
-          <span>{t('menu-spam')}</span>
+          <span className="menu-label">{t('menu-spam')}</span>
           <span className="menu-key">!</span>
         </MenuItem>
         <MenuItem className="menu-item danger" onClick={() => onAction('trash')}>
           <Icon icon={Trash2} size={14} />
-          <span>{t('cmd-trash')}</span>
+          <span className="menu-label">{t('cmd-trash')}</span>
           <span className="menu-key">#</span>
         </MenuItem>
       </Menu>

@@ -2029,8 +2029,12 @@ mark {
   cursor: pointer;
 }
 
-.menu-item span:nth-of-type(1) {
+.menu-label {
   flex-grow: 1;
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .menu-item[data-active-item] {
@@ -2235,7 +2239,10 @@ mark {
 .rail-resize {
   position: absolute;
   inset-block: 0;
-  inset-inline-end: -3px;
+  /* Fully inside the rail. Straddling the border reads nicer but overflows the
+     scroll box, which both widened scrollWidth past clientWidth and meant the
+     outer half of the handle was clipped by overflow-x: hidden — unclickable. */
+  inset-inline-end: 0;
   inline-size: 6px;
   cursor: col-resize;
   /* Above the rail's own content so a drag near a button still grabs the
@@ -2257,23 +2264,51 @@ body.resizing {
   user-select: none;
 }
 
-/* Collapsed: icons only. The labels are removed from the flow rather than
-   hidden with opacity, so nothing is left to wrap or overflow at 56px — and
-   each item keeps a title so the icon is still identifiable. */
+/* Collapsed: icons only.
+   Labels stay in the flow and are clipped by the rail rather than removed, so
+   the panel narrowing *is* the animation — they slide out of view instead of
+   vanishing a frame before the width moves. Nothing can wrap on the way,
+   because everything here is nowrap. */
+.rail {
+  overflow-x: hidden;
+}
+
+.rail-text,
+.rail-label,
+.account .clip,
+.account .mono {
+  white-space: nowrap;
+}
+
+/* Icons never shrink. The labels stay in the flow so they can slide out with
+   the panel, which makes each row's content much wider than a collapsed rail —
+   and flex-shrink happily crushed every icon to zero width to make it fit. */
+.rail-item > svg,
+.account > .dot,
+.rail-item > .tag-swatch {
+  flex: none;
+}
+
+/* Labels may shrink to nothing; they are the thing being clipped. */
+.rail-text {
+  min-inline-size: 0;
+}
+
 .rail[data-collapsed] .rail-text,
 .rail[data-collapsed] .rail-label,
 .rail[data-collapsed] .account span:not(.dot),
 .rail[data-collapsed] .count {
-  display: none;
+  opacity: 0;
+  /* Not just invisible: a clipped label must not still be a click target or a
+     thing a screen reader reads out of a collapsed rail. */
+  pointer-events: none;
 }
 
-.rail[data-collapsed] .rail-item,
-.rail[data-collapsed] .account {
-  justify-content: center;
-  padding-inline: 0;
-  gap: 0;
-}
-
+/* Icons hold the exact x they have when expanded. Nudging them toward the
+   centre of the narrow rail meant every icon travelled while the panel moved,
+   so two things animated at once and neither read cleanly. Fixed, the only
+   motion is the panel narrowing and the labels sliding out with it — and the
+   icons appear to stay still, which is what makes it feel like one movement. */
 .rail[data-collapsed] .account {
   block-size: 36px;
 }
@@ -2281,4 +2316,49 @@ body.resizing {
 .rail[data-collapsed] .tag-swatch {
   inline-size: 10px;
   block-size: 10px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* grid-template-columns interpolates, so the whole three-pane layout moves
+     together and the list pane is never briefly overlapped or short. */
+  .shell {
+    transition: grid-template-columns 220ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  }
+
+  /* Labels fade faster than the panel moves, so they are gone before the space
+     for them is. Fading in is slower and delayed, so text does not appear over
+     a rail still too narrow to hold it. */
+  .rail-text,
+  .rail-label,
+  .account span:not(.dot),
+  .count {
+    transition: opacity 200ms ease 120ms;
+  }
+
+  .rail[data-collapsed] .rail-text,
+  .rail[data-collapsed] .rail-label,
+  .rail[data-collapsed] .account span:not(.dot),
+  .rail[data-collapsed] .count {
+    transition: opacity 90ms ease;
+  }
+
+  /* A drag must not be animated — the rail would lag the pointer by the length
+     of the transition, which reads as the handle being stuck. */
+  body.resizing .shell {
+    transition: none;
+  }
+}
+
+/* Tooltip for a collapsed rail item. Small, immediate, and out of the way:
+   its whole job is naming an icon you are already pointing at. */
+.tip {
+  z-index: 70;
+  padding: 5px 9px;
+  border: 1px solid var(--hair);
+  border-radius: 6px;
+  background: var(--raised);
+  box-shadow: 0 6px 18px rgba(24, 39, 48, 0.18);
+  font-size: 12px;
+  color: var(--ink);
+  white-space: nowrap;
 }

@@ -52,7 +52,15 @@ export function AccountMenu({
         <Icon icon={ChevronDown} size={13} />
       </MenuButton>
 
-      <Menu gutter={4} className="menu" aria-label={t('rail-switch-account')}>
+      {/* Portalled, or the menu renders inside the rail's flex column: it
+          becomes a flex child, widens the rail's scroll box and shifts every
+          item left by a few pixels the moment it opens. */}
+      <Menu
+        portal
+        gutter={4}
+        className="menu"
+        aria-label={t('rail-switch-account')}
+      >
         {accounts.map((a, i) => (
           <MenuItem key={a.id} className="menu-item" onClick={() => onSwitch(i + 1)}>
             <span
@@ -60,7 +68,7 @@ export function AccountMenu({
               aria-hidden="true"
               style={{ background: a.color || 'var(--ink3)' }}
             />
-            <span className="clip">{a.email}</span>
+            <span className="menu-label">{a.email}</span>
             {a.email === current && <Icon icon={Check} size={13} />}
           </MenuItem>
         ))}
@@ -68,11 +76,11 @@ export function AccountMenu({
 
         <MenuItem className="menu-item" onClick={() => onNotImplemented(t('accounts-add'))}>
           <Icon icon={Plus} size={14} />
-          <span>{t('accounts-add')}</span>
+          <span className="menu-label">{t('accounts-add')}</span>
         </MenuItem>
         <MenuItem className="menu-item" onClick={onSettings}>
           <Icon icon={Settings2} size={14} />
-          <span>{t('settings-accounts')}</span>
+          <span className="menu-label">{t('settings-accounts')}</span>
         </MenuItem>
       </Menu>
     </MenuProvider>
