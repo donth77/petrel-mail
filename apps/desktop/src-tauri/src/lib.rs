@@ -122,6 +122,48 @@ fn imap_config_from_env() -> Option<ImapConfig> {
 fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
     tauri::async_runtime::spawn(async move {
         *state.source.lock().unwrap() = format!("syncing {}…", cfg.host);
+
+        // Folders first. Without them every message ingests with no placement,
+        // so the rail's views have nothing to filter on and archiving has
+        // nowhere to put anything — which is how a sync can look like it worked
+        // while leaving the app unable to file a single message.
+        match petrel_providers::imap::probe(&cfg, 0).await {
+            Ok(report) => {
+                let rows: Vec<(String, Option<String>)> = report
+                    .folders
+                    .iter()
+                    .map(|f| {
+                        (
+                            f.name.clone(),
+                            petrel_providers::imap::special_use_role(f).map(|r| r.to_string()),
+                        )
+                    })
+                    .collect();
+                // Gmail is the provider whose folders are labels, and the only
+                // one we can identify from what it advertises before any mail
+                // arrives. Recording it here is what makes archiving keep the
+                // user's other labels instead of clearing them.
+                let looks_like_gmail = cfg.host.contains("gmail")
+                    || report.folders.iter().any(|f| f.name.starts_with("[Gmail]"));
+                if let Ok(store) = state.store.lock() {
+                    match store.sync_folders(account, &rows) {
+                        Ok(n) => eprintln!("[sync] {n} folder(s) discovered"),
+                        Err(e) => eprintln!("[sync] folder sync failed: {e}"),
+                    }
+                    if looks_like_gmail {
+                        let _ = store.set_account_kind(account, "gmail");
+                    }
+                }
+            }
+            Err(e) => eprintln!("[sync] folder discovery failed: {e}"),
+        }
+
+        let inbox_id = state
+            .store
+            .lock()
+            .ok()
+            .and_then(|s| s.folder_for_role(account, "inbox").ok().flatten());
+
         match petrel_providers::imap::fetch_raw(&cfg, "INBOX", 200).await {
             Ok(messages) => {
                 eprintln!("[sync] fetched {} message(s)", messages.len());
@@ -134,7 +176,7 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
                         Ok(s) => s,
                         Err(_) => break,
                     };
-                    match store.ingest_raw(&state.blobs, account, None, Some(*uid), raw) {
+                    match store.ingest_raw(&state.blobs, account, inbox_id, Some(*uid), raw) {
                         Ok(_) => {
                             ok += 1;
                             state.seeded.store(ok, Ordering::Relaxed);
@@ -222,8 +264,11 @@ fn triage(
         .first_account()
         .map_err(|e| e.to_string())?
         .ok_or("no account")?;
+    // The provider's placement model, not a per-call guess: on Gmail an
+    // archive removes one label, on a classic server it replaces the folder.
+    let policy = store.placement_policy(account).map_err(|e| e.to_string())?;
     store
-        .apply_thread_action(account, thread_id, kind, target)
+        .apply_thread_action(account, thread_id, kind, target, policy)
         .map_err(|e| e.to_string())
 }
 

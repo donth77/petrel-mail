@@ -66,6 +66,37 @@ impl ActionKind {
     }
 }
 
+/// How a provider models "which folder is this message in".
+///
+/// Classic IMAP says exactly one: a message lives in a folder, and moving it
+/// removes it from where it was. Gmail presents labels as folders, so a message
+/// is legitimately in INBOX *and* Work *and* Contracts at the same time, and
+/// archiving means removing one label rather than clearing them all.
+///
+/// This is the difference the store has to model, because triage is applied
+/// locally before the server ever sees it — so the local prediction has to be
+/// the same shape as what the server will do. Treating Gmail as exclusive
+/// silently strips every user label the first time somebody archives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlacementPolicy {
+    /// One folder per message; any move replaces what was there.
+    Exclusive,
+    /// Folders are labels; a message can carry several.
+    Labels,
+}
+
+impl PlacementPolicy {
+    /// Whether archiving should clear every placement or only the inbox one.
+    ///
+    /// On both providers the *user-visible* result is the same — it leaves the
+    /// inbox — but on Gmail clearing the rest would also throw away labels the
+    /// user applied deliberately.
+    pub fn archive_clears_everything(self) -> bool {
+        matches!(self, PlacementPolicy::Exclusive)
+    }
+}
+
 /// One message's state before an action touched it — enough to put it back
 /// exactly, including which folders it was in.
 #[derive(Debug, Clone, Serialize, Deserialize)]

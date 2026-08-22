@@ -415,3 +415,127 @@ mod tests {
         assert_eq!(of(&["IDLE", "UIDPLUS", "MOVE"]), FullReconcile);
     }
 }
+
+/// The role a server claims for a folder, from its LIST attributes (RFC 6154
+/// SPECIAL-USE), falling back to the one name every server agrees on.
+///
+/// Attributes arrive as the Debug rendering of the IMAP crate's name-attribute
+/// type, so `\\Sent` may appear as `Extension("\\Sent")` or bare. Matching is
+/// therefore on a normalised token rather than an exact string: being strict
+/// here fails silently and leaves every folder unmapped, which reads as "this
+/// server has no Sent folder" rather than as a parsing bug.
+///
+/// Gmail is the reason `\All` maps to archive. It has no `\Archive` at all —
+/// archiving there means removing the Inbox label, and everything lives in All
+/// Mail. Treating All Mail as the archive destination is what makes
+/// "archive" mean the same thing to a user on Gmail as on Fastmail.
+pub fn special_use_role(folder: &FolderInfo) -> Option<&'static str> {
+    // INBOX is the one folder name the standard fixes, and it carries no
+    // SPECIAL-USE attribute of its own.
+    if folder.name.eq_ignore_ascii_case("INBOX") {
+        return Some("inbox");
+    }
+    let tokens: Vec<String> = folder
+        .attributes
+        .iter()
+        .map(|a| normalise_attr(a))
+        .collect();
+    let has = |t: &str| tokens.iter().any(|x| x == t);
+
+    if has("sent") {
+        return Some("sent");
+    }
+    if has("drafts") {
+        return Some("drafts");
+    }
+    if has("junk") || has("spam") {
+        return Some("spam");
+    }
+    if has("trash") {
+        return Some("trash");
+    }
+    if has("archive") || has("all") {
+        return Some("archive");
+    }
+    None
+}
+
+/// Lowercase alphanumerics only, so `Extension("\\Sent")`, `\Sent` and `Sent`
+/// all reduce to the same token.
+fn normalise_attr(raw: &str) -> String {
+    raw.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase()
+        // The Debug wrapper contributes its own letters; drop the known ones so
+        // `extensionsent` still reads as `sent`.
+        .replace("extension", "")
+        .replace("custom", "")
+}
+
+#[cfg(test)]
+mod special_use_tests {
+    use super::*;
+
+    fn f(name: &str, attrs: &[&str]) -> FolderInfo {
+        FolderInfo {
+            name: name.into(),
+            delimiter: Some("/".into()),
+            attributes: attrs.iter().map(|a| a.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn inbox_is_matched_by_name_since_it_carries_no_attribute() {
+        assert_eq!(special_use_role(&f("INBOX", &[])), Some("inbox"));
+        assert_eq!(special_use_role(&f("inbox", &[])), Some("inbox"));
+    }
+
+    #[test]
+    fn attributes_match_however_the_imap_crate_renders_them() {
+        for rendering in ["\\Sent", "Sent", "Extension(\"\\\\Sent\")"] {
+            assert_eq!(
+                special_use_role(&f("Sent Items", &[rendering])),
+                Some("sent"),
+                "failed on {rendering}"
+            );
+        }
+    }
+
+    #[test]
+    fn gmail_all_mail_is_the_archive() {
+        // Gmail ships \All and no \Archive; archiving there is "remove the
+        // Inbox label", and All Mail is where the message still lives.
+        assert_eq!(
+            special_use_role(&f("[Gmail]/All Mail", &["\\All", "\\HasNoChildren"])),
+            Some("archive")
+        );
+        assert_eq!(
+            special_use_role(&f("[Gmail]/Sent Mail", &["\\Sent"])),
+            Some("sent")
+        );
+        assert_eq!(
+            special_use_role(&f("[Gmail]/Spam", &["\\Junk"])),
+            Some("spam")
+        );
+        assert_eq!(
+            special_use_role(&f("[Gmail]/Trash", &["\\Trash"])),
+            Some("trash")
+        );
+    }
+
+    #[test]
+    fn a_users_own_folder_has_no_role() {
+        assert_eq!(
+            special_use_role(&f("Contracts", &["\\HasNoChildren"])),
+            None
+        );
+        assert_eq!(special_use_role(&f("Contracts/2026", &[])), None);
+    }
+
+    #[test]
+    fn junk_and_spam_are_the_same_role() {
+        assert_eq!(special_use_role(&f("Junk", &["\\Junk"])), Some("spam"));
+        assert_eq!(special_use_role(&f("Spam", &["\\Spam"])), Some("spam"));
+    }
+}

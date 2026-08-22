@@ -1310,6 +1310,46 @@ impl Store {
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
+    /// Records the folders a server reported, with the roles it claimed.
+    ///
+    /// Upsert by path rather than insert: a resync must not duplicate every
+    /// folder, and a server that starts advertising SPECIAL-USE later should
+    /// update the role on the row that already exists rather than shadow it.
+    pub fn sync_folders(
+        &self,
+        account_id: i64,
+        folders: &[(String, Option<String>)],
+    ) -> Result<usize> {
+        let mut n = 0;
+        for (path, role) in folders {
+            let name = path.rsplit('/').next().unwrap_or(path);
+            let existing: Option<i64> = self
+                .conn
+                .query_row(
+                    "SELECT id FROM folders WHERE account_id = ?1 AND path = ?2",
+                    params![account_id, path],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            match existing {
+                Some(id) => {
+                    self.conn.execute(
+                        "UPDATE folders SET role = ?2, name = ?3 WHERE id = ?1",
+                        params![id, role, name],
+                    )?;
+                }
+                None => {
+                    self.conn.execute(
+                        "INSERT INTO folders(account_id, role, name, path) VALUES (?1, ?2, ?3, ?4)",
+                        params![account_id, role, name, path],
+                    )?;
+                }
+            }
+            n += 1;
+        }
+        Ok(n)
+    }
+
     /// A folder the user named, looked up by path and created if new.
     ///
     /// Separate from `ensure_folder`, which keys on role: two user folders can
@@ -1357,6 +1397,41 @@ impl Store {
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
+    /// How this account's provider models placement.
+    ///
+    /// Derived from the account kind rather than sniffed per action, so every
+    /// caller gets the same answer and a mis-detected provider is one row to
+    /// fix rather than a behaviour scattered across call sites. Unknown
+    /// providers get the exclusive model: it is the IMAP default, and guessing
+    /// "labels" for a server that does not have them would leave messages in
+    /// two folders that can only hold them in one.
+    pub fn placement_policy(&self, account_id: i64) -> Result<crate::actions::PlacementPolicy> {
+        use crate::actions::PlacementPolicy;
+        let kind: String = self
+            .conn
+            .query_row(
+                "SELECT kind FROM accounts WHERE id = ?1",
+                params![account_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or_default();
+        Ok(match kind.as_str() {
+            "gmail" => PlacementPolicy::Labels,
+            _ => PlacementPolicy::Exclusive,
+        })
+    }
+
+    /// Records which provider an account turned out to be, once a sync has seen
+    /// the server. Called after capability discovery, not guessed at setup.
+    pub fn set_account_kind(&self, account_id: i64, kind: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE accounts SET kind = ?2 WHERE id = ?1",
+            params![account_id, kind],
+        )?;
+        Ok(())
+    }
+
     pub fn tags_of(&self, message_id: i64) -> Result<Vec<i64>> {
         let mut stmt = self
             .conn
@@ -1374,6 +1449,7 @@ impl Store {
         thread_id: i64,
         kind: crate::actions::ActionKind,
         target: Option<i64>,
+        policy: crate::actions::PlacementPolicy,
     ) -> Result<crate::actions::ActionReceipt> {
         use crate::actions::{ActionKind, ActionPayload, ActionReceipt, PriorState};
 
@@ -1427,12 +1503,31 @@ impl Store {
                         .execute("DELETE FROM placements WHERE message_id = ?1", params![id])?;
                     self.place_message(*id, dest)?;
                 }
-                ActionKind::Archive | ActionKind::Trash | ActionKind::Spam => {
+                ActionKind::Archive => {
+                    let dest = self.ensure_folder(account_id, "archive", "archive")?;
+                    if policy.archive_clears_everything() {
+                        self.conn
+                            .execute("DELETE FROM placements WHERE message_id = ?1", params![id])?;
+                    } else {
+                        // Labels: archiving removes the message from the inbox
+                        // and leaves every other label alone. Clearing them all
+                        // would throw away folders the user filed it under
+                        // deliberately — invisibly, and before the server has
+                        // even been asked.
+                        self.conn.execute(
+                            "DELETE FROM placements
+                             WHERE message_id = ?1
+                               AND folder_id IN (SELECT id FROM folders WHERE role = 'inbox')",
+                            params![id],
+                        )?;
+                    }
+                    self.place_message(*id, dest)?;
+                }
+                ActionKind::Trash | ActionKind::Spam => {
                     let role = kind.destination_role().expect("move action has a role");
                     let dest = self.ensure_folder(account_id, role, role)?;
-                    // Out of every folder, into one. On Gmail this is a label
-                    // change rather than a move, which is petrel-providers'
-                    // problem to translate, not the store's.
+                    // Binning is exclusive on both providers: a message in the
+                    // trash is not still sitting in your inbox under a label.
                     self.conn
                         .execute("DELETE FROM placements WHERE message_id = ?1", params![id])?;
                     self.place_message(*id, dest)?;

@@ -6,7 +6,7 @@
 //! the inbox folder) passes every other test here and empties the mailbox in
 //! production, which is the failure this file exists to prevent.
 
-use petrel_engine::actions::ActionKind;
+use petrel_engine::actions::{ActionKind, PlacementPolicy};
 use petrel_engine::store::{ListView, NewMessage, Store, flags};
 
 fn seeded() -> (Store, i64, Vec<i64>) {
@@ -72,7 +72,13 @@ fn archiving_moves_a_conversation_between_the_inbox_and_archive_views() {
     assert!(subjects(&store, &ListView::Folder("archive".into())).is_empty());
 
     let receipt = store
-        .apply_thread_action(account, tid, ActionKind::Archive, None)
+        .apply_thread_action(
+            account,
+            tid,
+            ActionKind::Archive,
+            None,
+            PlacementPolicy::Exclusive,
+        )
         .unwrap();
 
     assert_eq!(subjects(&store, &ListView::Inbox), ["m1", "m2", "m3"]);
@@ -90,10 +96,22 @@ fn archiving_moves_a_conversation_between_the_inbox_and_archive_views() {
 fn trash_and_spam_are_separate_views() {
     let (store, account, ids) = seeded();
     store
-        .apply_thread_action(account, thread_of(&store, ids[0]), ActionKind::Trash, None)
+        .apply_thread_action(
+            account,
+            thread_of(&store, ids[0]),
+            ActionKind::Trash,
+            None,
+            PlacementPolicy::Exclusive,
+        )
         .unwrap();
     store
-        .apply_thread_action(account, thread_of(&store, ids[1]), ActionKind::Spam, None)
+        .apply_thread_action(
+            account,
+            thread_of(&store, ids[1]),
+            ActionKind::Spam,
+            None,
+            PlacementPolicy::Exclusive,
+        )
         .unwrap();
 
     assert_eq!(subjects(&store, &ListView::Folder("trash".into())), ["m0"]);
@@ -115,12 +133,19 @@ fn starred_spans_folders_but_not_the_bin() {
             thread_of(&store, ids[1]),
             ActionKind::Archive,
             None,
+            PlacementPolicy::Exclusive,
         )
         .unwrap();
     // ...but trashing something takes it out of Starred. A star is not a reason
     // to keep showing you mail you threw away.
     store
-        .apply_thread_action(account, thread_of(&store, ids[2]), ActionKind::Trash, None)
+        .apply_thread_action(
+            account,
+            thread_of(&store, ids[2]),
+            ActionKind::Trash,
+            None,
+            PlacementPolicy::Exclusive,
+        )
         .unwrap();
 
     assert_eq!(subjects(&store, &ListView::Starred), ["m0", "m1"]);
