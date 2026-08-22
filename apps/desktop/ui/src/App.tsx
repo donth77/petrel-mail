@@ -32,7 +32,8 @@ export function App() {
   const searchRef = useRef<HTMLInputElement>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  // Null when closed; otherwise the pane to open on.
+  const [settingsOpen, setSettingsOpen] = useState<'accounts' | 'appearance' | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [undoOffer, setUndoOffer] = useState<UndoOffer | null>(null);
   const [readerOverlay, setReaderOverlay] = useState(false);
@@ -176,7 +177,7 @@ export function App() {
     openTag: () => setPicker('tag'),
     openPalette: () => setPaletteOpen(true),
     openHelp: () => setHelpOpen(true),
-    openSettings: () => setSettingsOpen(true),
+    openSettings: () => setSettingsOpen('appearance'),
     focusSearch: () => searchRef.current?.focus(),
   });
 
@@ -323,6 +324,15 @@ export function App() {
       }
     }
 
+    // Arriving at a conversation that was being held unread ends the hold:
+    // you asked to come back to it, and this is coming back. Without this a
+    // conversation marked unread once could never be marked read by reading
+    // it again — and testing the rule by marking something unread first would
+    // look exactly like the rule being broken.
+    if (current && leaving !== current.id) {
+      triageRef.current.releaseHeldUnread(current.id);
+    }
+
     // And the one you are on, if you stay.
     if (!current || autoRead.current === current.id) return;
     if (!current.unread) {
@@ -416,11 +426,11 @@ export function App() {
           if (acc) setToast(t('account-switched', { email: acc.email }));
           else setToast(t('account-none-at', { n: String(n) }));
         }}
-        onSettings={() => setSettingsOpen(true)}
+        onSettings={() => setSettingsOpen('accounts')}
         onNotImplemented={(label) => setToast(t('not-implemented', { label }))}
         onView={(v) => {
           if (v === 'help') setHelpOpen(true);
-          else if (v === 'settings') setSettingsOpen(true);
+          else if (v === 'settings') setSettingsOpen('appearance');
           else setView(v);
         }}
       />
@@ -557,7 +567,7 @@ export function App() {
           hasThread: !!active,
           onView: (v) => {
             if (v === 'help') setHelpOpen(true);
-            else if (v === 'settings') setSettingsOpen(true);
+            else if (v === 'settings') setSettingsOpen('appearance');
             else if (v === 'search') searchRef.current?.focus();
             else setView(v);
           },
@@ -566,9 +576,10 @@ export function App() {
       />
       <Help open={helpOpen} onClose={() => setHelpOpen(false)} />
       <Settings
-        open={settingsOpen}
+        open={settingsOpen !== null}
+        pane={settingsOpen ?? undefined}
         onClose={() => {
-          setSettingsOpen(false);
+          setSettingsOpen(null);
           api.accounts().then(setAccounts).catch(() => {});
         }}
         onOpenHelp={() => setHelpOpen(true)}

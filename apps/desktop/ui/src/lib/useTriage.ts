@@ -215,5 +215,13 @@ export function useTriage(opts: {
     hasUndo: () => lastUndo.current != null,
     /** Whether the user asked for this conversation to stay unread. */
     isHeldUnread: (id: number) => heldUnread.current.has(id),
+    /** Forgets that request, once the user opens the conversation again.
+     *
+     *  Marking something unread means "come back to this", not "never mark
+     *  this read again" — so the hold lasts until you come back, and then
+     *  opening it counts as coming back. Gmail, Outlook and Mail all behave
+     *  this way, and without it a conversation marked unread once could never
+     *  be marked read by reading it. */
+    releaseHeldUnread: (id: number) => heldUnread.current.delete(id),
   };
 }

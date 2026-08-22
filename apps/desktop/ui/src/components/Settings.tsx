@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Dialog, DialogDismiss } from '@ariakit/react';
 import {
   Archive, Bell, CircleHelp, Database, Mail, PencilLine, Shield, SunMoon, User, X,
@@ -28,13 +28,24 @@ const PANES: { id: PaneId; label: StringId; icon: LucideIcon }[] = [
 
 type Props = {
   open: boolean;
+  /** Which pane to land on. Opening Settings from "Accounts" and arriving at
+   *  Appearance is the kind of small betrayal that teaches people to distrust
+   *  every other shortcut in the app. */
+  pane?: PaneId;
   onClose: () => void;
   onOpenHelp: () => void;
   onNotImplemented: (label: string) => void;
 };
 
-export function Settings({ open, onClose, onOpenHelp, onNotImplemented }: Props) {
-  const [pane, setPane] = useState<PaneId>('appearance');
+export function Settings({ open, pane: requested, onClose, onOpenHelp, onNotImplemented }: Props) {
+  const [pane, setPane] = useState<PaneId>(requested ?? 'appearance');
+
+  // Follow the request each time the dialog opens, not once on mount: the
+  // component stays mounted between openings, so a value read at mount would
+  // be whatever the first caller asked for, forever.
+  useEffect(() => {
+    if (open && requested) setPane(requested);
+  }, [open, requested]);
 
   return (
     <Dialog
