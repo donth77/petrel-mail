@@ -54,6 +54,10 @@ struct AppState {
     /// RFC 4315. Without it a message can be marked deleted but not expunged,
     /// because a bare EXPUNGE would take every other \\Deleted message with it.
     server_has_uidplus: AtomicBool,
+    /// Messages the user asked to see this once. Deliberately not persisted:
+    /// "show images" is a decision about one message on one occasion, and a
+    /// version of it that outlived the session would be trust nobody granted.
+    shown_once: Mutex<std::collections::HashSet<i64>>,
     tokens: Arc<ViewTokens>,
     account_id: i64,
     data_dir: String,
@@ -712,6 +716,100 @@ fn view_counts(mode: String, state: State<Arc<AppState>>) -> Result<Vec<(String,
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
     store
         .view_counts(petrel_engine::store::CountMode::parse(&mode))
+        .map_err(|e| e.to_string())
+}
+
+/// Who sent this, and whether their remote content is already allowed.
+///
+/// The reader asks so its banner can offer the right thing: the sender's
+/// address to name in "always show images from …", and whether to bother
+/// offering at all.
+#[derive(serde::Serialize)]
+struct RemoteStatus {
+    from_addr: String,
+    allowed: bool,
+    /// True when it is allowed because the user has written to them, rather
+    /// than because they were trusted by hand. The two are worth telling apart:
+    /// one is a decision to revisit in settings, the other is not a decision
+    /// at all and there is nothing in the list to find.
+    because_written_to: bool,
+}
+
+#[tauri::command]
+fn remote_status(message_id: i64, state: State<Arc<AppState>>) -> Result<RemoteStatus, String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    let from = store
+        .message_sender(message_id)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    let Some(account) = store.first_account().map_err(|e| e.to_string())? else {
+        return Ok(RemoteStatus {
+            from_addr: from,
+            allowed: false,
+            because_written_to: false,
+        });
+    };
+    let trusted = store
+        .sender_trusted(account, &from)
+        .map_err(|e| e.to_string())?;
+    let written = store
+        .has_written_to(account, &from)
+        .map_err(|e| e.to_string())?;
+    Ok(RemoteStatus {
+        from_addr: from,
+        allowed: trusted || written,
+        because_written_to: written && !trusted,
+    })
+}
+
+/// Shows this one message's remote content, for as long as the app is running.
+#[tauri::command]
+fn show_remote_once(message_id: i64, state: State<Arc<AppState>>) -> Result<(), String> {
+    state
+        .shown_once
+        .lock()
+        .map_err(|_| "lock poisoned")?
+        .insert(message_id);
+    Ok(())
+}
+
+/// Trusts this message's sender from now on.
+#[tauri::command]
+fn trust_sender(message_id: i64, state: State<Arc<AppState>>) -> Result<String, String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    let Some(account) = store.first_account().map_err(|e| e.to_string())? else {
+        return Err("no account".into());
+    };
+    let from = store
+        .message_sender(message_id)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    if from.is_empty() {
+        return Err("this message has no sender to trust".into());
+    }
+    store
+        .trust_sender(account, &from, now_ms())
+        .map_err(|e| e.to_string())?;
+    Ok(from)
+}
+
+#[tauri::command]
+fn trusted_senders(state: State<Arc<AppState>>) -> Result<Vec<String>, String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    let Some(account) = store.first_account().map_err(|e| e.to_string())? else {
+        return Ok(Vec::new());
+    };
+    store.trusted_senders(account).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn untrust_sender(addr: String, state: State<Arc<AppState>>) -> Result<(), String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    let Some(account) = store.first_account().map_err(|e| e.to_string())? else {
+        return Ok(());
+    };
+    store
+        .untrust_sender(account, &addr)
         .map_err(|e| e.to_string())
 }
 
@@ -1585,6 +1683,7 @@ pub fn run() {
         draining: AtomicBool::new(false),
         server_has_move: AtomicBool::new(false),
         server_has_uidplus: AtomicBool::new(false),
+        shown_once: Mutex::new(std::collections::HashSet::new()),
         tokens: Arc::new(ViewTokens::new()),
         account_id: account,
         data_dir: dir.display().to_string(),
@@ -1650,6 +1749,11 @@ pub fn run() {
             list_threads,
             list_tags,
             view_counts,
+            remote_status,
+            show_remote_once,
+            trust_sender,
+            trusted_senders,
+            untrust_sender,
             thread_detail,
             triage,
             undo_triage,
@@ -1694,13 +1798,37 @@ pub fn run() {
             // next message rather than the next launch. Anything unreadable
             // falls back to blocking: the safe answer is the one a failure
             // should produce.
-            let allow_remote = state
+            // Three ways a message earns its remote content, checked in the
+            // order that costs least: the user turned blocking off entirely,
+            // they asked to see this one message, or the sender is someone the
+            // engine already trusts. Any failure along the way blocks.
+            let policy_state = Arc::clone(&state);
+            let blocking_off = state
                 .store
                 .lock()
                 .ok()
                 .and_then(|s| s.settings().ok())
                 .map(|s| s.get("blockRemoteContent").map(String::as_str) == Some("off"))
                 .unwrap_or(false);
+            let allow_remote = move |message_id: i64| {
+                if blocking_off {
+                    return true;
+                }
+                if policy_state
+                    .shown_once
+                    .lock()
+                    .map(|set| set.contains(&message_id))
+                    .unwrap_or(false)
+                {
+                    return true;
+                }
+                policy_state
+                    .store
+                    .lock()
+                    .ok()
+                    .and_then(|s| s.remote_content_allowed(message_id).ok())
+                    .unwrap_or(false)
+            };
             message_view::handle(&request, &state.tokens, &state.blobs, lookup, allow_remote)
         })
         .setup(|app| {

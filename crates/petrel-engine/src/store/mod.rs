@@ -11,7 +11,7 @@ use rusqlite::functions::FunctionFlags;
 use rusqlite::{Connection, params};
 use std::path::Path;
 
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
 /// Bumped whenever text extraction changes; a mismatch forces reindexing.
 pub const EXTRACTOR_VERSION: i64 = 1;
 
@@ -787,6 +787,9 @@ impl Store {
         }
         if ver < 8 {
             conn.execute_batch(include_str!("migrations/0008-send-later.sql"))?;
+        }
+        if ver < 9 {
+            conn.execute_batch(include_str!("migrations/0009-remote-senders.sql"))?;
         }
         if ver < SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -2604,6 +2607,117 @@ impl Store {
             )?,
             None => stmt.query_row([], |r| r.get(0))?,
         })
+    }
+
+    /// Whether this message's remote content may load.
+    ///
+    /// Blocked unless one of two things is true:
+    ///
+    /// * the sender has been trusted explicitly, or
+    /// * the user has written to them.
+    ///
+    /// The second is the one that makes blocking liveable. A tracking pixel
+    /// buys the sender three facts — the address is real, when it was read, and
+    /// roughly from where. Someone the user has already emailed has the first
+    /// two by other means and is not a stranger, so the trade is no longer
+    /// worth breaking their mail over. It is deliberately a question about sent
+    /// mail rather than a stored flag, so it answers correctly for a
+    /// correspondent from before this feature existed, and stops being true if
+    /// that mail is ever removed.
+    pub fn remote_content_allowed(&self, message_id: i64) -> Result<bool> {
+        let row: Option<(i64, Option<String>)> = self
+            .conn
+            .query_row(
+                "SELECT account_id, from_addr FROM messages WHERE id = ?1",
+                params![message_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        // No sender to judge means no reason to trust it.
+        let Some((account_id, Some(from))) = row else {
+            return Ok(false);
+        };
+        let from = from.trim().to_lowercase();
+        if from.is_empty() {
+            return Ok(false);
+        }
+        Ok(self.sender_trusted(account_id, &from)? || self.has_written_to(account_id, &from)?)
+    }
+
+    /// Who sent a message, normalised the way the trust list stores addresses.
+    pub fn message_sender(&self, message_id: i64) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT from_addr FROM messages WHERE id = ?1",
+                params![message_id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten()
+            .map(|a| a.trim().to_lowercase())
+            .filter(|a| !a.is_empty()))
+    }
+
+    /// Whether this address was trusted by hand.
+    pub fn sender_trusted(&self, account_id: i64, addr: &str) -> Result<bool> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM remote_senders
+                            WHERE account_id = ?1 AND addr_norm = ?2)",
+            params![account_id, addr.trim().to_lowercase()],
+            |r| r.get::<_, i64>(0),
+        )? != 0)
+    }
+
+    /// Whether the user has ever sent mail to this address.
+    ///
+    /// Sent mail only — being written *to* by someone says nothing about
+    /// whether they know you, which is the entire question.
+    pub fn has_written_to(&self, account_id: i64, addr: &str) -> Result<bool> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS (
+               SELECT 1 FROM message_addresses ma
+               JOIN messages m ON m.id = ma.message_id
+               JOIN placements p ON p.message_id = m.id
+               JOIN folders f ON f.id = p.folder_id
+               WHERE m.account_id = ?1
+                 AND m.deleted_at_ms IS NULL
+                 AND f.role = 'sent'
+                 AND ma.role IN ('to', 'cc')
+                 AND ma.addr_norm = ?2)",
+            params![account_id, addr.trim().to_lowercase()],
+            |r| r.get::<_, i64>(0),
+        )? != 0)
+    }
+
+    /// Trusts a sender's remote content from now on.
+    pub fn trust_sender(&self, account_id: i64, addr: &str, now_ms: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO remote_senders(account_id, addr_norm, added_ms) VALUES (?1, ?2, ?3)
+             ON CONFLICT(account_id, addr_norm) DO UPDATE SET added_ms = excluded.added_ms",
+            params![account_id, addr.trim().to_lowercase(), now_ms],
+        )?;
+        Ok(())
+    }
+
+    /// Takes that trust back.
+    pub fn untrust_sender(&self, account_id: i64, addr: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM remote_senders WHERE account_id = ?1 AND addr_norm = ?2",
+            params![account_id, addr.trim().to_lowercase()],
+        )?;
+        Ok(())
+    }
+
+    /// The trusted senders, most recently trusted first — what the privacy
+    /// pane lists so a decision made once in a banner can be found and undone.
+    pub fn trusted_senders(&self, account_id: i64) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT addr_norm FROM remote_senders WHERE account_id = ?1
+             ORDER BY added_ms DESC, addr_norm",
+        )?;
+        let rows = stmt.query_map(params![account_id], |r| r.get(0))?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
     /// Every live message in one conversation, oldest first — the reading pane

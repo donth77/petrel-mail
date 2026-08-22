@@ -1,0 +1,28 @@
+<!doctype html>
+<!-- A stand-in for the message frame.
+
+     The real one is served over the petrel-msg protocol, which does not exist
+     in a browser, so the harness could never render a body — and everything
+     that depends on the frame talking to the app (its height, the keys it
+     forwards, the count of blocked remote resources) went untested.
+
+     This posts the same two messages the real frame posts, so the app cannot
+     tell the difference. ?blocked=N says how much was refused. -->
+<meta charset="utf-8">
+<style>
+  body { margin: 0; padding: 14px 16px; font: 14px/1.6 system-ui, sans-serif; }
+</style>
+<p>Message body stand-in.</p>
+<script>
+  (function () {
+    var blocked = Number(new URLSearchParams(location.search).get('blocked') || 0);
+    function post() {
+      parent.postMessage({
+        petrelHeight: document.documentElement.scrollHeight,
+        petrelBlocked: blocked,
+      }, '*');
+    }
+    addEventListener('load', post);
+    post();
+  })();
+</script>

@@ -1,4 +1,4 @@
-//! The remote-content setting has to reach the renderer.
+//! The remote-content decision has to reach the renderer.
 //!
 //! A privacy control that saves a preference and changes nothing is worse than
 //! no control at all: it is a promise the app does not keep, made in the one
@@ -32,7 +32,9 @@ fn render(allow_remote: bool) -> (String, String) {
         &tokens,
         &blobs,
         |_| Some(hash.clone()),
-        allow_remote,
+        // The renderer now asks per message rather than being told once, so the
+        // test supplies the same answer the policy would.
+        |_| allow_remote,
     );
     let csp = response
         .headers()
@@ -42,6 +44,25 @@ fn render(allow_remote: bool) -> (String, String) {
         .unwrap()
         .to_string();
     (String::from_utf8_lossy(response.body()).into_owned(), csp)
+}
+
+/// The count of refused resources leaves the frame, because the offer to undo
+/// the refusal cannot live inside it — a sandboxed frame with no IPC can state
+/// what happened but can never act on it. If this stops being reported, the
+/// banner silently never appears and blocking becomes indistinguishable from
+/// a message that simply had no images.
+#[test]
+fn the_blocked_count_is_reported_out_of_the_frame() {
+    let (html, _) = render(false);
+    assert!(
+        html.contains("petrelBlocked: 1"),
+        "the frame must tell the app what it refused: {html}"
+    );
+    let (allowed, _) = render(true);
+    assert!(
+        allowed.contains("petrelBlocked: 0"),
+        "nothing was refused, and the banner must not appear: {allowed}"
+    );
 }
 
 #[test]

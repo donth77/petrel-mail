@@ -102,7 +102,11 @@ const HEIGHT_REPORTER: &str = r#"
     var d = document.documentElement, b = document.body;
     return Math.max(d.scrollHeight, b ? b.scrollHeight : 0);
   }
-  function post() { try { parent.postMessage({ petrelHeight: h() }, '*'); } catch (e) {} }
+  function post() {
+    try {
+      parent.postMessage({ petrelHeight: h(), petrelBlocked: BLOCKED }, '*');
+    } catch (e) {}
+  }
   addEventListener('load', post);
   addEventListener('resize', post);
   if (window.ResizeObserver) { new ResizeObserver(post).observe(document.documentElement); }
@@ -126,16 +130,12 @@ const HEIGHT_REPORTER: &str = r#"
 "#;
 
 fn document(body: &str, blocked_remote: usize, nonce: &str) -> String {
-    let banner = if blocked_remote > 0 {
-        format!(
-            "<div class=\"banner\">Remote content blocked \
-             ({blocked_remote} resource{}). This message tried to load content from \
-             another server, which would tell the sender you opened it.</div>",
-            if blocked_remote == 1 { "" } else { "s" }
-        )
-    } else {
-        String::new()
-    };
+    // The count goes out to the app rather than into a banner here. A notice
+    // drawn inside the frame can only ever be a notice: the frame has no script
+    // of its own, no IPC and no same-origin access, so "Show images" drawn here
+    // would be a button that cannot do anything. Outside, it can.
+    let reporter = HEIGHT_REPORTER.replace("BLOCKED", &blocked_remote.to_string());
+    let banner = "";
     format!(
         r#"<!doctype html><html><head><meta charset="utf-8">
 <style>
@@ -149,8 +149,7 @@ fn document(body: &str, blocked_remote: usize, nonce: &str) -> String {
             padding: 8px 10px; border-radius: 4px; font-size: 12.5px; margin-bottom: 12px; }}
   .petrel-plain {{ white-space: pre-wrap; font: 13.5px/1.6 ui-monospace, SFMono-Regular, monospace; }}
   .petrel-plain .q {{ color: #54666e; }}
-</style></head><body>{banner}{body}<script nonce="{nonce}">{reporter}</script></body></html>"#,
-        reporter = HEIGHT_REPORTER
+</style></head><body>{banner}{body}<script nonce="{nonce}">{reporter}</script></body></html>"#
     )
 }
 
@@ -159,10 +158,11 @@ pub fn handle(
     tokens: &Arc<ViewTokens>,
     blobs: &BlobStore,
     lookup_blob: impl Fn(i64) -> Option<String>,
-    // From the user's Privacy setting. Passed in rather than read here so the
-    // render path keeps no opinion about where preferences live — and so the
-    // default when anything goes wrong is the safe one.
-    allow_remote: bool,
+    // Asked per message, because the answer is per sender: blocked unless the
+    // sender was trusted or the user has written to them. Passed in rather than
+    // decided here so the render path keeps no opinion about where preferences
+    // live — and so the default, when anything goes wrong, is the safe one.
+    allow_remote: impl Fn(i64) -> bool,
 ) -> Response<Vec<u8>> {
     let path = request.uri().path().to_string();
     let Some(token) = path.strip_prefix("/message/") else {
@@ -181,6 +181,7 @@ pub fn handle(
     let Some(parsed) = petrel_mime::parse_message(&raw) else {
         return error_response(422, "message could not be parsed");
     };
+    let allow_remote = allow_remote(message_id);
 
     // Prefer HTML; fall back to the plain part. Fail closed to text.
     let (body, report) = match parsed.body_html.as_deref() {

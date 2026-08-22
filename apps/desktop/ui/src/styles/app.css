@@ -2806,3 +2806,85 @@ body.resizing {
 .rail-new-tag::placeholder {
   color: var(--ink3);
 }
+
+/* ------------------------------------------------- blocked remote content */
+
+/* Outside the message frame, because the frame cannot act on its own notice.
+   Styled as information rather than alarm: nothing has gone wrong, a default
+   was applied, and the two ways out are right there. */
+.blocked-remote {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 0 0 -4px;
+  padding: 8px 14px;
+  border: 1px solid var(--hair);
+  border-radius: 8px;
+  background: var(--hair2);
+  color: var(--ink2);
+  font-size: 12.5px;
+}
+
+.blocked-remote.quiet {
+  border-style: dashed;
+  background: transparent;
+}
+
+.blocked-what {
+  flex-grow: 1;
+  min-inline-size: 0;
+}
+
+/* A button that reads as a choice rather than a control: these sit inside a
+   sentence, and a pair of grey rectangles there would out-shout the message. */
+.linkish {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 550;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.linkish:hover {
+  text-decoration: underline;
+}
+
+.trusted-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.trusted-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: 7px;
+  background: var(--hair2);
+  font-size: 13px;
+}
+
+.trusted-list li .clip {
+  flex-grow: 1;
+  min-inline-size: 0;
+}
+
+.trusted-list .linkish {
+  display: grid;
+  place-items: center;
+  color: var(--ink3);
+}
+
+.trusted-list .linkish:hover {
+  color: var(--danger);
+  text-decoration: none;
+}

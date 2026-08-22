@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api';
+import { t } from '../lib/strings';
 
 /**
  * A message body, rendered in a sandboxed frame served over `petrel-msg:`.
@@ -14,11 +15,17 @@ import { api } from '../lib/api';
 export function MessageBody({ messageId, title }: { messageId: number; title: string }) {
   const [url, setUrl] = useState<string | null>(null);
   const [height, setHeight] = useState(180);
+  const [blocked, setBlocked] = useState(0);
+  const [sender, setSender] = useState<string | null>(null);
   const frameRef = useRef<HTMLIFrameElement>(null);
+  // Bumped to re-fetch the body once the policy for it has changed. The URL is
+  // single-use, so a new one is the only way to render the same message again.
+  const [reload, setReload] = useState(0);
 
   useEffect(() => {
     let live = true;
     setUrl(null);
+    setBlocked(0);
     api
       .messageUrl(messageId)
       .then((u) => live && setUrl(u || null))
@@ -26,7 +33,7 @@ export function MessageBody({ messageId, title }: { messageId: number; title: st
     return () => {
       live = false;
     };
-  }, [messageId]);
+  }, [messageId, reload]);
 
   useEffect(() => {
     function onMessage(e: MessageEvent) {
@@ -43,6 +50,12 @@ export function MessageBody({ messageId, title }: { messageId: number; title: st
           altKey: boolean;
         };
       };
+
+      // How much the sanitizer refused. Reported out rather than drawn inside
+      // the frame: a banner in there could say what happened but never offer to
+      // undo it — the frame has no IPC and no same-origin access by design.
+      const b = (data as { petrelBlocked?: unknown })?.petrelBlocked;
+      if (typeof b === 'number') setBlocked(b);
 
       const h = data?.petrelHeight;
       if (typeof h === 'number' && h > 0 && h < 20000) {
@@ -70,8 +83,35 @@ export function MessageBody({ messageId, title }: { messageId: number; title: st
     return () => window.removeEventListener('message', onMessage);
   }, []);
 
+  const allow = async (always: boolean) => {
+    try {
+      const addr = always ? await api.trustSender(messageId) : null;
+      if (!always) await api.showRemoteOnce(messageId);
+      if (addr) setSender(addr);
+      setBlocked(0);
+      setReload((n) => n + 1);
+    } catch (e) {
+      void api.log(`remote content: ${e}`);
+    }
+  };
+
   if (!url) return <div className="body-loading" />;
   return (
+    <>
+      {blocked > 0 && (
+        <div className="blocked-remote">
+          <span className="blocked-what">
+            {t('remote-blocked', { count: String(blocked) })}
+          </span>
+          <button type="button" className="linkish" onClick={() => void allow(false)}>
+            {t('remote-show-once')}
+          </button>
+          <button type="button" className="linkish" onClick={() => void allow(true)}>
+            {t('remote-always')}
+          </button>
+        </div>
+      )}
+      {sender && <div className="blocked-remote quiet">{t('remote-trusted', { addr: sender })}</div>}
     <iframe
       ref={frameRef}
       className="msg-frame"
@@ -81,5 +121,6 @@ export function MessageBody({ messageId, title }: { messageId: number; title: st
       style={{ height }}
       scrolling="no"
     />
+    </>
   );
 }

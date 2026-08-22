@@ -23,6 +23,7 @@ rm -rf "$out"
 mkdir -p "$out"
 cp -R "$ui/dist/." "$out/"
 cp "$root/scripts/harness/shim.js" "$out/shim.js"
+cp "$root/scripts/harness/msg.html" "$out/msg.html"
 
 # Inject the shim ahead of the module script. A classic script tag runs during
 # parsing, so window.__TAURI_INTERNALS__ exists before the deferred module ever

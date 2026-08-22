@@ -51,6 +51,14 @@
     { id: 13, name: 'Receipts', colour: '#5E7C4A', thread_count: 0 },
   ];
 
+  // Set window.__PETREL_WRITTEN_TO__ before load to exercise the auto-allow
+  // path — someone the user has emailed is trusted without being in the list.
+  var trustedSenders = [];
+  var writtenTo = [];
+  try {
+    writtenTo = JSON.parse(localStorage.getItem('__petrel_written_to') || '[]');
+  } catch (e) {}
+
   var identity = {
     address: 'you@example.com',
     display_name: 'You',
@@ -147,7 +155,41 @@
       ];
     },
     message_url: function () {
-      return '';
+      // A stand-in frame, so the reading pane actually has one. Set
+      // window.__PETREL_BLOCKED__ to model a message with remote content in it.
+      // localStorage rather than a window global: setting it means reloading,
+      // and a reload wipes the global before the app can read it.
+      var n = 0;
+      try { n = Number(localStorage.getItem('__petrel_blocked') || 0); } catch (e) {}
+      return './msg.html?blocked=' + n;
+    },
+    // Remote content, modelled rather than stubbed: the policy is the point of
+    // the feature, so a shim that always answered "allowed" would let a banner
+    // that ignores it look correct.
+    remote_status: function () {
+      var addr = 'sam@example.com';
+      return {
+        from_addr: addr,
+        allowed: trustedSenders.indexOf(addr) >= 0 || writtenTo.indexOf(addr) >= 0,
+        because_written_to:
+          writtenTo.indexOf(addr) >= 0 && trustedSenders.indexOf(addr) < 0,
+      };
+    },
+    show_remote_once: function () {
+      return null;
+    },
+    trust_sender: function () {
+      var addr = 'sam@example.com';
+      if (trustedSenders.indexOf(addr) < 0) trustedSenders.push(addr);
+      return addr;
+    },
+    trusted_senders: function () {
+      return trustedSenders.slice();
+    },
+    untrust_sender: function (a) {
+      var i = trustedSenders.indexOf(a.addr);
+      if (i >= 0) trustedSenders.splice(i, 1);
+      return null;
     },
     frontend_log: function () {
       return null;

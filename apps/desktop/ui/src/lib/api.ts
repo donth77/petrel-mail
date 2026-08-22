@@ -35,6 +35,15 @@ export type Tag = { id: number; name: string; colour: string; thread_count: numb
 
 export type Attachment = { filename: string; size: number };
 
+/** Whether a message's remote content may load, and on what grounds. */
+export type RemoteStatus = {
+  from_addr: string;
+  allowed: boolean;
+  /** Allowed because the user has written to them, not by an explicit choice —
+   *  so there is nothing in the trusted list to find or undo. */
+  because_written_to: boolean;
+};
+
 export type ThreadMessage = {
   id: number;
   from_display: string;
@@ -248,6 +257,13 @@ const mock = {
   ],
   viewCounts: async (mode: string): Promise<[string, number][]> =>
     mode === 'off' ? [] : [['inbox', 3], ['drafts', 1], ['spam', 2]],
+  remoteStatus: async (): Promise<RemoteStatus> => ({
+    from_addr: 'sam@example.com', allowed: false, because_written_to: false,
+  }),
+  showRemoteOnce: async () => {},
+  trustSender: async () => 'sam@example.com',
+  trustedSenders: async (): Promise<string[]> => [],
+  untrustSender: async () => {},
   threadDetail: async (): Promise<ThreadMessage[]> => [
     {
       id: 1, from_display: 'Dana Wu', from_addr: 'dana@northbay.example',
@@ -298,6 +314,11 @@ const real = {
     invoke<Thread[]>('list_threads', { view, offset, limit }),
   tags: () => invoke<Tag[]>('list_tags'),
   viewCounts: (mode: string) => invoke<[string, number][]>('view_counts', { mode }),
+  remoteStatus: (messageId: number) => invoke<RemoteStatus>('remote_status', { messageId }),
+  showRemoteOnce: (messageId: number) => invoke<void>('show_remote_once', { messageId }),
+  trustSender: (messageId: number) => invoke<string>('trust_sender', { messageId }),
+  trustedSenders: () => invoke<string[]>('trusted_senders'),
+  untrustSender: (addr: string) => invoke<void>('untrust_sender', { addr }),
   triage: (threadId: number, kind: ActionKind, target?: number) =>
     invoke<ActionReceipt>('triage', { threadId, kind, target: target ?? null }),
   undoTriage: (actionId: number) => invoke<boolean>('undo_triage', { actionId }),
