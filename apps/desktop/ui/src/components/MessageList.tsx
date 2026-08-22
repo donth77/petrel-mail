@@ -96,17 +96,29 @@ export function MessageList({ items, activeId, density, onActivate }: Props) {
         // composite: virtualFocus expects DOM focus on the container and tracks
         // the active item itself. Re-seat both before moving, or next() has no
         // active item to move from and silently does nothing.
+        // Direction is computed from the list's own order, not delegated to
+        // the composite's next()/previous(). Those depend on which items are
+        // currently registered — and with virtualization that set changes as you
+        // scroll — so the same key could resolve differently depending on where
+        // you were. Index arithmetic over `items` is the visual order by
+        // definition: j is always the row below, k always the row above.
         const focusedItem = el?.closest<HTMLElement>('[role="option"]');
-        if (focusedItem?.id) composite.setActiveId(focusedItem.id);
-        scrollRef.current?.focus({ preventScroll: true });
+        const fromId = focusedItem?.id?.startsWith('msg-')
+          ? Number(focusedItem.id.slice(4))
+          : activeId;
+        const at = items.findIndex((m) => m.id === fromId);
+        const nextIndex = at < 0 ? 0 : at + (e.key === 'j' ? 1 : -1);
+        const target = items[nextIndex];
+        if (!target) return;
 
-        const target = e.key === 'j' ? composite.next() : composite.previous();
-        if (target) composite.move(target);
+        scrollRef.current?.focus({ preventScroll: true });
+        composite.setActiveId(`msg-${target.id}`);
+        onActivate(target.id);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [composite]);
+  }, [composite, items, activeId, onActivate]);
 
   // Give the list focus once it has something to show, so arrow keys work
   // without a click first. Only when nothing else has been focused deliberately.
