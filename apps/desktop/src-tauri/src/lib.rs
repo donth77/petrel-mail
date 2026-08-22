@@ -55,6 +55,42 @@ struct Status {
     sync_error: Option<String>,
 }
 
+/// Turns a protocol error into something a person can act on.
+///
+/// The raw text is Rust's Debug rendering of an IMAP response — `code: None,
+/// info: Some("[AUTHENTICATIONFAILED] ...")` — which tells a user nothing and
+/// tells them it unhelpfully. The detail still goes to sync.log; what reaches
+/// the screen should say what to do about it.
+fn friendly_sync_error(raw: &str) -> String {
+    let r = raw.to_ascii_uppercase();
+    if r.contains("AUTHENTICATIONFAILED") || r.contains("INVALID CREDENTIALS") {
+        return "Sign-in was refused. Gmail needs 2-Step Verification switched on \
+                and an app password — your ordinary account password will not work \
+                for IMAP."
+            .into();
+    }
+    if r.contains("AUTHORIZATIONFAILED") || r.contains("WEBALERT") {
+        return "The server accepted the password but refused access. For Gmail \
+                this usually means IMAP is switched off in settings."
+            .into();
+    }
+    if r.contains("DNS") || r.contains("NAME OR SERVICE") || r.contains("RESOLVE") {
+        return "That server name could not be looked up. Check the host.".into();
+    }
+    if r.contains("CONNECTION REFUSED") || r.contains("TIMED OUT") || r.contains("TIMEOUT") {
+        return "The server did not answer. Check the host and port, and whether \
+                something on this network blocks IMAP."
+            .into();
+    }
+    if r.contains("CERTIFICATE") || r.contains("TLS") || r.contains("HANDSHAKE") {
+        return "The encrypted connection could not be established, so Petrel \
+                stopped rather than continuing in the clear."
+            .into();
+    }
+    // Unknown: show the raw text rather than a reassuring guess.
+    raw.to_string()
+}
+
 /// Appends a line to a log file in the data directory.
 ///
 /// Under LaunchServices — which is the only way the app gets real keyboard
@@ -184,7 +220,7 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
             }
             Err(e) => {
                 log_sync(&format!("folder discovery FAILED: {e}"));
-                *state.sync_error.lock().unwrap() = Some(format!("{e}"));
+                *state.sync_error.lock().unwrap() = Some(friendly_sync_error(&format!("{e}")));
             }
         }
 
@@ -220,7 +256,7 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
             Err(e) => {
                 log_sync(&format!("fetch FAILED: {e}"));
                 *state.source.lock().unwrap() = format!("sync failed: {e}");
-                *state.sync_error.lock().unwrap() = Some(format!("{e}"));
+                *state.sync_error.lock().unwrap() = Some(friendly_sync_error(&format!("{e}")));
             }
         }
         state.seeding.store(false, Ordering::Relaxed);

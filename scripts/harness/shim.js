@@ -58,6 +58,11 @@
         source: 'test@example.com',
         retention: '',
         data_dir: '/tmp',
+        // Flip to a string to exercise the sync-failure banner.
+        // Set localStorage.__petrel_sync_error to exercise the failure banner.
+        sync_error: (function () {
+          try { return localStorage.getItem('__petrel_sync_error') || null; } catch (e) { return null; }
+        })(),
       };
     },
     list_threads: function (a) {

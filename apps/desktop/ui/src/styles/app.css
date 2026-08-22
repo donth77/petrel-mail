@@ -1982,7 +1982,9 @@ mark {
 /* A sync failure has to be impossible to miss: an unreachable server and an
    empty mailbox look identical until something says which one it is. */
 .sync-error {
-  grid-column: 1 / -1;
+  /* Sits in the frame's flex column, above the three-pane grid — not inside it.
+     As a grid child it landed in the 1fr row and took half the window. */
+  flex: none;
   display: flex;
   align-items: baseline;
   gap: 10px;
@@ -1994,13 +1996,7 @@ mark {
   font-size: 12.5px;
 }
 
-.sync-error .mono {
-  font-family: var(--mono);
+.sync-error-note {
+  color: var(--ink2);
   font-size: 11.5px;
-  color: var(--ink2);
-  overflow-wrap: anywhere;
-}
-
-.sync-error span:last-child {
-  color: var(--ink2);
 }
