@@ -74,6 +74,10 @@ export function useTriage(opts: {
   // The last thing done, so Z has something to reverse without the caller
   // tracking it.
   const lastUndo = useRef<UndoOffer | null>(null);
+  // Conversations the user deliberately marked unread. Leaving one must not
+  // mark it read again — flagging something to come back to is the entire
+  // point, and undoing that on the way out is worse than never offering it.
+  const heldUnread = useRef<Set<number>>(new Set());
 
   const run = useCallback(
     async (kind: ActionKind, threadId?: number, targetId?: number, quiet = false) => {
@@ -93,6 +97,11 @@ export function useTriage(opts: {
       void api.log(
         JSON.stringify({ kind: 'triage', stage: 'start', k, target, threadId: row.thread_id }),
       );
+
+      // Deliberate only: the automatic mark-read is quiet, and it must not be
+      // able to clear the flag a person set on purpose.
+      if (kind === 'mark_unread' && !quiet) heldUnread.current.add(row.id);
+      if (kind === 'mark_read') heldUnread.current.delete(row.id);
 
       const removes = leavesView(kind, view);
       const before = items;
@@ -198,5 +207,13 @@ export function useTriage(opts: {
     void run(row.starred ? 'unstar' : 'star');
   }, [items, activeId, run]);
 
-  return { run, undo, toggleStar, pending, hasUndo: () => lastUndo.current != null };
+  return {
+    run,
+    undo,
+    toggleStar,
+    pending,
+    hasUndo: () => lastUndo.current != null,
+    /** Whether the user asked for this conversation to stay unread. */
+    isHeldUnread: (id: number) => heldUnread.current.has(id),
+  };
 }

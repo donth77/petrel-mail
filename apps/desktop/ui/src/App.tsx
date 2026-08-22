@@ -286,44 +286,52 @@ export function App() {
     }
   }, [items, view, query, settings, status?.seeding]);
 
-  // Opening a conversation marks it read, as every mail client does.
+  // Moving off a conversation marks it read — the rule every mail client with
+  // a reading pane uses, and the one Outlook states outright as "mark as read
+  // when the selection changes".
   //
-  // After a dwell, not instantly: j/k moves the selection one row at a time, so
-  // marking on selection would clear the unread state of every conversation you
-  // scrolled past on the way to the one you wanted. The delay is short enough to
-  // feel automatic and long enough to survive a fast scroll.
+  // An earlier version only marked the *current* conversation, after a dwell,
+  // so that scrolling with j/k did not clear everything you passed. That was
+  // wrong in the ordinary case: select one, click the next, and the first was
+  // never marked at all, because moving cancelled the timer that would have
+  // done it. Reading something and moving on is the common gesture; passing
+  // over something on the way to somewhere else is the rare one.
   //
-  // Once per selection, though — not once per unread state. Marking something
-  // unread while you are reading it flips `unread` back to true, and without
-  // this the rule would helpfully undo that a second later: the icon changes,
-  // then changes back on its own, which reads as the button not working.
-  // Deliberate beats automatic. Moving away and returning marks it read again,
-  // because that is a fresh decision to open it.
-  //
-  // The dependency list is deliberately just the selection. `triage` is a new
-  // object on every render and `active` is a new object whenever the list
-  // reloads, so depending on either meant the pending timer was cancelled and
-  // restarted by re-renders that had nothing to do with the selection — a
-  // toast expiring, a status poll, a notification. On a quiet screen it worked;
-  // on a busy one the dwell could be postponed indefinitely. Both are read
-  // through refs so the timer survives everything except actually moving.
+  // The dwell survives for whatever is selected *now*, so a conversation you
+  // stop on is marked read without having to leave it.
   const autoRead = useRef<number | null>(null);
+  const previousId = useRef<number | null>(null);
   const activeRef = useRef(active);
   activeRef.current = active;
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
   const triageRef = useRef(triage);
   triageRef.current = triage;
+
   useEffect(() => {
+    if (settings.layout === 'off') return;
     const current = activeRef.current;
-    if (!current || settings.layout === 'off') return;
-    if (autoRead.current === current.id) return;
+    const leaving = previousId.current;
+    previousId.current = current?.id ?? null;
+
+    // The one you just left.
+    if (leaving != null && leaving !== current?.id) {
+      const row = itemsRef.current.find((m) => m.id === leaving);
+      if (row?.unread && !triageRef.current.isHeldUnread(leaving)) {
+        autoRead.current = leaving;
+        void triageRef.current.run('mark_read', leaving, undefined, true);
+      }
+    }
+
+    // And the one you are on, if you stay.
+    if (!current || autoRead.current === current.id) return;
     if (!current.unread) {
-      // Nothing to do, but remember we have considered this one so that
-      // marking it unread later is not immediately reversed.
       autoRead.current = current.id;
       return;
     }
     const id = current.id;
     const h = setTimeout(() => {
+      if (triageRef.current.isHeldUnread(id)) return;
       autoRead.current = id;
       void triageRef.current.run('mark_read', id, undefined, true);
     }, 900);
