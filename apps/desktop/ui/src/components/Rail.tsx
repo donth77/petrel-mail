@@ -146,9 +146,11 @@ export function Rail({
             <span className="rail-text">{t('rail-settings')}</span>
           </button>
         </Tip>
-        {/* The toggle keeps a tooltip when expanded too: it is the one item
-            whose icon does not say which way it goes. */}
-        <Tip label={collapsed ? t('rail-expand') : t('rail-collapse')} placement="right">
+        <Tip
+          label={collapsed ? t('rail-expand') : t('rail-collapse')}
+          placement="right"
+          when={collapsed}
+        >
           <button
             type="button"
             className="rail-item"

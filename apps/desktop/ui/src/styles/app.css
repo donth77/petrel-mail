@@ -2312,9 +2312,27 @@ body.resizing {
 /* The account button keeps its height. Shrinking it to a single row pulled
    every icon below it upward, so collapsing moved things in two directions at
    once — the panel narrowing and the whole list jumping. The dot centres itself
-   in the height it already had. */
+   in the height it already had.
+ *
+ * Centring needs the row emptied as well as justified: the text and chevron are
+ * invisible but still flex items, so the gaps *between* them stayed in the
+ * layout and shoved the dot nine pixels left of the icon column beneath it,
+ * leaving the gap on the right that gave it away. */
 .rail[data-collapsed] .account {
   justify-content: center;
+  gap: 0;
+}
+
+.account-text {
+  min-inline-size: 0;
+  flex-grow: 1;
+}
+
+.rail[data-collapsed] .account-text,
+.rail[data-collapsed] .account > svg {
+  inline-size: 0;
+  flex: 0 0 0;
+  overflow: hidden;
 }
 
 .rail[data-collapsed] .tag-swatch {

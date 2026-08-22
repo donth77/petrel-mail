@@ -41,7 +41,10 @@ export function AccountMenu({
         {/* The account's own colour, not the app accent — the whole point of
             setting one is telling accounts apart at a glance. */}
         <span className="dot" style={{ background: accountColor }} />
-        <span style={{ minInlineSize: 0, flexGrow: 1 }}>
+        {/* A class, not an inline style: inline wins over every stylesheet rule,
+            so the collapsed state could not shrink this and the leftover width
+            pushed the dot off centre. */}
+        <span className="account-text">
           <span className="clip" style={{ display: 'block', fontSize: 12.5, fontWeight: 600 }}>
             {current}
           </span>
