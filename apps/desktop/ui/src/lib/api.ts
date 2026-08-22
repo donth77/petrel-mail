@@ -62,8 +62,13 @@ export type Account = {
   folders: FolderMapping[];
 };
 
+export type Folder = { id: number; role: string; path: string };
+
 export type ActionKind =
-  | 'archive' | 'trash' | 'spam' | 'star' | 'unstar' | 'mark_read' | 'mark_unread';
+  | 'archive' | 'trash' | 'spam' | 'star' | 'unstar' | 'mark_read' | 'mark_unread'
+  // These three carry a target id alongside — a folder for move, a tag for the
+  // other two. The kind stays a plain string so every action has one wire shape.
+  | 'move' | 'tag' | 'untag';
 
 export type ActionReceipt = {
   action_id: number;
@@ -163,16 +168,25 @@ const mock = {
     mockRows(24).filter((r) => r.subject.toLowerCase().includes(q.toLowerCase())),
   // Fresh objects each call: returning the same reference means React sees no
   // change and the mock silently misreports whether a write took effect.
-  triage: async (_t: number, kind: ActionKind): Promise<ActionReceipt> => ({
+  triage: async (_t: number, kind: ActionKind, _target?: number): Promise<ActionReceipt> => ({
     action_id: Math.floor(Math.random() * 1e6),
     kind,
     message_count: 1,
     description:
       { archive: 'Archived', trash: 'Moved to Trash', spam: 'Reported as spam',
         star: 'Starred', unstar: 'Unstarred', mark_read: 'Marked read',
-        mark_unread: 'Marked unread' }[kind],
+        mark_unread: 'Marked unread', move: 'Moved', tag: 'Tagged',
+        untag: 'Untagged' }[kind],
   }),
   undoTriage: async () => true,
+  folders: async (): Promise<Folder[]> => [
+    { id: 101, role: '', path: 'Contracts' },
+    { id: 102, role: '', path: 'Contracts/2026' },
+    { id: 103, role: '', path: 'Client contact' },
+    { id: 1, role: 'archive', path: 'Archive' },
+  ],
+  createFolder: async () => 999,
+  createTag: async () => 998,
   accounts: async (): Promise<Account[]> => mockAccounts.map((a) => ({ ...a })),
   setAccountColor: async (id: number, color: string) => {
     const a = mockAccounts.find((x) => x.id === id);
@@ -234,9 +248,12 @@ const real = {
   threads: (view: string, offset: number, limit: number) =>
     invoke<Thread[]>('list_threads', { view, offset, limit }),
   tags: () => invoke<Tag[]>('list_tags'),
-  triage: (threadId: number, kind: ActionKind) =>
-    invoke<ActionReceipt>('triage', { threadId, kind }),
+  triage: (threadId: number, kind: ActionKind, target?: number) =>
+    invoke<ActionReceipt>('triage', { threadId, kind, target: target ?? null }),
   undoTriage: (actionId: number) => invoke<boolean>('undo_triage', { actionId }),
+  folders: () => invoke<Folder[]>('list_folders'),
+  createFolder: (path: string) => invoke<number>('create_folder', { path }),
+  createTag: (name: string) => invoke<number>('create_tag', { name }),
   accounts: () => invoke<Account[]>('list_accounts'),
   setAccountColor: (accountId: number, color: string) =>
     invoke<void>('set_account_color', { accountId, color }),

@@ -22,6 +22,13 @@ pub enum ActionKind {
     Unstar,
     MarkRead,
     MarkUnread,
+    /// Move to a named folder, rather than one of the three roles above. The
+    /// destination rides alongside as a target id: keeping the kind a plain
+    /// string keeps one wire format for every action, and the store rejects a
+    /// move that arrives without one.
+    Move,
+    Tag,
+    Untag,
 }
 
 impl ActionKind {
@@ -35,6 +42,13 @@ impl ActionKind {
         }
     }
 
+    /// Whether this action is meaningless without a target id — a folder for a
+    /// move, a tag for tagging. Checked in the store, so an action can never be
+    /// queued in a state that cannot be applied or undone.
+    pub fn needs_target(self) -> bool {
+        matches!(self, ActionKind::Move | ActionKind::Tag | ActionKind::Untag)
+    }
+
     /// What the user is told after it happens. Past tense, because it already has.
     pub fn past_tense(self) -> &'static str {
         match self {
@@ -45,6 +59,9 @@ impl ActionKind {
             ActionKind::Unstar => "Unstarred",
             ActionKind::MarkRead => "Marked read",
             ActionKind::MarkUnread => "Marked unread",
+            ActionKind::Move => "Moved",
+            ActionKind::Tag => "Tagged",
+            ActionKind::Untag => "Untagged",
         }
     }
 }
@@ -56,6 +73,15 @@ pub struct PriorState {
     pub message_id: i64,
     pub flags: i64,
     pub folder_ids: Vec<i64>,
+    /// Tags are captured for the same reason folders are: undoing a tag has to
+    /// put back what was there, not remove what this action added — those differ
+    /// the moment the same tag was already on the message.
+    ///
+    /// Defaulted because actions queued before tagging existed have no such
+    /// field, and a queue that fails to deserialise is a queue that strands
+    /// work the server has not seen.
+    #[serde(default)]
+    pub tag_ids: Vec<i64>,
 }
 
 /// The queued action, and the state it replaced.
@@ -63,6 +89,9 @@ pub struct PriorState {
 pub struct ActionPayload {
     pub kind: ActionKind,
     pub thread_id: i64,
+    /// The folder or tag this action names, for the kinds that need one.
+    #[serde(default)]
+    pub target: Option<i64>,
     pub prior: Vec<PriorState>,
 }
 

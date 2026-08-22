@@ -72,7 +72,7 @@ fn archiving_moves_a_conversation_between_the_inbox_and_archive_views() {
     assert!(subjects(&store, &ListView::Folder("archive".into())).is_empty());
 
     let receipt = store
-        .apply_thread_action(account, tid, ActionKind::Archive)
+        .apply_thread_action(account, tid, ActionKind::Archive, None)
         .unwrap();
 
     assert_eq!(subjects(&store, &ListView::Inbox), ["m1", "m2", "m3"]);
@@ -90,10 +90,10 @@ fn archiving_moves_a_conversation_between_the_inbox_and_archive_views() {
 fn trash_and_spam_are_separate_views() {
     let (store, account, ids) = seeded();
     store
-        .apply_thread_action(account, thread_of(&store, ids[0]), ActionKind::Trash)
+        .apply_thread_action(account, thread_of(&store, ids[0]), ActionKind::Trash, None)
         .unwrap();
     store
-        .apply_thread_action(account, thread_of(&store, ids[1]), ActionKind::Spam)
+        .apply_thread_action(account, thread_of(&store, ids[1]), ActionKind::Spam, None)
         .unwrap();
 
     assert_eq!(subjects(&store, &ListView::Folder("trash".into())), ["m0"]);
@@ -110,12 +110,17 @@ fn starred_spans_folders_but_not_the_bin() {
     // Starred mail keeps its star when archived: Starred is a view across the
     // mailbox, not a folder you move things into.
     store
-        .apply_thread_action(account, thread_of(&store, ids[1]), ActionKind::Archive)
+        .apply_thread_action(
+            account,
+            thread_of(&store, ids[1]),
+            ActionKind::Archive,
+            None,
+        )
         .unwrap();
     // ...but trashing something takes it out of Starred. A star is not a reason
     // to keep showing you mail you threw away.
     store
-        .apply_thread_action(account, thread_of(&store, ids[2]), ActionKind::Trash)
+        .apply_thread_action(account, thread_of(&store, ids[2]), ActionKind::Trash, None)
         .unwrap();
 
     assert_eq!(subjects(&store, &ListView::Starred), ["m0", "m1"]);

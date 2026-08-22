@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { api, type Account, type Tag, type Thread, type Status } from './lib/api';
+import { api, type Account, type Folder, type Tag, type Thread, type Status } from './lib/api';
 import { count as fmtCount } from './lib/format';
 import { t, type StringId } from './lib/strings';
 import { Search } from 'lucide-react';
@@ -8,6 +8,7 @@ import { useKeyboard } from './lib/useKeyboard';
 import { useTriage, type UndoOffer } from './lib/useTriage';
 import { TitleBar } from './components/TitleBar';
 import { Palette } from './components/Palette';
+import { Picker, type PickerOption } from './components/Picker';
 import { Help } from './components/Help';
 import { Settings } from './components/Settings';
 import { useSettings } from './lib/settings';
@@ -32,6 +33,8 @@ export function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [undoOffer, setUndoOffer] = useState<UndoOffer | null>(null);
   const [readerOverlay, setReaderOverlay] = useState(false);
+  const [picker, setPicker] = useState<'folder' | 'tag' | null>(null);
+  const [folders, setFolders] = useState<Folder[]>([]);
 
   useEffect(() => {
     let live = true;
@@ -119,6 +122,8 @@ export function App() {
       if (acc) setToast(t('account-switched', { email: acc.email }));
       else setToast(t('account-none-at', { n: String(n) }));
     },
+    openMove: () => setPicker('folder'),
+    openTag: () => setPicker('tag'),
     openPalette: () => setPaletteOpen(true),
     openHelp: () => setHelpOpen(true),
     openSettings: () => setSettingsOpen(true),
@@ -162,15 +167,33 @@ export function App() {
   }, [query, view, viewName, status?.count]);
 
   const active = useMemo(() => items.find((m) => m.id === activeId) ?? null, [items, activeId]);
+
   const unread = useMemo(() => items.filter((m) => m.unread).length, [items]);
 
   // Tags come from the account, so one that has no conversation on this page
   // still appears in the rail.
   const [tags, setTags] = useState<Tag[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
+
+  // Folders show their full path so "Contracts/2026" is distinguishable from
+  // another "2026" elsewhere; tags carry their colour and whether this
+  // conversation already has them, because tagging is a set, not a choice.
+  const pickerOptions: PickerOption[] = useMemo(() => {
+    if (picker === 'tag') {
+      const on = new Set((active?.tags ?? []).map((x) => x.name));
+      return tags.map((tg) => ({
+        id: tg.id,
+        label: tg.name,
+        colour: tg.colour || undefined,
+        on: on.has(tg.name),
+      }));
+    }
+    return folders.map((f) => ({ id: f.id, label: f.path }));
+  }, [picker, folders, tags, active]);
   useEffect(() => {
     let live = true;
     api.tags().then((t) => live && setTags(t)).catch(() => {});
+    api.folders().then((f) => live && setFolders(f)).catch((e) => api.log(`folders failed: ${e}`));
     api.accounts().then((a) => live && setAccounts(a)).catch(() => {});
     return () => {
       live = false;
@@ -259,6 +282,36 @@ export function App() {
           onMore={() => setPaletteOpen(true)}
         />
       )}
+
+      <Picker
+        open={picker !== null}
+        mode={picker ?? 'folder'}
+        subject={active?.subject ?? null}
+        options={pickerOptions}
+        onClose={() => setPicker(null)}
+        onChoose={(id, on) => {
+          if (picker === 'folder') {
+            void triage.run('move', undefined, id);
+            setPicker(null);
+          } else {
+            // Toggling: `on` is the state being moved to, so an applied tag
+            // untags rather than re-applying and reporting "Tagged" twice.
+            void triage.run(on ? 'tag' : 'untag', undefined, id);
+          }
+        }}
+        onCreate={(name) => {
+          const make = picker === 'folder' ? api.createFolder(name) : api.createTag(name);
+          void make
+            .then((id) => {
+              if (picker === 'folder') {
+                setPicker(null);
+                return triage.run('move', undefined, id).then(() => api.folders().then(setFolders));
+              }
+              return triage.run('tag', undefined, id).then(() => api.tags().then(setTags));
+            })
+            .catch((e) => setToast(t('triage-failed', { error: String(e) })));
+        }}
+      />
 
       <Palette
         open={paletteOpen}

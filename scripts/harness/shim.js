@@ -38,6 +38,18 @@
     };
   });
 
+  var folders = [
+    { id: 101, role: '', path: 'Contracts' },
+    { id: 102, role: '', path: 'Contracts/2026' },
+    { id: 103, role: '', path: 'Client contact' },
+    { id: 1, role: 'archive', path: 'Archive' },
+  ];
+  var tags = [
+    { id: 11, name: 'Urgent', colour: '#A8544B', thread_count: 0 },
+    { id: 12, name: 'Waiting on', colour: '#3B6EA5', thread_count: 0 },
+    { id: 13, name: 'Receipts', colour: '#5E7C4A', thread_count: 0 },
+  ];
+
   var handlers = {
     status: function () {
       return {
@@ -71,7 +83,7 @@
       return rows;
     },
     list_tags: function () {
-      return [];
+      return tags;
     },
     list_accounts: function () {
       return [];
@@ -120,6 +132,16 @@
         else if (a.kind === 'unstar') row.starred = false;
         else if (a.kind === 'mark_read') row.unread = false;
         else if (a.kind === 'mark_unread') row.unread = true;
+        else if (a.kind === 'move') row.filed = 'moved';
+        else if (a.kind === 'tag') {
+          var tg = tags.filter(function (x) { return x.id === a.target; })[0];
+          if (tg && !row.tags.some(function (x) { return x.name === tg.name; })) {
+            row.tags.push({ name: tg.name, colour: tg.colour });
+          }
+        } else if (a.kind === 'untag') {
+          var t2 = tags.filter(function (x) { return x.id === a.target; })[0];
+          if (t2) row.tags = row.tags.filter(function (x) { return x.name !== t2.name; });
+        }
       }
       var past = {
         archive: 'Archived',
@@ -129,6 +151,9 @@
         unstar: 'Unstarred',
         mark_read: 'Marked read',
         mark_unread: 'Marked unread',
+        move: 'Moved',
+        tag: 'Tagged',
+        untag: 'Untagged',
       };
       return {
         action_id: window.__PETREL_IPC__.length,
@@ -139,6 +164,19 @@
     },
     undo_triage: function () {
       return true;
+    },
+    list_folders: function () {
+      return folders;
+    },
+    create_folder: function (a) {
+      var id = 200 + folders.length;
+      folders.push({ id: id, role: '', path: a.path });
+      return id;
+    },
+    create_tag: function (a) {
+      var id = 300 + tags.length;
+      tags.push({ id: id, name: a.name, colour: '', thread_count: 0 });
+      return id;
     },
   };
 

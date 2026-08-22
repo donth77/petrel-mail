@@ -13,7 +13,8 @@ use std::sync::{Arc, Mutex};
 use petrel_engine::actions::{ActionKind, ActionReceipt};
 use petrel_engine::blob::BlobStore;
 use petrel_engine::store::{
-    AccountSummary, ListView, Listing, NewMessage, Store, TagSummary, ThreadListing, ThreadMessage,
+    AccountSummary, FolderSummary, ListView, Listing, NewMessage, Store, TagSummary, ThreadListing,
+    ThreadMessage,
 };
 use petrel_providers::imap::{ImapConfig, Security};
 use petrel_testkit::DemoMailbox;
@@ -213,6 +214,7 @@ fn thread_detail(
 fn triage(
     thread_id: i64,
     kind: ActionKind,
+    target: Option<i64>,
     state: State<Arc<AppState>>,
 ) -> Result<ActionReceipt, String> {
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
@@ -221,7 +223,44 @@ fn triage(
         .map_err(|e| e.to_string())?
         .ok_or("no account")?;
     store
-        .apply_thread_action(account, thread_id, kind)
+        .apply_thread_action(account, thread_id, kind, target)
+        .map_err(|e| e.to_string())
+}
+
+/// Folders for the move picker (V).
+#[tauri::command]
+fn list_folders(state: State<Arc<AppState>>) -> Result<Vec<FolderSummary>, String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    let Some(account) = store.first_account().map_err(|e| e.to_string())? else {
+        return Ok(Vec::new());
+    };
+    store.folders(account).map_err(|e| e.to_string())
+}
+
+/// Creates a folder the user named, or returns the one already there. The
+/// picker offers this on the end of the same keystroke as choosing one.
+#[tauri::command]
+fn create_folder(path: String, state: State<Arc<AppState>>) -> Result<i64, String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    let account = store
+        .first_account()
+        .map_err(|e| e.to_string())?
+        .ok_or("no account")?;
+    store
+        .ensure_named_folder(account, &path)
+        .map_err(|e| e.to_string())
+}
+
+/// Creates a tag, or returns the one already there — same shape as folders.
+#[tauri::command]
+fn create_tag(name: String, state: State<Arc<AppState>>) -> Result<i64, String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    let account = store
+        .first_account()
+        .map_err(|e| e.to_string())?
+        .ok_or("no account")?;
+    store
+        .ensure_tag(account, &name, None)
         .map_err(|e| e.to_string())
 }
 
@@ -703,6 +742,9 @@ pub fn run() {
             thread_detail,
             triage,
             undo_triage,
+            list_folders,
+            create_folder,
+            create_tag,
             list_accounts,
             set_account_color,
             set_account_archive,

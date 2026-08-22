@@ -9,6 +9,10 @@ import { t } from './strings';
  *  Starred and from nowhere else. Deciding by action alone left rows sitting in
  *  lists they no longer belonged to. */
 function leavesView(kind: ActionKind, view: string): boolean {
+  // A move files the conversation somewhere specific, so it leaves whatever
+  // list you were looking at — including the inbox, and including a folder
+  // view, since the destination is by definition somewhere else.
+  if (kind === 'move') return true;
   switch (view) {
     case 'inbox':
       return kind === 'archive' || kind === 'trash' || kind === 'spam';
@@ -20,6 +24,9 @@ function leavesView(kind: ActionKind, view: string): boolean {
       return kind === 'archive' || kind === 'spam';
     case 'spam':
       return kind === 'archive' || kind === 'trash';
+    case 'sent':
+    case 'drafts':
+      return false;
     default:
       // Sent, drafts and tag views: nothing triage does moves a conversation
       // out of them.
@@ -65,7 +72,7 @@ export function useTriage(opts: {
   const lastUndo = useRef<UndoOffer | null>(null);
 
   const run = useCallback(
-    async (kind: ActionKind, threadId?: number) => {
+    async (kind: ActionKind, threadId?: number, targetId?: number) => {
       const k = kind;
       const target = threadId ?? activeId;
       if (target == null) {
@@ -114,7 +121,7 @@ export function useTriage(opts: {
 
       setPending(true);
       try {
-        const receipt = await api.triage(row.thread_id, kind);
+        const receipt = await api.triage(row.thread_id, kind, targetId);
         void api.log(JSON.stringify({ kind: 'triage', stage: 'ok', id: receipt.action_id }));
         lastUndo.current = {
           actionId: receipt.action_id,

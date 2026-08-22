@@ -23,6 +23,10 @@ pub enum StoreError {
     Integrity(String),
     #[error("ingest failed: {0}")]
     Ingest(String),
+    /// A caller asked for something the store will not do — as distinct from
+    /// something that went wrong while doing it.
+    #[error("{0}")]
+    Rejected(String),
 }
 
 /// What a garbage-collection pass destroyed.
@@ -129,6 +133,15 @@ pub struct TagSummary {
     pub name: String,
     pub colour: String,
     pub thread_count: i64,
+}
+
+/// A folder as the move picker shows it.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FolderSummary {
+    pub id: i64,
+    /// Empty for folders the user made; otherwise archive, sent, trash and so on.
+    pub role: String,
+    pub path: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -1276,6 +1289,58 @@ impl Store {
         Ok(self.conn.last_insert_rowid())
     }
 
+    /// Every folder on the account, for the move picker.
+    ///
+    /// Folders the user made come first, because those are what a move is
+    /// usually for; the role folders are reachable from the rail already and
+    /// are here only so V can get to them too.
+    pub fn folders(&self, account_id: i64) -> Result<Vec<FolderSummary>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, coalesce(role,''), path FROM folders
+             WHERE account_id = ?1
+             ORDER BY (role IS NOT NULL AND role <> ''), path COLLATE NOCASE",
+        )?;
+        let rows = stmt.query_map(params![account_id], |r| {
+            Ok(FolderSummary {
+                id: r.get(0)?,
+                role: r.get(1)?,
+                path: r.get(2)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// A folder the user named, looked up by path and created if new.
+    ///
+    /// Separate from `ensure_folder`, which keys on role: two user folders can
+    /// exist side by side with no role at all, so role is the wrong identity
+    /// for them.
+    pub fn ensure_named_folder(&self, account_id: i64, path: &str) -> Result<i64> {
+        let path = path.trim();
+        if path.is_empty() {
+            return Err(StoreError::Rejected("a folder needs a name".into()));
+        }
+        let existing: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT id FROM folders WHERE account_id = ?1 AND path = ?2 COLLATE NOCASE",
+                params![account_id, path],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(id) = existing {
+            return Ok(id);
+        }
+        // The leaf is the display name; the path keeps the hierarchy the server
+        // uses, so "Contracts/2026" shows as 2026 nested under Contracts.
+        let name = path.rsplit('/').next().unwrap_or(path);
+        self.conn.execute(
+            "INSERT INTO folders(account_id, role, name, path) VALUES (?1, NULL, ?2, ?3)",
+            params![account_id, name, path],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
     pub fn place_message(&self, message_id: i64, folder_id: i64) -> Result<()> {
         self.conn.execute(
             "INSERT OR IGNORE INTO placements(message_id, folder_id) VALUES (?1, ?2)",
@@ -1292,6 +1357,14 @@ impl Store {
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
+    pub fn tags_of(&self, message_id: i64) -> Result<Vec<i64>> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT tag_id FROM message_tags WHERE message_id = ?1")?;
+        let rows = stmt.query_map(params![message_id], |r| r.get(0))?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
     /// Applies a triage action to a whole conversation, locally and at once,
     /// then queues it for the server. Returns a receipt that carries everything
     /// undo needs, so callers hold no state of their own.
@@ -1300,8 +1373,18 @@ impl Store {
         account_id: i64,
         thread_id: i64,
         kind: crate::actions::ActionKind,
+        target: Option<i64>,
     ) -> Result<crate::actions::ActionReceipt> {
         use crate::actions::{ActionKind, ActionPayload, ActionReceipt, PriorState};
+
+        // Refused here rather than defaulted to something plausible: a move with
+        // no destination is a bug in the caller, and inventing one would file
+        // mail somewhere nobody asked for.
+        if kind.needs_target() && target.is_none() {
+            return Err(StoreError::Rejected(format!(
+                "{kind:?} needs a target folder or tag"
+            )));
+        }
 
         let ids: Vec<i64> = {
             let mut stmt = self.conn.prepare_cached(
@@ -1325,6 +1408,7 @@ impl Store {
             prior.push(PriorState {
                 message_id: *id,
                 flags,
+                tag_ids: self.tags_of(*id)?,
                 folder_ids: self.folders_of(*id)?,
             });
         }
@@ -1335,6 +1419,14 @@ impl Store {
                 ActionKind::Unstar => self.set_flags(*id, 0, flags::FLAGGED)?,
                 ActionKind::MarkRead => self.set_flags(*id, flags::SEEN, 0)?,
                 ActionKind::MarkUnread => self.set_flags(*id, 0, flags::SEEN)?,
+                ActionKind::Tag => self.tag_message(*id, target.expect("checked above"))?,
+                ActionKind::Untag => self.untag_message(*id, target.expect("checked above"))?,
+                ActionKind::Move => {
+                    let dest = target.expect("checked above");
+                    self.conn
+                        .execute("DELETE FROM placements WHERE message_id = ?1", params![id])?;
+                    self.place_message(*id, dest)?;
+                }
                 ActionKind::Archive | ActionKind::Trash | ActionKind::Spam => {
                     let role = kind.destination_role().expect("move action has a role");
                     let dest = self.ensure_folder(account_id, role, role)?;
@@ -1351,6 +1443,7 @@ impl Store {
         let payload = ActionPayload {
             kind,
             thread_id,
+            target,
             prior,
         };
         let json = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".into());
@@ -1412,6 +1505,16 @@ impl Store {
             )?;
             for f in &p.folder_ids {
                 self.place_message(p.message_id, *f)?;
+            }
+            // Same shape as folders: wipe and restore what was captured, rather
+            // than removing whatever this action added. Those differ whenever
+            // the tag was already on the message before the action ran.
+            self.conn.execute(
+                "DELETE FROM message_tags WHERE message_id = ?1",
+                params![p.message_id],
+            )?;
+            for tag in &p.tag_ids {
+                self.tag_message(p.message_id, *tag)?;
             }
         }
 

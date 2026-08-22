@@ -70,7 +70,7 @@ export const BINDINGS: Binding[] = [
   { id: 'snooze', group: 'act', label: 'Snooze this conversation', display: ['B'],
     chords: [{ key: 'b' }], available: false },
   { id: 'move-tag', group: 'act', label: 'Move to folder · tag', display: ['V', 'L'],
-    chords: [{ key: 'v' }, { key: 'l' }], available: false },
+    chords: [{ key: 'v' }, { key: 'l' }], available: true },
   { id: 'read-unread', group: 'act', label: 'Mark read · unread', display: ['read', 'unread'],
     chords: [{ key: 'i', shift: true }, { key: 'u', shift: true }], available: true },
   { id: 'select', group: 'act', label: 'Select · extend selection', display: ['X', 'extend'],

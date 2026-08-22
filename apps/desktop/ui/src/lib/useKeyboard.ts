@@ -11,6 +11,8 @@ export type KeyActions = {
   openSettings: () => void;
   focusSearch: () => void;
   triage: (kind: import('./api').ActionKind) => void;
+  openMove: () => void;
+  openTag: () => void;
   toggleStar: () => void;
   undo: () => void;
 };
@@ -91,7 +93,7 @@ export function useKeyboard(actions: KeyActions) {
         }
       }
 
-      if ('eE#!sSzZIU'.includes(e.key)) {
+      if ('eE#!sSzZIUvVlL'.includes(e.key)) {
         void import('./api').then(({ api }) =>
           api.log(
             JSON.stringify({
@@ -120,6 +122,14 @@ export function useKeyboard(actions: KeyActions) {
         case 'S':
           e.preventDefault();
           return a.toggleStar();
+        case 'v':
+        case 'V':
+          e.preventDefault();
+          return a.openMove();
+        case 'l':
+        case 'L':
+          e.preventDefault();
+          return a.openTag();
         case 'z':
         case 'Z':
           e.preventDefault();
