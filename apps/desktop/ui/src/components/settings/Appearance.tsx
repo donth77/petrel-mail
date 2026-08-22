@@ -125,6 +125,37 @@ export function Appearance() {
         </div>
       </section>
 
+      {/* Here rather than under Notifications, where this started. "Badges"
+          is grouped with notifications in the spec, but that means the dock
+          icon — an interruption. These are numbers in the sidebar: a question
+          about how the app looks, and Appearance is where people look. */}
+      <section className="field">
+        <div className="flabel">{t('badges')}</div>
+        <p className="fhelp">{t('badges-help')}</p>
+        <Pill
+          value={settings.badges}
+          onChange={(v) => set('badges', v)}
+          options={[
+            { value: 'unread', label: t('badges-unread') },
+            { value: 'total', label: t('badges-total') },
+            { value: 'off', label: t('badges-off') },
+          ]}
+        />
+      </section>
+
+      <section className="field">
+        <div className="flabel">{t('appearance-checkboxes')}</div>
+        <p className="fhelp">{t('appearance-checkboxes-help')}</p>
+        <Pill
+          value={settings.checkboxes}
+          onChange={(v) => set('checkboxes', v)}
+          options={[
+            { value: 'off', label: t('checkboxes-off') },
+            { value: 'on', label: t('checkboxes-on') },
+          ]}
+        />
+      </section>
+
       <section className="field last">
         <div className="flabel">{t('appearance-text-size')}</div>
         <p className="fhelp">{t('appearance-text-size-help')}</p>

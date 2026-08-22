@@ -9,36 +9,33 @@ import { t } from './strings';
  *  Starred and from nowhere else. Deciding by action alone left rows sitting in
  *  lists they no longer belonged to. */
 function leavesView(kind: ActionKind, view: string): boolean {
-  // A move files the conversation somewhere specific, so it leaves whatever
-  // list you were looking at — including the inbox, and including a folder
-  // view, since the destination is by definition somewhere else.
-  if (kind === 'move') return true;
-  // Deleting permanently removes the conversation from everywhere, so it leaves
-  // whatever list you happen to be looking at when you do it.
-  if (kind === 'delete_forever') return true;
-  // Snoozing takes a conversation out of the inbox; un-snoozing takes it out
-  // of the snoozed list. Either way it leaves the list you are looking at.
+  // Filed somewhere specific, or gone entirely: either way it is not here.
+  if (kind === 'move' || kind === 'delete_forever') return true;
+
+  // Trash and spam are exclusive placements on both kinds of provider — the
+  // conversation leaves wherever it was. So it leaves whatever list you happen
+  // to be looking at, unless that list is where it lands.
+  //
+  // This used to be enumerated view by view, and the enumeration was wrong:
+  // Sent, Drafts, Snoozed and every tag view were all listed as places nothing
+  // moves out of, so binning something from any of them left the row sitting
+  // there until a refresh took it away.
+  if (kind === 'trash') return view !== 'trash';
+  if (kind === 'spam') return view !== 'spam';
+
+  // Out of the inbox, and out of a bin it is being rescued from. Stars and tags
+  // survive archiving, so those views keep the conversation.
+  if (kind === 'archive') return view === 'inbox' || view === 'trash' || view === 'spam';
+
   if (kind === 'snooze') return view === 'inbox';
   if (kind === 'unsnooze') return view === 'snoozed';
-  switch (view) {
-    case 'inbox':
-      return kind === 'archive' || kind === 'trash' || kind === 'spam';
-    case 'starred':
-      return kind === 'unstar' || kind === 'trash' || kind === 'spam';
-    case 'archive':
-      return kind === 'trash' || kind === 'spam';
-    case 'trash':
-      return kind === 'archive' || kind === 'spam';
-    case 'spam':
-      return kind === 'archive' || kind === 'trash';
-    case 'sent':
-    case 'drafts':
-      return false;
-    default:
-      // Sent, drafts and tag views: nothing triage does moves a conversation
-      // out of them.
-      return false;
-  }
+  if (kind === 'unstar') return view === 'starred';
+
+  // Untagging is deliberately not here. The row only leaves if the tag removed
+  // is the one being viewed, and this cannot see which tag was passed — so it
+  // leaves the row alone rather than risk removing one the user is still
+  // looking at. The next load has it right.
+  return false;
 }
 
 export type UndoOffer = {

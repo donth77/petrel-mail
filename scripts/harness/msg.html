@@ -10,7 +10,8 @@
      tell the difference. ?blocked=N says how much was refused. -->
 <meta charset="utf-8">
 <style>
-  body { margin: 0; padding: 14px 16px; font: 14px/1.6 system-ui, sans-serif; }
+  :root { --petrel-size: 15px; }
+  body { margin: 0; padding: 14px 16px; font: var(--petrel-size)/1.6 system-ui, sans-serif; }
 </style>
 <div id="content"><p>Message body stand-in.</p></div>
 <script>
@@ -49,6 +50,15 @@
     // The real frame forwards key identity out, because a focused frame
     // swallows every keystroke. Without this the harness could not exercise
     // the case that matters most: reading a long message after clicking it.
+    // The reading-size preference, as the real frame does it.
+    addEventListener('message', function (e) {
+      var n = e.data && e.data.petrelSize;
+      if (typeof n === 'number' && n >= 10 && n <= 28) {
+        document.documentElement.style.setProperty('--petrel-size', n + 'px');
+        post();
+      }
+    });
+
     addEventListener('keydown', function (e) {
       parent.postMessage({
         petrelKey: {

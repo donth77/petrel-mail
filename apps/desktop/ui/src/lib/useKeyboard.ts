@@ -71,11 +71,22 @@ export function useKeyboard(actions: KeyActions) {
 
       // Modified shortcuts work everywhere, including in a text field: ⌘K is
       // how you get *out* of one.
-      if (mod && !e.altKey) {
-        const k = e.key.toLowerCase();
-        if (k === 'k') return e.preventDefault(), a.openPalette();
-        if (k === ',') return e.preventDefault(), a.openSettings();
-        if (/^[1-9]$/.test(e.key)) return e.preventDefault(), a.switchAccount(Number(e.key));
+      if (mod) {
+        if (!e.altKey) {
+          const k = e.key.toLowerCase();
+          if (k === 'k') return e.preventDefault(), a.openPalette();
+          if (k === ',') return e.preventDefault(), a.openSettings();
+          if (/^[1-9]$/.test(e.key)) return e.preventDefault(), a.switchAccount(Number(e.key));
+        }
+        // Anything else held with ⌘ or ctrl belongs to the system, and this
+        // return is the whole of what makes that true.
+        //
+        // Without it every modified key fell through to the single-key commands
+        // below: ⌘C opened the composer, ⌘A replied to all, ⌘V opened the move
+        // picker, ⌘Z undid a triage action and ⌘F forwarded. Worse, they call
+        // preventDefault, so the system action was not merely shadowed but
+        // swallowed — you could not copy text out of a message at all.
+        return;
       }
 
       if (typing) {

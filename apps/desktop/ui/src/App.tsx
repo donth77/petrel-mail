@@ -29,6 +29,7 @@ import { Help } from './components/Help';
 import { Settings } from './components/Settings';
 import { clampRail, useSettings } from './lib/settings';
 import { Confirm } from './components/Confirm';
+import { RowMenu } from './components/RowMenu';
 import { Toast } from './components/Toast';
 import { MessageList } from './components/MessageList';
 import { Reader } from './components/Reader';
@@ -135,6 +136,11 @@ export function App() {
   // a thing you do to one long message, not a way you like the app arranged —
   // and coming back tomorrow to a hidden list would read as a broken window.
   const [readerFull, setReaderFull] = useState(false);
+
+  // Where a right-click landed, and on what. Held here rather than in the list
+  // because acting on it needs the same triage, pickers and confirmation the
+  // rest of the app uses.
+  const [rowMenu, setRowMenu] = useState<{ id: number; x: number; y: number } | null>(null);
 
   const [pendingDelete, setPendingDelete] = useState<number[] | null>(null);
   const askDelete = (ids?: number[]) => {
@@ -572,12 +578,6 @@ export function App() {
     };
   }, [status?.count, status?.seeding, settings.badges, items]);
 
-  // status.source is a description, not always an address — do not slice a
-  // sentence at "@" and present the fragment as an account name.
-  const accountLabel = (status?.source ?? '').includes('@')
-    ? status!.source.split('@')[0]
-    : t('app-name');
-
   return (
     <div className="app-frame">
       <TitleBar synced={status?.seeding ? t('status-seeding') : t('titlebar-sync')} />
@@ -665,12 +665,14 @@ export function App() {
             />
             <span className="kbd">{t('search-hint-key')}</span>
           </div>
+          {/* No account chip here. One account is active at a time and the
+              rail names it, so this repeated it a few inches away — and its dot
+              was painted with the theme accent rather than the account's own
+              colour, so two accounts in different colours would have shown the
+              same dot. It earns a place again the day a view can hold mail from
+              more than one account. */}
           <div className="view-row">
             <span className="view-name">{viewName}</span>
-            <span className="chip">
-              <span className="dot" style={{ background: 'var(--accent)' }} />
-              {accountLabel}
-            </span>
             <span className="view-count">
               {selected.size > 0
                 ? t('list-selected', { count: fmtCount(selected.size) })
@@ -706,7 +708,25 @@ export function App() {
               setAnchor(id);
             }}
             density={settings.density}
-            onActivate={(id) => {
+            checkboxes={settings.checkboxes === 'on'}
+            onActivate={(id, mods) => {
+              // Cmd/ctrl adds or removes one; shift reaches back to where the
+              // selection started. Neither opens the conversation — picking
+              // several and having the last one fill the reading pane is how
+              // you accidentally mark something read while gathering a batch.
+              if (mods.toggle) {
+                setSelected((cur) => toggle(cur, id));
+                setAnchor(id);
+                return;
+              }
+              if (mods.range) {
+                setSelected((cur) => extend(cur, items.map((m) => m.id), anchor, id));
+                return;
+              }
+              // A plain click is "just this one", so it puts a selection away
+              // rather than quietly acting on rows still held from before.
+              if (selected.size > 0) setSelected(new Set());
+              setAnchor(id);
               setActiveId(id);
               // In Drafts, selecting one means resuming it. Showing an
               // unfinished message in a reading pane is showing it to the
@@ -718,7 +738,19 @@ export function App() {
               setActiveId(threadId);
               setPicker('snooze');
             }}
-              />
+            onContextMenu={(id, x, y) => {
+              // Right-clicking inside a selection acts on all of it; on a row
+              // outside one, the selection is dropped and only that row is in
+              // play. Anything else and the menu would quietly act on rows the
+              // user was no longer pointing at.
+              if (!selected.has(id)) {
+                setSelected(new Set());
+                setAnchor(null);
+                setActiveId(id);
+              }
+              setRowMenu({ id, x, y });
+            }}
+          />
         )}
       </div>
 
@@ -792,6 +824,10 @@ export function App() {
       )}
 
       <Picker
+        // Folders are labels only on Gmail. Telling a Fastmail or Exchange user
+        // about label behaviour is telling them something false about their own
+        // mail, so the note is shown to the accounts it describes.
+        labelsNotFolders={accounts[0]?.kind === 'gmail'}
         open={picker !== null}
         mode={picker === 'send-later' ? 'snooze' : (picker ?? 'folder')}
         subject={active?.subject ?? null}
@@ -898,6 +934,53 @@ export function App() {
           </button>
         </div>
       )}
+
+      {rowMenu &&
+        (() => {
+          const row = items.find((m) => m.thread_id === rowMenu.id || m.id === rowMenu.id);
+          if (!row) return null;
+          const targets = selected.has(rowMenu.id) ? [...selected] : [rowMenu.id];
+          const close = () => setRowMenu(null);
+          // Every item routes through the same paths the rest of the app uses,
+          // so a right-click cannot become a second, subtly different way to
+          // archive something.
+          return (
+            <RowMenu
+              at={{ x: rowMenu.x, y: rowMenu.y }}
+              onClose={close}
+              thread={row}
+              view={view}
+              count={targets.length}
+              onAction={(kind) => {
+                close();
+                if (kind === 'delete_forever') {
+                  askDelete(targets);
+                  return;
+                }
+                targets.forEach((id) => void triage.run(kind, id));
+                if (selected.size > 0) setSelected(new Set());
+              }}
+              onMove={() => {
+                close();
+                setPicker('folder');
+              }}
+              onTag={() => {
+                close();
+                setPicker('tag');
+              }}
+              onSnooze={() => {
+                close();
+                setPicker('snooze');
+              }}
+              onPopOut={() => {
+                close();
+                void api
+                  .popoutMessage(row.thread_id)
+                  .catch((e) => setToast(t('popout-failed', { error: String(e) })));
+              }}
+            />
+          );
+        })()}
 
       <Confirm
         open={pendingDelete !== null}

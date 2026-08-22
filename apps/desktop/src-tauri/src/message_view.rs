@@ -114,6 +114,18 @@ const HEIGHT_REPORTER: &str = r#"
   setTimeout(post, 60);
   setTimeout(post, 400);
 
+  // The reading-size preference. A CSS variable on the host cannot cross into
+  // an opaque-origin frame, so the size is sent in and applied here — which is
+  // also why it takes effect immediately rather than on the next fetch.
+  addEventListener('message', function (e) {
+    var n = e.data && e.data.petrelSize;
+    // Bounded: the only thing this accepts is a plausible font size.
+    if (typeof n === 'number' && n >= 10 && n <= 28) {
+      document.documentElement.style.setProperty('--petrel-size', n + 'px');
+      post();
+    }
+  });
+
   addEventListener('keydown', function (e) {
     // Identity only — which key, which modifiers. Nothing about the document.
     try {
@@ -140,14 +152,17 @@ fn document(body: &str, blocked_remote: usize, nonce: &str) -> String {
         r#"<!doctype html><html><head><meta charset="utf-8">
 <style>
   :root {{ color-scheme: light; }}
+  :root {{ --petrel-size: 15px; }}
   body {{ margin: 0; padding: 14px 16px; background: #fff; color: #182730;
-         font: 14px/1.6 -apple-system, system-ui, sans-serif; word-wrap: break-word; }}
+         font: var(--petrel-size)/1.6 -apple-system, system-ui, sans-serif;
+         word-wrap: break-word; }}
   img {{ max-width: 100%; height: auto; }}
   table {{ max-width: 100%; }}
   blockquote {{ margin: 8px 0; padding-left: 12px; border-left: 2px solid #d9e1e2; color: #54666e; }}
   .banner {{ background: #f6eedd; border: 1px solid #e2d3ae; color: #6b5220;
             padding: 8px 10px; border-radius: 4px; font-size: 12.5px; margin-bottom: 12px; }}
-  .petrel-plain {{ white-space: pre-wrap; font: 13.5px/1.6 ui-monospace, SFMono-Regular, monospace; }}
+  .petrel-plain {{ white-space: pre-wrap;
+                  font: calc(var(--petrel-size) * 0.92)/1.6 ui-monospace, SFMono-Regular, monospace; }}
   .petrel-plain .q {{ color: #54666e; }}
 </style></head><body>{banner}{body}<script nonce="{nonce}">{reporter}</script></body></html>"#
     )

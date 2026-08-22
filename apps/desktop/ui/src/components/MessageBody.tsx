@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api';
+import { useSettings } from '../lib/settings';
 import { t } from '../lib/strings';
 
 /**
@@ -13,6 +14,7 @@ import { t } from '../lib/strings';
  * still opaque-origin, still network-blocked by CSP, still cut off from IPC.
  */
 export function MessageBody({ messageId, title }: { messageId: number; title: string }) {
+  const { settings } = useSettings();
   const [url, setUrl] = useState<string | null>(null);
   const [height, setHeight] = useState(180);
   const [blocked, setBlocked] = useState(0);
@@ -82,6 +84,24 @@ export function MessageBody({ messageId, title }: { messageId: number; title: st
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
   }, []);
+
+  // The reading-size preference, sent in rather than inherited.
+  //
+  // The frame is opaque-origin, so a CSS variable on the host cannot reach it —
+  // which is why setting this appeared to do nothing at all: it was styling the
+  // container around a frame whose own stylesheet said 14px. Sent on every
+  // change as well as on load, so the size moves while the setting is being
+  // tried rather than on the next message opened.
+  useEffect(() => {
+    const n = Number(settings.readingTextSize);
+    if (!Number.isFinite(n)) return;
+    const send = () => frameRef.current?.contentWindow?.postMessage({ petrelSize: n }, '*');
+    send();
+    // Again once the frame has parsed its script, which may not have run yet
+    // when the size changes at the same moment the body loads.
+    const again = setTimeout(send, 120);
+    return () => clearTimeout(again);
+  }, [settings.readingTextSize, url]);
 
   const allow = async (always: boolean) => {
     try {

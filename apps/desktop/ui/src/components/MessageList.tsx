@@ -15,9 +15,17 @@ type Props = {
   selected: ReadonlySet<number>;
   onToggleSelect: (id: number) => void;
   density: 'relaxed' | 'compact';
-  onActivate: (id: number) => void;
+  /** Modifiers come along: cmd/ctrl toggles one, shift reaches back to the
+   *  anchor, and a plain click means "just this one". Decided above, because
+   *  the anchor and the selection live there. */
+  onActivate: (id: number, mods: { toggle: boolean; range: boolean }) => void;
+  /** A checkbox column down the left, from settings. */
+  checkboxes: boolean;
   onAction: (kind: ActionKind, threadId: number) => void;
   onSnooze: (threadId: number) => void;
+  /** Right-click. The pointer position comes along because a context menu is
+   *  anchored to where you clicked, not to the row. */
+  onContextMenu: (threadId: number, x: number, y: number) => void;
 };
 
 /** Marks up `[bracketed]` spans from the engine's snippet as search hits. */
@@ -39,8 +47,10 @@ export function MessageList({
   onToggleSelect,
   density,
   onActivate,
+  checkboxes,
   onAction,
   onSnooze,
+  onContextMenu,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const composite = useCompositeStore({
@@ -139,7 +149,9 @@ export function MessageList({
 
         scrollRef.current?.focus({ preventScroll: true });
         composite.setActiveId(`msg-${target.id}`);
-        onActivate(target.id);
+        // Keyboard movement is a plain move: J and K walk the list, and the
+        // selection keys (X, ⇧J/K) are what act on more than one.
+        onActivate(target.id, { toggle: false, range: false });
       }
     };
     // Bubble phase, deliberately. With virtualFocus Ariakit re-dispatches the
@@ -196,7 +208,15 @@ export function MessageList({
       className={`scroller density-${density}`}
       ref={scrollRef}
     >
-      <div className="rows" style={{ height: virtualizer.getTotalSize() }}>
+      <div
+        className="rows"
+        // The row is a grid with a fixed column template, so the extra cell has
+        // to be declared in CSS as well as rendered — inserting an element
+        // without it pushes every later child one column along and the content
+        // wraps into a second row.
+        data-checkboxes={checkboxes || undefined}
+        style={{ height: virtualizer.getTotalSize() }}
+      >
         {virtualRows.map((v) => {
           const m = items[v.index];
           if (!m) return null;
@@ -225,19 +245,48 @@ export function MessageList({
               data-index={v.index}
               ref={virtualizer.measureElement}
               style={{ transform: `translateY(${v.start}px)` }}
-              onClick={() => {
+              onClick={(e: React.MouseEvent) => {
                 // Keep the composite's notion of "current" in step with the
                 // click, so the keyboard carries on from where the pointer left.
                 composite.setActiveId(`msg-${m.id}`);
-                onActivate(m.id);
+                onActivate(m.id, {
+                  toggle: e.metaKey || e.ctrlKey,
+                  range: e.shiftKey,
+                });
+              }}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                composite.setActiveId(`msg-${m.id}`);
+                onContextMenu(m.id, e.clientX, e.clientY);
               }}
             >
               {/* The unread dot has its own grid column, so a read row does not
-                  shift its avatar and text leftward to fill the gap. */}
-              <span aria-hidden="true">
+                  shift its avatar and text leftward to fill the gap. With the
+                  checkbox column on it leaves the flow entirely — see the CSS. */}
+              <span className="row-dot" aria-hidden="true">
                 {m.unread && <span className="unread-dot" />}
               </span>
 
+              {/* Compact has no avatar to click, so with the column off there
+                  is nothing here to select with — which is exactly why the
+                  checkbox has to render in both densities. A setting that
+                  silently does nothing in one of them is worse than no
+                  setting. */}
+              {density === 'compact' && checkboxes && (
+                <span
+                  role="checkbox"
+                  tabIndex={-1}
+                  aria-checked={selected.has(m.id)}
+                  aria-label={t('list-select-row')}
+                  className="row-check"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onToggleSelect(m.id);
+                  }}
+                >
+                  {selected.has(m.id) && <Icon icon={Check} size={11} />}
+                </span>
+              )}
               {density === 'compact' ? (
                 // Compact is a different row, not relaxed with things hidden:
                 // no avatar, one line, fixed-width sender and time so the
@@ -261,18 +310,41 @@ export function MessageList({
                 </span>
               ) : (
                 <>
-                  {/* The avatar is the selection target, as it is in Gmail:
-                      a checkbox column would cost every row width it only
-                      needs while selecting. */}
+                  {/* With the column on, the checkbox is the selection target
+                      and the avatar goes back to being an avatar. Two targets
+                      for one job is worse than either alone. */}
+                  {checkboxes && (
+                    <span
+                      role="checkbox"
+                      tabIndex={-1}
+                      aria-checked={selected.has(m.id)}
+                      aria-label={t('list-select-row')}
+                      className="row-check"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onToggleSelect(m.id);
+                      }}
+                    >
+                      {selected.has(m.id) && <Icon icon={Check} size={11} />}
+                    </span>
+                  )}
                   <span
-                    className="avatar selectable"
+                    className={checkboxes ? 'avatar' : 'avatar selectable'}
                     aria-hidden="true"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onToggleSelect(m.id);
-                    }}
+                    onClick={
+                      checkboxes
+                        ? undefined
+                        : (e) => {
+                            e.stopPropagation();
+                            onToggleSelect(m.id);
+                          }
+                    }
                   >
-                    {selected.has(m.id) ? <Icon icon={Check} size={14} /> : initials(m.from_display, m.from_addr)}
+                    {!checkboxes && selected.has(m.id) ? (
+                      <Icon icon={Check} size={14} />
+                    ) : (
+                      initials(m.from_display, m.from_addr)
+                    )}
                   </span>
                   <span className="row-main">
                     <span className="row-top">

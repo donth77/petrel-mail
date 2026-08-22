@@ -726,10 +726,18 @@ impl ListView {
                          JOIN folders f ON f.id = p.folder_id
                          WHERE p.message_id = {alias}.id AND f.role = ?3)"
             ),
+            // Excluding the bins, exactly as Starred does. A tag is a thing
+            // you meant; the bin is where things go to stop mattering, and a
+            // conversation in it is not still Urgent. Without this, trashing
+            // something tagged left it listed under its tag forever.
             ListView::Tag(_) => format!(
                 "EXISTS (SELECT 1 FROM message_tags mt
                          JOIN tags tg ON tg.id = mt.tag_id
-                         WHERE mt.message_id = {alias}.id AND tg.name = ?3)"
+                         WHERE mt.message_id = {alias}.id AND tg.name = ?3)
+                 AND NOT EXISTS (SELECT 1 FROM placements p
+                                 JOIN folders f ON f.id = p.folder_id
+                                 WHERE p.message_id = {alias}.id
+                                   AND f.role IN ('trash','spam'))"
             ),
         }
     }

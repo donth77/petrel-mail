@@ -40,6 +40,15 @@ export const DEFAULTS = {
   /// rather not be counted at.
   badges: 'unread' as 'unread' | 'total' | 'off',
 
+  /// A checkbox column down the left of the list.
+  ///
+  /// Off by default: the avatar already selects, which costs no width, and a
+  /// permanent column of empty boxes is space every row pays for all the time
+  /// to serve the minority of moments anyone is selecting. On for people who
+  /// expect it from every other mail client, and for whom an avatar that is
+  /// secretly a checkbox is a thing you have to be told.
+  checkboxes: 'off' as 'off' | 'on',
+
   /// Seconds to hold a message before it goes. Nothing reaches the server while
   /// the countdown runs, which is what makes undo a cancel rather than a recall
   /// — the only kind that actually works.

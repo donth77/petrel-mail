@@ -25,6 +25,8 @@ export type PickerOption = {
 
 type Props = {
   open: boolean;
+  /** True on Gmail, where what IMAP calls folders are labels. */
+  labelsNotFolders?: boolean;
   /** Move is a single choice that closes; tag is a set you toggle. */
   mode: 'folder' | 'tag' | 'snooze';
   options: PickerOption[];
@@ -56,7 +58,7 @@ function Highlight({ text, hits }: { text: string; hits: number[] }) {
  * that does not exist yet" is the same intent as "file this", and making it a
  * different gesture is what pushes people back to the mouse.
  */
-export function Picker({ open, mode, options, subject, onClose, onChoose, onCreate }: Props) {
+export function Picker({ open, mode, options, subject, onClose, onChoose, onCreate , labelsNotFolders }: Props) {
   const [query, setQuery] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -174,7 +176,13 @@ export function Picker({ open, mode, options, subject, onClose, onChoose, onCrea
 
         <div className="picker-foot">
           {t(
-            mode === 'folder' ? 'picker-folder-foot' : mode === 'tag' ? 'picker-tag-foot' : 'picker-snooze-foot',
+            mode === 'folder'
+              ? labelsNotFolders
+                ? 'picker-folder-foot-labels'
+                : 'picker-folder-foot'
+              : mode === 'tag'
+                ? 'picker-tag-foot'
+                : 'picker-snooze-foot',
           )}
         </div>
       </ComboboxProvider>

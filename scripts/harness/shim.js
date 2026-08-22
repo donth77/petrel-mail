@@ -39,6 +39,16 @@
     };
   });
 
+  // A few rows start out filed and tagged, so the views that are not the inbox
+  // have something in them. Without these, Sent, Drafts and the tag views were
+  // all permanently empty here — and a bug that only shows up in those views
+  // could not be reproduced, which is exactly what happened with trash.
+  rows[5].filed = 'sent';
+  rows[6].filed = 'sent';
+  rows[7].filed = 'drafts';
+  rows[8].tags = [{ name: 'Urgent', colour: '#A8544B' }];
+  rows[9].tags = [{ name: 'Urgent', colour: '#A8544B' }];
+
   var folders = [
     { id: 101, role: '', path: 'Contracts' },
     { id: 102, role: '', path: 'Contracts/2026' },
@@ -68,8 +78,13 @@
 
   var handlers = {
     status: function () {
+      // Set localStorage.__petrel_seeding to model an active sync, which polls
+      // status every 400ms instead of every 5s. That cadence is what exposed a
+      // toast whose dismissal timer restarted on every render.
+      var seeding = false;
+      try { seeding = localStorage.getItem('__petrel_seeding') === '1'; } catch (e) {}
       return {
-        seeding: false,
+        seeding: seeding,
         count: rows.length,
         source: 'test@example.com',
         retention: '',

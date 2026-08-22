@@ -275,3 +275,31 @@ fn account_unread_ignores_spam_and_the_bin() {
     let me = summary.iter().find(|a| a.id == account).unwrap();
     assert_eq!(me.unread_count, 2, "only the inbox pair counts");
 }
+
+/// A conversation in the bin is not still "Urgent".
+///
+/// Starred already excluded the bins; tags did not, so trashing something
+/// tagged left it listed under its tag — and the list would have brought it
+/// back the moment anything refreshed, whatever the UI did optimistically.
+#[test]
+fn tag_views_exclude_the_bins_like_starred_does() {
+    let (store, account, ids) = seeded();
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+    let trash = store.ensure_folder(account, "trash", "Trash").unwrap();
+    let spam = store.ensure_folder(account, "spam", "Spam").unwrap();
+    let tag = store.ensure_tag(account, "urgent", None).unwrap();
+    for id in &ids[..3] {
+        store.place_message(*id, inbox).unwrap();
+        store.tag_message(*id, tag).unwrap();
+    }
+    assert_eq!(subjects(&store, &ListView::Tag("urgent".into())).len(), 3);
+
+    store.place_message(ids[0], trash).unwrap();
+    store.place_message(ids[1], spam).unwrap();
+    let left = subjects(&store, &ListView::Tag("urgent".into()));
+    assert_eq!(
+        left,
+        ["m2"],
+        "binned mail should not still be tagged urgent"
+    );
+}

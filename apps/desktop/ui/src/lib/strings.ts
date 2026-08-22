@@ -136,8 +136,8 @@ export const en = {
   'notify-level-all': 'All new mail',
   'notify-level-priority': 'Priority only',
   'notify-level-none': 'Nothing',
-  'badges': 'Numbers beside each mailbox',
-  'badges-help': 'Drafts and the Outbox always show how many are waiting — mail you wrote yourself is never unread.',
+  'badges': 'Mailbox counts',
+  'badges-help': 'The number beside each mailbox in the sidebar. Drafts and the Outbox always show how many are waiting, because mail you wrote is never unread.',
   'badges-unread': 'Unread',
   'badges-total': 'Everything',
   'badges-off': 'None',
@@ -265,6 +265,12 @@ export const en = {
   'help-together-note': 'From Sam, since June, with a file attached, mentioning the annex. The filter buttons type this for you.',
   'close': 'Close',
   'cancel': 'Cancel',
+  'list-select-row': 'Select this conversation',
+  'appearance-checkboxes': 'Checkboxes',
+  'appearance-checkboxes-help': 'A checkbox on every conversation. Without one, clicking the avatar selects instead — and ⌘-click and ⇧-click work either way.',
+  'checkboxes-on': 'Show',
+  'checkboxes-off': 'Hide',
+  'menu-applies-to': 'All { $count } selected',
   'recipient-remove': 'Remove { $addr }',
   'recipient-suggestions': 'Matching people',
   'recipient-written-to': 'you have emailed',
@@ -306,8 +312,11 @@ export const en = {
   'snooze-weekend': 'This weekend',
   'snooze-next-week': 'Next week',
   'picker-none': 'Nothing matches.',
-  'picker-folder-foot':
-    'On Gmail this changes labels rather than moving anything, which is what Gmail means by a folder. The result matches what you would see in the web client.',
+  'picker-folder-foot': 'The conversation leaves this view and lives in the folder you pick.',
+  // Gmail only, and worth saying: the reassurance is that your other labels
+  // survive. Without it, "move" reads as though it might replace them.
+  'picker-folder-foot-labels':
+    'Gmail calls these labels. This adds the one you pick and takes the conversation out of the inbox — any other labels it has stay on it.',
   'picker-tag-foot': 'Tags stay on the conversation wherever it is filed.',
   'palette-placeholder': 'Type a command…',
   'palette-group-conversation': 'This conversation',

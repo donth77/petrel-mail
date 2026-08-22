@@ -3,11 +3,8 @@ import {
   Archive,
   ChevronDown,
   CornerUpLeft,
-  ExternalLink,
   Mail,
   MailOpen,
-  Maximize2,
-  Minimize2,
   Paperclip,
   Star,
 } from 'lucide-react';
@@ -345,34 +342,12 @@ export function Reader({
                 one long message wants the width this window can give it, and
                 a message you are working *from* wants to stay open while you
                 do something else in the app. */}
-            {onToggleFull && (
-              <Tip label={full ? t('reader-shrink') : t('reader-expand')} keys={['\\']}>
-                <button
-                  type="button"
-                  className="act-icon"
-                  aria-label={full ? t('reader-shrink') : t('reader-expand')}
-                  aria-pressed={full}
-                  onClick={onToggleFull}
-                >
-                  <Icon icon={full ? Minimize2 : Maximize2} />
-                </button>
-              </Tip>
-            )}
-            {onPopOut && (
-              <Tip label={t('reader-popout')}>
-                <button
-                  type="button"
-                  className="act-icon"
-                  aria-label={t('reader-popout')}
-                  onClick={onPopOut}
-                >
-                  <Icon icon={ExternalLink} />
-                </button>
-              </Tip>
-            )}
             <MoreMenu
               thread={thread}
               view={view}
+              onPopOut={onPopOut}
+              full={full}
+              onToggleFull={onToggleFull}
               onAction={onAction}
               onMove={onMove}
               onTag={onTag}
