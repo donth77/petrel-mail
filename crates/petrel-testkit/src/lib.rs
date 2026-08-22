@@ -248,40 +248,73 @@ const DEMO_PEOPLE: &[(&str, &str)] = &[
 ];
 
 const DEMO_THREADS: &[(&str, &str)] = &[
-    ("Q3 vendor contracts — pricing before Friday",
-     "The twelve-month term works. The volume tier resets annually, not quarterly, so I've added that to page 3."),
-    ("Vendor shortlist",
-     "Narrowed it to three. Two came in under budget; the third is better on support but 18% more."),
-    ("Self-hosted Dovecot — cert pinning question",
-     "The fingerprint changed after their renewal. Is that flow documented anywhere I can point the team at?"),
-    ("Receipt for August",
-     "Your subscription renewed. No action needed — the invoice is attached for your records."),
-    ("Issue 214 — what the rate cut means",
-     "Three things worth your attention this week, and one that isn't but is funny anyway."),
-    ("Your order has shipped",
-     "Tracking is below. Expected Thursday, and no signature is required on delivery."),
-    ("[petrel-mail] Sanitizer profile ready for review (#142)",
-     "17 tests including CSS exfiltration and attribute-selector attacks. Two edge cases still open."),
-    ("Notes from Tuesday",
-     "Rough notes while they're fresh. The bit about retention needs a decision before we go further."),
-    ("東京支社の会議について",
-     "明日の午前中に詳細を確認してください。資料は添付のとおりです。"),
-    ("Annex review",
-     "Marked up section 4 in track changes. Everything else reads fine to me."),
-    ("Invoice 2214 — overdue",
-     "This one slipped past its terms. Could you confirm it's in the run for this week?"),
-    ("Lunch Thursday?",
-     "There's a new place near the office that isn't terrible. 12:30 if that works."),
-    ("Board pack v4",
-     "Final version, incorporating Friday's comments. Slides 8-11 changed the most."),
-    ("Re: Contract terms",
-     "Agreed on all but the indemnity cap. Can we talk it through before signing?"),
+    (
+        "Q3 vendor contracts — pricing before Friday",
+        "The twelve-month term works. The volume tier resets annually, not quarterly, so I've added that to page 3.",
+    ),
+    (
+        "Vendor shortlist",
+        "Narrowed it to three. Two came in under budget; the third is better on support but 18% more.",
+    ),
+    (
+        "Self-hosted Dovecot — cert pinning question",
+        "The fingerprint changed after their renewal. Is that flow documented anywhere I can point the team at?",
+    ),
+    (
+        "Receipt for August",
+        "Your subscription renewed. No action needed — the invoice is attached for your records.",
+    ),
+    (
+        "Issue 214 — what the rate cut means",
+        "Three things worth your attention this week, and one that isn't but is funny anyway.",
+    ),
+    (
+        "Your order has shipped",
+        "Tracking is below. Expected Thursday, and no signature is required on delivery.",
+    ),
+    (
+        "[petrel-mail] Sanitizer profile ready for review (#142)",
+        "17 tests including CSS exfiltration and attribute-selector attacks. Two edge cases still open.",
+    ),
+    (
+        "Notes from Tuesday",
+        "Rough notes while they're fresh. The bit about retention needs a decision before we go further.",
+    ),
+    (
+        "東京支社の会議について",
+        "明日の午前中に詳細を確認してください。資料は添付のとおりです。",
+    ),
+    (
+        "Annex review",
+        "Marked up section 4 in track changes. Everything else reads fine to me.",
+    ),
+    (
+        "Invoice 2214 — overdue",
+        "This one slipped past its terms. Could you confirm it's in the run for this week?",
+    ),
+    (
+        "Lunch Thursday?",
+        "There's a new place near the office that isn't terrible. 12:30 if that works.",
+    ),
+    (
+        "Board pack v4",
+        "Final version, incorporating Friday's comments. Slides 8-11 changed the most.",
+    ),
+    (
+        "Re: Contract terms",
+        "Agreed on all but the indemnity cap. Can we talk it through before signing?",
+    ),
 ];
 
 impl DemoMailbox {
     /// `now_ms` anchors the newest message; the rest spread backwards.
     pub fn new(seed: u64, n: usize, now_ms: i64) -> Self {
-        Self { rng: Rng::new(seed), n, produced: 0, now_ms }
+        Self {
+            rng: Rng::new(seed),
+            n,
+            produced: 0,
+            now_ms,
+        }
     }
 }
 

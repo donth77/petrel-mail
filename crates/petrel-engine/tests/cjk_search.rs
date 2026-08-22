@@ -31,9 +31,9 @@ fn store_with(bodies: &[(&str, &str)]) -> (Store, Vec<i64>) {
 #[test]
 fn one_and_two_character_queries_match_across_scripts() {
     let (store, ids) = store_with(&[
-        ("会議", "明日の会議は東京で行います"),          // Japanese
-        ("合同", "上海の合同会议について"),               // Simplified Chinese
-        ("회의", "내일 서울에서 회의가 있습니다"),        // Korean, precomposed
+        ("会議", "明日の会議は東京で行います"),    // Japanese
+        ("合同", "上海の合同会议について"),        // Simplified Chinese
+        ("회의", "내일 서울에서 회의가 있습니다"), // Korean, precomposed
     ]);
 
     // one character
@@ -163,7 +163,15 @@ fn snippets_come_from_the_original_text_not_the_spaced_index() {
 #[test]
 fn hostile_cjk_queries_never_error() {
     let (store, _) = store_with(&[("会議", "東京の会議")]);
-    for q in ["東\"京", "東\0京", "東 \" 京", "\"", "東京\"\"", "  東  ", "東-京"] {
+    for q in [
+        "東\"京",
+        "東\0京",
+        "東 \" 京",
+        "\"",
+        "東京\"\"",
+        "  東  ",
+        "東-京",
+    ] {
         store
             .search(q, 10)
             .unwrap_or_else(|e| panic!("query {q:?} errored: {e}"));

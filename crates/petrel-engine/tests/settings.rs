@@ -6,11 +6,17 @@ use petrel_engine::store::Store;
 #[test]
 fn settings_round_trip_and_overwrite() {
     let store = Store::open_in_memory().unwrap();
-    assert!(store.settings().unwrap().is_empty(), "nothing is set to begin with");
+    assert!(
+        store.settings().unwrap().is_empty(),
+        "nothing is set to begin with"
+    );
 
     store.set_setting("theme", "dark").unwrap();
     store.set_setting("density", "compact").unwrap();
-    assert_eq!(store.settings().unwrap().get("theme").map(String::as_str), Some("dark"));
+    assert_eq!(
+        store.settings().unwrap().get("theme").map(String::as_str),
+        Some("dark")
+    );
 
     store.set_setting("theme", "light").unwrap();
     assert_eq!(
@@ -36,11 +42,20 @@ fn clearing_a_setting_removes_it_rather_than_storing_a_default() {
 fn preferences_do_not_collide_with_engine_bookkeeping() {
     let store = Store::open_in_memory().unwrap();
     store.set_meta("extractor_version", "9").unwrap();
-    store.set_setting("extractor_version", "user nonsense").unwrap();
+    store
+        .set_setting("extractor_version", "user nonsense")
+        .unwrap();
 
-    assert_eq!(store.meta("extractor_version").unwrap().as_deref(), Some("9"));
     assert_eq!(
-        store.settings().unwrap().get("extractor_version").map(String::as_str),
+        store.meta("extractor_version").unwrap().as_deref(),
+        Some("9")
+    );
+    assert_eq!(
+        store
+            .settings()
+            .unwrap()
+            .get("extractor_version")
+            .map(String::as_str),
         Some("user nonsense"),
         "same key name in both tables must not clobber the engine's value"
     );
@@ -56,7 +71,11 @@ fn settings_survive_reopening_the_store() {
     }
     let store = Store::open(&path).unwrap();
     assert_eq!(
-        store.settings().unwrap().get("language").map(String::as_str),
+        store
+            .settings()
+            .unwrap()
+            .get("language")
+            .map(String::as_str),
         Some("de"),
         "a preference that does not outlive the process is not a preference"
     );
@@ -64,7 +83,7 @@ fn settings_survive_reopening_the_store() {
 
 #[test]
 fn account_summary_carries_counts_and_folder_mapping() {
-    use petrel_engine::store::{flags, NewMessage};
+    use petrel_engine::store::{NewMessage, flags};
 
     let mut store = Store::open_in_memory().unwrap();
     let account = store.ensure_test_account().unwrap();
@@ -87,11 +106,18 @@ fn account_summary_carries_counts_and_folder_mapping() {
     }
 
     let accounts = store.accounts().unwrap();
-    let a = accounts.iter().find(|a| a.id == account).expect("the account");
+    let a = accounts
+        .iter()
+        .find(|a| a.id == account)
+        .expect("the account");
 
     assert_eq!(a.message_count, 5);
     assert_eq!(a.unread_count, 2, "three were marked read");
     assert_eq!(a.color, "#9A6B1F");
-    assert_eq!(a.newest_ms, Some(1_004), "newest message stands in for last sync");
+    assert_eq!(
+        a.newest_ms,
+        Some(1_004),
+        "newest message stands in for last sync"
+    );
     assert!(!a.local_archive, "mirror is the default (Q24)");
 }

@@ -250,7 +250,10 @@ fn set_setting(key: String, value: String, state: State<Arc<AppState>>) -> Resul
 }
 
 #[tauri::command]
-fn search_messages(query: String, state: State<Arc<AppState>>) -> Result<Vec<ThreadListing>, String> {
+fn search_messages(
+    query: String,
+    state: State<Arc<AppState>>,
+) -> Result<Vec<ThreadListing>, String> {
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
     store.search_threads(&query, 200).map_err(|e| e.to_string())
 }
@@ -323,7 +326,9 @@ fn spawn_demo_seeding(state: Arc<AppState>, account: i64) {
 fn reseed_demo_if_stale(state: &Arc<AppState>, account: i64) -> bool {
     const WANT: &str = "2";
     let synthetic = {
-        let Ok(store) = state.store.lock() else { return false };
+        let Ok(store) = state.store.lock() else {
+            return false;
+        };
         if store.meta("demo_seed_version").ok().flatten().as_deref() == Some(WANT) {
             return false;
         }
@@ -351,8 +356,15 @@ fn reseed_demo_if_stale(state: &Arc<AppState>, account: i64) -> bool {
 }
 
 fn decorate_demo_store(state: &Arc<AppState>, account: i64) {
-    let Ok(store) = state.store.lock() else { return };
-    if store.meta("demo_decorated").ok().flatten().is_some_and(|v| !v.is_empty()) {
+    let Ok(store) = state.store.lock() else {
+        return;
+    };
+    if store
+        .meta("demo_decorated")
+        .ok()
+        .flatten()
+        .is_some_and(|v| !v.is_empty())
+    {
         return;
     }
     let tags: Vec<(i64, u32)> = [
@@ -391,7 +403,10 @@ fn decorate_demo_store(state: &Arc<AppState>, account: i64) {
         }
     }
     let _ = store.set_meta("demo_decorated", "1");
-    eprintln!("[demo] decorated {} messages with tags and flags", ids.len());
+    eprintln!(
+        "[demo] decorated {} messages with tags and flags",
+        ids.len()
+    );
 }
 
 /// Webview-side diagnostics: init scripts run before page scripts and are
@@ -530,7 +545,11 @@ fn frontend_log(entry: String) {
     // bundle, which is the only way macOS gives it real focus) stderr goes
     // nowhere readable, and diagnostics that vanish are not diagnostics.
     let path = data_dir().join("frontend.log");
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
         use std::io::Write;
         let _ = writeln!(f, "{entry}");
     }

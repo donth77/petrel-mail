@@ -1133,7 +1133,10 @@ impl Store {
             )?;
             a.folders = f
                 .query_map(params![a.id], |r| {
-                    Ok(FolderMapping { role: r.get(0)?, path: r.get(1)? })
+                    Ok(FolderMapping {
+                        role: r.get(0)?,
+                        path: r.get(1)?,
+                    })
                 })?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
             out.push(a);
@@ -1150,7 +1153,9 @@ impl Store {
     }
 
     pub fn settings(&self) -> Result<std::collections::HashMap<String, String>> {
-        let mut stmt = self.conn.prepare_cached("SELECT key, value FROM settings")?;
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT key, value FROM settings")?;
         let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
         Ok(rows.collect::<std::result::Result<std::collections::HashMap<_, _>, _>>()?)
     }
@@ -1225,8 +1230,10 @@ impl Store {
         let n = self.conn.execute("DELETE FROM messages", [])?;
         self.conn.execute("DELETE FROM fts_content", [])?;
         self.conn.execute("DELETE FROM fts_cjk", [])?;
-        self.conn
-            .execute("INSERT INTO fts_messages(fts_messages) VALUES('rebuild')", [])?;
+        self.conn.execute(
+            "INSERT INTO fts_messages(fts_messages) VALUES('rebuild')",
+            [],
+        )?;
         Ok(n)
     }
 
@@ -1465,7 +1472,15 @@ impl Store {
         )?;
         let rows: Vec<(i64, String, String, String, String, i64, i64)> = stmt
             .query_map(params![thread_id], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                ))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
@@ -1488,7 +1503,10 @@ impl Store {
             )?;
             let attachments: Vec<Attachment> = att
                 .query_map(params![id], |r| {
-                    Ok(Attachment { filename: r.get(0)?, size: r.get(1)? })
+                    Ok(Attachment {
+                        filename: r.get(0)?,
+                        size: r.get(1)?,
+                    })
                 })?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
 
