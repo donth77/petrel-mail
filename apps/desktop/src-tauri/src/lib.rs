@@ -790,6 +790,14 @@ pub fn run() {
         Some(id) => id,
         None => store.ensure_test_account().expect("create account row"),
     };
+    // Name it after the account actually configured, before any sync runs — the
+    // address is known from the environment, so there is no reason for the
+    // switcher to say test@example.com while real mail is arriving.
+    if let Some(cfg) = imap_config_from_env() {
+        if let Err(e) = store.set_account_email(account, &cfg.user) {
+            eprintln!("[store] could not name the account: {e}");
+        }
+    }
     let blobs = BlobStore::open(&dir.join("blobs")).expect("open blob store");
 
     // Startup housekeeping: clear temp files left by an interrupted write, then

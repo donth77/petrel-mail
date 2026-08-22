@@ -1422,6 +1422,21 @@ impl Store {
         })
     }
 
+    /// Names the account after the address it actually signs in as.
+    ///
+    /// The placeholder row exists so the app has something to hang mail off
+    /// before any account is configured; once one is, leaving it called
+    /// test@example.com tells the user their real mailbox is not connected
+    /// while it quietly is. Single-account for now — the account model arrives
+    /// with the setup UI, and this becomes an insert rather than an update.
+    pub fn set_account_email(&self, account_id: i64, email: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE accounts SET email = ?2 WHERE id = ?1",
+            params![account_id, email],
+        )?;
+        Ok(())
+    }
+
     /// Records which provider an account turned out to be, once a sync has seen
     /// the server. Called after capability discovery, not guessed at setup.
     pub fn set_account_kind(&self, account_id: i64, kind: &str) -> Result<()> {
