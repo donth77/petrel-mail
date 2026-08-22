@@ -38,6 +38,17 @@ struct AppState {
     /// which is exactly what it did, leaving a failed login looking like an
     /// empty mailbox.
     sync_error: Mutex<Option<String>>,
+    /// Raised when local triage is waiting to reach the server. The drain
+    /// worker sleeps on this rather than on a timer, so an archive reaches
+    /// Gmail in about a second instead of whenever the next sync happens to
+    /// come round — which, with IDLE holding a connection open, could be
+    /// twenty minutes.
+    drain_signal: Arc<tokio::sync::Notify>,
+    /// One drain at a time. Two overlapping passes would both read the same
+    /// queued rows and deliver each change twice.
+    draining: AtomicBool,
+    /// Whether the server supports UID MOVE, learned from the probe.
+    server_has_move: AtomicBool,
     tokens: Arc<ViewTokens>,
     account_id: i64,
     data_dir: String,
@@ -178,6 +189,34 @@ fn imap_config_from_env() -> Option<ImapConfig> {
     })
 }
 
+/// Delivers queued triage as soon as there is any, rather than when the next
+/// sync happens to run.
+///
+/// Debounced, because triage comes in bursts: working down an inbox is a run of
+/// archives a few hundred milliseconds apart, and one connection carrying all
+/// of them beats one connection each. A second of latency is invisible to the
+/// person doing it and saves a login per keystroke.
+fn spawn_drain_worker(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            state.drain_signal.notified().await;
+            tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+            let has_move = state.server_has_move.load(Ordering::Relaxed);
+            drain_actions(Arc::clone(&state), account, cfg.clone(), has_move).await;
+        }
+    });
+}
+
+/// Clears the draining flag however the drain ends, including on an early
+/// return or a panic — a flag left set would silently stop every later drain.
+struct DrainGuard(Arc<AppState>);
+
+impl Drop for DrainGuard {
+    fn drop(&mut self) {
+        self.0.draining.store(false, Ordering::SeqCst);
+    }
+}
+
 /// Delivers queued triage to the server.
 ///
 /// This is the second half of the optimistic model. Everything the user does is
@@ -192,6 +231,17 @@ fn imap_config_from_env() -> Option<ImapConfig> {
 /// a change that never reached the server is not one to discard.
 async fn drain_actions(state: Arc<AppState>, account: i64, cfg: ImapConfig, has_move: bool) {
     use petrel_engine::actions::ActionKind;
+
+    // Refuse to overlap. compare_exchange rather than a load-then-store: two
+    // tasks arriving together would both see `false` and both proceed.
+    if state
+        .draining
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
+    let _guard = DrainGuard(Arc::clone(&state));
 
     let pending = match state
         .store
@@ -300,6 +350,7 @@ async fn drain_actions(state: Arc<AppState>, account: i64, cfg: ImapConfig, has_
 /// engine — that arrives with the orchestrator; this proves the path end to end
 /// inside the app.
 fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
+    spawn_drain_worker(Arc::clone(&state), account, cfg.clone());
     tauri::async_runtime::spawn(async move {
         *state.source.lock().unwrap() = format!("syncing {}…", cfg.host);
 
@@ -313,6 +364,7 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
             Ok(report) => {
                 has_move = report.greeting_capabilities.move_;
                 has_idle = report.greeting_capabilities.idle;
+                state.server_has_move.store(has_move, Ordering::Relaxed);
                 log_sync(&format!(
                     "probe ok: {} folder(s), MOVE={has_move}, IDLE={has_idle}",
                     report.folders.len(),
@@ -564,9 +616,13 @@ fn triage(
     // The provider's placement model, not a per-call guess: on Gmail an
     // archive removes one label, on a classic server it replaces the folder.
     let policy = store.placement_policy(account).map_err(|e| e.to_string())?;
-    store
+    let receipt = store
         .apply_thread_action(account, thread_id, kind, target, policy)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    // Local change done; ask for it to be delivered. The lock is released as
+    // this returns, so the drain is never waiting on the caller.
+    state.drain_signal.notify_one();
+    Ok(receipt)
 }
 
 /// Sends a message, then files a copy in Sent.
@@ -703,7 +759,11 @@ fn create_tag(name: String, state: State<Arc<AppState>>) -> Result<i64, String> 
 #[tauri::command]
 fn undo_triage(action_id: i64, state: State<Arc<AppState>>) -> Result<bool, String> {
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
-    store.undo_action(action_id).map_err(|e| e.to_string())
+    let undone = store.undo_action(action_id).map_err(|e| e.to_string())?;
+    // An undo can leave other queued work behind it, and the row it cancelled
+    // is gone from the queue — either way the server's picture just changed.
+    state.drain_signal.notify_one();
+    Ok(undone)
 }
 
 #[tauri::command]
@@ -1122,6 +1182,9 @@ pub fn run() {
         seeded: AtomicUsize::new(0),
         source: Mutex::new("starting…".into()),
         sync_error: Mutex::new(None),
+        drain_signal: Arc::new(tokio::sync::Notify::new()),
+        draining: AtomicBool::new(false),
+        server_has_move: AtomicBool::new(false),
         tokens: Arc::new(ViewTokens::new()),
         account_id: account,
         data_dir: dir.display().to_string(),
