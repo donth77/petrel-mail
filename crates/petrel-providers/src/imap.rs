@@ -151,6 +151,14 @@ fn parse_capabilities(items: impl Iterator<Item = String>) -> Capabilities {
     }
 }
 
+/// The same TLS setup, for callers outside this module (SMTP submission).
+pub(crate) async fn tls_stream_for(
+    host: &str,
+    port: u16,
+) -> Result<tokio_rustls::client::TlsStream<TcpStream>> {
+    tls_stream(host, port).await
+}
+
 async fn tls_stream(host: &str, port: u16) -> Result<tokio_rustls::client::TlsStream<TcpStream>> {
     let roots = RootCertStore {
         roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),

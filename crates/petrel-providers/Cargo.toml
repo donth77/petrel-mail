@@ -18,6 +18,11 @@ tokio-rustls = "0.26"
 rustls = "0.23"
 webpki-roots = "1"
 futures = "0.3"
+# Builds RFC 5322 messages. Hand-rolling headers is fine until the first
+# non-ASCII subject or attachment, at which point it is encoded-word and
+# multipart boundaries — solved problems not worth re-solving.
+mail-builder = "0.4"
+base64 = "0.22"
 thiserror.workspace = true
 
 tempfile.workspace = true
