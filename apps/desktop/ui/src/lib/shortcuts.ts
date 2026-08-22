@@ -60,6 +60,8 @@ export const BINDINGS: Binding[] = [
 
   { id: 'reader-full', group: 'move', label: 'Fill the window with the message', display: ['\\'],
     chords: [{ key: '\\' }], available: true },
+  { id: 'reader-scroll', group: 'move', label: 'Scroll the message · a page at a time',
+    display: ['Space', '⇧Space'], chords: [{ key: ' ' }], available: true },
 
   // ---- act on mail
   { id: 'archive', group: 'act', label: 'Archive', display: ['E'],

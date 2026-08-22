@@ -161,7 +161,11 @@
       // and a reload wipes the global before the app can read it.
       var n = 0;
       try { n = Number(localStorage.getItem('__petrel_blocked') || 0); } catch (e) {}
-      return './msg.html?blocked=' + n;
+      var extra = '';
+      try {
+        extra = localStorage.getItem('__petrel_body') || '';
+      } catch (e) {}
+      return './msg.html?blocked=' + n + (extra ? '&' + extra : '');
     },
     // Remote content, modelled rather than stubbed: the policy is the point of
     // the feature, so a shim that always answered "allowed" would let a banner

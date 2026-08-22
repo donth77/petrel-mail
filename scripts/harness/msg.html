@@ -12,7 +12,28 @@
 <style>
   body { margin: 0; padding: 14px 16px; font: 14px/1.6 system-ui, sans-serif; }
 </style>
-<p>Message body stand-in.</p>
+<div id="content"><p>Message body stand-in.</p></div>
+<script>
+  // ?tall=N repeats the body so the pane has something to scroll, and ?wide=1
+  // adds a table wider than any window — the two shapes real mail arrives in
+  // that the three-line fixtures never produced.
+  (function () {
+    var q = new URLSearchParams(location.search);
+    var c = document.getElementById('content');
+    for (var i = 0; i < Number(q.get('tall') || 0); i++) {
+      var p = document.createElement('p');
+      p.textContent = 'Paragraph ' + (i + 1) + ' of a message longer than the window.';
+      c.appendChild(p);
+    }
+    if (q.get('wide')) {
+      var t = document.createElement('table');
+      t.setAttribute('border', '1');
+      var row = t.insertRow();
+      for (var j = 0; j < 40; j++) row.insertCell().textContent = 'column ' + j;
+      c.appendChild(t);
+    }
+  })();
+</script>
 <script>
   (function () {
     var blocked = Number(new URLSearchParams(location.search).get('blocked') || 0);
@@ -24,5 +45,17 @@
     }
     addEventListener('load', post);
     post();
+
+    // The real frame forwards key identity out, because a focused frame
+    // swallows every keystroke. Without this the harness could not exercise
+    // the case that matters most: reading a long message after clicking it.
+    addEventListener('keydown', function (e) {
+      parent.postMessage({
+        petrelKey: {
+          key: e.key, metaKey: e.metaKey, ctrlKey: e.ctrlKey,
+          shiftKey: e.shiftKey, altKey: e.altKey,
+        },
+      }, '*');
+    });
   })();
 </script>

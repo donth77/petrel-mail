@@ -135,6 +135,60 @@ export function Reader({
   // Which message [ and ] move from. Separate from `expanded` because you can
   // have several open at once and still be reading one of them.
   const [focused, setFocused] = useState<number | null>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+
+  // Scrolling a long message from the keyboard.
+  //
+  // Nothing else can do this. The body renders in a sandboxed frame that is
+  // sized to its own content and told not to scroll, so there is no scrollable
+  // region inside it; the scroll lives out here, on a div the frame cannot
+  // reach. And once the frame has focus — which it does the moment anyone
+  // clicks a message — every key goes to it, and only the *identity* of the key
+  // comes back out. So the app has to do the scrolling on the frame\'s behalf.
+  //
+  // Listening on window rather than the element for exactly that reason: the
+  // forwarded keys are re-dispatched there, and a listener on the div would
+  // never see the ones that matter most.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const body = bodyRef.current;
+      const reader = body?.closest('.reader');
+      // Only when the reading pane is where the user is. Otherwise Space would
+      // scroll a message while they were working down the list.
+      if (!body || !reader || !reader.contains(document.activeElement)) return;
+      // Not while a control has focus. Space on a focused button means press
+      // it, and stealing that to scroll would break every action in the header
+      // for anyone working without a mouse.
+      const on = document.activeElement as HTMLElement | null;
+      const tag = on?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'BUTTON' || tag === 'A') return;
+      if (on?.getAttribute('role') === 'button' || on?.isContentEditable) return;
+
+      const page = body.clientHeight * 0.9;
+      const by =
+        e.key === ' ' ? (e.shiftKey ? -page : page)
+        : e.key === 'PageDown' ? page
+        : e.key === 'PageUp' ? -page
+        : e.key === 'ArrowDown' ? 60
+        : e.key === 'ArrowUp' ? -60
+        : null;
+
+      if (by !== null) {
+        e.preventDefault();
+        body.scrollBy({ top: by, behavior: 'instant' as ScrollBehavior });
+        return;
+      }
+      // Home and End are the "start again" and "how does it end" keys, and on
+      // a long message both are otherwise a lot of scrolling.
+      if (e.key === 'Home' || e.key === 'End') {
+        e.preventDefault();
+        body.scrollTo({ top: e.key === 'Home' ? 0 : body.scrollHeight, behavior: 'instant' as ScrollBehavior });
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
 
   useEffect(() => {
     let live = true;
@@ -328,7 +382,7 @@ export function Reader({
         </div>
       </header>
 
-      <div className="reader-body">
+      <div className="reader-body" ref={bodyRef} tabIndex={-1}>
         {error && (
           <div className="empty">
             <h2 style={{ color: 'var(--danger)' }}>{t('reader-failed')}</h2>
