@@ -474,6 +474,22 @@ fn assign_thread(
     Ok(thread_id)
 }
 
+/// A conversation belongs in the inbox listing unless it has been filed away.
+///
+/// Stated as "not in archive, trash or spam" rather than "in the inbox" on
+/// purpose. Mail the sync has not placed anywhere yet is still mail, and a
+/// positive test would hide all of it — the same class of bug as joining on a
+/// NULL `thread_id`. Search deliberately does *not* use this: archived mail is
+/// exactly what people search for.
+fn not_filed(id_expr: &str) -> String {
+    format!(
+        "NOT EXISTS (SELECT 1 FROM placements p
+                     JOIN folders f ON f.id = p.folder_id
+                     WHERE p.message_id = {id_expr}
+                       AND f.role IN ('archive','trash','spam'))"
+    )
+}
+
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         Self::init(Connection::open(path)?)
@@ -1512,7 +1528,7 @@ impl Store {
     }
 
     pub fn list_threads(&self, offset: u32, limit: u32) -> Result<Vec<ThreadListing>> {
-        let mut stmt = self.conn.prepare_cached(
+        let sql = format!(
             "SELECT coalesce(m.thread_id, -m.id), m.id, coalesce(m.from_display,''), coalesce(m.from_addr,''),
                     coalesce(m.subject,''), coalesce(m.snippet,''), m.date_ms, t.n,
                     coalesce(t.participants,''), t.unread, t.starred, t.attach,
@@ -1534,13 +1550,16 @@ impl Store {
                       max(CASE WHEN flags & 1 = 0 THEN 1 ELSE 0 END) AS unread,
                       max(CASE WHEN flags & 4 != 0 THEN 1 ELSE 0 END) AS starred,
                       max(has_attachments) AS attach
-               FROM messages WHERE deleted_at_ms IS NULL
+               FROM messages WHERE deleted_at_ms IS NULL AND {inner}
                GROUP BY coalesce(thread_id, -id)
              ) t ON coalesce(m.thread_id, -m.id) = t.thread_id AND m.date_ms = t.md
-             WHERE m.deleted_at_ms IS NULL
+             WHERE m.deleted_at_ms IS NULL AND {outer}
              GROUP BY coalesce(m.thread_id, -m.id)
              ORDER BY m.date_ms DESC LIMIT ?1 OFFSET ?2",
-        )?;
+            inner = not_filed("messages.id"),
+            outer = not_filed("m.id"),
+        );
+        let mut stmt = self.conn.prepare_cached(&sql)?;
         let rows = stmt.query_map(params![limit, offset], |row| {
             Ok(ThreadListing {
                 thread_id: row.get(0)?,
