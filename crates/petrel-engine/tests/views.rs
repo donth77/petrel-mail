@@ -55,7 +55,9 @@ fn parse_maps_rail_keys_and_never_errors() {
         ListView::parse("tag:urgent"),
         ListView::Tag("urgent".into())
     );
-    assert_eq!(ListView::parse("snoozed"), ListView::NotBuilt);
+    assert_eq!(ListView::parse("snoozed"), ListView::Snoozed);
+    // Outbox is still the one view with nothing behind it: it needs a send
+    // queue, which arrives with deferred sending rather than with snooze.
     assert_eq!(ListView::parse("outbox"), ListView::NotBuilt);
     // A stale or unknown view falls back rather than failing: the worst
     // outcome of a bad rail key should be the wrong list, not a broken screen.

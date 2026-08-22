@@ -10,6 +10,7 @@ import { TitleBar } from './components/TitleBar';
 import { Palette } from './components/Palette';
 import { Picker, type PickerOption } from './components/Picker';
 import { Compose, addresses, type Draft } from './components/Compose';
+import { snoozeOptions } from './lib/snooze';
 import { notifiable, postDesktopNotification } from './lib/notify';
 import { Help } from './components/Help';
 import { Settings } from './components/Settings';
@@ -35,7 +36,7 @@ export function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [undoOffer, setUndoOffer] = useState<UndoOffer | null>(null);
   const [readerOverlay, setReaderOverlay] = useState(false);
-  const [picker, setPicker] = useState<'folder' | 'tag' | null>(null);
+  const [picker, setPicker] = useState<'folder' | 'tag' | 'snooze' | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   // A message waiting out its undo window. It is held here, in the window, and
   // has not touched the network — which is the whole reason undo can cancel it
@@ -170,6 +171,7 @@ export function App() {
         body: '',
       });
     },
+    snooze: () => setPicker('snooze'),
     openMove: () => setPicker('folder'),
     openTag: () => setPicker('tag'),
     openPalette: () => setPaletteOpen(true),
@@ -198,7 +200,7 @@ export function App() {
     if (view === 'inbox') {
       return { title: t('empty-inbox-title'), body: t('empty-inbox-body') };
     }
-    if (view === 'snoozed' || view === 'outbox') {
+    if (view === 'outbox') {
       return {
         title: t('empty-notbuilt-title', { view: viewName }),
         body: t('empty-notbuilt-body'),
@@ -207,7 +209,8 @@ export function App() {
     const body =
       // Starred is not somewhere you move mail to, so the generic copy is
       // wrong there in a way a reader would notice.
-      view === 'starred' ? t('empty-starred-body', { key: 'S' })
+      view === 'snoozed' ? t('empty-snoozed-body', { key: 'B' })
+      : view === 'starred' ? t('empty-starred-body', { key: 'S' })
       : view === 'sent' ? t('empty-sent-body')
       : view === 'drafts' ? t('empty-drafts-body')
       : t('empty-view-body');
@@ -307,6 +310,7 @@ export function App() {
   // another "2026" elsewhere; tags carry their colour and whether this
   // conversation already has them, because tagging is a set, not a choice.
   const pickerOptions: PickerOption[] = useMemo(() => {
+    if (picker === 'snooze') return snoozeOptions();
     if (picker === 'tag') {
       const on = new Set((active?.tags ?? []).map((x) => x.name));
       return tags.map((tg) => ({
@@ -410,6 +414,10 @@ export function App() {
             density={settings.density}
             onActivate={setActiveId}
             onAction={(kind, threadId) => void triage.run(kind, threadId)}
+            onSnooze={(threadId) => {
+              setActiveId(threadId);
+              setPicker('snooze');
+            }}
             onNotImplemented={(label) => setToast(t('not-implemented', { label }))}
           />
         )}
@@ -421,6 +429,7 @@ export function App() {
           onAction={(kind) => void triage.run(kind)}
           onMove={() => setPicker('folder')}
           onTag={() => setPicker('tag')}
+          onSnooze={() => setPicker('snooze')}
         />
       )}
 
@@ -450,6 +459,13 @@ export function App() {
         options={pickerOptions}
         onClose={() => setPicker(null)}
         onChoose={(id, on) => {
+          if (picker === 'snooze') {
+            // The id *is* the instant to come back at — a snooze has no row to
+            // point at, only a time.
+            void triage.run('snooze', undefined, id);
+            setPicker(null);
+            return;
+          }
           if (picker === 'folder') {
             void triage.run('move', undefined, id);
             setPicker(null);

@@ -90,11 +90,13 @@ export function Reader({
   onAction,
   onMove,
   onTag,
+  onSnooze,
 }: {
   thread: Thread | null;
   onAction: (kind: ActionKind) => void;
   onMove: () => void;
   onTag: () => void;
+  onSnooze: () => void;
 }) {
   const [messages, setMessages] = useState<ThreadMessage[]>([]);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
@@ -192,7 +194,13 @@ export function Reader({
             >
               <Icon icon={thread.unread ? MailOpen : Mail} />
             </button>
-            <MoreMenu thread={thread} onAction={onAction} onMove={onMove} onTag={onTag} />
+            <MoreMenu
+              thread={thread}
+              onAction={onAction}
+              onMove={onMove}
+              onTag={onTag}
+              onSnooze={onSnooze}
+            />
           </div>
         </div>
       </header>

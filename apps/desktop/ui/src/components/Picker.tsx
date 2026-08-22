@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Check, FolderClosed, Plus, Tag as TagIcon, X } from 'lucide-react';
+import { Check, Clock, FolderClosed, Plus, Tag as TagIcon, X } from 'lucide-react';
 import {
   Combobox, ComboboxItem, ComboboxList, ComboboxProvider, Dialog, DialogDismiss,
 } from '@ariakit/react';
@@ -8,6 +8,8 @@ import { Icon } from './Icon';
 import { t } from '../lib/strings';
 
 export type PickerOption = {
+  /** For folders and tags this is a row id; for snooze it is the instant to
+   *  come back at, which is the only thing that identifies the choice. */
   id: number;
   /** What the user reads. For a nested folder this is the full path. */
   label: string;
@@ -15,12 +17,15 @@ export type PickerOption = {
   colour?: string;
   /** Already applied — tag mode only, where the list is a set of checkboxes. */
   on?: boolean;
+  /** The resolved time, shown beside a snooze preset: "Tomorrow" means nothing
+   *  without "Thu 8:00 AM" next to it. */
+  detail?: string;
 };
 
 type Props = {
   open: boolean;
   /** Move is a single choice that closes; tag is a set you toggle. */
-  mode: 'folder' | 'tag';
+  mode: 'folder' | 'tag' | 'snooze';
   options: PickerOption[];
   subject: string | null;
   onClose: () => void;
@@ -72,8 +77,11 @@ export function Picker({ open, mode, options, subject, onClose, onChoose, onCrea
   // Offer creation only when the text is not already a name in the list —
   // otherwise the last row invites you to make a duplicate of what you can see.
   const typed = query.trim();
+  // Snooze offers fixed times; there is nothing to create.
   const canCreate =
-    typed.length > 0 && !options.some((o) => o.label.toLowerCase() === typed.toLowerCase());
+    mode !== 'snooze' &&
+    typed.length > 0 &&
+    !options.some((o) => o.label.toLowerCase() === typed.toLowerCase());
 
   return (
     <Dialog
@@ -81,17 +89,21 @@ export function Picker({ open, mode, options, subject, onClose, onChoose, onCrea
       onClose={onClose}
       backdrop={<div className="palette-backdrop" />}
       className="picker"
-      aria-label={t(mode === 'folder' ? 'picker-folder-title' : 'picker-tag-title')}
+      aria-label={t(
+        mode === 'folder' ? 'picker-folder-title' : mode === 'tag' ? 'picker-tag-title' : 'picker-snooze-title',
+      )}
     >
       <ComboboxProvider setValue={setQuery} resetValueOnHide>
         <div className="picker-head">
-          <Icon icon={mode === 'folder' ? FolderClosed : TagIcon} size={14} />
+          <Icon icon={mode === 'folder' ? FolderClosed : mode === 'tag' ? TagIcon : Clock} size={14} />
           <Combobox
             ref={inputRef}
             autoSelect
             autoFocus
             className="picker-input"
-            placeholder={t(mode === 'folder' ? 'picker-folder-hint' : 'picker-tag-hint')}
+            placeholder={t(
+              mode === 'folder' ? 'picker-folder-hint' : mode === 'tag' ? 'picker-tag-hint' : 'picker-snooze-hint',
+            )}
             onKeyDown={(e) => {
               // ↵ with nothing matching means "make it" — the create row is the
               // active item in that case, so only the empty-list case is special.
@@ -119,7 +131,9 @@ export function Picker({ open, mode, options, subject, onClose, onChoose, onCrea
               hideOnClick={mode === 'folder'}
               onClick={() => onChoose(o.id, !o.on)}
             >
-              {mode === 'tag' ? (
+              {mode === 'snooze' ? (
+                <Icon icon={Clock} size={13} />
+              ) : mode === 'tag' ? (
                 <span className={`picker-check${o.on ? ' on' : ''}`} aria-hidden="true">
                   {o.on && <Icon icon={Check} size={10} />}
                 </span>
@@ -132,6 +146,7 @@ export function Picker({ open, mode, options, subject, onClose, onChoose, onCrea
               <span className="clip">
                 <Highlight text={o.label} hits={hits} />
               </span>
+              {o.detail && <span className="picker-when mono">{o.detail}</span>}
             </ComboboxItem>
           ))}
 
@@ -155,7 +170,9 @@ export function Picker({ open, mode, options, subject, onClose, onChoose, onCrea
         </ComboboxList>
 
         <div className="picker-foot">
-          {t(mode === 'folder' ? 'picker-folder-foot' : 'picker-tag-foot')}
+          {t(
+            mode === 'folder' ? 'picker-folder-foot' : mode === 'tag' ? 'picker-tag-foot' : 'picker-snooze-foot',
+          )}
         </div>
       </ComboboxProvider>
     </Dialog>

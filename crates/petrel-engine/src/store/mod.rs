@@ -11,7 +11,7 @@ use rusqlite::functions::FunctionFlags;
 use rusqlite::{Connection, params};
 use std::path::Path;
 
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 /// Bumped whenever text extraction changes; a mismatch forces reindexing.
 pub const EXTRACTOR_VERSION: i64 = 1;
 
@@ -530,6 +530,8 @@ pub enum ListView {
     Starred,
     /// A server folder by its role: archive, sent, drafts, spam, trash.
     Folder(String),
+    /// Put aside until a time that has not arrived yet.
+    Snoozed,
     Tag(String),
     /// A view the product describes but has nothing to put in yet — Snoozed
     /// without a scheduler, Outbox without sending. Deliberately distinct from
@@ -545,7 +547,8 @@ impl ListView {
             "inbox" => ListView::Inbox,
             "starred" => ListView::Starred,
             "archive" | "sent" | "drafts" | "spam" | "trash" => ListView::Folder(key.to_string()),
-            "snoozed" | "outbox" => ListView::NotBuilt,
+            "snoozed" => ListView::Snoozed,
+            "outbox" => ListView::NotBuilt,
             other => match other.strip_prefix("tag:") {
                 Some(name) if !name.is_empty() => ListView::Tag(name.to_string()),
                 // Anything unrecognised falls back to the inbox rather than
@@ -565,7 +568,13 @@ impl ListView {
     /// whatever the user typed, so both are user data on its way into SQL.
     fn predicate(&self, alias: &str) -> String {
         match self {
-            ListView::Inbox => not_filed(alias),
+            ListView::Inbox => format!(
+                "{} AND coalesce({alias}.snoozed_until_ms, 0) <= (strftime('%s','now') * 1000)",
+                not_filed(alias)
+            ),
+            ListView::Snoozed => {
+                format!("coalesce({alias}.snoozed_until_ms, 0) > (strftime('%s','now') * 1000)")
+            }
             ListView::Starred => format!(
                 "{alias}.flags & {f} != 0
                  AND NOT EXISTS (SELECT 1 FROM placements p
@@ -640,6 +649,9 @@ impl Store {
         }
         if ver < 4 {
             conn.execute_batch(include_str!("migrations/0004-action-messages.sql"))?;
+        }
+        if ver < 5 {
+            conn.execute_batch(include_str!("migrations/0005-snooze.sql"))?;
         }
         if ver < SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -1626,6 +1638,11 @@ impl Store {
                 message_id: *id,
                 flags,
                 tag_ids: self.tags_of(*id)?,
+                snoozed_until: self.conn.query_row(
+                    "SELECT snoozed_until_ms FROM messages WHERE id = ?1",
+                    params![id],
+                    |r| r.get(0),
+                )?,
                 folder_ids: self.folders_of(*id)?,
             });
         }
@@ -1636,6 +1653,18 @@ impl Store {
                 ActionKind::Unstar => self.set_flags(*id, 0, flags::FLAGGED)?,
                 ActionKind::MarkRead => self.set_flags(*id, flags::SEEN, 0)?,
                 ActionKind::MarkUnread => self.set_flags(*id, 0, flags::SEEN)?,
+                ActionKind::Snooze => {
+                    self.conn.execute(
+                        "UPDATE messages SET snoozed_until_ms = ?2 WHERE id = ?1",
+                        params![id, target.expect("checked above")],
+                    )?;
+                }
+                ActionKind::Unsnooze => {
+                    self.conn.execute(
+                        "UPDATE messages SET snoozed_until_ms = NULL WHERE id = ?1",
+                        params![id],
+                    )?;
+                }
                 ActionKind::Tag => self.tag_message(*id, target.expect("checked above"))?,
                 ActionKind::Untag => self.untag_message(*id, target.expect("checked above"))?,
                 ActionKind::Move => {
@@ -1685,7 +1714,7 @@ impl Store {
         let json = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".into());
         self.conn.execute(
             "INSERT INTO actions(account_id, kind, payload_json, state, created_ms)
-             VALUES (?1, ?2, ?3, 'queued', ?4)",
+             VALUES (?1, ?2, ?3, ?5, ?4)",
             params![
                 account_id,
                 serde_json::to_string(&kind).unwrap_or_default(),
@@ -1693,7 +1722,12 @@ impl Store {
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0)
+                    .unwrap_or(0),
+                if kind.is_local_only() {
+                    "local"
+                } else {
+                    "queued"
+                }
             ],
         )?;
 
@@ -1731,7 +1765,9 @@ impl Store {
         let Some((json, state)) = row else {
             return Ok(false);
         };
-        if state != "queued" {
+        // 'local' actions never go to a server, so there is no point at which
+        // undoing one stops being a cancellation.
+        if state != "queued" && state != "local" {
             return Ok(false);
         }
         let Ok(payload) = serde_json::from_str::<ActionPayload>(&json) else {
@@ -1760,6 +1796,10 @@ impl Store {
             for tag in &p.tag_ids {
                 self.tag_message(p.message_id, *tag)?;
             }
+            self.conn.execute(
+                "UPDATE messages SET snoozed_until_ms = ?2 WHERE id = ?1",
+                params![p.message_id, p.snoozed_until],
+            )?;
         }
 
         self.conn.execute(

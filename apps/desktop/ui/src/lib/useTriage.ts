@@ -13,6 +13,10 @@ function leavesView(kind: ActionKind, view: string): boolean {
   // list you were looking at — including the inbox, and including a folder
   // view, since the destination is by definition somewhere else.
   if (kind === 'move') return true;
+  // Snoozing takes a conversation out of the inbox; un-snoozing takes it out
+  // of the snoozed list. Either way it leaves the list you are looking at.
+  if (kind === 'snooze') return view === 'inbox';
+  if (kind === 'unsnooze') return view === 'snoozed';
   switch (view) {
     case 'inbox':
       return kind === 'archive' || kind === 'trash' || kind === 'spam';

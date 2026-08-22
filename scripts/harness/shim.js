@@ -35,6 +35,7 @@
       attachment_name: '',
       // Where the engine would have filed it; '' means still in the inbox.
       filed: '',
+      snoozed: 0,
     };
   });
 
@@ -70,9 +71,13 @@
       // rows for every view would let an unimplemented view look implemented,
       // which is the exact failure this harness exists to catch.
       var view = a.view || 'inbox';
-      if (view === 'inbox') return rows.filter(function (r) { return !r.filed; });
+      var now = Date.now();
+      if (view === 'inbox') {
+        return rows.filter(function (r) { return !r.filed && !(r.snoozed > now); });
+      }
+      if (view === 'snoozed') return rows.filter(function (r) { return r.snoozed > now; });
       if (view === 'starred') return rows.filter(function (r) { return r.starred; });
-      if (view === 'snoozed' || view === 'outbox') return [];
+      if (view === 'outbox') return [];
       if (view.indexOf('tag:') === 0) {
         var name = view.slice(4);
         return rows.filter(function (r) {
@@ -138,6 +143,8 @@
         else if (a.kind === 'mark_read') row.unread = false;
         else if (a.kind === 'mark_unread') row.unread = true;
         else if (a.kind === 'move') row.filed = 'moved';
+        else if (a.kind === 'snooze') row.snoozed = a.target;
+        else if (a.kind === 'unsnooze') row.snoozed = 0;
         else if (a.kind === 'tag') {
           var tg = tags.filter(function (x) { return x.id === a.target; })[0];
           if (tg && !row.tags.some(function (x) { return x.name === tg.name; })) {
@@ -159,6 +166,8 @@
         move: 'Moved',
         tag: 'Tagged',
         untag: 'Untagged',
+        snooze: 'Snoozed',
+        unsnooze: 'Back in the inbox',
       };
       return {
         action_id: window.__PETREL_IPC__.length,

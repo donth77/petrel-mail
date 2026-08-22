@@ -68,7 +68,9 @@ export type ActionKind =
   | 'archive' | 'trash' | 'spam' | 'star' | 'unstar' | 'mark_read' | 'mark_unread'
   // These three carry a target id alongside — a folder for move, a tag for the
   // other two. The kind stays a plain string so every action has one wire shape.
-  | 'move' | 'tag' | 'untag';
+  | 'move' | 'tag' | 'untag'
+  // Local only: the target is the instant to come back at.
+  | 'snooze' | 'unsnooze';
 
 export type ActionReceipt = {
   action_id: number;
@@ -179,7 +181,7 @@ const mock = {
       { archive: 'Archived', trash: 'Moved to Trash', spam: 'Reported as spam',
         star: 'Starred', unstar: 'Unstarred', mark_read: 'Marked read',
         mark_unread: 'Marked unread', move: 'Moved', tag: 'Tagged',
-        untag: 'Untagged' }[kind],
+        untag: 'Untagged', snooze: 'Snoozed', unsnooze: 'Back in the inbox' }[kind],
   }),
   undoTriage: async () => true,
   folders: async (): Promise<Folder[]> => [

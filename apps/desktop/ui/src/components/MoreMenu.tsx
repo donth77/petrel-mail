@@ -2,7 +2,8 @@ import {
   Menu, MenuButton, MenuItem, MenuProvider, MenuSeparator,
 } from '@ariakit/react';
 import {
-  Archive, FolderClosed, Mail, MailOpen, MoreVertical, ShieldAlert, Star, Tag as TagIcon, Trash2,
+  Archive, Clock, FolderClosed, Mail, MailOpen, MoreVertical, ShieldAlert, Star,
+  Tag as TagIcon, Trash2,
 } from 'lucide-react';
 import type { ActionKind, Thread } from '../lib/api';
 import { Icon } from './Icon';
@@ -14,6 +15,7 @@ type Props = {
   onAction: (kind: ActionKind) => void;
   onMove: () => void;
   onTag: () => void;
+  onSnooze: () => void;
 };
 
 /**
@@ -29,7 +31,7 @@ type Props = {
  * Every item here has a keyboard equivalent, shown alongside — the menu is for
  * discovering them, not a substitute for learning them.
  */
-export function MoreMenu({ thread, onAction, onMove, onTag }: Props) {
+export function MoreMenu({ thread, onAction, onMove, onTag, onSnooze }: Props) {
   return (
     <MenuProvider placement="bottom-end">
       <MenuButton className="act-icon" aria-label={t('reader-more')}>
@@ -61,6 +63,11 @@ export function MoreMenu({ thread, onAction, onMove, onTag }: Props) {
           <Icon icon={TagIcon} size={14} />
           <span>{t('picker-tag-title')}</span>
           <span className="menu-key">L</span>
+        </MenuItem>
+        <MenuItem className="menu-item" onClick={onSnooze}>
+          <Icon icon={Clock} size={14} />
+          <span>{t('reader-snooze')}</span>
+          <span className="menu-key">B</span>
         </MenuItem>
         <MenuItem className="menu-item" onClick={() => onAction('archive')}>
           <Icon icon={Archive} size={14} />

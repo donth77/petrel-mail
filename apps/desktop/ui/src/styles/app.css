@@ -2211,3 +2211,16 @@ mark {
 .sending-now:hover {
   color: var(--ink);
 }
+
+/* The resolved time beside a snooze preset. "Tomorrow" is not a time. */
+.picker-when {
+  margin-inline-start: auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink3);
+  flex: none;
+}
+
+.picker-opt[data-active-item] .picker-when {
+  color: var(--accent-ink);
+}

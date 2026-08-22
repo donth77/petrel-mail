@@ -29,6 +29,10 @@ pub enum ActionKind {
     Move,
     Tag,
     Untag,
+    /// Put aside until an instant, carried as the target. Local only: IMAP has
+    /// nowhere to record it, so it never reaches a server and never drains.
+    Snooze,
+    Unsnooze,
 }
 
 impl ActionKind {
@@ -46,7 +50,18 @@ impl ActionKind {
     /// move, a tag for tagging. Checked in the store, so an action can never be
     /// queued in a state that cannot be applied or undone.
     pub fn needs_target(self) -> bool {
-        matches!(self, ActionKind::Move | ActionKind::Tag | ActionKind::Untag)
+        matches!(
+            self,
+            ActionKind::Move | ActionKind::Tag | ActionKind::Untag | ActionKind::Snooze
+        )
+    }
+
+    /// Whether this action exists only in Petrel. Local actions are recorded so
+    /// they can be undone, but never queued for delivery — leaving them
+    /// 'queued' would strand them in the drain forever and block resync from
+    /// ever trusting the server about those messages again.
+    pub fn is_local_only(self) -> bool {
+        matches!(self, ActionKind::Snooze | ActionKind::Unsnooze)
     }
 
     /// What the user is told after it happens. Past tense, because it already has.
@@ -62,6 +77,8 @@ impl ActionKind {
             ActionKind::Move => "Moved",
             ActionKind::Tag => "Tagged",
             ActionKind::Untag => "Untagged",
+            ActionKind::Snooze => "Snoozed",
+            ActionKind::Unsnooze => "Back in the inbox",
         }
     }
 }
@@ -113,6 +130,10 @@ pub struct PriorState {
     /// work the server has not seen.
     #[serde(default)]
     pub tag_ids: Vec<i64>,
+    /// When this was due back, if it was snoozed. Captured like the rest so
+    /// undoing a snooze restores the previous one rather than clearing it.
+    #[serde(default)]
+    pub snoozed_until: Option<i64>,
 }
 
 /// The queued action, and the state it replaced.

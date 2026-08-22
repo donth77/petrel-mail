@@ -68,7 +68,7 @@ export const BINDINGS: Binding[] = [
   { id: 'star', group: 'act', label: 'Star', display: ['S'],
     chords: [{ key: 's' }], available: true },
   { id: 'snooze', group: 'act', label: 'Snooze this conversation', display: ['B'],
-    chords: [{ key: 'b' }], available: false },
+    chords: [{ key: 'b' }], available: true },
   { id: 'move-tag', group: 'act', label: 'Move to folder · tag', display: ['V', 'L'],
     chords: [{ key: 'v' }, { key: 'l' }], available: true },
   { id: 'read-unread', group: 'act', label: 'Mark read · unread', display: ['read', 'unread'],

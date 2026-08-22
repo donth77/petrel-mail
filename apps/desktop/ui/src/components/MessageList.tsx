@@ -14,6 +14,7 @@ type Props = {
   density: 'relaxed' | 'compact';
   onActivate: (id: number) => void;
   onAction: (kind: ActionKind, threadId: number) => void;
+  onSnooze: (threadId: number) => void;
   onNotImplemented: (label: string) => void;
 };
 
@@ -35,6 +36,7 @@ export function MessageList({
   density,
   onActivate,
   onAction,
+  onSnooze,
   onNotImplemented,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -353,7 +355,7 @@ export function MessageList({
                   title={t('qact-snooze')}
                   onClick={(e) => {
                     e.stopPropagation();
-                    onNotImplemented(t('reader-snooze'));
+                    onSnooze(m.id);
                   }}
                 >
                   <Icon icon={Clock} size={14} />

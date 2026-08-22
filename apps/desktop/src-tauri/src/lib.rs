@@ -261,6 +261,11 @@ async fn drain_actions(state: Arc<AppState>, account: i64, cfg: ImapConfig, has_
                     _ => Ok(()),
                 }
             }
+            // Local-only, so they should never have been queued at all — the
+            // store marks them 'local' and this drain only reads 'queued'.
+            // Handled here so adding a local action later cannot silently fall
+            // into the tag branch and be counted as stuck forever.
+            ActionKind::Snooze | ActionKind::Unsnooze => continue,
             // Tags are Gmail labels or IMAP keywords depending on the provider,
             // and neither is wired yet. Left queued rather than marked done, so
             // they deliver once that lands instead of being silently dropped.
