@@ -292,12 +292,43 @@ export function App() {
   // marking on selection would clear the unread state of every conversation you
   // scrolled past on the way to the one you wanted. The delay is short enough to
   // feel automatic and long enough to survive a fast scroll.
+  //
+  // Once per selection, though — not once per unread state. Marking something
+  // unread while you are reading it flips `unread` back to true, and without
+  // this the rule would helpfully undo that a second later: the icon changes,
+  // then changes back on its own, which reads as the button not working.
+  // Deliberate beats automatic. Moving away and returning marks it read again,
+  // because that is a fresh decision to open it.
+  //
+  // The dependency list is deliberately just the selection. `triage` is a new
+  // object on every render and `active` is a new object whenever the list
+  // reloads, so depending on either meant the pending timer was cancelled and
+  // restarted by re-renders that had nothing to do with the selection — a
+  // toast expiring, a status poll, a notification. On a quiet screen it worked;
+  // on a busy one the dwell could be postponed indefinitely. Both are read
+  // through refs so the timer survives everything except actually moving.
+  const autoRead = useRef<number | null>(null);
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  const triageRef = useRef(triage);
+  triageRef.current = triage;
   useEffect(() => {
-    if (!active?.unread || settings.layout === 'off') return;
-    const id = active.id;
-    const h = setTimeout(() => void triage.run('mark_read', id, undefined, true), 900);
+    const current = activeRef.current;
+    if (!current || settings.layout === 'off') return;
+    if (autoRead.current === current.id) return;
+    if (!current.unread) {
+      // Nothing to do, but remember we have considered this one so that
+      // marking it unread later is not immediately reversed.
+      autoRead.current = current.id;
+      return;
+    }
+    const id = current.id;
+    const h = setTimeout(() => {
+      autoRead.current = id;
+      void triageRef.current.run('mark_read', id, undefined, true);
+    }, 900);
     return () => clearTimeout(h);
-  }, [active?.id, active?.unread, settings.layout, triage]);
+  }, [active?.id, settings.layout]);
 
   const unread = useMemo(() => items.filter((m) => m.unread).length, [items]);
 
