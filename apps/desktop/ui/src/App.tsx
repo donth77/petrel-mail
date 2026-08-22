@@ -545,6 +545,10 @@ export function App() {
         tags={tags}
         railRef={railRef}
         collapsed={settings.railCollapsed === 'on'}
+        onCompose={() => {
+          attachmentWarned.current = false;
+          setDraft({ to: '', cc: '', subject: '', body: startingBody(identity, false) });
+        }}
         onToggleCollapsed={() =>
           set('railCollapsed', settings.railCollapsed === 'on' ? 'off' : 'on')
         }

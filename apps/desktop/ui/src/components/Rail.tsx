@@ -1,6 +1,6 @@
 import {
   Inbox, Star, Clock, Send, PencilLine, Upload, Archive, ShieldAlert, Trash2,
-  CircleHelp, PanelLeftClose, PanelLeftOpen, Settings, type LucideIcon,
+  CircleHelp, PanelLeftClose, PanelLeftOpen, PenSquare, Settings, type LucideIcon,
 } from 'lucide-react';
 import type { Account } from '../lib/api';
 import { Icon } from './Icon';
@@ -27,6 +27,7 @@ type Props = {
   accounts: Account[];
   collapsed: boolean;
   onToggleCollapsed: () => void;
+  onCompose: () => void;
   /** Absolute x during a drag, or a signed delta from the keyboard. */
   onResize: (xOrDelta: number) => void;
   onSwitchAccount: (index: number) => void;
@@ -49,6 +50,7 @@ export function Rail({
   collapsed,
   onView,
   onToggleCollapsed,
+  onCompose,
   onResize,
   onSwitchAccount,
   onSettings,
@@ -87,6 +89,17 @@ export function Rail({
         onSwitch={onSwitchAccount}
         onSettings={onSettings}
       />
+
+      {/* Writing is the one thing in this rail that is not somewhere to go, so
+          it gets the one filled button. C does the same for anyone who has
+          learned it — the cap is on the button so they can. */}
+      <Tip label={t('cmd-compose')} placement="right" when={collapsed} keys={['C']}>
+        <button type="button" className="compose-new" onClick={onCompose}>
+          <Icon icon={PenSquare} size={15} />
+          <span className="rail-text">{t('cmd-compose')}</span>
+          <span className="kbd on-accent rail-text">C</span>
+        </button>
+      </Tip>
 
       <div className="rail-label">{t('rail-mailboxes')}</div>
       {MAILBOXES.map((m) => (

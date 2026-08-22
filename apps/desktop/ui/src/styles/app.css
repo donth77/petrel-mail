@@ -2113,6 +2113,37 @@ mark {
   z-index: 45;
 }
 
+/* Header rows in the composer: From, To, Cc, Subject.
+   Ported from the Compose mockup's own stylesheet rather than reinvented —
+   these class names came from there and their rules did not follow, so every
+   row rendered with no padding, no separator and no label column. */
+.hdrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  border-block-end: 1px solid var(--hair2);
+  font-size: 13px;
+}
+
+.hdrow .lab {
+  /* Fixed, so From/To/Cc/Subject line up into a column the eye can run down
+     instead of four labels each starting somewhere different. */
+  inline-size: 42px;
+  flex: none;
+  color: var(--ink3);
+  font-size: 12px;
+}
+
+/* The close button in the palette and help sheets, which have no header row to
+   sit in. Same placement as the settings one. */
+.palette-esc {
+  position: absolute;
+  inset-block-start: 12px;
+  inset-inline-end: 14px;
+  z-index: 1;
+}
+
 .compose-head {
   display: flex;
   align-items: center;
@@ -2621,4 +2652,42 @@ body.resizing {
   border: 0;
   border-radius: 0;
   box-shadow: none;
+}
+
+/* The one filled button in the rail. Everything else there is a place to go;
+   this is a thing to do, and it should not have to be found among them. */
+.compose-new {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  inline-size: 100%;
+  margin-block-end: 8px;
+  padding: 8px 11px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: start;
+  cursor: pointer;
+  flex: none;
+}
+
+.compose-new .rail-text:first-of-type {
+  flex-grow: 1;
+}
+
+.compose-new:hover {
+  background: var(--accent-ink);
+}
+
+.compose-new > svg {
+  flex: none;
+}
+
+/* Collapsed, it is an icon like everything else — but still the filled one. */
+.rail[data-collapsed] .compose-new {
+  padding-inline: 9px;
 }

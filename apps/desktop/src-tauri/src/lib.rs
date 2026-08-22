@@ -1326,50 +1326,11 @@ const DIAG: &str = r#"
   }
   function send(obj) { try { buf.push(JSON.stringify(obj)); } catch (e) { buf.push('"unserializable"'); } flush(); }
 
-  // Input reachability probe: reports the first of each kind of event to land,
-  // and what was under the pointer. A webview that renders but never sees a
-  // click looks identical to a frozen one, so this distinguishes them.
-  var seen = {};
-  function once(kind, extra) {
-    if (seen[kind]) return;
-    seen[kind] = 1;
-    send({ kind: 'input', event: kind, detail: extra || null });
-  }
-  window.addEventListener('pointermove', function (e) {
-    var el = e.target;
-    once('pointermove', el ? (el.className || el.tagName) + '' : 'none');
-  }, true);
-  window.addEventListener('click', function (e) {
-    var el = e.target;
-    once('click', el ? (el.className || el.tagName) + '' : 'none');
-  }, true);
-  window.addEventListener('wheel', function () { once('wheel'); }, true);
-  window.addEventListener('scroll', function (e) {
-    var el = e.target;
-    once('scroll', el && el.className ? el.className + '' : 'document');
-  }, true);
-  window.addEventListener('keydown', function (e) { once('keydown', e.key); }, true);
-
-  // Focus and hit-testing, sampled repeatedly: distinguishes "the webview never
-  // gets focus" from "something invisible is on top of the page".
-  window.addEventListener('focus', function () { send({ kind: 'win', e: 'focus' }); }, true);
-  window.addEventListener('blur', function () { send({ kind: 'win', e: 'blur' }); }, true);
-  var ticks = 0;
-  var beat = setInterval(function () {
-    ticks++;
-    var el = null;
-    try { el = document.elementFromPoint(400, 400); } catch (e) {}
-    send({
-      kind: 'focus-probe',
-      tick: ticks,
-      hasFocus: document.hasFocus(),
-      visibility: document.visibilityState,
-      active: document.activeElement ? document.activeElement.tagName : null,
-      at400x400: el ? (el.className || el.tagName) + '' : 'nothing',
-      events: Object.keys(seen).join(',') || 'none'
-    });
-    // runs for the life of the window
-  }, 3000);
+  // What remains of the diagnostics is the part that still earns its place:
+  // uncaught errors. The input and focus probes below this were scaffolding for
+  // a window that would not respond, which was traced to the launch context
+  // months of debugging ago; left in, they wrote a line every three seconds
+  // forever and buried the one line that mattered.
   try { document.title = 'D:' + String(location.href).slice(0, 48); } catch (e) {}
   send({ kind: 'boot', href: String(location.href), readyState: document.readyState });
   window.addEventListener('error', function (e) {
