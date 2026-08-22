@@ -92,10 +92,16 @@ export function MessageList({ items, activeId, density, onActivate }: Props) {
 
       if (e.key === 'j' || e.key === 'k') {
         e.preventDefault();
-        // Focus follows, so the *next* arrow key continues from the same place
-        // rather than starting over.
+        // Clicking a row focuses that button natively, which desyncs the
+        // composite: virtualFocus expects DOM focus on the container and tracks
+        // the active item itself. Re-seat both before moving, or next() has no
+        // active item to move from and silently does nothing.
+        const focusedItem = el?.closest<HTMLElement>('[role="option"]');
+        if (focusedItem?.id) composite.setActiveId(focusedItem.id);
         scrollRef.current?.focus({ preventScroll: true });
-        composite.move(e.key === 'j' ? composite.next() : composite.previous());
+
+        const target = e.key === 'j' ? composite.next() : composite.previous();
+        if (target) composite.move(target);
       }
     };
     window.addEventListener('keydown', onKey);
@@ -164,7 +170,12 @@ export function MessageList({ items, activeId, density, onActivate }: Props) {
               data-index={v.index}
               ref={virtualizer.measureElement}
               style={{ transform: `translateY(${v.start}px)` }}
-              onClick={() => onActivate(m.id)}
+              onClick={() => {
+                // Keep the composite's notion of "current" in step with the
+                // click, so the keyboard carries on from where the pointer left.
+                composite.setActiveId(`msg-${m.id}`);
+                onActivate(m.id);
+              }}
             >
               {/* The unread dot has its own grid column, so a read row does not
                   shift its avatar and text leftward to fill the gap. */}
