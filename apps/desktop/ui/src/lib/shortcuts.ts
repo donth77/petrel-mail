@@ -58,25 +58,25 @@ export const BINDINGS: Binding[] = [
   { id: 'popout', group: 'write', label: 'Open in its own window', display: 'popout',
     chords: [{ key: 'o', meta: true, shift: true }], available: false },
 
-  // ---- act on mail (arrives with the action queue)
+  // ---- act on mail
   { id: 'archive', group: 'act', label: 'Archive', display: ['E'],
-    chords: [{ key: 'e' }], available: false },
+    chords: [{ key: 'e' }], available: true },
   { id: 'trash', group: 'act', label: 'Move to trash', display: ['#'],
-    chords: [{ key: '#' }], available: false },
+    chords: [{ key: '#' }], available: true },
   { id: 'spam', group: 'act', label: 'Report spam', display: ['!'],
-    chords: [{ key: '!' }], available: false },
+    chords: [{ key: '!' }], available: true },
   { id: 'star', group: 'act', label: 'Star', display: ['S'],
-    chords: [{ key: 's' }], available: false },
+    chords: [{ key: 's' }], available: true },
   { id: 'snooze', group: 'act', label: 'Snooze this conversation', display: ['B'],
     chords: [{ key: 'b' }], available: false },
   { id: 'move-tag', group: 'act', label: 'Move to folder · tag', display: ['V', 'L'],
     chords: [{ key: 'v' }, { key: 'l' }], available: false },
   { id: 'read-unread', group: 'act', label: 'Mark read · unread', display: ['read', 'unread'],
-    chords: [{ key: 'i', shift: true }, { key: 'u', shift: true }], available: false },
+    chords: [{ key: 'i', shift: true }, { key: 'u', shift: true }], available: true },
   { id: 'select', group: 'act', label: 'Select · extend selection', display: ['X', 'extend'],
     chords: [{ key: 'x' }], available: false },
   { id: 'undo', group: 'act', label: 'Undo the last thing', display: ['Z'],
-    chords: [{ key: 'z' }], available: false },
+    chords: [{ key: 'z' }], available: true },
 
   // ---- everywhere
   { id: 'search', group: 'everywhere', label: 'Search', display: ['/'],

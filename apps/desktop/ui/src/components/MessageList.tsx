@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { Composite, CompositeItem, useCompositeStore } from '@ariakit/react';
 import { useVirtualizer, defaultRangeExtractor, type Range } from '@tanstack/react-virtual';
 import { Archive, Clock, MoreVertical, Paperclip, Star } from 'lucide-react';
-import type { Thread } from '../lib/api';
+import type { ActionKind, Thread } from '../lib/api';
 import { Icon } from './Icon';
 import { initials, listTime, fullTime } from '../lib/format';
 import { t } from '../lib/strings';
@@ -12,6 +12,9 @@ type Props = {
   activeId: number | null;
   density: 'relaxed' | 'compact';
   onActivate: (id: number) => void;
+  onAction: (kind: ActionKind, threadId: number) => void;
+  onMore: (threadId: number) => void;
+  onNotImplemented: (label: string) => void;
 };
 
 /** Marks up `[bracketed]` spans from the engine's snippet as search hits. */
@@ -26,7 +29,15 @@ function Snippet({ text }: { text: string }) {
   );
 }
 
-export function MessageList({ items, activeId, density, onActivate }: Props) {
+export function MessageList({
+  items,
+  activeId,
+  density,
+  onActivate,
+  onAction,
+  onMore,
+  onNotImplemented,
+}: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const composite = useCompositeStore({
     // DOM focus stays on the scroller and aria-activedescendant points at the row.
@@ -67,6 +78,10 @@ export function MessageList({ items, activeId, density, onActivate }: Props) {
     measureElement: (el) => el.getBoundingClientRect().height,
   });
 
+  // Movement lives here rather than in Ariakit's composite navigation, because
+  // the app needs to know the selection changed — moving the highlight without
+  // changing what the reading pane shows is just watching the list scroll.
+  //
   // Gmail's j/k are global, not scoped to whether the list happens to hold
   // focus. Scoping them to the scroller meant they did nothing until you had
   // clicked into the list first, which is not how anyone expects them to work.
@@ -90,12 +105,15 @@ export function MessageList({ items, activeId, density, onActivate }: Props) {
       // Inside a dialog the list is not what the keys are for.
       if (el?.closest('[role="dialog"]')) return;
 
-      if (e.key === 'j' || e.key === 'k') {
+      const down = e.key === 'j' || e.key === 'ArrowDown';
+      const up = e.key === 'k' || e.key === 'ArrowUp';
+      // j/k are global; arrows only when the list holds focus, because
+      // everywhere else an arrow key is expected to scroll.
+      const scoped = e.key === 'ArrowDown' || e.key === 'ArrowUp';
+      if (scoped && !scrollRef.current?.contains(document.activeElement)) return;
+
+      if (down || up) {
         e.preventDefault();
-        // Clicking a row focuses that button natively, which desyncs the
-        // composite: virtualFocus expects DOM focus on the container and tracks
-        // the active item itself. Re-seat both before moving, or next() has no
-        // active item to move from and silently does nothing.
         // Direction is computed from the list's own order, not delegated to
         // the composite's next()/previous(). Those depend on which items are
         // currently registered — and with virtualization that set changes as you
@@ -107,7 +125,7 @@ export function MessageList({ items, activeId, density, onActivate }: Props) {
           ? Number(focusedItem.id.slice(4))
           : activeId;
         const at = items.findIndex((m) => m.id === fromId);
-        const nextIndex = at < 0 ? 0 : at + (e.key === 'j' ? 1 : -1);
+        const nextIndex = at < 0 ? 0 : at + (down ? 1 : -1);
         const target = items[nextIndex];
         if (!target) return;
 
@@ -116,6 +134,12 @@ export function MessageList({ items, activeId, density, onActivate }: Props) {
         onActivate(target.id);
       }
     };
+    // Bubble phase, deliberately. With virtualFocus Ariakit re-dispatches the
+    // keydown onto the active item as a non-bubbling clone, so a capture-phase
+    // listener sees the same keypress twice and the selection jumps two rows.
+    // On bubble only the original arrives. Ariakit may still move its own
+    // activeId first; harmless, because the line below *sets* the target rather
+    // than stepping from wherever the composite happens to be.
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [composite, items, activeId, onActivate]);
@@ -132,17 +156,15 @@ export function MessageList({ items, activeId, density, onActivate }: Props) {
     }
   }, [items.length]);
 
-  // Ariakit owns "which item is active"; the app owns "which conversation is
-  // open". Keyboard movement only touches the first, so without this the
-  // highlight never moves and the reading pane never changes — you just watch
-  // the list scroll. Clicks were unaffected, which is why this looked like a
-  // keyboard-only fault.
-  const activeItemId = composite.useState('activeId');
+  // `activeId` is the single source of truth for what is selected; the composite
+  // only follows it. An earlier version also pushed the composite's id back into
+  // the app, and the two effects ping-ponged — each one "correcting" the other
+  // from a stale read until React gave up. Movement now has exactly one writer
+  // on each side: keys and clicks set the app's activeId, this mirrors it down.
   useEffect(() => {
-    if (!activeItemId?.startsWith('msg-')) return;
-    const id = Number(activeItemId.slice(4));
-    if (Number.isFinite(id) && id !== activeId) onActivate(id);
-  }, [activeItemId, activeId, onActivate]);
+    const want = activeId == null ? null : `msg-${activeId}`;
+    if (composite.getState().activeId !== want) composite.setActiveId(want);
+  }, [activeId, composite]);
 
   // Follow the active row when the *selection* moves — not on every render.
   // `virtualizer` is a fresh object each render, so depending on it re-ran this
@@ -282,13 +304,36 @@ export function MessageList({ items, activeId, density, onActivate }: Props) {
                   These are pointer affordances for what E, B and the palette
                   already do, so they are hidden from assistive tech. */}
               <span className="row-actions" aria-hidden="true">
-                <span className="qact" title="Archive (E)">
+                {/* stopPropagation, or the click also lands on the row behind
+                    and selects the conversation we are about to archive. */}
+                <span
+                  className="qact"
+                  title={t('qact-archive')}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onAction('archive', m.id);
+                  }}
+                >
                   <Icon icon={Archive} size={14} />
                 </span>
-                <span className="qact" title="Snooze (B)">
+                <span
+                  className="qact"
+                  title={t('qact-snooze')}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onNotImplemented(t('reader-snooze'));
+                  }}
+                >
                   <Icon icon={Clock} size={14} />
                 </span>
-                <span className="qact" title="More">
+                <span
+                  className="qact"
+                  title={t('qact-more')}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onMore(m.id);
+                  }}
+                >
                   <Icon icon={MoreVertical} size={14} />
                 </span>
               </span>

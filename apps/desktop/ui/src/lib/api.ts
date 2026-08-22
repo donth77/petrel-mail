@@ -62,6 +62,17 @@ export type Account = {
   folders: FolderMapping[];
 };
 
+export type ActionKind =
+  | 'archive' | 'trash' | 'spam' | 'star' | 'unstar' | 'mark_read' | 'mark_unread';
+
+export type ActionReceipt = {
+  action_id: number;
+  kind: ActionKind;
+  message_count: number;
+  /** Already past tense: by the time this arrives, it has happened. */
+  description: string;
+};
+
 export type Status = {
   seeding: boolean;
   count: number;
@@ -139,6 +150,16 @@ const mock = {
     mockRows(24).filter((r) => r.subject.toLowerCase().includes(q.toLowerCase())),
   // Fresh objects each call: returning the same reference means React sees no
   // change and the mock silently misreports whether a write took effect.
+  triage: async (_t: number, kind: ActionKind): Promise<ActionReceipt> => ({
+    action_id: Math.floor(Math.random() * 1e6),
+    kind,
+    message_count: 1,
+    description:
+      { archive: 'Archived', trash: 'Moved to Trash', spam: 'Reported as spam',
+        star: 'Starred', unstar: 'Unstarred', mark_read: 'Marked read',
+        mark_unread: 'Marked unread' }[kind],
+  }),
+  undoTriage: async () => true,
   accounts: async (): Promise<Account[]> => mockAccounts.map((a) => ({ ...a })),
   setAccountColor: async (id: number, color: string) => {
     const a = mockAccounts.find((x) => x.id === id);
@@ -200,6 +221,9 @@ const real = {
   threads: (offset: number, limit: number) =>
     invoke<Thread[]>('list_threads', { offset, limit }),
   tags: () => invoke<Tag[]>('list_tags'),
+  triage: (threadId: number, kind: ActionKind) =>
+    invoke<ActionReceipt>('triage', { threadId, kind }),
+  undoTriage: (actionId: number) => invoke<boolean>('undo_triage', { actionId }),
   accounts: () => invoke<Account[]>('list_accounts'),
   setAccountColor: (accountId: number, color: string) =>
     invoke<void>('set_account_color', { accountId, color }),

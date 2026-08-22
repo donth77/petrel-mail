@@ -4,6 +4,7 @@
 //! (as the crate grows) sync orchestration and sanitization. UI shells talk to
 //! this crate through a typed API; they never touch SQLite or the network.
 
+pub mod actions;
 pub mod blob;
 pub mod outbox;
 pub mod retention;

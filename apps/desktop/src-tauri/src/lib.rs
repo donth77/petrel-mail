@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use petrel_engine::actions::{ActionKind, ActionReceipt};
 use petrel_engine::blob::BlobStore;
 use petrel_engine::store::{
     AccountSummary, Listing, NewMessage, Store, TagSummary, ThreadListing, ThreadMessage,
@@ -201,6 +202,31 @@ fn thread_detail(
     store.thread_detail(thread_id).map_err(|e| e.to_string())
 }
 
+/// Applies a triage action locally and queues it. Returns the receipt the UI
+/// needs to offer undo, so the frontend holds no state of its own about what it
+/// just did.
+#[tauri::command]
+fn triage(
+    thread_id: i64,
+    kind: ActionKind,
+    state: State<Arc<AppState>>,
+) -> Result<ActionReceipt, String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    let account = store
+        .first_account()
+        .map_err(|e| e.to_string())?
+        .ok_or("no account")?;
+    store
+        .apply_thread_action(account, thread_id, kind)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn undo_triage(action_id: i64, state: State<Arc<AppState>>) -> Result<bool, String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    store.undo_action(action_id).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn list_accounts(state: State<Arc<AppState>>) -> Result<Vec<AccountSummary>, String> {
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
@@ -324,7 +350,7 @@ fn spawn_demo_seeding(state: Arc<AppState>, account: i64) {
 /// configured** — this writes flags, and flags on real mail belong to the
 /// server, not to a demo routine.
 fn reseed_demo_if_stale(state: &Arc<AppState>, account: i64) -> bool {
-    const WANT: &str = "2";
+    const WANT: &str = "3";
     let synthetic = {
         let Ok(store) = state.store.lock() else {
             return false;
@@ -343,7 +369,7 @@ fn reseed_demo_if_stale(state: &Arc<AppState>, account: i64) -> bool {
     match state.store.lock() {
         Ok(store) => {
             let removed = store.delete_all_messages().unwrap_or(0);
-            let _ = store.set_meta("demo_seed_version", WANT);
+            let _ = store.set_meta("demo_seed_version", "3");
             let _ = store.set_meta("demo_decorated", "");
             eprintln!("[demo] cleared {removed} synthetic messages for a fresh seed");
         }
@@ -402,6 +428,24 @@ fn decorate_demo_store(state: &Arc<AppState>, account: i64) {
             }
         }
     }
+    // A mailbox without folders is not a mailbox: triage has nowhere to move
+    // mail to, and the folder mapping pane has nothing to report.
+    for (role, path) in [
+        ("inbox", "INBOX"),
+        ("archive", "Archive"),
+        ("sent", "Sent"),
+        ("drafts", "Drafts"),
+        ("spam", "Junk"),
+        ("trash", "Trash"),
+    ] {
+        let _ = store.ensure_folder(account, role, path);
+    }
+    if let Ok(Some(inbox)) = store.folder_for_role(account, "inbox") {
+        for id in &ids {
+            let _ = store.place_message(*id, inbox);
+        }
+    }
+
     let _ = store.set_meta("demo_decorated", "1");
     eprintln!(
         "[demo] decorated {} messages with tags and flags",
@@ -653,6 +697,8 @@ pub fn run() {
             list_threads,
             list_tags,
             thread_detail,
+            triage,
+            undo_triage,
             list_accounts,
             set_account_color,
             set_account_archive,

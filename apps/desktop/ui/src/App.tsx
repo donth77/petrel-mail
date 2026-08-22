@@ -5,6 +5,7 @@ import { t } from './lib/strings';
 import { Search } from 'lucide-react';
 import { Rail } from './components/Rail';
 import { useKeyboard } from './lib/useKeyboard';
+import { useTriage, type UndoOffer } from './lib/useTriage';
 import { TitleBar } from './components/TitleBar';
 import { Palette } from './components/Palette';
 import { Help } from './components/Help';
@@ -29,6 +30,7 @@ export function App() {
   const [helpOpen, setHelpOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [undoOffer, setUndoOffer] = useState<UndoOffer | null>(null);
   const [readerOverlay, setReaderOverlay] = useState(false);
 
   useEffect(() => {
@@ -70,6 +72,17 @@ export function App() {
     };
   }, [query, status?.count, status?.seeding]);
 
+  const triage = useTriage({
+    items,
+    setItems,
+    activeId,
+    setActiveId,
+    onMessage: (text, undo) => {
+      setToast(text);
+      setUndoOffer(undo ?? null);
+    },
+  });
+
   const railRef = useRef<HTMLElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -97,6 +110,9 @@ export function App() {
       target.focus();
     },
     goTo: setView,
+    triage: (kind) => void triage.run(kind),
+    toggleStar: () => triage.toggleStar(),
+    undo: () => void triage.undo(),
     switchAccount: (n) => {
       const acc = accounts[n - 1];
       if (acc) setToast(t('account-switched', { email: acc.email }));
@@ -201,11 +217,25 @@ export function App() {
             activeId={activeId}
             density={settings.density}
             onActivate={setActiveId}
+            onAction={(kind, threadId) => void triage.run(kind, threadId)}
+            onMore={(threadId) => {
+              // Same surface the reader's More opens — the palette already
+              // scopes its commands to whichever conversation is selected.
+              setActiveId(threadId);
+              setPaletteOpen(true);
+            }}
+            onNotImplemented={(label) => setToast(t('not-implemented', { label }))}
           />
         )}
       </div>
 
-      {(settings.layout !== 'off' || readerOverlay) && <Reader thread={active} />}
+      {(settings.layout !== 'off' || readerOverlay) && (
+        <Reader
+          thread={active}
+          onAction={(kind) => void triage.run(kind)}
+          onMore={() => setPaletteOpen(true)}
+        />
+      )}
 
       <Palette
         open={paletteOpen}
@@ -232,7 +262,21 @@ export function App() {
         onOpenHelp={() => setHelpOpen(true)}
         onNotImplemented={(label) => setToast(t('not-implemented', { label }))}
       />
-      <Toast message={toast} onDone={() => setToast(null)} />
+      <Toast
+        message={toast}
+        onUndo={
+          undoOffer
+            ? () => {
+                void triage.undo(undoOffer);
+                setUndoOffer(null);
+              }
+            : undefined
+        }
+        onDone={() => {
+          setToast(null);
+          setUndoOffer(null);
+        }}
+      />
 
       <footer className="status">
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>

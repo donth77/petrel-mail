@@ -10,6 +10,9 @@ export type KeyActions = {
   openHelp: () => void;
   openSettings: () => void;
   focusSearch: () => void;
+  triage: (kind: import('./api').ActionKind) => void;
+  toggleStar: () => void;
+  undo: () => void;
 };
 
 /** Where a keystroke means text, not a command. */
@@ -70,6 +73,40 @@ export function useKeyboard(actions: KeyActions) {
             return;
           }
         }
+      }
+
+      // Triage. Single keys, so they yield to text fields like everything else.
+      switch (e.key) {
+        case 'e':
+        case 'E':
+          e.preventDefault();
+          return a.triage('archive');
+        case '#':
+          e.preventDefault();
+          return a.triage('trash');
+        case '!':
+          e.preventDefault();
+          return a.triage('spam');
+        case 's':
+        case 'S':
+          e.preventDefault();
+          return a.toggleStar();
+        case 'z':
+        case 'Z':
+          e.preventDefault();
+          return a.undo();
+        case 'I':
+          if (e.shiftKey) {
+            e.preventDefault();
+            return a.triage('mark_read');
+          }
+          break;
+        case 'U':
+          if (e.shiftKey) {
+            e.preventDefault();
+            return a.triage('mark_unread');
+          }
+          break;
       }
 
       switch (e.key) {

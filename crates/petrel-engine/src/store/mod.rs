@@ -1152,6 +1152,196 @@ impl Store {
         Ok(())
     }
 
+    /// The folder holding a role for this account, if one is mapped.
+    pub fn folder_for_role(&self, account_id: i64, role: &str) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id FROM folders WHERE account_id = ?1 AND role = ?2 LIMIT 1",
+                params![account_id, role],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Creates a folder for a role if the account has none. Real accounts learn
+    /// their folders from the server; this exists for accounts that have not
+    /// synced and for tests, so triage has somewhere to move mail to.
+    pub fn ensure_folder(&self, account_id: i64, role: &str, path: &str) -> Result<i64> {
+        if let Some(id) = self.folder_for_role(account_id, role)? {
+            return Ok(id);
+        }
+        self.conn.execute(
+            "INSERT INTO folders(account_id, role, name, path) VALUES (?1, ?2, ?3, ?4)",
+            params![account_id, role, path, path],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn place_message(&self, message_id: i64, folder_id: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO placements(message_id, folder_id) VALUES (?1, ?2)",
+            params![message_id, folder_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn folders_of(&self, message_id: i64) -> Result<Vec<i64>> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT folder_id FROM placements WHERE message_id = ?1")?;
+        let rows = stmt.query_map(params![message_id], |r| r.get(0))?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// Applies a triage action to a whole conversation, locally and at once,
+    /// then queues it for the server. Returns a receipt that carries everything
+    /// undo needs, so callers hold no state of their own.
+    pub fn apply_thread_action(
+        &self,
+        account_id: i64,
+        thread_id: i64,
+        kind: crate::actions::ActionKind,
+    ) -> Result<crate::actions::ActionReceipt> {
+        use crate::actions::{ActionKind, ActionPayload, ActionReceipt, PriorState};
+
+        let ids: Vec<i64> = {
+            let mut stmt = self.conn.prepare_cached(
+                "SELECT id FROM messages
+                 WHERE coalesce(thread_id, -id) = ?1 AND deleted_at_ms IS NULL",
+            )?;
+            stmt.query_map(params![thread_id], |r| r.get(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+
+        // Captured *before* anything changes: undo restores what was, rather
+        // than guessing an inverse — which breaks as soon as two actions touch
+        // the same message.
+        let mut prior = Vec::with_capacity(ids.len());
+        for id in &ids {
+            let flags: i64 = self.conn.query_row(
+                "SELECT flags FROM messages WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )?;
+            prior.push(PriorState {
+                message_id: *id,
+                flags,
+                folder_ids: self.folders_of(*id)?,
+            });
+        }
+
+        for id in &ids {
+            match kind {
+                ActionKind::Star => self.set_flags(*id, flags::FLAGGED, 0)?,
+                ActionKind::Unstar => self.set_flags(*id, 0, flags::FLAGGED)?,
+                ActionKind::MarkRead => self.set_flags(*id, flags::SEEN, 0)?,
+                ActionKind::MarkUnread => self.set_flags(*id, 0, flags::SEEN)?,
+                ActionKind::Archive | ActionKind::Trash | ActionKind::Spam => {
+                    let role = kind.destination_role().expect("move action has a role");
+                    let dest = self.ensure_folder(account_id, role, role)?;
+                    // Out of every folder, into one. On Gmail this is a label
+                    // change rather than a move, which is petrel-providers'
+                    // problem to translate, not the store's.
+                    self.conn
+                        .execute("DELETE FROM placements WHERE message_id = ?1", params![id])?;
+                    self.place_message(*id, dest)?;
+                }
+            }
+        }
+
+        let payload = ActionPayload {
+            kind,
+            thread_id,
+            prior,
+        };
+        let json = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".into());
+        self.conn.execute(
+            "INSERT INTO actions(account_id, kind, payload_json, state, created_ms)
+             VALUES (?1, ?2, ?3, 'queued', ?4)",
+            params![
+                account_id,
+                serde_json::to_string(&kind).unwrap_or_default(),
+                json,
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0)
+            ],
+        )?;
+
+        Ok(ActionReceipt {
+            action_id: self.conn.last_insert_rowid(),
+            kind,
+            message_count: ids.len(),
+            description: kind.past_tense().to_string(),
+        })
+    }
+
+    /// Puts back exactly what an action replaced. Only works while the action is
+    /// still queued: once it has reached the server, undoing is a new action
+    /// rather than a cancellation, and pretending otherwise would be a lie about
+    /// what the other end knows.
+    pub fn undo_action(&self, action_id: i64) -> Result<bool> {
+        use crate::actions::ActionPayload;
+
+        let row: Option<(String, String)> = self
+            .conn
+            .query_row(
+                "SELECT payload_json, state FROM actions WHERE id = ?1",
+                params![action_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let Some((json, state)) = row else {
+            return Ok(false);
+        };
+        if state != "queued" {
+            return Ok(false);
+        }
+        let Ok(payload) = serde_json::from_str::<ActionPayload>(&json) else {
+            return Ok(false);
+        };
+
+        for p in &payload.prior {
+            self.conn.execute(
+                "UPDATE messages SET flags = ?2 WHERE id = ?1",
+                params![p.message_id, p.flags],
+            )?;
+            self.conn.execute(
+                "DELETE FROM placements WHERE message_id = ?1",
+                params![p.message_id],
+            )?;
+            for f in &p.folder_ids {
+                self.place_message(p.message_id, *f)?;
+            }
+        }
+
+        self.conn.execute(
+            "UPDATE actions SET state = 'undone' WHERE id = ?1",
+            params![action_id],
+        )?;
+        Ok(true)
+    }
+
+    pub fn flags_of(&self, message_id: i64) -> Result<i64> {
+        Ok(self.conn.query_row(
+            "SELECT flags FROM messages WHERE id = ?1",
+            params![message_id],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Moves a queued action along. The dispatcher owns this; it is here so
+    /// tests can reach the state where undo must refuse.
+    pub fn mark_action_state(&self, action_id: i64, state: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE actions SET state = ?2 WHERE id = ?1",
+            params![action_id, state],
+        )?;
+        Ok(())
+    }
+
     pub fn settings(&self) -> Result<std::collections::HashMap<String, String>> {
         let mut stmt = self
             .conn

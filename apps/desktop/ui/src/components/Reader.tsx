@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Archive, ChevronDown, CornerUpLeft, MoreVertical, Paperclip, Star } from 'lucide-react';
-import { api, type Thread, type ThreadMessage } from '../lib/api';
+import { api, type ActionKind, type Thread, type ThreadMessage } from '../lib/api';
 import { count as fmtCount, fileSize, fullTime, initials, listTime, messageTime } from '../lib/format';
 import { Icon } from './Icon';
 import { MessageBody } from './MessageBody';
@@ -58,7 +58,15 @@ function Expanded({ m }: { m: ThreadMessage }) {
   );
 }
 
-export function Reader({ thread }: { thread: Thread | null }) {
+export function Reader({
+  thread,
+  onAction,
+  onMore,
+}: {
+  thread: Thread | null;
+  onAction: (kind: ActionKind) => void;
+  onMore: () => void;
+}) {
   const [messages, setMessages] = useState<ThreadMessage[]>([]);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [error, setError] = useState<string | null>(null);
@@ -132,13 +140,24 @@ export function Reader({ thread }: { thread: Thread | null }) {
               className={`act-icon${thread.starred ? ' on' : ''}`}
               aria-label={t('reader-star')}
               aria-pressed={thread.starred}
+              onClick={() => onAction(thread.starred ? 'unstar' : 'star')}
             >
               <Icon icon={Star} />
             </button>
-            <button type="button" className="act-icon" aria-label={t('reader-archive')}>
+            <button
+              type="button"
+              className="act-icon"
+              aria-label={t('reader-archive')}
+              onClick={() => onAction('archive')}
+            >
               <Icon icon={Archive} />
             </button>
-            <button type="button" className="act-icon" aria-label={t('reader-more')}>
+            <button
+              type="button"
+              className="act-icon"
+              aria-label={t('reader-more')}
+              onClick={onMore}
+            >
               <Icon icon={MoreVertical} />
             </button>
           </div>
