@@ -157,6 +157,17 @@ const en = {
   'settings-appearance': 'Appearance',
   'settings-privacy': 'Privacy & Security',
   'settings-storage': 'Storage & Data',
+  'identity-sending-as': 'Sending as',
+  'identity-alias-note':
+    'One identity per account for now. Sending as another address means proving to the server that it is yours, which arrives with the provider work.',
+  'identity-name': 'Your name',
+  'identity-name-placeholder': 'The name recipients see',
+  'identity-signature': 'Signature',
+  'identity-signature-placeholder': 'Added to the bottom of messages you write.',
+  'identity-signature-replies': 'Use this signature on replies too',
+  'identity-signature-replies-help':
+    'Off means new messages only. A signature repeated down a long thread is the thing people complain about.',
+  'identity-save-failed': 'Could not save that — { $error }',
   'privacy-remote': 'Remote content',
   'privacy-remote-help':
     'Images and other files a message loads from the internet. Blocking them is why a message can be read without the sender learning anything about you.',

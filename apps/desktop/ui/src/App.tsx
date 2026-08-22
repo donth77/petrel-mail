@@ -1,5 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { api, type Account, type Folder, type Tag, type Thread, type Status } from './lib/api';
+import {
+  api,
+  type Account,
+  type Folder,
+  type Identity,
+  type Status,
+  type Tag,
+  type Thread,
+} from './lib/api';
 import { count as fmtCount } from './lib/format';
 import { t, type StringId } from './lib/strings';
 import { Search } from 'lucide-react';
@@ -12,6 +20,7 @@ import { Picker, type PickerOption } from './components/Picker';
 import { Compose, addresses, type Draft } from './components/Compose';
 import { snoozeOptions } from './lib/snooze';
 import { promisesMissingAttachment } from './lib/compose-checks';
+import { startingBody } from './lib/signature';
 import { notifiable, postDesktopNotification } from './lib/notify';
 import { Help } from './components/Help';
 import { Settings } from './components/Settings';
@@ -152,7 +161,7 @@ export function App() {
     },
     compose: () => {
       attachmentWarned.current = false;
-      setDraft({ to: '', cc: '', subject: '', body: '' });
+      setDraft({ to: '', cc: '', subject: '', body: startingBody(identity, false) });
     },
     reply: (all) => {
       if (!active) return;
@@ -165,7 +174,7 @@ export function App() {
         // Reply threading rides on the headers, not the subject; the Re: is
         // only what people expect to read.
         subject: active.subject.match(/^re:/i) ? active.subject : `Re: ${active.subject}`,
-        body: '',
+        body: startingBody(identity, true),
         inReplyTo: null,
         references: [],
       });
@@ -177,7 +186,7 @@ export function App() {
         to: '',
         cc: '',
         subject: active.subject.match(/^fwd:/i) ? active.subject : `Fwd: ${active.subject}`,
-        body: '',
+        body: startingBody(identity, true),
       });
     },
     snooze: () => setPicker('snooze'),
@@ -362,6 +371,7 @@ export function App() {
   // still appears in the rail.
   const [tags, setTags] = useState<Tag[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [identity, setIdentity] = useState<Identity | null>(null);
 
   // Folders show their full path so "Contracts/2026" is distinguishable from
   // another "2026" elsewhere; tags carry their colour and whether this
@@ -383,6 +393,7 @@ export function App() {
     let live = true;
     api.tags().then((t) => live && setTags(t)).catch(() => {});
     api.folders().then((f) => live && setFolders(f)).catch((e) => api.log(`folders failed: ${e}`));
+    api.identity().then((i) => live && setIdentity(i)).catch((e) => api.log(`identity failed: ${e}`));
     api.accounts().then((a) => live && setAccounts(a)).catch(() => {});
     return () => {
       live = false;
@@ -592,14 +603,14 @@ export function App() {
           onSnooze: () => setPicker('snooze'),
           onMove: () => setPicker('folder'),
           onTag: () => setPicker('tag'),
-          onCompose: () => setDraft({ to: '', cc: '', subject: '', body: '' }),
+          onCompose: () => setDraft({ to: '', cc: '', subject: '', body: startingBody(identity, false) }),
           onReply: () => {
             if (!active) return;
             setDraft({
               to: active.from_addr,
               cc: '',
               subject: active.subject.match(/^re:/i) ? active.subject : `Re: ${active.subject}`,
-              body: '',
+              body: startingBody(identity, true),
               inReplyTo: null,
               references: [],
             });

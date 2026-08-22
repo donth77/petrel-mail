@@ -51,6 +51,13 @@
     { id: 13, name: 'Receipts', colour: '#5E7C4A', thread_count: 0 },
   ];
 
+  var identity = {
+    address: 'you@example.com',
+    display_name: 'You',
+    signature: '',
+    signature_on_reply: false,
+  };
+
   var handlers = {
     status: function () {
       return {
@@ -196,6 +203,15 @@
       // request rather than on what the composer rendered.
       if (!a.to || a.to.length === 0) throw 'no recipient';
       return 'test-' + Date.now() + '@example.com';
+    },
+    get_identity: function () {
+      return identity;
+    },
+    set_identity: function (a) {
+      identity.display_name = a.displayName;
+      identity.signature = a.signature;
+      identity.signature_on_reply = a.signatureOnReply;
+      return null;
     },
     storage_report: function () {
       return {

@@ -62,6 +62,13 @@ export type Account = {
   folders: FolderMapping[];
 };
 
+export type Identity = {
+  address: string;
+  display_name: string;
+  signature: string;
+  signature_on_reply: boolean;
+};
+
 export type StorageReport = {
   messages: number;
   attachments: number;
@@ -206,6 +213,10 @@ const mock = {
     database_bytes: 12_582_912, blob_bytes: 41_943_040, index_bytes: 3_145_728,
   }),
   exportMbox: async () => '40/0',
+  identity: async (): Promise<Identity> => ({
+    address: 'you@example.com', display_name: 'You', signature: '', signature_on_reply: false,
+  }),
+  setIdentity: async () => {},
   accounts: async (): Promise<Account[]> => mockAccounts.map((a) => ({ ...a })),
   setAccountColor: async (id: number, color: string) => {
     const a = mockAccounts.find((x) => x.id === id);
@@ -279,6 +290,9 @@ const real = {
   ) => invoke<string>('send_message', { to, cc, subject, body, inReplyTo, references }),
   storage: () => invoke<StorageReport>('storage_report'),
   exportMbox: (view: string, path: string) => invoke<string>('export_mbox', { view, path }),
+  identity: () => invoke<Identity>('get_identity'),
+  setIdentity: (displayName: string, signature: string, signatureOnReply: boolean) =>
+    invoke<void>('set_identity', { displayName, signature, signatureOnReply }),
   accounts: () => invoke<Account[]>('list_accounts'),
   setAccountColor: (accountId: number, color: string) =>
     invoke<void>('set_account_color', { accountId, color }),

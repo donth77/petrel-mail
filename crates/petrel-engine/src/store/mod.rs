@@ -11,7 +11,7 @@ use rusqlite::functions::FunctionFlags;
 use rusqlite::{Connection, params};
 use std::path::Path;
 
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 /// Bumped whenever text extraction changes; a mismatch forces reindexing.
 pub const EXTRACTOR_VERSION: i64 = 1;
 
@@ -188,6 +188,15 @@ fn format_asctime(ms: i64) -> String {
         s,
         year
     )
+}
+
+/// Who a message is sent as.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Identity {
+    pub address: String,
+    pub display_name: String,
+    pub signature: String,
+    pub signature_on_reply: bool,
 }
 
 /// What the Storage pane reports.
@@ -707,6 +716,9 @@ impl Store {
         }
         if ver < 5 {
             conn.execute_batch(include_str!("migrations/0005-snooze.sql"))?;
+        }
+        if ver < 6 {
+            conn.execute_batch(include_str!("migrations/0006-identity.sql"))?;
         }
         if ver < SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -1611,6 +1623,45 @@ impl Store {
         self.conn.execute(
             "UPDATE messages SET flags = ?2 WHERE id = ?1",
             params![message_id, flags],
+        )?;
+        Ok(())
+    }
+
+    /// The identity a message is sent as: who it is from, and what goes at the
+    /// bottom.
+    pub fn identity(&self, account_id: i64) -> Result<Identity> {
+        Ok(self.conn.query_row(
+            "SELECT email, coalesce(display_name,''), signature, signature_on_reply
+             FROM accounts WHERE id = ?1",
+            params![account_id],
+            |r| {
+                Ok(Identity {
+                    address: r.get(0)?,
+                    display_name: r.get(1)?,
+                    signature: r.get(2)?,
+                    signature_on_reply: r.get::<_, i64>(3)? != 0,
+                })
+            },
+        )?)
+    }
+
+    pub fn set_identity(
+        &self,
+        account_id: i64,
+        display_name: &str,
+        signature: &str,
+        signature_on_reply: bool,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE accounts
+             SET display_name = ?2, signature = ?3, signature_on_reply = ?4
+             WHERE id = ?1",
+            params![
+                account_id,
+                display_name,
+                signature,
+                if signature_on_reply { 1 } else { 0 }
+            ],
         )?;
         Ok(())
     }

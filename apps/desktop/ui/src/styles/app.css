@@ -2487,3 +2487,48 @@ body.resizing {
   color: var(--amber);
   margin-block-start: 9px;
 }
+
+/* Text inputs in settings panes. */
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-block-start: 8px;
+  max-inline-size: 420px;
+}
+
+.tiny-label {
+  font-size: 11px;
+  color: var(--ink3);
+}
+
+.text-input {
+  inline-size: 100%;
+  max-inline-size: 420px;
+  padding: 7px 9px;
+  border: 1px solid var(--hair);
+  border-radius: 7px;
+  background: var(--surface);
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.text-input:focus-visible {
+  outline: var(--focus-ring) solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+
+.signature-input {
+  min-block-size: 96px;
+  resize: vertical;
+  margin-block: 8px 10px;
+  line-height: 1.5;
+}
+
+.identity-preview {
+  margin-block-start: 9px;
+  font-size: 11.5px;
+  color: var(--ink3);
+}

@@ -8,6 +8,7 @@ import { Accounts } from './settings/Accounts';
 import { Appearance } from './settings/Appearance';
 import { Composing } from './settings/Composing';
 import { Notifications } from './settings/Notifications';
+import { Identities } from './settings/Identities';
 import { Privacy } from './settings/Privacy';
 import { Storage } from './settings/Storage';
 import { Icon } from './Icon';
@@ -94,7 +95,8 @@ export function Settings({ open, pane: requested, onClose, onOpenHelp, onNotImpl
           {pane === 'composing' && <Composing />}
           {pane === 'storage' && <Storage onMessage={onNotImplemented} />}
           {pane === 'privacy' && <Privacy />}
-          {pane !== 'appearance' && pane !== 'accounts' && pane !== 'notifications' && pane !== 'composing' && pane !== 'storage' && pane !== 'privacy' && (
+          {pane === 'identities' && <Identities onMessage={onNotImplemented} />}
+          {pane !== 'appearance' && pane !== 'accounts' && pane !== 'notifications' && pane !== 'composing' && pane !== 'storage' && pane !== 'privacy' && pane !== 'identities' && (
             <div className="empty">
               <h2>{t(PANES.find((p) => p.id === pane)!.label)}</h2>
               <p>{t('settings-not-built')}</p>

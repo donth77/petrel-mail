@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex};
 use petrel_engine::actions::{ActionKind, ActionReceipt};
 use petrel_engine::blob::BlobStore;
 use petrel_engine::store::{
-    AccountSummary, FolderSummary, ListView, Listing, NewMessage, StorageReport, Store, TagSummary,
-    ThreadListing, ThreadMessage,
+    AccountSummary, FolderSummary, Identity, ListView, Listing, NewMessage, StorageReport, Store,
+    TagSummary, ThreadListing, ThreadMessage,
 };
 use petrel_providers::imap::{ImapConfig, Security};
 use petrel_testkit::DemoMailbox;
@@ -658,9 +658,17 @@ async fn send_message(
         .unwrap_or("localhost")
         .to_string();
 
+    let identity = {
+        let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+        store
+            .first_account()
+            .ok()
+            .flatten()
+            .and_then(|a| store.identity(a).ok())
+    };
     let msg = Outgoing {
         from_addr: cfg.user.clone(),
-        from_name: String::new(),
+        from_name: identity.map(|i| i.display_name).unwrap_or_default(),
         to,
         cc,
         subject,
@@ -719,6 +727,34 @@ async fn send_message(
     }
     log_sync(&format!("sent {message_id}"));
     Ok(message_id)
+}
+
+/// Who mail is sent as, and what goes underneath it.
+#[tauri::command]
+fn get_identity(state: State<Arc<AppState>>) -> Result<Identity, String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    let account = store
+        .first_account()
+        .map_err(|e| e.to_string())?
+        .ok_or("no account")?;
+    store.identity(account).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_identity(
+    display_name: String,
+    signature: String,
+    signature_on_reply: bool,
+    state: State<Arc<AppState>>,
+) -> Result<(), String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    let account = store
+        .first_account()
+        .map_err(|e| e.to_string())?
+        .ok_or("no account")?;
+    store
+        .set_identity(account, &display_name, &signature, signature_on_reply)
+        .map_err(|e| e.to_string())
 }
 
 /// What the Storage pane shows.
@@ -1295,6 +1331,8 @@ pub fn run() {
             send_message,
             storage_report,
             export_mbox,
+            get_identity,
+            set_identity,
             list_accounts,
             set_account_color,
             set_account_archive,
