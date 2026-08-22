@@ -2309,8 +2309,12 @@ body.resizing {
    so two things animated at once and neither read cleanly. Fixed, the only
    motion is the panel narrowing and the labels sliding out with it — and the
    icons appear to stay still, which is what makes it feel like one movement. */
+/* The account button keeps its height. Shrinking it to a single row pulled
+   every icon below it upward, so collapsing moved things in two directions at
+   once — the panel narrowing and the whole list jumping. The dot centres itself
+   in the height it already had. */
 .rail[data-collapsed] .account {
-  block-size: 36px;
+  justify-content: center;
 }
 
 .rail[data-collapsed] .tag-swatch {

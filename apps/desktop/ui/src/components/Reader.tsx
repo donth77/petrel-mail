@@ -13,6 +13,7 @@ import { count as fmtCount, fileSize, fullTime, initials, listTime, messageTime 
 import { Icon } from './Icon';
 import { MessageBody } from './MessageBody';
 import { MoreMenu } from './MoreMenu';
+import { Tip } from './Tip';
 import { t } from '../lib/strings';
 
 /** A message that is not the one you came here to read: one line, expandable. */
@@ -24,9 +25,11 @@ function Collapsed({ m, onExpand }: { m: ThreadMessage; onExpand: () => void }) 
       </span>
       <span className="collapsed-from">{m.from_display || m.from_addr}</span>
       <span className="collapsed-snip clip">{m.snippet}</span>
-      <time className="mono collapsed-time" dateTime={new Date(m.date_ms).toISOString()} title={fullTime(m.date_ms)}>
-        {messageTime(m.date_ms)}
-      </time>
+      <Tip label={fullTime(m.date_ms)}>
+        <time className="mono collapsed-time" dateTime={new Date(m.date_ms).toISOString()}>
+          {messageTime(m.date_ms)}
+        </time>
+      </Tip>
     </button>
   );
 }
@@ -63,9 +66,11 @@ function Expanded({ m, onCollapse }: { m: ThreadMessage; onCollapse: () => void 
             <span className="mono">{m.from_addr}</span>
           </span>
         </span>
-        <time className="mono msg-time" dateTime={new Date(m.date_ms).toISOString()} title={fullTime(m.date_ms)}>
-          {messageTime(m.date_ms)}
-        </time>
+        <Tip label={fullTime(m.date_ms)}>
+          <time className="mono msg-time" dateTime={new Date(m.date_ms).toISOString()}>
+            {messageTime(m.date_ms)}
+          </time>
+        </Tip>
       </header>
 
       <MessageBody messageId={m.id} title={m.subject || '(no subject)'} />

@@ -6,7 +6,7 @@ import type { Account } from '../lib/api';
 import { Icon } from './Icon';
 import { t, type StringId } from '../lib/strings';
 import { AccountMenu } from './AccountMenu';
-import { RailTip } from './RailTip';
+import { Tip } from './Tip';
 
 const MAILBOXES: { id: StringId; key: string; glyph: LucideIcon }[] = [
   { id: 'mailbox-inbox', key: 'inbox', glyph: Inbox },
@@ -93,7 +93,7 @@ export function Rail({
 
       <div className="rail-label">{t('rail-mailboxes')}</div>
       {MAILBOXES.map((m) => (
-        <RailTip key={m.key} label={t(m.id)} collapsed={collapsed}>
+        <Tip key={m.key} label={t(m.id)} placement="right" when={collapsed}>
           <button
             type="button"
             className="rail-item"
@@ -104,14 +104,14 @@ export function Rail({
             <span className="rail-text">{t(m.id)}</span>
             {m.key === 'inbox' && unread > 0 && <span className="count">{unread}</span>}
           </button>
-        </RailTip>
+        </Tip>
       ))}
 
       {tags.length > 0 && (
         <>
           <div className="rail-label">{t('rail-tags')}</div>
           {tags.map((tag) => (
-            <RailTip key={tag.name} label={tag.name} collapsed={collapsed}>
+            <Tip key={tag.name} label={tag.name} placement="right" when={collapsed}>
             <button
               type="button"
               className="rail-item"
@@ -126,7 +126,7 @@ export function Rail({
               <span className="rail-text">{tag.name}</span>
               {tag.thread_count > 0 && <span className="count">{tag.thread_count}</span>}
             </button>
-            </RailTip>
+            </Tip>
           ))}
         </>
       )}
@@ -134,21 +134,21 @@ export function Rail({
       {/* Help and Settings sit at the foot of the rail, out of the triage path
           but always in the same place — not hidden behind a menu. */}
       <div className="rail-foot">
-        <RailTip label={t('rail-help')} collapsed={collapsed}>
+        <Tip label={t('rail-help')} placement="right" when={collapsed}>
           <button type="button" className="rail-item" onClick={() => onView('help')}>
             <Icon icon={CircleHelp} />
             <span className="rail-text">{t('rail-help')}</span>
           </button>
-        </RailTip>
-        <RailTip label={t('rail-settings')} collapsed={collapsed}>
+        </Tip>
+        <Tip label={t('rail-settings')} placement="right" when={collapsed}>
           <button type="button" className="rail-item" onClick={() => onView('settings')}>
             <Icon icon={Settings} />
             <span className="rail-text">{t('rail-settings')}</span>
           </button>
-        </RailTip>
+        </Tip>
         {/* The toggle keeps a tooltip when expanded too: it is the one item
             whose icon does not say which way it goes. */}
-        <RailTip label={collapsed ? t('rail-expand') : t('rail-collapse')} collapsed>
+        <Tip label={collapsed ? t('rail-expand') : t('rail-collapse')} placement="right">
           <button
             type="button"
             className="rail-item"
@@ -158,7 +158,7 @@ export function Rail({
             <Icon icon={collapsed ? PanelLeftOpen : PanelLeftClose} />
             <span className="rail-text">{t('rail-collapse')}</span>
           </button>
-        </RailTip>
+        </Tip>
       </div>
 
       {/* A separator with a role, not just a draggable strip: resizing by mouse

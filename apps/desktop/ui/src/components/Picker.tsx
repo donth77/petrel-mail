@@ -5,6 +5,7 @@ import {
 } from '@ariakit/react';
 import { fuzzyMatch, scoreMatch } from '../lib/commands';
 import { Icon } from './Icon';
+import { Tip } from './Tip';
 import { t } from '../lib/strings';
 
 export type PickerOption = {
@@ -113,9 +114,11 @@ export function Picker({ open, mode, options, subject, onClose, onChoose, onCrea
               }
             }}
           />
-          <DialogDismiss className="close-btn" aria-label={t('close')} title={t('close-title')}>
-            <Icon icon={X} size={15} />
-          </DialogDismiss>
+          <Tip label={t('close-title')} placement="bottom">
+            <DialogDismiss className="close-btn" aria-label={t('close')}>
+              <Icon icon={X} size={15} />
+            </DialogDismiss>
+          </Tip>
         </div>
 
         {subject && <div className="picker-subject clip">{subject}</div>}

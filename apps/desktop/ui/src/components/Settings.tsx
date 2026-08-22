@@ -8,6 +8,7 @@ import { Accounts } from './settings/Accounts';
 import { Appearance } from './settings/Appearance';
 import { Notifications } from './settings/Notifications';
 import { Icon } from './Icon';
+import { Tip } from './Tip';
 import { t, type StringId } from '../lib/strings';
 
 type PaneId =
@@ -68,9 +69,11 @@ export function Settings({ open, onClose, onOpenHelp, onNotImplemented }: Props)
         </nav>
 
         <div className="settings-pane">
-          <DialogDismiss className="close-btn settings-esc" aria-label={t('close')} title={t('close-title')}>
-            <Icon icon={X} size={15} />
-          </DialogDismiss>
+          <Tip label={t('close-title')} placement="bottom">
+            <DialogDismiss className="close-btn settings-esc" aria-label={t('close')}>
+              <Icon icon={X} size={15} />
+            </DialogDismiss>
+          </Tip>
           {pane === 'appearance' && <Appearance />}
           {pane === 'accounts' && <Accounts onNotImplemented={onNotImplemented} />}
           {pane === 'notifications' && <Notifications />}

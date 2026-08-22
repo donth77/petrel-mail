@@ -9,6 +9,7 @@ import {
 } from '../lib/commands';
 import { count as fmtCount } from '../lib/format';
 import { Icon } from './Icon';
+import { Tip } from './Tip';
 import { t } from '../lib/strings';
 
 const GROUP_LABEL = {
@@ -108,9 +109,11 @@ export function Palette({ open, onClose, subject, ctx }: Props) {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
-            <DialogDismiss className="close-btn palette-esc" aria-label={t('close')} title={t('close-title')}>
-            <Icon icon={X} size={15} />
-          </DialogDismiss>
+            <Tip label={t('close-title')} placement="bottom">
+              <DialogDismiss className="close-btn palette-esc" aria-label={t('close')}>
+              <Icon icon={X} size={15} />
+            </DialogDismiss>
+            </Tip>
           </div>
 
           <ComboboxList className="palette-list">
