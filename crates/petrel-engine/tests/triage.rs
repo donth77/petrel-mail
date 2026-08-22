@@ -296,7 +296,7 @@ fn a_move_without_a_destination_is_refused_rather_than_guessed() {
         .unwrap_err();
     assert!(err.to_string().contains("needs a target"), "{err}");
     // Nothing was queued, so there is nothing to sync and nothing to undo.
-    assert!(store.undo_action(1).unwrap() == false);
+    assert!(!store.undo_action(1).unwrap());
 }
 
 #[test]

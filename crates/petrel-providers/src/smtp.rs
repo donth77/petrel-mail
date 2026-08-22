@@ -272,7 +272,7 @@ impl SmtpConfig {
 /// retry that might duplicate it.
 pub async fn send_tls(cfg: &SmtpConfig, msg: &Outgoing, raw: &[u8]) -> SendResult {
     use base64::Engine as _;
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::io::{AsyncWriteExt, BufReader};
 
     macro_rules! fail_before {
         ($stage:expr, $e:expr) => {

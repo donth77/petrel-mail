@@ -7,7 +7,7 @@
 use petrel_engine::store::{ListView, Store, flags};
 
 fn store() -> (Store, i64) {
-    let mut s = Store::open_in_memory().unwrap();
+    let s = Store::open_in_memory().unwrap();
     let account = s.ensure_test_account().unwrap();
     (s, account)
 }

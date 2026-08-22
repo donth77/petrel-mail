@@ -672,6 +672,21 @@ impl ListView {
                              JOIN folders f ON f.id = p.folder_id
                              WHERE p.message_id = {alias}.id AND f.role = ?3)"
             ),
+            // Archive is the one folder that is also a definition. Gmail has
+            // no Archive folder — archiving there removes the Inbox label and
+            // the message stays in All Mail, which is mapped to this role. So
+            // "in the archive folder" is not enough: the day All Mail is
+            // synced, every inbox message would have that placement too and
+            // Archive would list the entire mailbox. Not-in-the-inbox is what
+            // the word actually means, on both kinds of provider.
+            ListView::Folder(role) if role == "archive" => format!(
+                "EXISTS (SELECT 1 FROM placements p
+                         JOIN folders f ON f.id = p.folder_id
+                         WHERE p.message_id = {alias}.id AND f.role = ?3)
+                 AND NOT EXISTS (SELECT 1 FROM placements p2
+                                 JOIN folders f2 ON f2.id = p2.folder_id
+                                 WHERE p2.message_id = {alias}.id AND f2.role = 'inbox')"
+            ),
             ListView::Folder(_) => format!(
                 "EXISTS (SELECT 1 FROM placements p
                          JOIN folders f ON f.id = p.folder_id

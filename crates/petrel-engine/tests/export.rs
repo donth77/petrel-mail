@@ -13,7 +13,7 @@ use petrel_engine::store::{ListView, NewMessage, Store};
 /// skipped" is one of the things under test and a fixture that quietly
 /// contributes blob-less rows makes that number mean nothing.
 fn seeded(dir: &std::path::Path) -> (Store, BlobStore, i64) {
-    let mut store = Store::open_in_memory().unwrap();
+    let store = Store::open_in_memory().unwrap();
     let account = store.ensure_test_account().unwrap();
     let blobs = BlobStore::open(&dir.join("blobs")).unwrap();
     (store, blobs, account)

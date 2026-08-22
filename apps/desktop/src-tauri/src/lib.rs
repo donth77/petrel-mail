@@ -352,6 +352,39 @@ async fn drain_actions(state: Arc<AppState>, account: i64, cfg: ImapConfig, has_
 /// One-shot sync: fetch recent mail and ingest it. Deliberately not a sync
 /// engine — that arrives with the orchestrator; this proves the path end to end
 /// inside the app.
+/// The folders worth pulling down, inbox first.
+///
+/// Deliberately not everything the server advertises:
+///
+/// * **All Mail is excluded.** On a labels provider it holds *every* message,
+///   so syncing it would roughly double the store — and since it is what the
+///   archive role maps to, it would make the Archive view mean "all your mail"
+///   rather than "mail you archived".
+/// * **Starred is excluded.** It is a view of the `\Flagged` flag, which
+///   already arrives with every message we fetch. Fetching it as a folder would
+///   download the same messages a second time to learn something we know.
+/// * **Snoozed is not here to exclude.** Gmail has the feature, but does not
+///   expose it over IMAP — there is no such mailbox in the folder list.
+/// * **Outbox likewise**: mail that has not reached a server yet is ours alone.
+fn folders_to_sync(state: &AppState, account: i64) -> Vec<(String, i64)> {
+    // Inbox first so the view the user is looking at fills before the rest.
+    const ROLES: [&str; 5] = ["inbox", "sent", "drafts", "spam", "trash"];
+    let Ok(store) = state.store.lock() else {
+        return Vec::new();
+    };
+    let Ok(all) = store.folders(account) else {
+        return Vec::new();
+    };
+    ROLES
+        .iter()
+        .filter_map(|role| {
+            all.iter()
+                .find(|f| f.role == *role)
+                .map(|f| (f.path.clone(), f.id))
+        })
+        .collect()
+}
+
 fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
     spawn_drain_worker(Arc::clone(&state), account, cfg.clone());
     tauri::async_runtime::spawn(async move {
@@ -404,12 +437,6 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
             }
         }
 
-        let inbox_id = state
-            .store
-            .lock()
-            .ok()
-            .and_then(|s| s.folder_for_role(account, "inbox").ok().flatten());
-
         // Deliver before reading back. Draining first means the server's answer
         // already includes what the user did, so the fetch below confirms local
         // state instead of contradicting it — and anything still queued is
@@ -429,40 +456,50 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
             .unwrap_or(200);
         let mut ok = 0usize;
         let mut failed = 0usize;
-        let result = {
-            let state = Arc::clone(&state);
-            petrel_providers::imap::fetch_raw_each(&cfg, "INBOX", limit, |uid, flags, raw| {
-                let Ok(mut store) = state.store.lock() else {
-                    return;
-                };
-                match store.ingest_raw(&state.blobs, account, inbox_id, Some(uid), raw) {
-                    Ok(ingested) => {
-                        // The server's answer about read state wins. Without
-                        // this every message arrives unread, so a mailbox with
-                        // nothing unread in it shows hundreds.
-                        let _ = store.set_message_flags(ingested.message_id, flags);
-                        ok += 1;
-                        state.seeded.store(ok, Ordering::Relaxed);
+        // Each folder is fetched separately, and the id it is fetched into is
+        // the one placements are recorded against — which is what makes Sent
+        // land in Sent rather than everything piling into the inbox.
+        let targets = folders_to_sync(&state, account);
+        for (name, folder_id) in &targets {
+            let result = {
+                let state = Arc::clone(&state);
+                petrel_providers::imap::fetch_raw_each(&cfg, name, limit, |uid, flags, raw| {
+                    let Ok(mut store) = state.store.lock() else {
+                        return;
+                    };
+                    match store.ingest_raw(&state.blobs, account, Some(*folder_id), Some(uid), raw)
+                    {
+                        Ok(ingested) => {
+                            // The server's answer about read state wins. Without
+                            // this every message arrives unread, so a mailbox with
+                            // nothing unread in it shows hundreds.
+                            let _ = store.set_message_flags(ingested.message_id, flags);
+                            ok += 1;
+                            state.seeded.store(ok, Ordering::Relaxed);
+                        }
+                        Err(_) => failed += 1,
                     }
-                    Err(_) => failed += 1,
-                }
-            })
-            .await
-        };
+                })
+                .await
+            };
+            match result {
+                Ok(seen) => log_sync(&format!("{name}: ingested {seen}")),
+                // One unreadable folder must not cost the others. A mailbox the
+                // account cannot select is a bad reason to have no Sent mail.
+                Err(e) => log_sync(&format!("{name}: fetch FAILED: {e}")),
+            }
+        }
 
-        match result {
-            Ok(seen) => {
-                if failed > 0 {
-                    log_sync(&format!("{failed} message(s) could not be ingested"));
-                }
-                log_sync(&format!("ingested {ok}/{seen}"));
-                *state.source.lock().unwrap() = format!("{} · {ok} message(s) synced", cfg.user);
-            }
-            Err(e) => {
-                log_sync(&format!("fetch FAILED after {ok} message(s): {e}"));
-                *state.source.lock().unwrap() = format!("sync failed: {e}");
-                *state.sync_error.lock().unwrap() = Some(friendly_sync_error(&format!("{e}")));
-            }
+        if failed > 0 {
+            log_sync(&format!("{failed} message(s) could not be ingested"));
+        }
+        if ok == 0 && !targets.is_empty() {
+            let msg = "no mail could be fetched from any folder";
+            log_sync(msg);
+            *state.sync_error.lock().unwrap() = Some(friendly_sync_error(msg));
+            *state.source.lock().unwrap() = "sync failed".into();
+        } else {
+            *state.source.lock().unwrap() = format!("{} · {ok} message(s) synced", cfg.user);
         }
         state.seeding.store(false, Ordering::Relaxed);
 
@@ -511,42 +548,57 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
             drain_actions(Arc::clone(&state), account, cfg.clone(), has_move).await;
             send_due(Arc::clone(&state), account).await;
 
-            let since = inbox_id
-                .and_then(|fid| {
-                    state
-                        .store
-                        .lock()
-                        .ok()
-                        .and_then(|s| s.max_uid(fid).ok().flatten())
-                })
-                .unwrap_or(0);
-
+            // A watermark per folder, not one shared one: UIDs are only unique
+            // within a mailbox, so the inbox's highest UID says nothing about
+            // what is new in Sent, and sharing one would skip most of it.
             let mut fresh = 0usize;
-            let polled = {
-                let state = Arc::clone(&state);
-                petrel_providers::imap::fetch_since_each(&cfg, "INBOX", since, |uid, flags, raw| {
-                    let Ok(mut store) = state.store.lock() else {
-                        return;
-                    };
-                    if let Ok(ingested) =
-                        store.ingest_raw(&state.blobs, account, inbox_id, Some(uid), raw)
-                    {
-                        let _ = store.set_message_flags(ingested.message_id, flags);
-                        fresh += 1;
-                    }
-                })
-                .await
-            };
-            match polled {
-                Ok(_) if fresh > 0 => {
-                    log_sync(&format!("poll: {fresh} new message(s)"));
-                    // The list watches this count, so bumping it is what makes
-                    // new mail appear without the user doing anything.
-                    state.seeded.fetch_add(fresh, Ordering::Relaxed);
-                    *state.sync_error.lock().unwrap() = None;
+            let mut trouble: Option<String> = None;
+            for (name, folder_id) in &folders_to_sync(&state, account) {
+                let since = state
+                    .store
+                    .lock()
+                    .ok()
+                    .and_then(|s| s.max_uid(*folder_id).ok().flatten())
+                    .unwrap_or(0);
+                let polled = {
+                    let state = Arc::clone(&state);
+                    petrel_providers::imap::fetch_since_each(
+                        &cfg,
+                        name,
+                        since,
+                        |uid, flags, raw| {
+                            let Ok(mut store) = state.store.lock() else {
+                                return;
+                            };
+                            if let Ok(ingested) = store.ingest_raw(
+                                &state.blobs,
+                                account,
+                                Some(*folder_id),
+                                Some(uid),
+                                raw,
+                            ) {
+                                let _ = store.set_message_flags(ingested.message_id, flags);
+                                fresh += 1;
+                            }
+                        },
+                    )
+                    .await
+                };
+                if let Err(e) = polled {
+                    log_sync(&format!("poll {name} failed: {e}"));
+                    trouble = Some(format!("{e}"));
                 }
-                Ok(_) => {}
-                Err(e) => log_sync(&format!("poll failed: {e}")),
+            }
+            if fresh > 0 {
+                log_sync(&format!("poll: {fresh} new message(s)"));
+                // The list watches this count, so bumping it is what makes
+                // new mail appear without the user doing anything.
+                state.seeded.fetch_add(fresh, Ordering::Relaxed);
+            }
+            // Only a pass that both found nothing and hit nothing clears the
+            // banner: a poll that failed halfway is not proof that sync is well.
+            if trouble.is_none() {
+                *state.sync_error.lock().unwrap() = None;
             }
         }
     });

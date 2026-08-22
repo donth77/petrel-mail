@@ -64,6 +64,45 @@ async fn main() {
     }
     println!();
 
+    // How much mail is in each folder, which is what decides whether syncing a
+    // folder is a background detail or a download the user should be asked
+    // about.
+    let names: Vec<String> = report.folders.iter().map(|f| f.name.clone()).collect();
+    match petrel_providers::imap::folder_counts(&cfg, &names).await {
+        Ok(counts) => {
+            println!("counts    :");
+            for (name, n) in counts {
+                let shown = if name.starts_with("[Gmail]") || name.eq_ignore_ascii_case("INBOX") {
+                    name
+                } else {
+                    format!("<user folder, {} chars>", name.len())
+                };
+                println!("            {n:>8}  {shown}");
+            }
+            println!();
+        }
+        Err(e) => println!("counts FAILED: {e}"),
+    }
+
+    // Fetching from a folder whose name carries brackets and spaces is the
+    // part most likely to be quoted wrong, and it fails as "no mail in Sent"
+    // rather than as an error. Counts and sizes only — never a subject.
+    for folder in ["[Gmail]/Sent Mail", "[Gmail]/Spam"] {
+        let mut n = 0usize;
+        let mut bytes = 0usize;
+        match petrel_providers::imap::fetch_raw_each(&cfg, folder, 3, |_uid, flags, raw| {
+            n += 1;
+            bytes += raw.len();
+            let _ = flags;
+        })
+        .await
+        {
+            Ok(seen) => println!("fetch {folder:<20}: saw {seen}, got {n} ({bytes} bytes)"),
+            Err(e) => println!("fetch {folder:<20}: FAILED {e}"),
+        }
+    }
+    println!();
+
     let t1 = Instant::now();
     match petrel_providers::imap::fetch_raw(&cfg, "INBOX", limit).await {
         Ok(msgs) => {

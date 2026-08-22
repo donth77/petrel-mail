@@ -166,3 +166,31 @@ fn tag_views_select_by_tag_and_are_not_sql() {
     assert!(subjects(&store, &hostile).is_empty());
     assert_eq!(subjects(&store, &ListView::Inbox).len(), 4, "table intact");
 }
+
+/// Gmail has no Archive folder: archiving removes the Inbox label and the
+/// message stays in All Mail, which is mapped to the archive role. So the
+/// Archive *view* has to mean "not in the inbox" — otherwise, once All Mail is
+/// synced, every message in it (which is all of them) would appear archived.
+#[test]
+fn archive_excludes_anything_still_in_the_inbox() {
+    let (store, account, ids) = seeded();
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+    let all_mail = store
+        .ensure_folder(account, "archive", "[Gmail]/All Mail")
+        .unwrap();
+
+    // What syncing All Mail looks like: everything is in it, and the inbox
+    // messages are in both.
+    for id in &ids {
+        store.place_message(*id, all_mail).unwrap();
+    }
+    store.place_message(ids[0], inbox).unwrap();
+    store.place_message(ids[1], inbox).unwrap();
+
+    let archived = subjects(&store, &ListView::Folder("archive".into()));
+    assert_eq!(
+        archived,
+        ["m2", "m3"],
+        "inbox mail must not read as archived"
+    );
+}

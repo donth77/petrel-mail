@@ -447,6 +447,49 @@ where
     Ok(out)
 }
 
+/// How many messages each folder holds.
+///
+/// EXAMINE rather than SELECT: read-only, so counting cannot mark anything seen
+/// or otherwise disturb a mailbox we are only measuring.
+pub async fn folder_counts(cfg: &ImapConfig, folders: &[String]) -> Result<Vec<(String, u32)>> {
+    match cfg.security {
+        Security::Tls => {
+            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
+            folder_counts_session(client, cfg, folders).await
+        }
+        #[cfg(feature = "insecure-plaintext")]
+        Security::InsecurePlaintext => {
+            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
+            folder_counts_session(Client::new(tcp), cfg, folders).await
+        }
+    }
+}
+
+async fn folder_counts_session<S>(
+    client: Client<S>,
+    cfg: &ImapConfig,
+    folders: &[String],
+) -> Result<Vec<(String, u32)>>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
+{
+    let mut session = client
+        .login(&cfg.user, &cfg.pass)
+        .await
+        .map_err(|(e, _)| e)?;
+    let mut out = Vec::new();
+    for name in folders {
+        // A folder that cannot be examined is reported as absent rather than
+        // failing the whole survey — \Noselect containers are normal.
+        match session.examine(name).await {
+            Ok(mb) => out.push((name.clone(), mb.exists)),
+            Err(_) => continue,
+        }
+    }
+    session.logout().await?;
+    Ok(out)
+}
+
 /// Waits on the server for something to happen, or until `timeout`.
 ///
 /// This is IMAP's push (RFC 2177): the connection is held open and the server
