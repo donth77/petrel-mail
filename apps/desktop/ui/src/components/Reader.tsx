@@ -101,12 +101,15 @@ function Expanded({
 
 export function Reader({
   thread,
+  view,
   onAction,
   onMove,
   onTag,
   onSnooze,
 }: {
   thread: Thread | null;
+  /** Which view is open, so the destructive action can mean the right thing. */
+  view: string;
   onAction: (kind: ActionKind) => void;
   onMove: () => void;
   onTag: () => void;
@@ -272,6 +275,7 @@ export function Reader({
             </Tip>
             <MoreMenu
               thread={thread}
+              view={view}
               onAction={onAction}
               onMove={onMove}
               onTag={onTag}

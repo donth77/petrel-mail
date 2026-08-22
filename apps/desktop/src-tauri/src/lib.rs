@@ -51,6 +51,9 @@ struct AppState {
     draining: AtomicBool,
     /// Whether the server supports UID MOVE, learned from the probe.
     server_has_move: AtomicBool,
+    /// RFC 4315. Without it a message can be marked deleted but not expunged,
+    /// because a bare EXPUNGE would take every other \\Deleted message with it.
+    server_has_uidplus: AtomicBool,
     tokens: Arc<ViewTokens>,
     account_id: i64,
     data_dir: String,
@@ -204,7 +207,15 @@ fn spawn_drain_worker(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
             state.drain_signal.notified().await;
             tokio::time::sleep(std::time::Duration::from_millis(900)).await;
             let has_move = state.server_has_move.load(Ordering::Relaxed);
-            drain_actions(Arc::clone(&state), account, cfg.clone(), has_move).await;
+            let has_uidplus = state.server_has_uidplus.load(Ordering::Relaxed);
+            drain_actions(
+                Arc::clone(&state),
+                account,
+                cfg.clone(),
+                has_move,
+                has_uidplus,
+            )
+            .await;
             send_due(Arc::clone(&state), account).await;
         }
     });
@@ -232,7 +243,13 @@ impl Drop for DrainGuard {
 /// stops that action rather than the drain — one unreachable message should not
 /// strand every other change behind it — and leaves it queued to retry, because
 /// a change that never reached the server is not one to discard.
-async fn drain_actions(state: Arc<AppState>, account: i64, cfg: ImapConfig, has_move: bool) {
+async fn drain_actions(
+    state: Arc<AppState>,
+    account: i64,
+    cfg: ImapConfig,
+    has_move: bool,
+    has_uidplus: bool,
+) {
     use petrel_engine::actions::ActionKind;
 
     // Refuse to overlap. compare_exchange rather than a load-then-store: two
@@ -318,6 +335,25 @@ async fn drain_actions(state: Arc<AppState>, account: i64, cfg: ImapConfig, has_
             // store marks them 'local' and this drain only reads 'queued'.
             // Handled here so adding a local action later cannot silently fall
             // into the tag branch and be counted as stuck forever.
+            ActionKind::DeleteForever => {
+                // The local row is already a tombstone, so its placements are
+                // the last record of where the server copy lives. Expunge from
+                // the folder it was queued against.
+                match petrel_providers::imap::expunge_uid(&cfg, &folder, uid, has_uidplus).await {
+                    // Marked \\Deleted but not expunged: the server has no
+                    // UIDPLUS, and a bare EXPUNGE would have committed every
+                    // other pending deletion in the mailbox too. Worth a line
+                    // in the log, because the message outlives the gesture.
+                    Ok(false) => {
+                        log_sync(&format!(
+                            "{folder}: marked deleted but not expunged (no UIDPLUS)"
+                        ));
+                        Ok(())
+                    }
+                    Ok(true) => Ok(()),
+                    Err(e) => Err(e),
+                }
+            }
             ActionKind::Snooze | ActionKind::Unsnooze => continue,
             // Tags are Gmail labels or IMAP keywords depending on the provider,
             // and neither is wired yet. Left queued rather than marked done, so
@@ -392,6 +428,7 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
 
         let mut has_move = false;
         let mut has_idle = false;
+        let mut has_uidplus = false;
         // Folders first. Without them every message ingests with no placement,
         // so the rail's views have nothing to filter on and archiving has
         // nowhere to put anything — which is how a sync can look like it worked
@@ -400,9 +437,13 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
             Ok(report) => {
                 has_move = report.greeting_capabilities.move_;
                 has_idle = report.greeting_capabilities.idle;
+                has_uidplus = report.greeting_capabilities.uidplus;
                 state.server_has_move.store(has_move, Ordering::Relaxed);
+                state
+                    .server_has_uidplus
+                    .store(has_uidplus, Ordering::Relaxed);
                 log_sync(&format!(
-                    "probe ok: {} folder(s), MOVE={has_move}, IDLE={has_idle}",
+                    "probe ok: {} folder(s), MOVE={has_move}, IDLE={has_idle}, UIDPLUS={has_uidplus}",
                     report.folders.len(),
                 ));
                 let rows: Vec<(String, Option<String>)> = report
@@ -441,7 +482,14 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
         // already includes what the user did, so the fetch below confirms local
         // state instead of contradicting it — and anything still queued is
         // protected from being overwritten by the pending checks in the store.
-        drain_actions(Arc::clone(&state), account, cfg.clone(), has_move).await;
+        drain_actions(
+            Arc::clone(&state),
+            account,
+            cfg.clone(),
+            has_move,
+            has_uidplus,
+        )
+        .await;
         // A message due while the app was closed goes out now, rather than
         // waiting for whatever next wakes the worker.
         send_due(Arc::clone(&state), account).await;
@@ -545,7 +593,14 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
 
             // Deliver first, so the fetch that follows confirms local state
             // rather than contradicting it — the same ordering as startup.
-            drain_actions(Arc::clone(&state), account, cfg.clone(), has_move).await;
+            drain_actions(
+                Arc::clone(&state),
+                account,
+                cfg.clone(),
+                has_move,
+                has_uidplus,
+            )
+            .await;
             send_due(Arc::clone(&state), account).await;
 
             // A watermark per folder, not one shared one: UIDs are only unique
@@ -1529,6 +1584,7 @@ pub fn run() {
         drain_signal: Arc::new(tokio::sync::Notify::new()),
         draining: AtomicBool::new(false),
         server_has_move: AtomicBool::new(false),
+        server_has_uidplus: AtomicBool::new(false),
         tokens: Arc::new(ViewTokens::new()),
         account_id: account,
         data_dir: dir.display().to_string(),

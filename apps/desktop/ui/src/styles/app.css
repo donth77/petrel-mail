@@ -1417,6 +1417,9 @@ mark {
 }
 
 .settings {
+  /* The anchor for .settings-esc. Absent, the close button resolves against
+     the full-width backdrop and lands at the edge of the screen. */
+  position: relative;
   inline-size: 1040px;
   max-inline-size: calc(100vw - 48px);
   block-size: 760px;
@@ -2690,4 +2693,109 @@ body.resizing {
 /* Collapsed, it is an icon like everything else — but still the filled one. */
 .rail[data-collapsed] .compose-new {
   padding-inline: 9px;
+}
+
+/* --------------------------------------------------------------- confirm */
+
+.confirm-backdrop {
+  position: fixed;
+  inset-block-start: 22vh;
+  inset-inline: 0;
+  display: grid;
+  justify-items: center;
+  z-index: 50;
+}
+
+.confirm {
+  inline-size: 420px;
+  max-inline-size: calc(100vw - 48px);
+  padding: 20px 22px 18px;
+  border: 1px solid var(--hair);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 18px 48px rgba(24, 39, 48, 0.16);
+}
+
+.confirm-title {
+  font-family: var(--display);
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.confirm-detail {
+  margin-block: 8px 0;
+  color: var(--ink2);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.confirm-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-block-start: 18px;
+}
+
+/* Destructive, and coloured as such — but still a button, not an alarm. The
+   dialog has already said what this does; the colour is a reminder, not the
+   message. */
+.reply.danger {
+  border-color: color-mix(in oklab, var(--danger) 40%, var(--hair));
+  color: var(--danger);
+}
+
+.reply.danger:hover {
+  background: color-mix(in oklab, var(--danger) 8%, var(--surface));
+  border-color: var(--danger);
+}
+
+/* ------------------------------------------------------- new tag, in place */
+
+/* The TAGS header becomes a row so the + can sit at its end. Same padding as
+   the plain label, so the two kinds of section heading line up. */
+.rail-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.rail-add {
+  display: grid;
+  place-items: center;
+  inline-size: 18px;
+  block-size: 18px;
+  margin-inline-end: -2px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink3);
+  cursor: pointer;
+  padding: 0;
+  /* Quiet until wanted: a + that shouts sits above the mailboxes it is not
+     part of. It brightens on hover and is always reachable by keyboard. */
+  opacity: 0.75;
+}
+
+.rail-add:hover,
+.rail-add:focus-visible {
+  opacity: 1;
+  background: var(--hair2);
+  color: var(--ink);
+}
+
+.rail-new-tag {
+  inline-size: calc(100% - 18px);
+  margin: 2px 9px 4px;
+  padding: 5px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+}
+
+.rail-new-tag::placeholder {
+  color: var(--ink3);
 }

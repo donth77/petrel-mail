@@ -201,15 +201,22 @@ fn archive_excludes_anything_still_in_the_inbox() {
 fn view_counts_report_per_mailbox_and_by_conversation() {
     let (store, account, ids) = seeded();
     let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
-    let spam = store.ensure_folder(account, "spam", "[Gmail]/Spam").unwrap();
-    let sent = store.ensure_folder(account, "sent", "[Gmail]/Sent Mail").unwrap();
+    let spam = store
+        .ensure_folder(account, "spam", "[Gmail]/Spam")
+        .unwrap();
+    let sent = store
+        .ensure_folder(account, "sent", "[Gmail]/Sent Mail")
+        .unwrap();
 
     for id in &ids {
         store.place_message(*id, inbox).unwrap();
         store.set_flags(*id, 0, flags::SEEN).unwrap(); // unread
     }
     let counts = |s: &Store| -> std::collections::HashMap<String, i64> {
-        s.view_counts(CountMode::Unread).unwrap().into_iter().collect()
+        s.view_counts(CountMode::Unread)
+            .unwrap()
+            .into_iter()
+            .collect()
     };
     assert_eq!(counts(&store).get("inbox"), Some(&4));
 
@@ -229,8 +236,11 @@ fn view_counts_report_per_mailbox_and_by_conversation() {
     assert_eq!(counts(&store).get("sent"), None);
 
     // Asking for totals is a different question, and Sent can answer that one.
-    let totals: std::collections::HashMap<String, i64> =
-        store.view_counts(CountMode::Total).unwrap().into_iter().collect();
+    let totals: std::collections::HashMap<String, i64> = store
+        .view_counts(CountMode::Total)
+        .unwrap()
+        .into_iter()
+        .collect();
     assert_eq!(totals.get("sent"), Some(&1));
     // Two, not four: the ones filed into Spam and Sent have left the inbox.
     // Totals ignore read state, not placement.
@@ -238,4 +248,30 @@ fn view_counts_report_per_mailbox_and_by_conversation() {
 
     // Off means off, not zeroes.
     assert!(store.view_counts(CountMode::Off).unwrap().is_empty());
+}
+
+/// The account header's unread is a claim about your mail, not about every row
+/// in the database. Spam and the bin are mail already dealt with; counting them
+/// would have the header announce work that does not exist.
+#[test]
+fn account_unread_ignores_spam_and_the_bin() {
+    let (store, account, ids) = seeded();
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+    let spam = store
+        .ensure_folder(account, "spam", "[Gmail]/Spam")
+        .unwrap();
+    let trash = store
+        .ensure_folder(account, "trash", "[Gmail]/Trash")
+        .unwrap();
+    for id in &ids {
+        store.set_flags(*id, 0, flags::SEEN).unwrap();
+    }
+    store.place_message(ids[0], inbox).unwrap();
+    store.place_message(ids[1], inbox).unwrap();
+    store.place_message(ids[2], spam).unwrap();
+    store.place_message(ids[3], trash).unwrap();
+
+    let summary = store.accounts().unwrap();
+    let me = summary.iter().find(|a| a.id == account).unwrap();
+    assert_eq!(me.unread_count, 2, "only the inbox pair counts");
 }

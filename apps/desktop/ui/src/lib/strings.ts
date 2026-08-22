@@ -13,7 +13,7 @@
 
 type Args = Record<string, string | number>;
 
-const en = {
+export const en = {
   'app-name': 'Petrel',
 
   'rail-mailboxes': 'Mailboxes',
@@ -264,6 +264,16 @@ const en = {
   'help-together': 'Putting it together',
   'help-together-note': 'From Sam, since June, with a file attached, mentioning the annex. The filter buttons type this for you.',
   'close': 'Close',
+  'cancel': 'Cancel',
+  'tag-new': 'New tag',
+  'tag-new-placeholder': 'Tag name…',
+  'tag-create-failed': 'Could not create the tag — { $error }',
+  'no-subject': '(no subject)',
+  'delete-forever': 'Delete permanently',
+  'delete-forever-confirm': 'Delete permanently?',
+  'delete-forever-one': 'This removes “{ $subject }” from the server. It cannot be undone.',
+  'delete-forever-many': 'This removes { $count } conversations from the server. It cannot be undone.',
+  'deleted-forever': 'Deleted',
   'close-title': 'Close (Esc)',
   'picker-folder-title': 'Move to folder',
   'picker-tag-title': 'Tag',

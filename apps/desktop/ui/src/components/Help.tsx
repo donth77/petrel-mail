@@ -4,6 +4,7 @@ import { Search, X } from 'lucide-react';
 import { OPERATOR_GROUPS, shortcutGroups } from '../lib/help';
 import { Icon } from './Icon';
 import { Tip } from './Tip';
+import { clickAway } from '../lib/dialog';
 import { t } from '../lib/strings';
 
 export function Help({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -47,7 +48,8 @@ export function Help({ open, onClose }: { open: boolean; onClose: () => void }) 
       open={open}
       onClose={close}
       className="help-backdrop"
-      backdrop={<div className="palette-scrim" />}
+      {...clickAway(onClose)}
+      backdrop={<div className="palette-scrim" onClick={onClose} />}
       aria-label={t('rail-help')}
     >
       <div className="help">
@@ -74,7 +76,7 @@ export function Help({ open, onClose }: { open: boolean; onClose: () => void }) 
             />
           </label>
           <Tip label={t('close-title')} placement="bottom">
-            <DialogDismiss className="close-btn palette-esc" aria-label={t('close')}>
+            <DialogDismiss className="close-btn" aria-label={t('close')}>
               <Icon icon={X} size={15} />
             </DialogDismiss>
           </Tip>

@@ -13,6 +13,7 @@ import { Privacy } from './settings/Privacy';
 import { Storage } from './settings/Storage';
 import { Icon } from './Icon';
 import { Tip } from './Tip';
+import { clickAway } from '../lib/dialog';
 import { t, type StringId } from '../lib/strings';
 
 type PaneId =
@@ -62,7 +63,8 @@ export function Settings({ open, pane: requested, onClose, onMessage }: Props) {
       open={open}
       onClose={onClose}
       className="settings-backdrop"
-      backdrop={<div className="palette-scrim" />}
+      {...clickAway(onClose)}
+      backdrop={<div className="palette-scrim" onClick={onClose} />}
       aria-label={t('settings-title')}
     >
       <div className="settings">

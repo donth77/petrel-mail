@@ -1389,9 +1389,17 @@ impl Store {
                     coalesce(a.color,''), a.local_archive,
                     (SELECT count(*) FROM messages m
                       WHERE m.account_id = a.id AND m.deleted_at_ms IS NULL),
+                    -- Unread that a person would claim as theirs. Spam and
+                    -- the bin are excluded: now that both are synced, counting
+                    -- them would have the account header announce unread mail
+                    -- whose whole point is that it was already dealt with.
                     (SELECT count(*) FROM messages m
                       WHERE m.account_id = a.id AND m.deleted_at_ms IS NULL
-                        AND m.flags & 1 = 0),
+                        AND m.flags & 1 = 0
+                        AND NOT EXISTS (SELECT 1 FROM placements p
+                                        JOIN folders f ON f.id = p.folder_id
+                                        WHERE p.message_id = m.id
+                                          AND f.role IN ('spam','trash'))),
                     (SELECT max(m.date_ms) FROM messages m
                       WHERE m.account_id = a.id AND m.deleted_at_ms IS NULL)
              FROM accounts a ORDER BY a.id",
@@ -1976,6 +1984,27 @@ impl Store {
                         params![id],
                     )?;
                 }
+                ActionKind::DeleteForever => {
+                    // A tombstone rather than a DELETE, and deliberately so:
+                    // the queued action still refers to this message id, and
+                    // removing the row before the server has been told would
+                    // strand the instruction that makes the deletion real.
+                    // The row and its bytes are reaped later, by the same
+                    // grace-period sweep that handles mail the server dropped.
+                    // The clock comes from SQLite rather than a parameter,
+                    // as the snooze predicate's does: this timestamp only ever
+                    // feeds the grace-period sweep, and threading a clock
+                    // through triage to stamp a tombstone is not worth it.
+                    self.conn.execute(
+                        "UPDATE messages SET deleted_at_ms = (strftime('%s','now') * 1000)
+                         WHERE id = ?1",
+                        params![id],
+                    )?;
+                    // Out of search at once. A message the user deleted must
+                    // not keep answering queries while its bytes are reaped.
+                    self.conn
+                        .execute("DELETE FROM fts_content WHERE message_id = ?1", params![id])?;
+                }
                 ActionKind::Tag => self.tag_message(*id, target.expect("checked above"))?,
                 ActionKind::Untag => self.untag_message(*id, target.expect("checked above"))?,
                 ActionKind::Move => {
@@ -2084,6 +2113,13 @@ impl Store {
         let Ok(payload) = serde_json::from_str::<ActionPayload>(&json) else {
             return Ok(false);
         };
+        // Belt as well as braces. The UI confirms a permanent delete instead of
+        // offering undo, but this is the layer that must not be talked into
+        // restoring placements for a message whose bytes are being expunged —
+        // that would resurrect a row pointing at mail nobody can fetch again.
+        if !payload.kind.is_undoable() {
+            return Ok(false);
+        }
 
         for p in &payload.prior {
             self.conn.execute(
@@ -2521,9 +2557,7 @@ impl Store {
             // Sent only earns a number when the number is a total. There is no
             // pending work in a sent message, and a count that never moves is
             // furniture.
-            ["sent"]
-                .iter()
-                .filter(|_| mode == CountMode::Total),
+            ["sent"].iter().filter(|_| mode == CountMode::Total),
         ) {
             let view = ListView::parse(key);
             let total = mode == CountMode::Total || ALWAYS_TOTAL.contains(key);

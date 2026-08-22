@@ -10,6 +10,7 @@ import {
 import { count as fmtCount } from '../lib/format';
 import { Icon } from './Icon';
 import { Tip } from './Tip';
+import { clickAway } from '../lib/dialog';
 import { t } from '../lib/strings';
 
 const GROUP_LABEL = {
@@ -90,7 +91,8 @@ export function Palette({ open, onClose, subject, ctx }: Props) {
       open={open}
       onClose={close}
       className="palette-backdrop"
-      backdrop={<div className="palette-scrim" />}
+      {...clickAway(onClose)}
+      backdrop={<div className="palette-scrim" onClick={onClose} />}
       aria-label={t('palette-placeholder')}
     >
       <ComboboxProvider

@@ -165,6 +165,7 @@
         else if (a.kind === 'mark_read') row.unread = false;
         else if (a.kind === 'mark_unread') row.unread = true;
         else if (a.kind === 'move') row.filed = 'moved';
+        else if (a.kind === 'delete_forever') rows.splice(rows.indexOf(row), 1);
         else if (a.kind === 'snooze') row.snoozed = a.target;
         else if (a.kind === 'unsnooze') row.snoozed = 0;
         else if (a.kind === 'tag') {
@@ -190,6 +191,7 @@
         untag: 'Untagged',
         snooze: 'Snoozed',
         unsnooze: 'Back in the inbox',
+        delete_forever: 'Deleted',
       };
       return {
         action_id: window.__PETREL_IPC__.length,

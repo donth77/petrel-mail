@@ -28,6 +28,7 @@ import { notifiable, postDesktopNotification } from './lib/notify';
 import { Help } from './components/Help';
 import { Settings } from './components/Settings';
 import { clampRail, useSettings } from './lib/settings';
+import { Confirm } from './components/Confirm';
 import { Toast } from './components/Toast';
 import { MessageList } from './components/MessageList';
 import { Reader } from './components/Reader';
@@ -126,6 +127,16 @@ export function App() {
     },
   });
 
+  // Which conversations a confirmed delete would remove. Captured when the
+  // dialog opens rather than read when it closes: the selection can change
+  // underneath an open dialog, and deleting something other than what the
+  // dialog named is the worst possible outcome for the one action with no undo.
+  const [pendingDelete, setPendingDelete] = useState<number[] | null>(null);
+  const askDelete = (ids?: number[]) => {
+    const list = ids ?? targets(selected, activeId);
+    if (list.length > 0) setPendingDelete(list);
+  };
+
   const railRef = useRef<HTMLElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -158,6 +169,13 @@ export function App() {
       // what makes X worth having: nothing new to learn, it just applies to
       // more than one conversation.
       const ids = targets(selected, activeId);
+      // Inside the trash there is nowhere further to move something, so the
+      // bin key means the permanent thing — behind the dialog, never straight
+      // through. Same key, same place, and the only irreversible one asks.
+      if (kind === 'trash' && view === 'trash') {
+        askDelete(ids);
+        return;
+      }
       ids.forEach((id) => void triage.run(kind, id));
       if (selected.size > 0) setSelected(new Set());
     },
@@ -562,6 +580,15 @@ export function App() {
         unread={unread}
         counts={counts}
         view={view}
+        onCreateTag={(name) =>
+          api
+            .createTag(name)
+            // Re-read rather than push the new one in: the engine assigns the
+            // colour, and a rail row invented here would be the wrong one until
+            // the next refresh.
+            .then(() => api.tags().then(setTags))
+            .catch((e) => setToast(t('tag-create-failed', { error: String(e) })))
+        }
         tags={tags}
         railRef={railRef}
         collapsed={settings.railCollapsed === 'on'}
@@ -669,7 +696,8 @@ export function App() {
       {(settings.layout !== 'off' || readerOverlay) && (
         <Reader
           thread={active}
-          onAction={(kind) => void triage.run(kind)}
+          view={view}
+          onAction={(kind) => (kind === 'delete_forever' ? askDelete() : void triage.run(kind))}
           onMove={() => setPicker('folder')}
           onTag={() => setPicker('tag')}
           onSnooze={() => setPicker('snooze')}
@@ -833,6 +861,40 @@ export function App() {
           </button>
         </div>
       )}
+
+      <Confirm
+        open={pendingDelete !== null}
+        title={t('delete-forever-confirm')}
+        detail={
+          pendingDelete?.length === 1
+            ? t('delete-forever-one', {
+                subject:
+                  // Either kind of id can be in here — the keyboard path
+                  // carries the active message id and the row path a thread
+                  // id — so match the way triage itself does.
+                  items.find(
+                    (m) => m.id === pendingDelete[0] || m.thread_id === pendingDelete[0],
+                  )?.subject || t('no-subject'),
+              })
+            : t('delete-forever-many', { count: fmtCount(pendingDelete?.length ?? 0) })
+        }
+        confirmLabel={t('delete-forever')}
+        onClose={() => setPendingDelete(null)}
+        onConfirm={() => {
+          const ids = pendingDelete ?? [];
+          setPendingDelete(null);
+          // No undo offered, because there is none to offer. The toast reports
+          // what happened and stops there.
+          ids.forEach((id) => void triage.run('delete_forever', id, undefined, true));
+          if (selected.size > 0) setSelected(new Set());
+          // Clear the standing offer before saying anything. The toast is one
+          // surface: leaving the previous action's Undo attached to this
+          // message puts an undo button on a permanent delete, which is the
+          // precise lie the confirmation dialog exists to avoid.
+          setUndoOffer(null);
+          setToast(t('deleted-forever'));
+        }}
+      />
 
       <Toast
         message={toast}

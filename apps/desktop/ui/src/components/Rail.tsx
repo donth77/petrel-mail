@@ -1,6 +1,7 @@
+import { useEffect, useRef, useState } from 'react';
 import {
   Inbox, Star, Clock, Send, PencilLine, Upload, Archive, ShieldAlert, Trash2,
-  CircleHelp, PanelLeftClose, PanelLeftOpen, PenSquare, Settings, type LucideIcon,
+  CircleHelp, PanelLeftClose, PanelLeftOpen, PenSquare, Plus, Settings, type LucideIcon,
 } from 'lucide-react';
 import type { Account } from '../lib/api';
 import { Icon } from './Icon';
@@ -40,6 +41,9 @@ type Props = {
   view: string;
   tags: Tag[];
   onView: (v: string) => void;
+  /** Make a tag that is attached to nothing yet. Returns once it exists, so the
+   *  rail can put the input away only after the work succeeded. */
+  onCreateTag: (name: string) => Promise<void>;
   railRef?: React.Ref<HTMLElement>;
 };
 
@@ -53,6 +57,7 @@ export function Rail({
   tags,
   collapsed,
   onView,
+  onCreateTag,
   onToggleCollapsed,
   onCompose,
   onResize,
@@ -63,6 +68,14 @@ export function Rail({
   // Pointer drag, with the listeners on the window rather than the handle: a
   // fast drag outruns a 6px target, and losing the pointer mid-resize leaves
   // the rail stuck at whatever width the last event happened to land on.
+  // Naming a new tag. An inline field rather than a dialog: it is one short
+  // string, and a modal for one word is more ceremony than the act deserves.
+  const [naming, setNaming] = useState(false);
+  const nameInput = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (naming) nameInput.current?.focus();
+  }, [naming]);
+
   const startDrag = (e: React.PointerEvent) => {
     e.preventDefault();
     const move = (ev: PointerEvent) => onResize(ev.clientX);
@@ -88,7 +101,12 @@ export function Rail({
       <AccountMenu
         accounts={accounts}
         current={account}
-        unread={unread}
+        // The account's own unread, not the loaded page's. Deriving it from the
+        // rows in view made the header report Trash's unread count while
+        // sitting in Trash, which is not a fact about the account at all. This
+        // number also ignores the badge setting: that governs the numbers
+        // beside the mailboxes, not whether the account can say how it is.
+        unread={accounts.find((a) => a.email === account)?.unread_count ?? unread}
         accountColor={accountColor}
         onSwitch={onSwitchAccount}
         onSettings={onSettings}
@@ -126,10 +144,56 @@ export function Rail({
         </Tip>
       ))}
 
-      {tags.length > 0 && (
+      {/* The header shows even with no tags yet, because the + is how the first
+          one gets made — a section that only appears once you already have one
+          is a feature you cannot find. Collapsed there is no header row to put
+          a button in, so it goes; the tag rows themselves stay, because they
+          are still somewhere to go. */}
+      {!collapsed && (
         <>
-          <div className="rail-label">{t('rail-tags')}</div>
-          {tags.map((tag) => (
+          <div className="rail-label rail-label-row">
+            <span>{t('rail-tags')}</span>
+            <Tip label={t('tag-new')} placement="right">
+              <button
+                type="button"
+                className="rail-add"
+                aria-label={t('tag-new')}
+                onClick={() => setNaming(true)}
+              >
+                <Icon icon={Plus} size={13} />
+              </button>
+            </Tip>
+          </div>
+          {naming && (
+            <input
+              ref={nameInput}
+              className="rail-new-tag"
+              placeholder={t('tag-new-placeholder')}
+              aria-label={t('tag-new')}
+              autoComplete="off"
+              onBlur={() => setNaming(false)}
+              onKeyDown={(e) => {
+                // Stopped here so the app's single-key shortcuts do not fire
+                // while a tag is being named — typing "e" should not archive.
+                e.stopPropagation();
+                if (e.key === 'Escape') {
+                  setNaming(false);
+                  return;
+                }
+                if (e.key !== 'Enter') return;
+                const name = e.currentTarget.value.trim();
+                if (!name) {
+                  setNaming(false);
+                  return;
+                }
+                void onCreateTag(name).then(() => setNaming(false));
+              }}
+            />
+          )}
+        </>
+      )}
+
+      {tags.map((tag) => (
             <Tip key={tag.name} label={tag.name} placement="right" when={collapsed}>
             <button
               type="button"
@@ -148,9 +212,7 @@ export function Rail({
               )}
             </button>
             </Tip>
-          ))}
-        </>
-      )}
+      ))}
 
       {/* Help and Settings sit at the foot of the rail, out of the triage path
           but always in the same place — not hidden behind a menu. */}

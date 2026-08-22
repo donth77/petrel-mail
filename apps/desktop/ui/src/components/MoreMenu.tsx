@@ -13,6 +13,9 @@ import { Tip } from './Tip';
 
 type Props = {
   thread: Thread;
+  /** Which view is open. In the trash there is nowhere left to move something
+   *  to, so the destructive item becomes the permanent one. */
+  view: string;
   onAction: (kind: ActionKind) => void;
   onMove: () => void;
   onTag: () => void;
@@ -32,7 +35,8 @@ type Props = {
  * Every item here has a keyboard equivalent, shown alongside — the menu is for
  * discovering them, not a substitute for learning them.
  */
-export function MoreMenu({ thread, onAction, onMove, onTag, onSnooze }: Props) {
+export function MoreMenu({ thread, view, onAction, onMove, onTag, onSnooze }: Props) {
+  const inTrash = view === 'trash';
   return (
     <MenuProvider placement="bottom-end">
       <Tip label={t('reader-more')}>
@@ -87,9 +91,15 @@ export function MoreMenu({ thread, onAction, onMove, onTag, onSnooze }: Props) {
           <span className="menu-label">{t('menu-spam')}</span>
           <span className="menu-key">!</span>
         </MenuItem>
-        <MenuItem className="menu-item danger" onClick={() => onAction('trash')}>
+        {/* "Move to trash" from inside the trash is a gesture with nowhere to
+            go — it reads as broken. There, the same position and the same key
+            mean the thing you actually wanted. */}
+        <MenuItem
+          className="menu-item danger"
+          onClick={() => onAction(inTrash ? 'delete_forever' : 'trash')}
+        >
           <Icon icon={Trash2} size={14} />
-          <span className="menu-label">{t('cmd-trash')}</span>
+          <span className="menu-label">{inTrash ? t('delete-forever') : t('cmd-trash')}</span>
           <span className="menu-key">#</span>
         </MenuItem>
       </Menu>

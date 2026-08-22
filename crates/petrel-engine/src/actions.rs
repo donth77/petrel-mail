@@ -33,6 +33,14 @@ pub enum ActionKind {
     /// nowhere to record it, so it never reaches a server and never drains.
     Snooze,
     Unsnooze,
+    /// Gone. Not to the trash — out of it.
+    ///
+    /// The one action with no inverse. Everything else here is queued *with*
+    /// the state it replaced so it can be put back; this one ends with an
+    /// EXPUNGE, and no amount of local bookkeeping can un-expunge a message.
+    /// So it is confirmed before it happens rather than offered as undo after,
+    /// and `is_undoable` is what keeps the rest of the system honest about that.
+    DeleteForever,
 }
 
 impl ActionKind {
@@ -64,6 +72,16 @@ impl ActionKind {
         matches!(self, ActionKind::Snooze | ActionKind::Unsnooze)
     }
 
+    /// Whether the user can take this back.
+    ///
+    /// Only one action cannot be, and it is worth a method rather than a check
+    /// at each call site: an undo offered for a permanent delete would be a
+    /// button that lies, and the lie would only be discovered by someone
+    /// pressing it to recover something they wanted.
+    pub fn is_undoable(self) -> bool {
+        !matches!(self, ActionKind::DeleteForever)
+    }
+
     /// What the user is told after it happens. Past tense, because it already has.
     pub fn past_tense(self) -> &'static str {
         match self {
@@ -79,6 +97,7 @@ impl ActionKind {
             ActionKind::Untag => "Untagged",
             ActionKind::Snooze => "Snoozed",
             ActionKind::Unsnooze => "Back in the inbox",
+            ActionKind::DeleteForever => "Deleted",
         }
     }
 }

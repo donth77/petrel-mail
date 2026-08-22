@@ -548,3 +548,49 @@ fn pending_actions_come_back_in_the_order_they_were_made() {
     // And each knows how to address the message on the server.
     assert!(queued.iter().all(|p| p.folder_path == "INBOX"));
 }
+
+/// Permanent delete is the one action with no way back, and every layer has to
+/// agree about that — a client that offers undo and then cannot deliver it is
+/// worse than one that never offered.
+#[test]
+fn deleting_forever_leaves_the_list_and_cannot_be_undone() {
+    let (mut store, account, ids) = seeded();
+    let trash = store.ensure_folder(account, "trash", "Trash").unwrap();
+    store.place_message(ids[0], trash).unwrap();
+    let thread = store.thread_of(ids[0]).unwrap().unwrap_or(-ids[0]);
+
+    let receipt = store
+        .apply_thread_action(
+            account,
+            thread,
+            ActionKind::DeleteForever,
+            None,
+            PlacementPolicy::Exclusive,
+        )
+        .unwrap();
+
+    // Gone from the view it was in, not merely moved somewhere else.
+    let left: Vec<i64> = store
+        .list_threads(&ListView::Folder("trash".into()), 0, 50)
+        .unwrap()
+        .into_iter()
+        .map(|t| t.id)
+        .collect();
+    assert!(!left.contains(&ids[0]), "a deleted message still lists");
+
+    // And it still needs delivering, or the server would keep handing it back.
+    assert!(
+        !ActionKind::DeleteForever.is_local_only(),
+        "the expunge has to reach the server"
+    );
+    assert!(!store.undo_action(receipt.action_id).unwrap());
+
+    // Refusing undo must not have half-restored it on the way out.
+    let after: Vec<i64> = store
+        .list_threads(&ListView::Folder("trash".into()), 0, 50)
+        .unwrap()
+        .into_iter()
+        .map(|t| t.id)
+        .collect();
+    assert!(!after.contains(&ids[0]));
+}

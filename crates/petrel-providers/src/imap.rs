@@ -684,6 +684,71 @@ where
     Ok(())
 }
 
+/// Removes one message from the server for good.
+///
+/// UID EXPUNGE (RFC 4315) when the server has UIDPLUS, because a bare EXPUNGE
+/// is not a per-message operation: it removes *every* message in the mailbox
+/// carrying \Deleted, including ones some other client marked and has not
+/// committed yet. Deleting one message is not a licence to commit someone
+/// else's pending deletions.
+///
+/// Without UIDPLUS the message is marked \Deleted and left there. That is the
+/// conservative half of the job — it disappears from Petrel either way, and the
+/// server drops it at the next compaction — and it is a great deal better than
+/// taking unrelated mail with it. The caller is told which happened.
+pub async fn expunge_uid(
+    cfg: &ImapConfig,
+    folder: &str,
+    uid: u32,
+    server_has_uidplus: bool,
+) -> Result<bool> {
+    match cfg.security {
+        Security::Tls => {
+            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
+            expunge_uid_session(client, cfg, folder, uid, server_has_uidplus).await
+        }
+        #[cfg(feature = "insecure-plaintext")]
+        Security::InsecurePlaintext => {
+            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
+            expunge_uid_session(Client::new(tcp), cfg, folder, uid, server_has_uidplus).await
+        }
+    }
+}
+
+async fn expunge_uid_session<S>(
+    client: Client<S>,
+    cfg: &ImapConfig,
+    folder: &str,
+    uid: u32,
+    server_has_uidplus: bool,
+) -> Result<bool>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
+{
+    let mut session = client
+        .login(&cfg.user, &cfg.pass)
+        .await
+        .map_err(|(e, _)| e)?;
+    session.select(folder).await?;
+    {
+        let mut updates = session
+            .uid_store(uid.to_string(), "+FLAGS.SILENT (\\Deleted)")
+            .await?;
+        while updates.next().await.is_some() {}
+    }
+    let expunged = if server_has_uidplus {
+        // Pinned because the expunge stream is not Unpin, unlike the store one.
+        let updates = session.uid_expunge(uid.to_string()).await?;
+        futures::pin_mut!(updates);
+        while updates.next().await.is_some() {}
+        true
+    } else {
+        false
+    };
+    session.logout().await?;
+    Ok(expunged)
+}
+
 /// Moves one message, by UID, into another folder.
 ///
 /// Prefers UID MOVE (RFC 6851) and falls back to COPY + \Deleted + EXPUNGE for

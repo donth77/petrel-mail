@@ -13,6 +13,9 @@ function leavesView(kind: ActionKind, view: string): boolean {
   // list you were looking at — including the inbox, and including a folder
   // view, since the destination is by definition somewhere else.
   if (kind === 'move') return true;
+  // Deleting permanently removes the conversation from everywhere, so it leaves
+  // whatever list you happen to be looking at when you do it.
+  if (kind === 'delete_forever') return true;
   // Snoozing takes a conversation out of the inbox; un-snoozing takes it out
   // of the snoozed list. Either way it leaves the list you are looking at.
   if (kind === 'snooze') return view === 'inbox';
