@@ -205,6 +205,7 @@ fn spawn_drain_worker(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
             tokio::time::sleep(std::time::Duration::from_millis(900)).await;
             let has_move = state.server_has_move.load(Ordering::Relaxed);
             drain_actions(Arc::clone(&state), account, cfg.clone(), has_move).await;
+            send_due(Arc::clone(&state), account).await;
         }
     });
 }
@@ -414,6 +415,9 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
         // state instead of contradicting it — and anything still queued is
         // protected from being overwritten by the pending checks in the store.
         drain_actions(Arc::clone(&state), account, cfg.clone(), has_move).await;
+        // A message due while the app was closed goes out now, rather than
+        // waiting for whatever next wakes the worker.
+        send_due(Arc::clone(&state), account).await;
 
         // Ingest as each message lands rather than after all of them do. The
         // buffering version showed nothing for the whole fetch, which on a real
@@ -505,6 +509,7 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
             // Deliver first, so the fetch that follows confirms local state
             // rather than contradicting it — the same ordering as startup.
             drain_actions(Arc::clone(&state), account, cfg.clone(), has_move).await;
+            send_due(Arc::clone(&state), account).await;
 
             let since = inbox_id
                 .and_then(|fid| {
@@ -648,6 +653,35 @@ async fn send_message(
     attachments: Vec<String>,
     state: State<'_, Arc<AppState>>,
 ) -> Result<String, String> {
+    deliver(
+        state.inner(),
+        to,
+        cc,
+        subject,
+        body,
+        in_reply_to,
+        references,
+        attachments,
+    )
+    .await
+}
+
+/// Builds and sends one message, then files a copy in Sent.
+///
+/// Shared by the composer and the scheduled-send worker so there is one
+/// definition of what sending means — two would drift, and the half that
+/// drifted would be the one nobody watches.
+#[allow(clippy::too_many_arguments)]
+async fn deliver(
+    state: &Arc<AppState>,
+    to: Vec<String>,
+    cc: Vec<String>,
+    subject: String,
+    body: String,
+    in_reply_to: Option<String>,
+    references: Vec<String>,
+    attachments: Vec<String>,
+) -> Result<String, String> {
     use petrel_providers::smtp::{Attachment, Outgoing, SendResult, SmtpConfig, send_tls};
 
     let cfg = imap_config_from_env().ok_or("no account is configured")?;
@@ -746,6 +780,71 @@ async fn send_message(
     }
     log_sync(&format!("sent {message_id}"));
     Ok(message_id)
+}
+
+/// Marks a draft to go later, or pulls it back.
+#[tauri::command]
+fn schedule_send(
+    draft_id: i64,
+    at_ms: Option<i64>,
+    state: State<Arc<AppState>>,
+) -> Result<(), String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    store
+        .schedule_send(draft_id, at_ms)
+        .map_err(|e| e.to_string())?;
+    // Wake the worker: a message due in the past should not wait for the next
+    // poll just because it was scheduled after the fact.
+    state.drain_signal.notify_one();
+    Ok(())
+}
+
+/// Sends anything in the outbox whose time has come.
+///
+/// Runs on the same signal as the action drain, so a scheduled send goes out
+/// promptly rather than on whatever the sync cadence happens to be. Failures
+/// leave the message in the outbox: a send that did not happen is not one to
+/// forget about, and the next pass will try again.
+async fn send_due(state: Arc<AppState>, account: i64) {
+    let due = {
+        let Ok(store) = state.store.lock() else {
+            return;
+        };
+        store.due_sends(account, now_ms()).unwrap_or_default()
+    };
+    if due.is_empty() {
+        return;
+    }
+    log_sync(&format!("{} scheduled message(s) due", due.len()));
+
+    for d in due {
+        let to: Vec<String> =
+            d.to.split([',', ';'])
+                .map(|a| a.trim().to_string())
+                .filter(|a| !a.is_empty())
+                .collect();
+        match deliver(
+            &state,
+            to,
+            Vec::new(),
+            d.subject,
+            d.body,
+            None,
+            Vec::new(),
+            Vec::new(),
+        )
+        .await
+        {
+            Ok(id) => {
+                log_sync(&format!("scheduled send delivered {id}"));
+                if let Ok(store) = state.store.lock() {
+                    let _ = store.delete_draft(d.id);
+                }
+            }
+            // Left in the outbox on purpose, to be retried.
+            Err(e) => log_sync(&format!("scheduled send failed, still queued: {e}")),
+        }
+    }
 }
 
 /// Saves the composer's contents so they survive closing it.
@@ -1445,6 +1544,7 @@ pub fn run() {
             get_identity,
             set_identity,
             attachment_info,
+            schedule_send,
             save_draft,
             load_draft,
             delete_draft,

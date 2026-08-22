@@ -97,3 +97,89 @@ fn deleting_a_draft_removes_it() {
             .is_empty()
     );
 }
+
+/// Send later: a draft with a time on it.
+mod outbox {
+    use super::*;
+
+    fn now_ms() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn scheduling_moves_a_draft_from_drafts_to_the_outbox() {
+        let (s, account) = store();
+        let id = s
+            .save_draft(account, None, "a@example.com", "Later", "body")
+            .unwrap();
+        assert_eq!(
+            s.list_threads(&ListView::Folder("drafts".into()), 0, 50)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(s.list_threads(&ListView::Outbox, 0, 50).unwrap().is_empty());
+
+        s.schedule_send(id, Some(now_ms() + 600_000)).unwrap();
+
+        // It is post now, not a draft — showing it in both would invite editing
+        // something already on its way.
+        assert!(
+            s.list_threads(&ListView::Folder("drafts".into()), 0, 50)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(s.list_threads(&ListView::Outbox, 0, 50).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_scheduled_send_can_be_pulled_back() {
+        let (s, account) = store();
+        let id = s
+            .save_draft(account, None, "a@example.com", "Later", "body")
+            .unwrap();
+        s.schedule_send(id, Some(now_ms() + 600_000)).unwrap();
+        s.schedule_send(id, None).unwrap();
+
+        // An outbox you cannot retrieve something from is a worse promise than
+        // sending at once.
+        assert_eq!(
+            s.list_threads(&ListView::Folder("drafts".into()), 0, 50)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(s.list_threads(&ListView::Outbox, 0, 50).unwrap().is_empty());
+    }
+
+    #[test]
+    fn only_messages_whose_time_has_come_are_due() {
+        let (s, account) = store();
+        let soon = s
+            .save_draft(account, None, "a@example.com", "Soon", "b")
+            .unwrap();
+        let later = s
+            .save_draft(account, None, "b@example.com", "Later", "b")
+            .unwrap();
+        s.schedule_send(soon, Some(now_ms() - 1_000)).unwrap();
+        s.schedule_send(later, Some(now_ms() + 600_000)).unwrap();
+
+        let due = s.due_sends(account, now_ms()).unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].subject, "Soon");
+    }
+
+    #[test]
+    fn one_missed_while_the_app_was_shut_is_still_due() {
+        let (s, account) = store();
+        let id = s
+            .save_draft(account, None, "a@example.com", "Yesterday", "b")
+            .unwrap();
+        // Due long ago. Nothing ran in between, and nothing needed to.
+        s.schedule_send(id, Some(now_ms() - 86_400_000)).unwrap();
+        assert_eq!(s.due_sends(account, now_ms()).unwrap().len(), 1);
+    }
+}

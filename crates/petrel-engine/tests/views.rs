@@ -56,9 +56,7 @@ fn parse_maps_rail_keys_and_never_errors() {
         ListView::Tag("urgent".into())
     );
     assert_eq!(ListView::parse("snoozed"), ListView::Snoozed);
-    // Outbox is still the one view with nothing behind it: it needs a send
-    // queue, which arrives with deferred sending rather than with snooze.
-    assert_eq!(ListView::parse("outbox"), ListView::NotBuilt);
+    assert_eq!(ListView::parse("outbox"), ListView::Outbox);
     // A stale or unknown view falls back rather than failing: the worst
     // outcome of a bad rail key should be the wrong list, not a broken screen.
     assert_eq!(ListView::parse("nonsense"), ListView::Inbox);
@@ -167,15 +165,4 @@ fn tag_views_select_by_tag_and_are_not_sql() {
     let hostile = ListView::Tag("' OR 1=1 --".into());
     assert!(subjects(&store, &hostile).is_empty());
     assert_eq!(subjects(&store, &ListView::Inbox).len(), 4, "table intact");
-}
-
-#[test]
-fn views_with_nothing_behind_them_yet_are_empty_not_broken() {
-    let (store, _account, _ids) = seeded();
-    assert!(
-        store
-            .list_threads(&ListView::NotBuilt, 0, 50)
-            .unwrap()
-            .is_empty()
-    );
 }

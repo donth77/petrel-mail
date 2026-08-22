@@ -49,7 +49,7 @@ export function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [undoOffer, setUndoOffer] = useState<UndoOffer | null>(null);
   const [readerOverlay, setReaderOverlay] = useState(false);
-  const [picker, setPicker] = useState<'folder' | 'tag' | 'snooze' | null>(null);
+  const [picker, setPicker] = useState<'folder' | 'tag' | 'snooze' | 'send-later' | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   // Where a range grows from, so reversing direction shrinks it again.
   const [anchor, setAnchor] = useState<number | null>(null);
@@ -252,16 +252,12 @@ export function App() {
     if (view === 'inbox') {
       return { title: t('empty-inbox-title'), body: t('empty-inbox-body') };
     }
-    if (view === 'outbox') {
-      return {
-        title: t('empty-notbuilt-title', { view: viewName }),
-        body: t('empty-notbuilt-body'),
-      };
-    }
+
     const body =
       // Starred is not somewhere you move mail to, so the generic copy is
       // wrong there in a way a reader would notice.
-      view === 'snoozed' ? t('empty-snoozed-body', { key: 'B' })
+      view === 'outbox' ? t('empty-outbox-body')
+      : view === 'snoozed' ? t('empty-snoozed-body', { key: 'B' })
       : view === 'starred' ? t('empty-starred-body', { key: 'S' })
       : view === 'sent' ? t('empty-sent-body')
       : view === 'drafts' ? t('empty-drafts-body')
@@ -495,7 +491,9 @@ export function App() {
   // another "2026" elsewhere; tags carry their colour and whether this
   // conversation already has them, because tagging is a set, not a choice.
   const pickerOptions: PickerOption[] = useMemo(() => {
-    if (picker === 'snooze') return snoozeOptions();
+    // The same times snooze offers, for the same reason: "tomorrow" means the
+    // start of a working day, not twenty-four hours from now.
+    if (picker === 'snooze' || picker === 'send-later') return snoozeOptions();
     if (picker === 'tag') {
       const on = new Set((active?.tags ?? []).map((x) => x.name));
       return tags.map((tg) => ({
@@ -669,6 +667,7 @@ export function App() {
           }}
           onAttach={() => void attach()}
           onSaveDraft={() => void saveDraft(draft)}
+          onSendLater={() => setPicker('send-later')}
           onSend={() => {
             if (addresses(draft.to).length === 0) {
               setToast(t('compose-no-recipient'));
@@ -696,11 +695,27 @@ export function App() {
 
       <Picker
         open={picker !== null}
-        mode={picker ?? 'folder'}
+        mode={picker === 'send-later' ? 'snooze' : (picker ?? 'folder')}
         subject={active?.subject ?? null}
         options={pickerOptions}
         onClose={() => setPicker(null)}
         onChoose={(id, on) => {
+          if (picker === 'send-later') {
+            // Saved first: a message cannot wait in the outbox unless it
+            // exists there, and the id is what the schedule hangs on.
+            const d = draftRef.current;
+            setPicker(null);
+            if (!d) return;
+            void api
+              .saveDraft(d.savedId ?? null, d.to, d.subject, d.body)
+              .then((saved) => api.scheduleSend(saved, id))
+              .then(() => {
+                setDraft(null);
+                setToast(t('compose-scheduled', { when: new Date(id).toLocaleString() }));
+              })
+              .catch((e) => setToast(t('compose-save-failed', { error: String(e) })));
+            return;
+          }
           if (picker === 'snooze') {
             // The id *is* the instant to come back at — a snooze has no row to
             // point at, only a time.

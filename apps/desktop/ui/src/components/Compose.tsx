@@ -27,6 +27,7 @@ type Props = {
   onSend: () => void;
   onAttach: () => void;
   onSaveDraft: () => void;
+  onSendLater: () => void;
 };
 
 /** Splits a recipient field into addresses, forgiving the separators people
@@ -47,7 +48,7 @@ export function addresses(field: string): string[] {
  * are reading, and taking over the screen to write two lines loses the thing
  * being replied to. Popping out is a deliberate escalation, not the default.
  */
-export function Compose({ draft, account, onChange, onClose, onSend, onAttach, onSaveDraft }: Props) {
+export function Compose({ draft, account, onChange, onClose, onSend, onAttach, onSaveDraft, onSendLater }: Props) {
   const toRef = useRef<HTMLInputElement>(null);
   const bodyRef = useRef<HTMLTextAreaElement>(null);
   const [showCc, setShowCc] = useState(draft.cc.length > 0);
@@ -68,10 +69,16 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
       className="compose"
       aria-label={t('compose-title')}
       onKeyDown={(e) => {
-        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key === 'Enter') {
           e.preventDefault();
           e.stopPropagation();
           onSend();
+        }
+        if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 'Enter') {
+          e.preventDefault();
+          e.stopPropagation();
+          onSendLater();
+          return;
         }
         if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
           e.preventDefault();

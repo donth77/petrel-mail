@@ -222,6 +222,7 @@ const mock = {
   saveDraft: async () => 1,
   loadDraft: async (): Promise<DraftRecord> => ({ id: 1, to: '', subject: '', body: '' }),
   deleteDraft: async () => {},
+  scheduleSend: async () => {},
   attachmentInfo: async (paths: string[]) =>
     paths.map((path) => ({ path, name: path.split('/').pop() || path, size: 1024 })),
   accounts: async (): Promise<Account[]> => mockAccounts.map((a) => ({ ...a })),
@@ -307,6 +308,8 @@ const real = {
     invoke<number>('save_draft', { draftId, to, subject, body }),
   loadDraft: (id: number) => invoke<DraftRecord>('load_draft', { id }),
   deleteDraft: (id: number) => invoke<void>('delete_draft', { id }),
+  scheduleSend: (draftId: number, atMs: number | null) =>
+    invoke<void>('schedule_send', { draftId, atMs }),
   attachmentInfo: (paths: string[]) =>
     invoke<{ path: string; name: string; size: number }[]>('attachment_info', { paths }),
   accounts: () => invoke<Account[]>('list_accounts'),

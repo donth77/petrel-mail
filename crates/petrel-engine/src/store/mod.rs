@@ -11,7 +11,7 @@ use rusqlite::functions::FunctionFlags;
 use rusqlite::{Connection, params};
 use std::path::Path;
 
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 /// Bumped whenever text extraction changes; a mismatch forces reindexing.
 pub const EXTRACTOR_VERSION: i64 = 1;
 
@@ -611,12 +611,9 @@ pub enum ListView {
     Folder(String),
     /// Put aside until a time that has not arrived yet.
     Snoozed,
+    /// Written and waiting to go.
+    Outbox,
     Tag(String),
-    /// A view the product describes but has nothing to put in yet — Snoozed
-    /// without a scheduler, Outbox without sending. Deliberately distinct from
-    /// an unknown view: this one is empty because the feature is not built,
-    /// which is what the empty state says.
-    NotBuilt,
 }
 
 impl ListView {
@@ -627,7 +624,7 @@ impl ListView {
             "starred" => ListView::Starred,
             "archive" | "sent" | "drafts" | "spam" | "trash" => ListView::Folder(key.to_string()),
             "snoozed" => ListView::Snoozed,
-            "outbox" => ListView::NotBuilt,
+            "outbox" => ListView::Outbox,
             other => match other.strip_prefix("tag:") {
                 Some(name) if !name.is_empty() => ListView::Tag(name.to_string()),
                 // Anything unrecognised falls back to the inbox rather than
@@ -654,6 +651,9 @@ impl ListView {
             ListView::Snoozed => {
                 format!("coalesce({alias}.snoozed_until_ms, 0) > (strftime('%s','now') * 1000)")
             }
+            // A draft with a send time is not a draft any more, it is post. The
+            // two views are the same rows split on that one column.
+            ListView::Outbox => format!("{alias}.send_after_ms IS NOT NULL"),
             ListView::Starred => format!(
                 "{alias}.flags & {f} != 0
                  AND NOT EXISTS (SELECT 1 FROM placements p
@@ -661,6 +661,12 @@ impl ListView {
                                  WHERE p.message_id = {alias}.id
                                    AND f.role IN ('trash','spam'))",
                 f = flags::FLAGGED,
+            ),
+            ListView::Folder(role) if role == "drafts" => format!(
+                "{alias}.send_after_ms IS NULL
+                 AND EXISTS (SELECT 1 FROM placements p
+                             JOIN folders f ON f.id = p.folder_id
+                             WHERE p.message_id = {alias}.id AND f.role = ?3)"
             ),
             ListView::Folder(_) => format!(
                 "EXISTS (SELECT 1 FROM placements p
@@ -672,7 +678,6 @@ impl ListView {
                          JOIN tags tg ON tg.id = mt.tag_id
                          WHERE mt.message_id = {alias}.id AND tg.name = ?3)"
             ),
-            ListView::NotBuilt => "0".to_string(),
         }
     }
 
@@ -737,6 +742,9 @@ impl Store {
         }
         if ver < 7 {
             conn.execute_batch(include_str!("migrations/0007-draft-body.sql"))?;
+        }
+        if ver < 8 {
+            conn.execute_batch(include_str!("migrations/0008-send-later.sql"))?;
         }
         if ver < SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -1724,6 +1732,36 @@ impl Store {
         Ok(id)
     }
 
+    /// Marks a draft to go at a given time, or clears the schedule.
+    ///
+    /// Clearing matters as much as setting: an outbox you cannot pull something
+    /// back out of is a worse promise than sending straight away, because the
+    /// window where you can change your mind is exactly why it exists.
+    pub fn schedule_send(&self, draft_id: i64, at_ms: Option<i64>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE messages SET send_after_ms = ?2 WHERE id = ?1",
+            params![draft_id, at_ms],
+        )?;
+        Ok(())
+    }
+
+    /// Drafts whose time has come.
+    ///
+    /// A comparison against the clock, not a timer — so a message due while the
+    /// app was closed goes out on the next pass instead of being missed by an
+    /// alarm that never rang.
+    pub fn due_sends(&self, account_id: i64, now_ms: i64) -> Result<Vec<DraftRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id FROM messages
+             WHERE account_id = ?1 AND send_after_ms IS NOT NULL AND send_after_ms <= ?2
+             ORDER BY send_after_ms",
+        )?;
+        let ids: Vec<i64> = stmt
+            .query_map(params![account_id, now_ms], |r| r.get(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        ids.into_iter().map(|id| self.load_draft(id)).collect()
+    }
+
     /// Reads a draft back for editing.
     pub fn load_draft(&self, id: i64) -> Result<DraftRecord> {
         let (subject, body): (String, String) = self.conn.query_row(
@@ -2353,12 +2391,6 @@ impl Store {
         offset: u32,
         limit: u32,
     ) -> Result<Vec<ThreadListing>> {
-        // A view with nothing behind it yet answers empty rather than building a
-        // query that selects nothing — the caller shows "not built" copy, which
-        // is a different thing from "no mail here".
-        if matches!(view, ListView::NotBuilt) {
-            return Ok(Vec::new());
-        }
         let sql = format!(
             "SELECT coalesce(m.thread_id, -m.id), m.id, coalesce(m.from_display,''), coalesce(m.from_addr,''),
                     coalesce(m.subject,''), coalesce(m.snippet,''), m.date_ms, t.n,
