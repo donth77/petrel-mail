@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, type Account, type Tag, type Thread, type Status } from './lib/api';
 import { count as fmtCount } from './lib/format';
-import { t } from './lib/strings';
+import { t, type StringId } from './lib/strings';
 import { Search } from 'lucide-react';
 import { Rail } from './components/Rail';
 import { useKeyboard } from './lib/useKeyboard';
@@ -51,7 +51,7 @@ export function App() {
   useEffect(() => {
     let live = true;
     const run = () => {
-      const p = query.trim() ? api.search(query) : api.threads(0, 500);
+      const p = query.trim() ? api.search(query) : api.threads(view, 0, 500);
       p.then((rows: Thread[]) => {
         if (!live) return;
         setError(null);
@@ -70,13 +70,14 @@ export function App() {
       live = false;
       clearTimeout(h);
     };
-  }, [query, status?.count, status?.seeding]);
+  }, [query, view, status?.count, status?.seeding]);
 
   const triage = useTriage({
     items,
     setItems,
     activeId,
     setActiveId,
+    view,
     onMessage: (text, undo) => {
       setToast(text);
       setUndoOffer(undo ?? null);
@@ -123,6 +124,42 @@ export function App() {
     openSettings: () => setSettingsOpen(true),
     focusSearch: () => searchRef.current?.focus(),
   });
+
+  // The rail key is the view's identity; its label comes from the same string
+  // table the rail uses, so the two can never disagree.
+  const viewName = useMemo(
+    () => (view.startsWith('tag:') ? view.slice(4) : t(`mailbox-${view}` as StringId)),
+    [view],
+  );
+
+  // An empty list means different things in different views, and saying the
+  // wrong one is worse than saying nothing: "Nothing in Sent" reads as a fact
+  // about your mail when it is really a fact about what Petrel cannot do yet.
+  const emptyState = useMemo(() => {
+    if (query) {
+      return {
+        title: t('empty-search-title', { query }),
+        body: t('empty-search-body', { count: fmtCount(status?.count ?? 0) }),
+      };
+    }
+    if (view === 'inbox') {
+      return { title: t('empty-inbox-title'), body: t('empty-inbox-body') };
+    }
+    if (view === 'snoozed' || view === 'outbox') {
+      return {
+        title: t('empty-notbuilt-title', { view: viewName }),
+        body: t('empty-notbuilt-body'),
+      };
+    }
+    const body =
+      // Starred is not somewhere you move mail to, so the generic copy is
+      // wrong there in a way a reader would notice.
+      view === 'starred' ? t('empty-starred-body', { key: 'S' })
+      : view === 'sent' ? t('empty-sent-body')
+      : view === 'drafts' ? t('empty-drafts-body')
+      : t('empty-view-body');
+    return { title: t('empty-view-title', { view: viewName }), body };
+  }, [query, view, viewName, status?.count]);
 
   const active = useMemo(() => items.find((m) => m.id === activeId) ?? null, [items, activeId]);
   const unread = useMemo(() => items.filter((m) => m.unread).length, [items]);
@@ -180,7 +217,7 @@ export function App() {
             <span className="kbd">{t('search-hint-key')}</span>
           </div>
           <div className="view-row">
-            <span className="view-name">{t('mailbox-inbox')}</span>
+            <span className="view-name">{viewName}</span>
             <span className="chip">
               <span className="dot" style={{ background: 'var(--accent)' }} />
               {accountLabel}
@@ -200,16 +237,8 @@ export function App() {
           </div>
         ) : items.length === 0 ? (
           <div className="empty">
-            <h2>
-              {query
-                ? t('empty-search-title', { query })
-                : t('empty-inbox-title')}
-            </h2>
-            <p>
-              {query
-                ? t('empty-search-body', { count: fmtCount(status?.count ?? 0) })
-                : t('empty-inbox-body')}
-            </p>
+            <h2>{emptyState.title}</h2>
+            <p>{emptyState.body}</p>
           </div>
         ) : (
           <MessageList

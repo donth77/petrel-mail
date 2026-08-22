@@ -481,13 +481,95 @@ fn assign_thread(
 /// positive test would hide all of it — the same class of bug as joining on a
 /// NULL `thread_id`. Search deliberately does *not* use this: archived mail is
 /// exactly what people search for.
-fn not_filed(id_expr: &str) -> String {
+fn not_filed(alias: &str) -> String {
     format!(
         "NOT EXISTS (SELECT 1 FROM placements p
                      JOIN folders f ON f.id = p.folder_id
-                     WHERE p.message_id = {id_expr}
+                     WHERE p.message_id = {alias}.id
                        AND f.role IN ('archive','trash','spam'))"
     )
+}
+
+/// Which conversations the list is showing.
+///
+/// Parsed in the engine rather than at the IPC boundary so the mapping from a
+/// rail key to a query is one thing with one set of tests, and so an unknown
+/// view can never be turned into SQL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ListView {
+    /// Everything that has not been filed away. The default.
+    Inbox,
+    /// Flagged mail wherever it lives — except trash and spam, which are
+    /// where things go to be forgotten.
+    Starred,
+    /// A server folder by its role: archive, sent, drafts, spam, trash.
+    Folder(String),
+    Tag(String),
+    /// A view the product describes but has nothing to put in yet — Snoozed
+    /// without a scheduler, Outbox without sending. Deliberately distinct from
+    /// an unknown view: this one is empty because the feature is not built,
+    /// which is what the empty state says.
+    NotBuilt,
+}
+
+impl ListView {
+    /// Rail keys are the wire format, so this is the only place that knows them.
+    pub fn parse(key: &str) -> ListView {
+        match key {
+            "inbox" => ListView::Inbox,
+            "starred" => ListView::Starred,
+            "archive" | "sent" | "drafts" | "spam" | "trash" => ListView::Folder(key.to_string()),
+            "snoozed" | "outbox" => ListView::NotBuilt,
+            other => match other.strip_prefix("tag:") {
+                Some(name) if !name.is_empty() => ListView::Tag(name.to_string()),
+                // Anything unrecognised falls back to the inbox rather than
+                // erroring: a stale saved view should not leave you looking at
+                // a broken screen.
+                _ => ListView::Inbox,
+            },
+        }
+    }
+
+    /// The WHERE fragment selecting this view's messages, given the table alias
+    /// the surrounding query uses for `messages`.
+    ///
+    /// The folder role and the tag name are both bound as `?3` rather than
+    /// interpolated. Only one of them is ever live, and neither is a literal
+    /// this module controls — `Folder` is a public variant and a tag name is
+    /// whatever the user typed, so both are user data on its way into SQL.
+    fn predicate(&self, alias: &str) -> String {
+        match self {
+            ListView::Inbox => not_filed(alias),
+            ListView::Starred => format!(
+                "{alias}.flags & {f} != 0
+                 AND NOT EXISTS (SELECT 1 FROM placements p
+                                 JOIN folders f ON f.id = p.folder_id
+                                 WHERE p.message_id = {alias}.id
+                                   AND f.role IN ('trash','spam'))",
+                f = flags::FLAGGED,
+            ),
+            ListView::Folder(_) => format!(
+                "EXISTS (SELECT 1 FROM placements p
+                         JOIN folders f ON f.id = p.folder_id
+                         WHERE p.message_id = {alias}.id AND f.role = ?3)"
+            ),
+            ListView::Tag(_) => format!(
+                "EXISTS (SELECT 1 FROM message_tags mt
+                         JOIN tags tg ON tg.id = mt.tag_id
+                         WHERE mt.message_id = {alias}.id AND tg.name = ?3)"
+            ),
+            ListView::NotBuilt => "0".to_string(),
+        }
+    }
+
+    /// The value bound to `?3`, if this view needs one.
+    fn bound(&self) -> Option<&str> {
+        match self {
+            ListView::Folder(role) => Some(role),
+            ListView::Tag(name) => Some(name),
+            _ => None,
+        }
+    }
 }
 
 impl Store {
@@ -1527,7 +1609,18 @@ impl Store {
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
-    pub fn list_threads(&self, offset: u32, limit: u32) -> Result<Vec<ThreadListing>> {
+    pub fn list_threads(
+        &self,
+        view: &ListView,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Vec<ThreadListing>> {
+        // A view with nothing behind it yet answers empty rather than building a
+        // query that selects nothing — the caller shows "not built" copy, which
+        // is a different thing from "no mail here".
+        if matches!(view, ListView::NotBuilt) {
+            return Ok(Vec::new());
+        }
         let sql = format!(
             "SELECT coalesce(m.thread_id, -m.id), m.id, coalesce(m.from_display,''), coalesce(m.from_addr,''),
                     coalesce(m.subject,''), coalesce(m.snippet,''), m.date_ms, t.n,
@@ -1556,11 +1649,18 @@ impl Store {
              WHERE m.deleted_at_ms IS NULL AND {outer}
              GROUP BY coalesce(m.thread_id, -m.id)
              ORDER BY m.date_ms DESC LIMIT ?1 OFFSET ?2",
-            inner = not_filed("messages.id"),
-            outer = not_filed("m.id"),
+            inner = view.predicate("messages"),
+            outer = view.predicate("m"),
         );
         let mut stmt = self.conn.prepare_cached(&sql)?;
-        let rows = stmt.query_map(params![limit, offset], |row| {
+        // Two params, or three when the view binds a folder role or tag name.
+        // rusqlite rejects a count that does not match what the SQL references,
+        // so this cannot be a fixed tuple.
+        let mut args: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(limit), Box::new(offset)];
+        if let Some(b) = view.bound() {
+            args.push(Box::new(b.to_string()));
+        }
+        let rows = stmt.query_map(rusqlite::params_from_iter(args), |row| {
             Ok(ThreadListing {
                 thread_id: row.get(0)?,
                 id: row.get(1)?,

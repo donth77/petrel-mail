@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use petrel_engine::actions::{ActionKind, ActionReceipt};
 use petrel_engine::blob::BlobStore;
 use petrel_engine::store::{
-    AccountSummary, Listing, NewMessage, Store, TagSummary, ThreadListing, ThreadMessage,
+    AccountSummary, ListView, Listing, NewMessage, Store, TagSummary, ThreadListing, ThreadMessage,
 };
 use petrel_providers::imap::{ImapConfig, Security};
 use petrel_testkit::DemoMailbox;
@@ -171,13 +171,17 @@ fn list_messages(
 /// size (docs 06). Flags are rolled up across the thread by the engine.
 #[tauri::command]
 fn list_threads(
+    view: Option<String>,
     offset: u32,
     limit: u32,
     state: State<Arc<AppState>>,
 ) -> Result<Vec<ThreadListing>, String> {
+    // The rail key is parsed by the engine, which owns the mapping from a view
+    // to a query. An absent view means the inbox.
+    let view = ListView::parse(view.as_deref().unwrap_or("inbox"));
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
     store
-        .list_threads(offset, limit.min(2000))
+        .list_threads(&view, offset, limit.min(2000))
         .map_err(|e| e.to_string())
 }
 

@@ -33,6 +33,8 @@
       has_attachments: false,
       tags: [],
       attachment_name: '',
+      // Where the engine would have filed it; '' means still in the inbox.
+      filed: '',
     };
   });
 
@@ -46,8 +48,21 @@
         data_dir: '/tmp',
       };
     },
-    list_threads: function () {
-      return rows;
+    list_threads: function (a) {
+      // Views are modelled here, not faked away. A shim that returns the same
+      // rows for every view would let an unimplemented view look implemented,
+      // which is the exact failure this harness exists to catch.
+      var view = a.view || 'inbox';
+      if (view === 'inbox') return rows.filter(function (r) { return !r.filed; });
+      if (view === 'starred') return rows.filter(function (r) { return r.starred; });
+      if (view === 'snoozed' || view === 'outbox') return [];
+      if (view.indexOf('tag:') === 0) {
+        var name = view.slice(4);
+        return rows.filter(function (r) {
+          return r.tags.some(function (t) { return t.name === name; });
+        });
+      }
+      return rows.filter(function (r) { return r.filed === view; });
     },
     list_messages: function () {
       return rows;
@@ -94,6 +109,18 @@
       return null;
     },
     triage: function (a) {
+      // Move the fixture the way the engine would, so a view switch after a
+      // triage action shows what the real one would show.
+      var row = rows.filter(function (r) { return r.thread_id === a.threadId; })[0];
+      if (row) {
+        if (a.kind === 'archive') row.filed = 'archive';
+        else if (a.kind === 'trash') row.filed = 'trash';
+        else if (a.kind === 'spam') row.filed = 'spam';
+        else if (a.kind === 'star') row.starred = true;
+        else if (a.kind === 'unstar') row.starred = false;
+        else if (a.kind === 'mark_read') row.unread = false;
+        else if (a.kind === 'mark_unread') row.unread = true;
+      }
       var past = {
         archive: 'Archived',
         trash: 'Moved to trash',

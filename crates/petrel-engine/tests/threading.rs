@@ -6,7 +6,7 @@
 //! merge, and accounts that must never bleed into each other.
 
 use petrel_engine::blob::BlobStore;
-use petrel_engine::store::Store;
+use petrel_engine::store::{ListView, Store};
 
 const DAY: i64 = 24 * 60 * 60 * 1000;
 const T0: i64 = 1_800_000_000_000;
@@ -109,7 +109,7 @@ fn a_reply_chain_becomes_one_conversation() {
     assert_eq!(threads[1], threads[2]);
 
     // The list shows one row for three messages.
-    let listed = store.list_threads(0, 20).expect("list");
+    let listed = store.list_threads(&ListView::Inbox, 0, 20).expect("list");
     assert_eq!(listed.len(), 1, "one conversation, not three rows");
     assert_eq!(listed[0].message_count, 3);
     assert_eq!(listed[0].id, ids[2], "the row shows the newest message");
@@ -173,7 +173,7 @@ fn a_late_middle_message_merges_two_threads() {
     assert_eq!(t1, t2, "middle joins the head");
     assert_eq!(t2, t3, "and drags the tail with it");
 
-    let listed = store.list_threads(0, 20).expect("list");
+    let listed = store.list_threads(&ListView::Inbox, 0, 20).expect("list");
     assert_eq!(listed.len(), 1, "the two threads became one");
     assert_eq!(listed[0].message_count, 3);
 }
@@ -243,7 +243,13 @@ fn generic_subjects_do_not_merge_strangers() {
         store.thread_of(b.message_id).unwrap(),
         "\"Hi\" is not evidence of a conversation"
     );
-    assert_eq!(store.list_threads(0, 20).expect("list").len(), 2);
+    assert_eq!(
+        store
+            .list_threads(&ListView::Inbox, 0, 20)
+            .expect("list")
+            .len(),
+        2
+    );
 }
 
 #[test]
@@ -306,7 +312,13 @@ fn threads_never_span_accounts() {
         store.thread_of(b.message_id).unwrap(),
         "each account keeps its own conversation; actions must not cross"
     );
-    assert_eq!(store.list_threads(0, 20).expect("list").len(), 2);
+    assert_eq!(
+        store
+            .list_threads(&ListView::Inbox, 0, 20)
+            .expect("list")
+            .len(),
+        2
+    );
 }
 
 #[test]
@@ -350,7 +362,7 @@ fn deleted_messages_leave_the_conversation() {
         1,
         "a deleted message must vanish from the conversation too"
     );
-    let listed = store.list_threads(0, 20).expect("list");
+    let listed = store.list_threads(&ListView::Inbox, 0, 20).expect("list");
     assert_eq!(listed[0].message_count, 1);
 }
 
@@ -368,7 +380,7 @@ fn resyncing_a_thread_does_not_inflate_its_count() {
                 .expect("ingest");
         }
     }
-    let listed = store.list_threads(0, 20).expect("list");
+    let listed = store.list_threads(&ListView::Inbox, 0, 20).expect("list");
     assert_eq!(listed.len(), 1);
     assert_eq!(
         listed[0].message_count, 2,
@@ -402,7 +414,7 @@ fn thread_rows_roll_up_flags_from_their_messages() {
         .unwrap();
     store.set_has_attachments(ib.message_id, true).unwrap();
 
-    let rows = store.list_threads(0, 10).unwrap();
+    let rows = store.list_threads(&ListView::Inbox, 0, 10).unwrap();
     let row = rows
         .iter()
         .find(|r| r.subject.contains("Contract terms"))
@@ -421,7 +433,7 @@ fn thread_rows_roll_up_flags_from_their_messages() {
 
     // And the inverse: reading everything clears it.
     store.set_flags(ib.message_id, flags::SEEN, 0).unwrap();
-    let rows = store.list_threads(0, 10).unwrap();
+    let rows = store.list_threads(&ListView::Inbox, 0, 10).unwrap();
     let row = rows
         .iter()
         .find(|r| r.subject.contains("Contract terms"))
@@ -498,7 +510,7 @@ fn messages_without_a_thread_still_appear_as_single_conversations() {
     let ids = store.insert_messages(&msgs).unwrap();
     assert_eq!(ids.len(), 3);
 
-    let rows = store.list_threads(0, 50).unwrap();
+    let rows = store.list_threads(&ListView::Inbox, 0, 50).unwrap();
     assert_eq!(rows.len(), 3, "every unthreaded message gets its own row");
     for r in &rows {
         assert_eq!(r.message_count, 1, "a conversation of one");

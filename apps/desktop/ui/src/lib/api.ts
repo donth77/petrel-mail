@@ -145,7 +145,20 @@ const mock = {
     seeding: false, count: 10000, source: 'tom@northbay.example',
     retention: 'mirror', data_dir: '~/Library/Application Support/Petrel',
   }),
-  threads: async (offset: number, limit: number) => mockRows(Math.min(limit, 2000), offset),
+  threads: async (view: string, offset: number, limit: number) => {
+    const rows = mockRows(Math.min(limit, 2000), offset);
+    // Enough fidelity to exercise the view switch: the browser mock is not the
+    // engine, and pretending otherwise is what let an unimplemented view look
+    // implemented.
+    if (view === 'starred') return rows.filter((r) => r.starred);
+    if (view === 'snoozed' || view === 'outbox') return [];
+    if (view.startsWith('tag:')) {
+      const name = view.slice(4);
+      return rows.filter((r) => r.tags.some((t) => t.name === name));
+    }
+    if (view !== 'inbox') return [];
+    return rows;
+  },
   search: async (q: string) =>
     mockRows(24).filter((r) => r.subject.toLowerCase().includes(q.toLowerCase())),
   // Fresh objects each call: returning the same reference means React sees no
@@ -218,8 +231,8 @@ const mock = {
 
 const real = {
   status: () => invoke<Status>('status'),
-  threads: (offset: number, limit: number) =>
-    invoke<Thread[]>('list_threads', { offset, limit }),
+  threads: (view: string, offset: number, limit: number) =>
+    invoke<Thread[]>('list_threads', { view, offset, limit }),
   tags: () => invoke<Tag[]>('list_tags'),
   triage: (threadId: number, kind: ActionKind) =>
     invoke<ActionReceipt>('triage', { threadId, kind }),

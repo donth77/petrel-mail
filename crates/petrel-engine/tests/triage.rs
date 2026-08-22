@@ -5,7 +5,7 @@
 //! action has touched the same message, which is where guessing goes wrong.
 
 use petrel_engine::actions::ActionKind;
-use petrel_engine::store::{NewMessage, Store, flags};
+use petrel_engine::store::{ListView, NewMessage, Store, flags};
 
 fn seeded() -> (Store, i64, Vec<i64>) {
     let mut store = Store::open_in_memory().unwrap();
@@ -144,13 +144,13 @@ fn archived_conversations_leave_the_listing_and_come_back_on_undo() {
     }
     let tid = thread_of(&store, ids[0]);
 
-    let before = store.list_threads(0, 50).unwrap();
+    let before = store.list_threads(&ListView::Inbox, 0, 50).unwrap();
     assert_eq!(before.len(), 3, "all three start in the listing");
 
     let receipt = store
         .apply_thread_action(account, tid, ActionKind::Archive)
         .unwrap();
-    let after = store.list_threads(0, 50).unwrap();
+    let after = store.list_threads(&ListView::Inbox, 0, 50).unwrap();
     assert_eq!(after.len(), 2, "the archived conversation left the listing");
     assert!(
         !after.iter().any(|t| t.thread_id == tid),
@@ -158,7 +158,7 @@ fn archived_conversations_leave_the_listing_and_come_back_on_undo() {
     );
 
     store.undo_action(receipt.action_id).unwrap();
-    let restored = store.list_threads(0, 50).unwrap();
+    let restored = store.list_threads(&ListView::Inbox, 0, 50).unwrap();
     assert_eq!(restored.len(), 3, "undo puts it back in the listing");
     assert!(restored.iter().any(|t| t.thread_id == tid));
 }
@@ -170,7 +170,7 @@ fn archived_conversations_leave_the_listing_and_come_back_on_undo() {
 fn unplaced_messages_stay_in_the_listing() {
     let (store, _account, _ids) = seeded();
     assert_eq!(
-        store.list_threads(0, 50).unwrap().len(),
+        store.list_threads(&ListView::Inbox, 0, 50).unwrap().len(),
         3,
         "messages with no placement at all must still be listed"
     );
@@ -190,5 +190,8 @@ fn trashed_and_spammed_conversations_leave_the_listing() {
     store
         .apply_thread_action(account, thread_of(&store, ids[1]), ActionKind::Spam)
         .unwrap();
-    assert_eq!(store.list_threads(0, 50).unwrap().len(), 1);
+    assert_eq!(
+        store.list_threads(&ListView::Inbox, 0, 50).unwrap().len(),
+        1
+    );
 }

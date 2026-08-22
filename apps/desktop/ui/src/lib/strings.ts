@@ -59,6 +59,13 @@ const en = {
   'reader-none-body': 'Pick a conversation with J and K, or press Enter to open one.',
 
   'empty-inbox-title': 'Inbox is clear',
+  'empty-view-title': 'Nothing in { $view }',
+  'empty-view-body': 'Conversations you move here will show up in this list.',
+  'empty-notbuilt-title': '{ $view } is not built yet',
+  'empty-notbuilt-body': 'The view is here so the shape of the app is honest; nothing fills it until the feature lands.',
+  'empty-starred-body': 'Star a conversation with { $key } and it will be here.',
+  'empty-sent-body': 'Petrel cannot send mail yet, so nothing has landed here.',
+  'empty-drafts-body': 'Composing is not built yet, so there are no drafts to keep.',
   'empty-inbox-body': 'Nothing left to triage. Snoozed mail comes back when you asked it to.',
   'empty-search-title': 'No matches for “{ $query }”',
   'empty-search-body': 'All { $count } messages were searched.',

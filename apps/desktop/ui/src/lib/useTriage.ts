@@ -2,6 +2,31 @@ import { useCallback, useRef, useState } from 'react';
 import { api, type ActionKind, type Thread } from './api';
 import { t } from './strings';
 
+/** Whether an action takes a conversation out of the list you are looking at.
+ *
+ *  This cannot be read off the action alone. Archiving removes a row from the
+ *  inbox and from trash, but not from the archive; unstarring removes it from
+ *  Starred and from nowhere else. Deciding by action alone left rows sitting in
+ *  lists they no longer belonged to. */
+function leavesView(kind: ActionKind, view: string): boolean {
+  switch (view) {
+    case 'inbox':
+      return kind === 'archive' || kind === 'trash' || kind === 'spam';
+    case 'starred':
+      return kind === 'unstar' || kind === 'trash' || kind === 'spam';
+    case 'archive':
+      return kind === 'trash' || kind === 'spam';
+    case 'trash':
+      return kind === 'archive' || kind === 'spam';
+    case 'spam':
+      return kind === 'archive' || kind === 'trash';
+    default:
+      // Sent, drafts and tag views: nothing triage does moves a conversation
+      // out of them.
+      return false;
+  }
+}
+
 export type UndoOffer = {
   actionId: number;
   description: string;
@@ -30,9 +55,10 @@ export function useTriage(opts: {
   setItems: (fn: (prev: Thread[]) => Thread[]) => void;
   activeId: number | null;
   setActiveId: (id: number | null) => void;
+  view: string;
   onMessage: (text: string, undo?: UndoOffer) => void;
 }) {
-  const { items, setItems, activeId, setActiveId, onMessage } = opts;
+  const { items, setItems, activeId, setActiveId, view, onMessage } = opts;
   const [pending, setPending] = useState(false);
   // The last thing done, so Z has something to reverse without the caller
   // tracking it.
@@ -57,7 +83,7 @@ export function useTriage(opts: {
         JSON.stringify({ kind: 'triage', stage: 'start', k, target, threadId: row.thread_id }),
       );
 
-      const removes = kind === 'archive' || kind === 'trash' || kind === 'spam';
+      const removes = leavesView(kind, view);
       const before = items;
       const atIndex = items.findIndex((m) => m.id === row.id);
 
@@ -112,7 +138,7 @@ export function useTriage(opts: {
         setPending(false);
       }
     },
-    [items, activeId, setItems, setActiveId, onMessage],
+    [items, activeId, setItems, setActiveId, view, onMessage],
   );
 
   const undo = useCallback(
