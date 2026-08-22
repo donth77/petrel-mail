@@ -31,18 +31,32 @@ impl BlobStore {
         })
     }
 
-    fn path_for(&self, hash: &str) -> PathBuf {
-        self.root
-            .join(&hash[0..2])
-            .join(&hash[2..4])
-            .join(format!("{hash}.zst"))
+    /// Where a blob lives, sharded two levels deep so no directory holds a
+    /// hundred thousand files.
+    ///
+    /// Returns None for anything that is not a hash. Slicing a short string
+    /// here panicked, which turned "this message has no stored body" — an
+    /// ordinary thing to find in a database — into a crash inside whatever was
+    /// reading it.
+    fn path_for(&self, hash: &str) -> Option<PathBuf> {
+        if hash.len() < 4 || !hash.is_char_boundary(2) || !hash.is_char_boundary(4) {
+            return None;
+        }
+        Some(
+            self.root
+                .join(&hash[0..2])
+                .join(&hash[2..4])
+                .join(format!("{hash}.zst")),
+        )
     }
 
     /// Writes bytes, returns (hex hash, compressed size). Idempotent: an
     /// existing blob with the same hash is left untouched (dedupe).
     pub fn write(&self, bytes: &[u8]) -> Result<(String, u64)> {
         let hash = blake3::hash(bytes).to_hex().to_string();
-        let final_path = self.path_for(&hash);
+        let final_path = self
+            .path_for(&hash)
+            .expect("blake3 hex is always long enough to shard");
         if let Ok(meta) = fs::metadata(&final_path) {
             return Ok((hash, meta.len()));
         }
@@ -65,7 +79,10 @@ impl BlobStore {
     /// truncated restore, an antivirus rewrite) into a clean error the engine
     /// can heal from by refetching, instead of a wrong message on screen.
     pub fn read(&self, hash: &str) -> Result<Vec<u8>> {
-        let compressed = fs::read(self.path_for(hash))?;
+        let path = self
+            .path_for(hash)
+            .ok_or_else(|| BlobError::Corrupt(format!("{hash:?} is not a blob hash")))?;
+        let compressed = fs::read(path)?;
         let bytes = zstd::decode_all(compressed.as_slice())
             .map_err(|e| BlobError::Corrupt(format!("{hash}: decompression failed: {e}")))?;
         let actual = blake3::hash(&bytes).to_hex().to_string();
@@ -85,7 +102,11 @@ impl BlobStore {
     /// Deletes one blob's file. Called only by GC, and only for a hash the
     /// store has already proven unreachable.
     pub fn remove(&self, hash: &str) -> Result<()> {
-        match fs::remove_file(self.path_for(hash)) {
+        // Nothing to remove for a hash that could never have been stored.
+        let Some(path) = self.path_for(hash) else {
+            return Ok(());
+        };
+        match fs::remove_file(path) {
             Ok(()) => Ok(()),
             // Already gone is success: GC is idempotent by design.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -106,6 +127,28 @@ impl BlobStore {
     }
 
     /// Number of `.part` files awaiting a sweep (diagnostics/tests).
+    /// Bytes on disk across every stored blob.
+    ///
+    /// Walked rather than tracked in a counter: a counter drifts the first time
+    /// a crash lands between writing a blob and recording it, and the number
+    /// people check disk usage for is the one the filesystem actually reports.
+    pub fn total_bytes(&self) -> Result<u64> {
+        fn walk(dir: &std::path::Path) -> std::io::Result<u64> {
+            let mut total = 0;
+            for entry in std::fs::read_dir(dir)? {
+                let entry = entry?;
+                let meta = entry.metadata()?;
+                if meta.is_dir() {
+                    total += walk(&entry.path())?;
+                } else {
+                    total += meta.len();
+                }
+            }
+            Ok(total)
+        }
+        Ok(walk(&self.root).unwrap_or(0))
+    }
+
     pub fn pending_temp_files(&self) -> Result<usize> {
         Ok(fs::read_dir(self.root.join("tmp"))?.count())
     }

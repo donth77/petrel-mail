@@ -157,6 +157,19 @@ const en = {
   'settings-appearance': 'Appearance',
   'settings-privacy': 'Privacy & Security',
   'settings-storage': 'Storage & Data',
+  'storage-on-this-mac': 'On this Mac',
+  'storage-messages': 'Messages',
+  'storage-attachments': 'Attachments',
+  'storage-mail': 'Mail',
+  'storage-database': 'Database',
+  'storage-index': 'Search index',
+  'storage-export': 'Take your mail with you',
+  'storage-export-help':
+    'Writes to mbox, which every other mail client can read. Your mail stays yours whatever happens to Petrel — an export only Petrel could open would not be much of a promise.',
+  'storage-exported': 'Exported { $count } messages from { $view }',
+  'storage-exported-partial':
+    'Exported { $count } from { $view }; { $skipped } had no stored copy and were skipped',
+  'storage-export-failed': 'Export failed — { $error }',
   'settings-not-built': 'This pane is not built yet.',
   'accounts-yours': 'Your accounts',
   'accounts-add-later':

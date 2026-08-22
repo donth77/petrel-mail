@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex};
 use petrel_engine::actions::{ActionKind, ActionReceipt};
 use petrel_engine::blob::BlobStore;
 use petrel_engine::store::{
-    AccountSummary, FolderSummary, ListView, Listing, NewMessage, Store, TagSummary, ThreadListing,
-    ThreadMessage,
+    AccountSummary, FolderSummary, ListView, Listing, NewMessage, StorageReport, Store, TagSummary,
+    ThreadListing, ThreadMessage,
 };
 use petrel_providers::imap::{ImapConfig, Security};
 use petrel_testkit::DemoMailbox;
@@ -719,6 +719,41 @@ async fn send_message(
     Ok(message_id)
 }
 
+/// What the Storage pane shows.
+#[tauri::command]
+fn storage_report(state: State<Arc<AppState>>) -> Result<StorageReport, String> {
+    let blob_bytes = state.blobs.total_bytes().unwrap_or(0);
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    store
+        .storage_report(
+            &std::path::Path::new(&state.data_dir).join("petrel.db"),
+            blob_bytes,
+        )
+        .map_err(|e| e.to_string())
+}
+
+/// Writes a view's mail to an mbox file the user chose.
+///
+/// The path comes from the OS save panel rather than a location Petrel picks:
+/// an export is something you take somewhere, and guessing where would make the
+/// durability promise depend on knowing where Petrel hides things.
+#[tauri::command]
+fn export_mbox(
+    view: Option<String>,
+    path: String,
+    state: State<Arc<AppState>>,
+) -> Result<String, String> {
+    let view = ListView::parse(view.as_deref().unwrap_or("inbox"));
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    let (written, skipped) = store
+        .export_mbox(&state.blobs, &view, std::path::Path::new(&path))
+        .map_err(|e| e.to_string())?;
+    log_sync(&format!(
+        "exported {written} message(s) to mbox, {skipped} skipped"
+    ));
+    Ok(format!("{written}/{skipped}"))
+}
+
 /// Folders for the move picker (V).
 #[tauri::command]
 fn list_folders(state: State<Arc<AppState>>) -> Result<Vec<FolderSummary>, String> {
@@ -1242,6 +1277,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             status,
@@ -1255,6 +1291,8 @@ pub fn run() {
             create_folder,
             create_tag,
             send_message,
+            storage_report,
+            export_mbox,
             list_accounts,
             set_account_color,
             set_account_archive,

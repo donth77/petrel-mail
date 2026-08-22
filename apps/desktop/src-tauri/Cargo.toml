@@ -31,6 +31,9 @@ tauri = { version = "2.11", features = [] }
 # means the OS decides whether they appear — the in-app toast is the fallback
 # that always works.
 tauri-plugin-notification = "2"
+# A save panel for the mbox export. The OS owns the file picker; asking it is
+# the only way the export lands where the user actually wants it.
+tauri-plugin-dialog = "2"
 serde.workspace = true
 serde_json.workspace = true
 dirs = "6"

@@ -197,6 +197,15 @@
       if (!a.to || a.to.length === 0) throw 'no recipient';
       return 'test-' + Date.now() + '@example.com';
     },
+    storage_report: function () {
+      return {
+        messages: rows.length, attachments: 2,
+        database_bytes: 12582912, blob_bytes: 41943040, index_bytes: 3145728,
+      };
+    },
+    export_mbox: function () {
+      return rows.length + '/0';
+    },
     create_tag: function (a) {
       var id = 300 + tags.length;
       tags.push({ id: id, name: a.name, colour: '', thread_count: 0 });

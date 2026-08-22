@@ -27,6 +27,11 @@ pub enum StoreError {
     /// something that went wrong while doing it.
     #[error("{0}")]
     Rejected(String),
+    /// Writing an export failed. Distinct from a database error because the
+    /// thing to tell the user is different: a full disk or an unwritable
+    /// folder is theirs to fix.
+    #[error("could not write the export: {0}")]
+    Export(#[from] std::io::Error),
 }
 
 /// What a garbage-collection pass destroyed.
@@ -146,6 +151,56 @@ pub struct PendingAction {
     /// address on the server, so nothing that can be delivered.
     pub uid: Option<u32>,
     pub folder_path: String,
+}
+
+/// `Thu Jan  1 00:00:00 1970` — the shape mbox readers expect on a From line.
+fn format_asctime(ms: i64) -> String {
+    const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let secs = ms.div_euclid(1000);
+    let days = secs.div_euclid(86_400);
+    let tod = secs.rem_euclid(86_400);
+    let (h, m, s) = (tod / 3600, (tod % 3600) / 60, tod % 60);
+
+    // Civil-from-days (Howard Hinnant's algorithm), so this needs no date crate
+    // and no timezone database — mbox From lines are conventionally UTC.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { y + 1 } else { y };
+
+    let dow = (days + 4).rem_euclid(7) as usize;
+    format!(
+        "{} {} {:>2} {:02}:{:02}:{:02} {}",
+        DAYS[dow],
+        MONTHS[(month - 1) as usize],
+        d,
+        h,
+        m,
+        s,
+        year
+    )
+}
+
+/// What the Storage pane reports.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StorageReport {
+    pub messages: i64,
+    pub attachments: i64,
+    /// The SQLite file, including its write-ahead log — the WAL is often the
+    /// larger of the two after a big sync, and leaving it out reports a
+    /// mailbox as smaller than it is on disk.
+    pub database_bytes: u64,
+    pub blob_bytes: u64,
+    pub index_bytes: u64,
 }
 
 /// A folder as the move picker shows it.
@@ -1910,6 +1965,126 @@ impl Store {
             [],
         )?;
         Ok(n)
+    }
+
+    /// Writes a view's messages to an mbox file, oldest first.
+    ///
+    /// mbox because it is the format every other mail client can read — the
+    /// promise being kept here is that your mail is yours whatever happens to
+    /// this program, and a proprietary export would break that promise while
+    /// appearing to honour it.
+    ///
+    /// Returns how many messages were written. Messages whose blob is missing
+    /// are skipped and counted separately rather than aborting the export: a
+    /// partial archive of 9,000 messages is worth more than an error and none.
+    pub fn export_mbox(
+        &self,
+        blobs: &crate::blob::BlobStore,
+        view: &ListView,
+        path: &Path,
+    ) -> Result<(usize, usize)> {
+        use std::io::Write;
+
+        let ids: Vec<(i64, String, String, i64)> = {
+            // Every message in the view's conversations, not just the newest of
+            // each: an archive that keeps one message per thread is not an
+            // archive of your mail.
+            let threads: Vec<i64> = self
+                .list_threads(view, 0, u32::MAX)?
+                .into_iter()
+                .map(|t| t.thread_id)
+                .collect();
+            let mut out = Vec::new();
+            for tid in threads {
+                let mut stmt = self.conn.prepare_cached(
+                    "SELECT id, coalesce(blob_hash,''), coalesce(from_addr,''), date_ms
+                     FROM messages
+                     WHERE coalesce(thread_id, -id) = ?1 AND deleted_at_ms IS NULL
+                     ORDER BY date_ms",
+                )?;
+                let rows = stmt.query_map(params![tid], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                })?;
+                for row in rows {
+                    out.push(row?);
+                }
+            }
+            out.sort_by_key(|(_, _, _, date)| *date);
+            out
+        };
+
+        let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
+        let mut written = 0usize;
+        let mut skipped = 0usize;
+
+        for (_, hash, from, date_ms) in ids {
+            let Ok(raw) = blobs.read(&hash) else {
+                skipped += 1;
+                continue;
+            };
+            // The "From " line mbox separates on, in the asctime shape readers
+            // expect. Anything unparseable still gets a line, because a reader
+            // that cannot find the separator sees one enormous message.
+            let stamp = format_asctime(date_ms);
+            let sender = if from.is_empty() {
+                "petrel@localhost"
+            } else {
+                &from
+            };
+            writeln!(file, "From {sender} {stamp}")?;
+
+            // ">From " escaping: a body line beginning "From " would otherwise
+            // start a new message when the file is read back, silently splitting
+            // one message into two.
+            for line in raw.split(|b| *b == b'\n') {
+                let line = line.strip_suffix(b"\r").unwrap_or(line);
+                if line.starts_with(b"From ") {
+                    file.write_all(b">")?;
+                }
+                file.write_all(line)?;
+                file.write_all(b"\n")?;
+            }
+            file.write_all(b"\n")?;
+            written += 1;
+        }
+        file.flush()?;
+        Ok((written, skipped))
+    }
+
+    /// Counts and bytes for the Storage pane.
+    ///
+    /// The index size comes from the FTS tables rather than being inferred from
+    /// the file: the point of showing it separately is that it is the part you
+    /// can rebuild, so a number that silently includes the mail is useless.
+    pub fn storage_report(&self, db_path: &Path, blob_bytes: u64) -> Result<StorageReport> {
+        let file = |p: std::path::PathBuf| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+        let database_bytes = file(db_path.to_path_buf())
+            + file(db_path.with_extension("db-wal"))
+            + file(db_path.with_extension("db-shm"));
+
+        // dbstat is a compile-time option; when it is missing the honest answer
+        // is zero rather than a guess that would be wrong by an order of
+        // magnitude either way.
+        let index_bytes: u64 = self
+            .conn
+            .query_row(
+                "SELECT coalesce(sum(pgsize), 0) FROM dbstat
+                 WHERE name LIKE 'fts_%'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|n| n as u64)
+            .unwrap_or(0);
+
+        Ok(StorageReport {
+            messages: self.message_count()?,
+            attachments: self
+                .conn
+                .query_row("SELECT count(*) FROM attachments", [], |r| r.get(0))?,
+            database_bytes,
+            blob_bytes,
+            index_bytes,
+        })
     }
 
     pub fn message_count(&self) -> Result<i64> {

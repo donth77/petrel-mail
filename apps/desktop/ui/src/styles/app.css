@@ -2419,3 +2419,43 @@ body.resizing {
   font-size: 13px;
   cursor: pointer;
 }
+
+/* Storage figures. A table because they are figures — aligned digits are
+   readable at a glance in a way a list of sentences is not. */
+.storage-table {
+  inline-size: 100%;
+  max-inline-size: 420px;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin-block-start: 8px;
+}
+
+.storage-table td {
+  padding: 6px 0;
+  border-block-end: 1px solid var(--hair2);
+}
+
+.storage-table td:last-child {
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink2);
+}
+
+.storage-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-block-start: 10px;
+}
+
+.storage-actions .fbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-block-start: 0;
+}
+
+.fbtn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
