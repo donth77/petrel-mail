@@ -178,6 +178,119 @@ fn imap_config_from_env() -> Option<ImapConfig> {
     })
 }
 
+/// Delivers queued triage to the server.
+///
+/// This is the second half of the optimistic model. Everything the user does is
+/// applied locally at once and written to a queue; until something drains that
+/// queue, archiving a conversation in Petrel means nothing to anyone else, and
+/// the next resync quietly puts it back.
+///
+/// Order matters and is preserved: two actions on the same message have to
+/// arrive the way the user performed them, or the later one loses. A failure
+/// stops that action rather than the drain — one unreachable message should not
+/// strand every other change behind it — and leaves it queued to retry, because
+/// a change that never reached the server is not one to discard.
+async fn drain_actions(state: Arc<AppState>, account: i64, cfg: ImapConfig, has_move: bool) {
+    use petrel_engine::actions::ActionKind;
+
+    let pending = match state
+        .store
+        .lock()
+        .and_then(|s| Ok(s.pending_actions(account)))
+    {
+        Ok(Ok(p)) => p,
+        _ => return,
+    };
+    if pending.is_empty() {
+        return;
+    }
+    log_sync(&format!("draining {} queued change(s)", pending.len()));
+
+    let mut delivered = 0usize;
+    let mut stuck = 0usize;
+    for item in pending {
+        let Ok(kind) = serde_json::from_str::<ActionKind>(&item.kind_json) else {
+            continue;
+        };
+        let Some(uid) = item.uid else {
+            // Never placed anywhere, so there is no server-side message to act
+            // on. Nothing to deliver and nothing to retry.
+            continue;
+        };
+        let folder = if item.folder_path.is_empty() {
+            "INBOX".to_string()
+        } else {
+            item.folder_path.clone()
+        };
+
+        let result = match kind {
+            ActionKind::MarkRead => {
+                petrel_providers::imap::store_flag(&cfg, &folder, uid, "\\Seen", true).await
+            }
+            ActionKind::MarkUnread => {
+                petrel_providers::imap::store_flag(&cfg, &folder, uid, "\\Seen", false).await
+            }
+            ActionKind::Star => {
+                petrel_providers::imap::store_flag(&cfg, &folder, uid, "\\Flagged", true).await
+            }
+            ActionKind::Unstar => {
+                petrel_providers::imap::store_flag(&cfg, &folder, uid, "\\Flagged", false).await
+            }
+            ActionKind::Archive | ActionKind::Trash | ActionKind::Spam | ActionKind::Move => {
+                // The local move has already happened, so the destination is
+                // wherever the message now sits: the store is the record of
+                // where it should be, and re-deriving it here could disagree.
+                let dest = state
+                    .store
+                    .lock()
+                    .ok()
+                    .and_then(|s| s.folders_of(item.message_id).ok())
+                    .and_then(|f| f.first().copied())
+                    .and_then(|fid| {
+                        state
+                            .store
+                            .lock()
+                            .ok()
+                            .and_then(|s| s.folder_path(fid).ok().flatten())
+                    });
+                match dest {
+                    Some(to) if to != folder => {
+                        petrel_providers::imap::move_uid(&cfg, &folder, uid, &to, has_move).await
+                    }
+                    // Already where it belongs, or nowhere to send it.
+                    _ => Ok(()),
+                }
+            }
+            // Tags are Gmail labels or IMAP keywords depending on the provider,
+            // and neither is wired yet. Left queued rather than marked done, so
+            // they deliver once that lands instead of being silently dropped.
+            ActionKind::Tag | ActionKind::Untag => {
+                stuck += 1;
+                continue;
+            }
+        };
+
+        match result {
+            Ok(()) => {
+                delivered += 1;
+                if let Ok(store) = state.store.lock() {
+                    let _ = store.mark_action_state(item.action_id, "sent");
+                }
+            }
+            Err(e) => {
+                stuck += 1;
+                log_sync(&format!(
+                    "action {} could not be delivered: {e}",
+                    item.action_id
+                ));
+            }
+        }
+    }
+    log_sync(&format!(
+        "drained {delivered} change(s), {stuck} still queued"
+    ));
+}
+
 /// One-shot sync: fetch recent mail and ingest it. Deliberately not a sync
 /// engine — that arrives with the orchestrator; this proves the path end to end
 /// inside the app.
@@ -185,13 +298,19 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
     tauri::async_runtime::spawn(async move {
         *state.source.lock().unwrap() = format!("syncing {}…", cfg.host);
 
+        let mut has_move = false;
         // Folders first. Without them every message ingests with no placement,
         // so the rail's views have nothing to filter on and archiving has
         // nowhere to put anything — which is how a sync can look like it worked
         // while leaving the app unable to file a single message.
         match petrel_providers::imap::probe(&cfg, 0).await {
             Ok(report) => {
-                log_sync(&format!("probe ok: {} folder(s)", report.folders.len()));
+                has_move = report.greeting_capabilities.move_;
+                log_sync(&format!(
+                    "probe ok: {} folder(s), MOVE={}",
+                    report.folders.len(),
+                    has_move
+                ));
                 let rows: Vec<(String, Option<String>)> = report
                     .folders
                     .iter()
@@ -229,6 +348,12 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
             .lock()
             .ok()
             .and_then(|s| s.folder_for_role(account, "inbox").ok().flatten());
+
+        // Deliver before reading back. Draining first means the server's answer
+        // already includes what the user did, so the fetch below confirms local
+        // state instead of contradicting it — and anything still queued is
+        // protected from being overwritten by the pending checks in the store.
+        drain_actions(Arc::clone(&state), account, cfg.clone(), has_move).await;
 
         // Ingest as each message lands rather than after all of them do. The
         // buffering version showed nothing for the whole fetch, which on a real

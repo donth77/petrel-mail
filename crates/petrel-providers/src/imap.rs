@@ -437,6 +437,126 @@ where
     Ok(out)
 }
 
+/// Applies a flag change to one message, by UID.
+///
+/// `add` decides between +FLAGS and -FLAGS. Silent (.SILENT) because we already
+/// know what we asked for and do not want the server echoing every flag back
+/// for every message in a drain.
+pub async fn store_flag(
+    cfg: &ImapConfig,
+    folder: &str,
+    uid: u32,
+    flag: &str,
+    add: bool,
+) -> Result<()> {
+    match cfg.security {
+        Security::Tls => {
+            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
+            store_flag_session(client, cfg, folder, uid, flag, add).await
+        }
+        #[cfg(feature = "insecure-plaintext")]
+        Security::InsecurePlaintext => {
+            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
+            store_flag_session(Client::new(tcp), cfg, folder, uid, flag, add).await
+        }
+    }
+}
+
+async fn store_flag_session<S>(
+    client: Client<S>,
+    cfg: &ImapConfig,
+    folder: &str,
+    uid: u32,
+    flag: &str,
+    add: bool,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
+{
+    let mut session = client
+        .login(&cfg.user, &cfg.pass)
+        .await
+        .map_err(|(e, _)| e)?;
+    session.select(folder).await?;
+    let op = if add {
+        "+FLAGS.SILENT"
+    } else {
+        "-FLAGS.SILENT"
+    };
+    {
+        let mut updates = session
+            .uid_store(uid.to_string(), format!("{op} ({flag})"))
+            .await?;
+        while updates.next().await.is_some() {}
+    }
+    session.logout().await?;
+    Ok(())
+}
+
+/// Moves one message, by UID, into another folder.
+///
+/// Prefers UID MOVE (RFC 6851) and falls back to COPY + \Deleted + EXPUNGE for
+/// servers without it. The fallback is not equivalent — an expunge affects the
+/// whole mailbox, not just this message — so the capability is checked rather
+/// than assumed, and the slow path is taken only when there is no choice.
+pub async fn move_uid(
+    cfg: &ImapConfig,
+    from: &str,
+    uid: u32,
+    to: &str,
+    server_has_move: bool,
+) -> Result<()> {
+    match cfg.security {
+        Security::Tls => {
+            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
+            move_uid_session(client, cfg, from, uid, to, server_has_move).await
+        }
+        #[cfg(feature = "insecure-plaintext")]
+        Security::InsecurePlaintext => {
+            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
+            move_uid_session(Client::new(tcp), cfg, from, uid, to, server_has_move).await
+        }
+    }
+}
+
+async fn move_uid_session<S>(
+    client: Client<S>,
+    cfg: &ImapConfig,
+    from: &str,
+    uid: u32,
+    to: &str,
+    server_has_move: bool,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
+{
+    let mut session = client
+        .login(&cfg.user, &cfg.pass)
+        .await
+        .map_err(|(e, _)| e)?;
+    session.select(from).await?;
+    if server_has_move {
+        session.uid_mv(uid.to_string(), to).await?;
+    } else {
+        session.uid_copy(uid.to_string(), to).await?;
+        {
+            let mut updates = session
+                .uid_store(uid.to_string(), "+FLAGS.SILENT (\\Deleted)")
+                .await?;
+            while updates.next().await.is_some() {}
+        }
+        {
+            // The expunge stream is not Unpin, so it has to be pinned before it
+            // can be driven.
+            let expunged = session.expunge().await?;
+            futures::pin_mut!(expunged);
+            while expunged.next().await.is_some() {}
+        }
+    }
+    session.logout().await?;
+    Ok(())
+}
+
 /// Searches a folder for a Message-ID. This is the evidence-gathering half of
 /// the ambiguous-send rule: after a send whose outcome we could not read, we
 /// ask the server whether it actually has the message rather than guessing.

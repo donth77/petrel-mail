@@ -11,7 +11,7 @@ use rusqlite::functions::FunctionFlags;
 use rusqlite::{Connection, params};
 use std::path::Path;
 
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 /// Bumped whenever text extraction changes; a mismatch forces reindexing.
 pub const EXTRACTOR_VERSION: i64 = 1;
 
@@ -133,6 +133,19 @@ pub struct TagSummary {
     pub name: String,
     pub colour: String,
     pub thread_count: i64,
+}
+
+/// One message's worth of work waiting to reach the server.
+#[derive(Debug, Clone)]
+pub struct PendingAction {
+    pub action_id: i64,
+    pub kind_json: String,
+    pub payload_json: String,
+    pub message_id: i64,
+    /// Absent when the message was never placed in a folder — nothing to
+    /// address on the server, so nothing that can be delivered.
+    pub uid: Option<u32>,
+    pub folder_path: String,
 }
 
 /// A folder as the move picker shows it.
@@ -625,6 +638,9 @@ impl Store {
         if ver < 3 {
             conn.execute_batch(include_str!("migrations/0003-settings.sql"))?;
         }
+        if ver < 4 {
+            conn.execute_batch(include_str!("migrations/0004-action-messages.sql"))?;
+        }
         if ver < SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             conn.execute(
@@ -800,10 +816,25 @@ impl Store {
             }
 
             if let Some(fid) = folder_id {
-                tx.execute(
-                    "INSERT OR REPLACE INTO placements(message_id, folder_id, uid) VALUES (?1, ?2, ?3)",
-                    params![id, fid, uid],
+                // Not while local triage is still queued. A resync that re-files
+                // an archived conversation back into the inbox undoes the user's
+                // work on the next launch, long after they did it — which reads
+                // as "archiving does not stick" rather than as a sync bug.
+                let pending: i64 = tx.query_row(
+                    "SELECT EXISTS (
+                       SELECT 1 FROM action_messages am
+                       JOIN actions a ON a.id = am.action_id
+                       WHERE am.message_id = ?1 AND a.state = 'queued'
+                     )",
+                    params![id],
+                    |r| r.get(0),
                 )?;
+                if pending == 0 {
+                    tx.execute(
+                        "INSERT OR REPLACE INTO placements(message_id, folder_id, uid) VALUES (?1, ?2, ?3)",
+                        params![id, fid, uid],
+                    )?;
+                }
             }
         }
 
@@ -1422,6 +1453,65 @@ impl Store {
         })
     }
 
+    /// The server path of a folder, for addressing it over IMAP.
+    pub fn folder_path(&self, folder_id: i64) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT path FROM folders WHERE id = ?1",
+                params![folder_id],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// The queued actions, oldest first, with the UID and folder each one needs
+    /// to reach the server.
+    ///
+    /// Oldest first matters: two actions on the same message must arrive in the
+    /// order the user performed them, or the later one loses.
+    pub fn pending_actions(&self, account_id: i64) -> Result<Vec<PendingAction>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT a.id, a.kind, a.payload_json, am.message_id, p.uid, f.path
+             FROM actions a
+             JOIN action_messages am ON am.action_id = a.id
+             LEFT JOIN placements p ON p.message_id = am.message_id
+             LEFT JOIN folders f ON f.id = p.folder_id
+             WHERE a.account_id = ?1 AND a.state = 'queued'
+             ORDER BY a.id, am.message_id",
+        )?;
+        let rows = stmt.query_map(params![account_id], |r| {
+            Ok(PendingAction {
+                action_id: r.get(0)?,
+                kind_json: r.get(1)?,
+                payload_json: r.get(2)?,
+                message_id: r.get(3)?,
+                uid: r.get::<_, Option<i64>>(4)?.map(|u| u as u32),
+                folder_path: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// Whether this message has local changes the server has not been told about.
+    ///
+    /// A resync must not overwrite those. The server is authoritative about a
+    /// message only once our queued actions against it have been delivered —
+    /// until then, applying the server's version silently undoes what the user
+    /// just did, and does it on the next launch rather than immediately, which
+    /// is the hardest possible version of that bug to recognise.
+    pub fn message_has_pending(&self, message_id: i64) -> Result<bool> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS (
+               SELECT 1 FROM action_messages am
+               JOIN actions a ON a.id = am.action_id
+               WHERE am.message_id = ?1 AND a.state = 'queued'
+             )",
+            params![message_id],
+            |r| r.get::<_, i64>(0),
+        )? == 1)
+    }
+
     /// Assigns the IMAP system flags a server reported, replacing whatever was
     /// there.
     ///
@@ -1430,6 +1520,10 @@ impl Store {
     /// elsewhere and has since been marked unread has to end up unread here,
     /// and an add-only merge could never take a flag away.
     pub fn set_message_flags(&self, message_id: i64, flags: i64) -> Result<()> {
+        // Local pending work wins. See message_has_pending.
+        if self.message_has_pending(message_id)? {
+            return Ok(());
+        }
         self.conn.execute(
             "UPDATE messages SET flags = ?2 WHERE id = ?1",
             params![message_id, flags],
@@ -1586,8 +1680,16 @@ impl Store {
             ],
         )?;
 
+        let action_id = self.conn.last_insert_rowid();
+        for id in &ids {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO action_messages(action_id, message_id) VALUES (?1, ?2)",
+                params![action_id, id],
+            )?;
+        }
+
         Ok(ActionReceipt {
-            action_id: self.conn.last_insert_rowid(),
+            action_id,
             kind,
             message_count: ids.len(),
             description: kind.past_tense().to_string(),
