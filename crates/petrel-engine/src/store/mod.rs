@@ -1453,6 +1453,23 @@ impl Store {
         })
     }
 
+    /// The highest UID stored for a folder, or None when it holds nothing yet.
+    ///
+    /// This is what makes a poll cheap: everything above it is new, so a resync
+    /// asks for `{max+1}:*` rather than refetching the last N messages by
+    /// sequence number every time — which is both wasteful and wrong, since
+    /// sequence numbers shift as mail arrives and is expunged.
+    pub fn max_uid(&self, folder_id: i64) -> Result<Option<u32>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT max(uid) FROM placements WHERE folder_id = ?1",
+                params![folder_id],
+                |r| r.get::<_, Option<i64>>(0),
+            )?
+            .map(|u| u as u32))
+    }
+
     /// The server path of a folder, for addressing it over IMAP.
     pub fn folder_path(&self, folder_id: i64) -> Result<Option<String>> {
         Ok(self

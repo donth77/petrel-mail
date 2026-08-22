@@ -23,6 +23,9 @@ dev-plaintext-imap = ["petrel-providers/insecure-plaintext"]
 tauri-build = { version = "2.6", features = [] }
 
 [dependencies]
+# Just the timer, for the sync poll. Tauri already runs on tokio; this only
+# makes the dependency explicit rather than borrowed from its internals.
+tokio = { version = "1", features = ["time"] }
 tauri = { version = "2.11", features = [] }
 serde.workspace = true
 serde_json.workspace = true

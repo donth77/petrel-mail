@@ -401,6 +401,67 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
             }
         }
         state.seeding.store(false, Ordering::Relaxed);
+
+        // From here on, poll. The first pass took a window of recent mail;
+        // every pass after it asks only for UIDs above the highest we hold, so
+        // a poll costs one round trip when nothing has arrived.
+        //
+        // Polling rather than IDLE for now: IDLE needs a connection held open
+        // and re-issued every 29 minutes, and getting that wrong fails in the
+        // worst way — silently, by simply never delivering anything. A poll is
+        // duller and its failure mode is visible.
+        let every = std::time::Duration::from_secs(
+            std::env::var("PETREL_POLL_SECONDS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|s| *s >= 15)
+                .unwrap_or(120),
+        );
+        loop {
+            tokio::time::sleep(every).await;
+
+            // Deliver first, so the fetch that follows confirms local state
+            // rather than contradicting it — the same ordering as startup.
+            drain_actions(Arc::clone(&state), account, cfg.clone(), has_move).await;
+
+            let since = inbox_id
+                .and_then(|fid| {
+                    state
+                        .store
+                        .lock()
+                        .ok()
+                        .and_then(|s| s.max_uid(fid).ok().flatten())
+                })
+                .unwrap_or(0);
+
+            let mut fresh = 0usize;
+            let polled = {
+                let state = Arc::clone(&state);
+                petrel_providers::imap::fetch_since_each(&cfg, "INBOX", since, |uid, flags, raw| {
+                    let Ok(mut store) = state.store.lock() else {
+                        return;
+                    };
+                    if let Ok(ingested) =
+                        store.ingest_raw(&state.blobs, account, inbox_id, Some(uid), raw)
+                    {
+                        let _ = store.set_message_flags(ingested.message_id, flags);
+                        fresh += 1;
+                    }
+                })
+                .await
+            };
+            match polled {
+                Ok(_) if fresh > 0 => {
+                    log_sync(&format!("poll: {fresh} new message(s)"));
+                    // The list watches this count, so bumping it is what makes
+                    // new mail appear without the user doing anything.
+                    state.seeded.fetch_add(fresh, Ordering::Relaxed);
+                    *state.sync_error.lock().unwrap() = None;
+                }
+                Ok(_) => {}
+                Err(e) => log_sync(&format!("poll failed: {e}")),
+            }
+        }
     });
 }
 

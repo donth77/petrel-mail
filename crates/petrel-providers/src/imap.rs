@@ -437,6 +437,77 @@ where
     Ok(out)
 }
 
+/// Fetches everything above `since_uid`, streaming each message as it arrives.
+///
+/// Addressed by UID rather than sequence number, because sequence numbers shift
+/// as mail arrives and is expunged — an offset that was correct when the poll
+/// started can name a different message by the time it runs.
+///
+/// A `{n}:*` range always returns at least one message even when nothing is
+/// new (the server clamps it to the last one), so anything at or below
+/// `since_uid` is dropped here rather than re-ingested every poll.
+pub async fn fetch_since_each<F>(
+    cfg: &ImapConfig,
+    folder: &str,
+    since_uid: u32,
+    on_message: F,
+) -> Result<usize>
+where
+    F: FnMut(u32, i64, &[u8]),
+{
+    match cfg.security {
+        Security::Tls => {
+            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
+            fetch_since_session(client, cfg, folder, since_uid, on_message).await
+        }
+        #[cfg(feature = "insecure-plaintext")]
+        Security::InsecurePlaintext => {
+            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
+            fetch_since_session(Client::new(tcp), cfg, folder, since_uid, on_message).await
+        }
+    }
+}
+
+async fn fetch_since_session<S, F>(
+    client: Client<S>,
+    cfg: &ImapConfig,
+    folder: &str,
+    since_uid: u32,
+    mut on_message: F,
+) -> Result<usize>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
+    F: FnMut(u32, i64, &[u8]),
+{
+    let mut session = client
+        .login(&cfg.user, &cfg.pass)
+        .await
+        .map_err(|(e, _)| e)?;
+    session.select(folder).await?;
+    let mut n = 0usize;
+    {
+        let mut fetches = session
+            .uid_fetch(
+                format!("{}:*", since_uid.saturating_add(1)),
+                "(UID FLAGS RFC822)",
+            )
+            .await?;
+        while let Some(fetch) = fetches.next().await {
+            let fetch = fetch?;
+            let bits = flags_to_bits(fetch.flags());
+            if let (Some(uid), Some(body)) = (fetch.uid, fetch.body()) {
+                if uid <= since_uid {
+                    continue;
+                }
+                on_message(uid, bits, body);
+                n += 1;
+            }
+        }
+    }
+    session.logout().await?;
+    Ok(n)
+}
+
 /// Applies a flag change to one message, by UID.
 ///
 /// `add` decides between +FLAGS and -FLAGS. Silent (.SILENT) because we already
