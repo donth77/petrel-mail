@@ -242,12 +242,16 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
         let mut failed = 0usize;
         let result = {
             let state = Arc::clone(&state);
-            petrel_providers::imap::fetch_raw_each(&cfg, "INBOX", limit, |uid, raw| {
+            petrel_providers::imap::fetch_raw_each(&cfg, "INBOX", limit, |uid, flags, raw| {
                 let Ok(mut store) = state.store.lock() else {
                     return;
                 };
                 match store.ingest_raw(&state.blobs, account, inbox_id, Some(uid), raw) {
-                    Ok(_) => {
+                    Ok(ingested) => {
+                        // The server's answer about read state wins. Without
+                        // this every message arrives unread, so a mailbox with
+                        // nothing unread in it shows hundreds.
+                        let _ = store.set_message_flags(ingested.message_id, flags);
                         ok += 1;
                         state.seeded.store(ok, Ordering::Relaxed);
                     }

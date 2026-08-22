@@ -1422,6 +1422,21 @@ impl Store {
         })
     }
 
+    /// Assigns the IMAP system flags a server reported, replacing whatever was
+    /// there.
+    ///
+    /// Assignment rather than add/remove because this is the server stating
+    /// what is true, not a user action nudging it: a message that was read
+    /// elsewhere and has since been marked unread has to end up unread here,
+    /// and an add-only merge could never take a flag away.
+    pub fn set_message_flags(&self, message_id: i64, flags: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE messages SET flags = ?2 WHERE id = ?1",
+            params![message_id, flags],
+        )?;
+        Ok(())
+    }
+
     /// Names the account after the address it actually signs in as.
     ///
     /// The placeholder row exists so the app has something to hang mail off

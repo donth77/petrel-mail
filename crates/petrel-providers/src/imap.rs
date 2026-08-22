@@ -292,6 +292,37 @@ pub async fn append_message(cfg: &ImapConfig, folder: &str, raw: &[u8]) -> Resul
 
 /// Fetches whole messages (`RFC822`) with their UIDs — the bytes the engine
 /// stores verbatim and parses. Newest `limit` messages in the folder.
+/// The IMAP system flags we care about, as the engine's bits.
+///
+/// Deliberately the engine's numbering rather than a provider type: a message's
+/// read state is a fact about the mailbox, not about the protocol that
+/// delivered it, and every caller downstream already speaks these bits.
+pub mod flag_bits {
+    pub const SEEN: i64 = 1 << 0;
+    pub const ANSWERED: i64 = 1 << 1;
+    pub const FLAGGED: i64 = 1 << 2;
+    pub const DRAFT: i64 = 1 << 3;
+    pub const DELETED: i64 = 1 << 4;
+}
+
+/// Maps a fetch's FLAGS into those bits. Unknown and custom flags — Gmail's
+/// labels arrive this way — are ignored rather than guessed at.
+fn flags_to_bits<'a>(flags: impl Iterator<Item = async_imap::types::Flag<'a>>) -> i64 {
+    use async_imap::types::Flag;
+    let mut bits = 0;
+    for f in flags {
+        bits |= match f {
+            Flag::Seen => flag_bits::SEEN,
+            Flag::Answered => flag_bits::ANSWERED,
+            Flag::Flagged => flag_bits::FLAGGED,
+            Flag::Draft => flag_bits::DRAFT,
+            Flag::Deleted => flag_bits::DELETED,
+            _ => 0,
+        };
+    }
+    bits
+}
+
 /// Fetches recent messages, handing each one to `on_message` as it arrives.
 ///
 /// The buffering version holds every message in memory and returns only once
@@ -306,7 +337,7 @@ pub async fn fetch_raw_each<F>(
     on_message: F,
 ) -> Result<usize>
 where
-    F: FnMut(u32, &[u8]),
+    F: FnMut(u32, i64, &[u8]),
 {
     match cfg.security {
         Security::Tls => {
@@ -330,7 +361,7 @@ async fn fetch_each_session<S, F>(
 ) -> Result<usize>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
-    F: FnMut(u32, &[u8]),
+    F: FnMut(u32, i64, &[u8]),
 {
     let mut session = client
         .login(&cfg.user, &cfg.pass)
@@ -341,13 +372,17 @@ where
     if mailbox.exists > 0 {
         let last = mailbox.exists;
         let first = last.saturating_sub(limit.saturating_sub(1)).max(1);
+        // FLAGS, not just the body. Without them every message ingests with no
+        // read state and shows as unread — a mailbox with nothing unread in it
+        // arrives looking like hundreds of unread conversations.
         let mut fetches = session
-            .fetch(format!("{first}:{last}"), "(UID RFC822)")
+            .fetch(format!("{first}:{last}"), "(UID FLAGS RFC822)")
             .await?;
         while let Some(fetch) = fetches.next().await {
             let fetch = fetch?;
+            let bits = flags_to_bits(fetch.flags());
             if let (Some(uid), Some(body)) = (fetch.uid, fetch.body()) {
-                on_message(uid, body);
+                on_message(uid, bits, body);
                 n += 1;
             }
         }

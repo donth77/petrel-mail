@@ -5,7 +5,6 @@ import {
   CornerUpLeft,
   Mail,
   MailOpen,
-  MoreVertical,
   Paperclip,
   Star,
 } from 'lucide-react';
@@ -13,6 +12,7 @@ import { api, type ActionKind, type Thread, type ThreadMessage } from '../lib/ap
 import { count as fmtCount, fileSize, fullTime, initials, listTime, messageTime } from '../lib/format';
 import { Icon } from './Icon';
 import { MessageBody } from './MessageBody';
+import { MoreMenu } from './MoreMenu';
 import { t } from '../lib/strings';
 
 /** A message that is not the one you came here to read: one line, expandable. */
@@ -31,10 +31,28 @@ function Collapsed({ m, onExpand }: { m: ThreadMessage; onExpand: () => void }) 
   );
 }
 
-function Expanded({ m }: { m: ThreadMessage }) {
+function Expanded({ m, onCollapse }: { m: ThreadMessage; onCollapse: () => void }) {
   return (
     <article className="msg">
-      <header className="msg-head">
+      {/* The header is the toggle, the way it is in every mail client: if
+          clicking a collapsed message opens it, clicking the open one has to
+          close it again, or the only way back is to leave the conversation.
+          A button rather than a click handler on the header, so it is
+          reachable from the keyboard and announces itself as expanded. */}
+      <header
+        className="msg-head"
+        role="button"
+        tabIndex={0}
+        aria-expanded="true"
+        aria-label={t('reader-collapse', { who: m.from_display || m.from_addr })}
+        onClick={onCollapse}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            onCollapse();
+          }
+        }}
+      >
         <span className="avatar" aria-hidden="true">
           {initials(m.from_display, m.from_addr)}
         </span>
@@ -70,11 +88,13 @@ function Expanded({ m }: { m: ThreadMessage }) {
 export function Reader({
   thread,
   onAction,
-  onMore,
+  onMove,
+  onTag,
 }: {
   thread: Thread | null;
   onAction: (kind: ActionKind) => void;
-  onMore: () => void;
+  onMove: () => void;
+  onTag: () => void;
 }) {
   const [messages, setMessages] = useState<ThreadMessage[]>([]);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
@@ -172,14 +192,7 @@ export function Reader({
             >
               <Icon icon={thread.unread ? MailOpen : Mail} />
             </button>
-            <button
-              type="button"
-              className="act-icon"
-              aria-label={t('reader-more')}
-              onClick={onMore}
-            >
-              <Icon icon={MoreVertical} />
-            </button>
+            <MoreMenu thread={thread} onAction={onAction} onMove={onMove} onTag={onTag} />
           </div>
         </div>
       </header>
@@ -208,7 +221,17 @@ export function Reader({
           }
           if (!isExpanded && foldable.some((f, fi) => fi > 1 && f.id === m.id)) return null;
           return isExpanded ? (
-            <Expanded m={m} key={m.id} />
+            <Expanded
+              m={m}
+              key={m.id}
+              onCollapse={() =>
+                setExpanded((prev) => {
+                  const next = new Set(prev);
+                  next.delete(m.id);
+                  return next;
+                })
+              }
+            />
           ) : (
             <Collapsed m={m} key={m.id} onExpand={() => setExpanded((s) => new Set(s).add(m.id))} />
           );

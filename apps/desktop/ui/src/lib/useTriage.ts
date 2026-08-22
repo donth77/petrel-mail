@@ -72,7 +72,7 @@ export function useTriage(opts: {
   const lastUndo = useRef<UndoOffer | null>(null);
 
   const run = useCallback(
-    async (kind: ActionKind, threadId?: number, targetId?: number) => {
+    async (kind: ActionKind, threadId?: number, targetId?: number, quiet = false) => {
       const k = kind;
       const target = threadId ?? activeId;
       if (target == null) {
@@ -123,6 +123,11 @@ export function useTriage(opts: {
       try {
         const receipt = await api.triage(row.thread_id, kind, targetId);
         void api.log(JSON.stringify({ kind: 'triage', stage: 'ok', id: receipt.action_id }));
+        // Quiet actions still queue for the server — the server has to learn
+        // that you read it — but they announce nothing and offer no undo.
+        // Reading is not a gesture you undo, and a toast for every conversation
+        // you glance at would bury the ones that matter.
+        if (quiet) return;
         lastUndo.current = {
           actionId: receipt.action_id,
           description: receipt.description,
@@ -133,6 +138,12 @@ export function useTriage(opts: {
         };
         onMessage(receipt.description, lastUndo.current);
       } catch (err) {
+        if (quiet) {
+          // Nothing was optimistically removed for a quiet action, so there is
+          // nothing to roll back; log it and leave the row as it was.
+          void api.log(JSON.stringify({ kind: 'triage', stage: 'quiet-failed', k, error: String(err) }));
+          return;
+        }
         // A triage failure that only shows a toast is a failure nobody can
         // diagnose afterwards. It goes to the log as well.
         void api.log(JSON.stringify({ kind: 'triage', stage: 'failed', k, error: String(err) }));

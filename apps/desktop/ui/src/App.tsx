@@ -168,6 +168,19 @@ export function App() {
 
   const active = useMemo(() => items.find((m) => m.id === activeId) ?? null, [items, activeId]);
 
+  // Opening a conversation marks it read, as every mail client does.
+  //
+  // After a dwell, not instantly: j/k moves the selection one row at a time, so
+  // marking on selection would clear the unread state of every conversation you
+  // scrolled past on the way to the one you wanted. The delay is short enough to
+  // feel automatic and long enough to survive a fast scroll.
+  useEffect(() => {
+    if (!active?.unread || settings.layout === 'off') return;
+    const id = active.id;
+    const h = setTimeout(() => void triage.run('mark_read', id, undefined, true), 900);
+    return () => clearTimeout(h);
+  }, [active?.id, active?.unread, settings.layout, triage]);
+
   const unread = useMemo(() => items.filter((m) => m.unread).length, [items]);
 
   // Tags come from the account, so one that has no conversation on this page
@@ -291,7 +304,8 @@ export function App() {
         <Reader
           thread={active}
           onAction={(kind) => void triage.run(kind)}
-          onMore={() => setPaletteOpen(true)}
+          onMove={() => setPicker('folder')}
+          onTag={() => setPicker('tag')}
         />
       )}
 

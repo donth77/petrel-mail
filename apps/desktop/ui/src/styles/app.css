@@ -2000,3 +2000,74 @@ mark {
   color: var(--ink2);
   font-size: 11.5px;
 }
+
+/* Overflow menu behind the ⋮ button. Anchored to the button rather than
+   centred on screen: the whole point is that it acts on *this* conversation. */
+.menu {
+  z-index: 50;
+  min-inline-size: 232px;
+  padding: 5px;
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 14px 34px rgba(24, 39, 48, 0.16);
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  inline-size: 100%;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  text-align: start;
+  cursor: pointer;
+}
+
+.menu-item span:nth-of-type(1) {
+  flex-grow: 1;
+}
+
+.menu-item[data-active-item] {
+  background: var(--accent-wash);
+  color: var(--accent-ink);
+}
+
+.menu-item.danger[data-active-item] {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.menu-key {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink3);
+  flex: none;
+}
+
+.menu-sep {
+  block-size: 1px;
+  margin: 5px 4px;
+  border: 0;
+  background: var(--hair2);
+}
+
+/* An expanded message's header is a toggle, so it has to look like one. */
+.msg-head {
+  cursor: pointer;
+}
+
+.msg-head:hover .msg-name {
+  color: var(--accent-ink);
+}
+
+.msg-head:focus-visible {
+  outline: var(--focus-ring) solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
