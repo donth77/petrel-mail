@@ -1,5 +1,5 @@
 import { Menu, MenuButton, MenuItem, MenuProvider, MenuSeparator } from '@ariakit/react';
-import { Check, ChevronDown, Plus, Settings2 } from 'lucide-react';
+import { Check, ChevronDown, Settings2 } from 'lucide-react';
 import type { Account } from '../lib/api';
 import { Icon } from './Icon';
 import { t } from '../lib/strings';
@@ -13,7 +13,6 @@ type Props = {
   accountColor: string;
   onSwitch: (index: number) => void;
   onSettings: () => void;
-  onNotImplemented: (label: string) => void;
 };
 
 /**
@@ -33,7 +32,6 @@ export function AccountMenu({
   accountColor,
   onSwitch,
   onSettings,
-  onNotImplemented,
 }: Props) {
   return (
     <MenuProvider placement="bottom-start">
@@ -77,10 +75,6 @@ export function AccountMenu({
         ))}
         {accounts.length > 0 && <MenuSeparator className="menu-sep" />}
 
-        <MenuItem className="menu-item" onClick={() => onNotImplemented(t('accounts-add'))}>
-          <Icon icon={Plus} size={14} />
-          <span className="menu-label">{t('accounts-add')}</span>
-        </MenuItem>
         <MenuItem className="menu-item" onClick={onSettings}>
           <Icon icon={Settings2} size={14} />
           <span className="menu-label">{t('settings-accounts')}</span>

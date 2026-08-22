@@ -2387,3 +2387,35 @@ body.resizing {
   color: var(--ink);
   white-space: nowrap;
 }
+
+/* Segmented control with a value and a note under it (undo-send windows). */
+.seg-wide button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 9px 17px 8px;
+}
+
+.seg-value {
+  font-family: var(--mono);
+  font-size: 14px;
+}
+
+.tiny {
+  font-size: 10px;
+  color: var(--ink3);
+  min-block-size: 12px;
+}
+
+.seg-wide button.on .tiny {
+  color: var(--accent-ink);
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 13px;
+  cursor: pointer;
+}

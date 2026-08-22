@@ -11,6 +11,7 @@ import { Palette } from './components/Palette';
 import { Picker, type PickerOption } from './components/Picker';
 import { Compose, addresses, type Draft } from './components/Compose';
 import { snoozeOptions } from './lib/snooze';
+import { promisesMissingAttachment } from './lib/compose-checks';
 import { notifiable, postDesktopNotification } from './lib/notify';
 import { Help } from './components/Help';
 import { Settings } from './components/Settings';
@@ -39,6 +40,8 @@ export function App() {
   const [readerOverlay, setReaderOverlay] = useState(false);
   const [picker, setPicker] = useState<'folder' | 'tag' | 'snooze' | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
+  // Reset per composer, so each message gets its own single warning.
+  const attachmentWarned = useRef(false);
   // A message waiting out its undo window. It is held here, in the window, and
   // has not touched the network — which is the whole reason undo can cancel it
   // rather than chase it.
@@ -147,9 +150,14 @@ export function App() {
       if (acc) setToast(t('account-switched', { email: acc.email }));
       else setToast(t('account-none-at', { n: String(n) }));
     },
-    compose: () => setDraft({ to: '', cc: '', subject: '', body: '' }),
+    compose: () => {
+      attachmentWarned.current = false;
+      setDraft({ to: '', cc: '', subject: '', body: '' });
+    },
     reply: (all) => {
       if (!active) return;
+      // R follows the configured default; A always means reply-all.
+      const replyAll = all || settings.replyDefault === 'reply-all';
       const who = active.from_addr;
       setDraft({
         to: who,
@@ -161,7 +169,7 @@ export function App() {
         inReplyTo: null,
         references: [],
       });
-      if (all) setToast(t('not-implemented', { label: t('reader-reply-all') }));
+      if (replyAll) setToast(t('not-implemented', { label: t('reader-reply-all') }));
     },
     forward: () => {
       if (!active) return;
@@ -515,6 +523,19 @@ export function App() {
               setToast(t('compose-no-recipient'));
               return;
             }
+            // Asked once. A second Send goes, because a warning you cannot get
+            // past is a bug rather than a safeguard — sometimes you really did
+            // mean to write "as attached" about something sent last week.
+            if (
+              settings.warnMissingAttachment === 'on' &&
+              !attachmentWarned.current &&
+              promisesMissingAttachment(draft.subject, draft.body, 0)
+            ) {
+              attachmentWarned.current = true;
+              setToast(t('compose-missing-attachment'));
+              return;
+            }
+            attachmentWarned.current = false;
             const wait = Number(settings.undoSendSeconds) || 0;
             setOutgoing({ draft, left: wait });
             setDraft(null);

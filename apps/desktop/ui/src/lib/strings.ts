@@ -82,6 +82,19 @@ const en = {
 
   'sync-failed-title': 'Could not reach your mail',
   'sync-failed-body': 'Showing what Petrel already had — nothing is lost. Details in sync.log.',
+  'compose-undo': 'Undo send',
+  'compose-undo-help':
+    'After you press Send, Petrel holds the message for this long and shows an Undo button. Nothing reaches the server until the time is up — so this is a real cancel, not a recall request that may or may not be honoured.',
+  'compose-undo-off-label': 'Off',
+  'compose-undo-off': 'send at once',
+  'compose-undo-default': 'default',
+  'compose-undo-most': 'most room',
+  'compose-writing': 'Writing',
+  'compose-warn-attachment': 'Warn about a missing attachment',
+  'compose-warn-attachment-help':
+    'If the message mentions attaching something and nothing is attached, Petrel asks before it goes.',
+  'compose-replying': 'Replying',
+  'compose-reply-default-help': 'Which button leads, and what R does.',
   'compose-title': 'Compose',
   'compose-new': 'New message',
   'compose-reply': 'Reply',
@@ -92,6 +105,7 @@ const en = {
   'compose-body': 'Message',
   'compose-send': 'Send',
   'compose-attach': 'Attach',
+  'compose-missing-attachment': 'This mentions an attachment and has none. Send again to send anyway.',
   'compose-no-recipient': 'Add someone to send to.',
   'compose-sending': 'Sending in { $count }s',
   'compose-send-now': 'Send now',
@@ -145,7 +159,8 @@ const en = {
   'settings-storage': 'Storage & Data',
   'settings-not-built': 'This pane is not built yet.',
   'accounts-yours': 'Your accounts',
-  'accounts-add': 'Add account',
+  'accounts-add-later':
+    'Petrel handles one account for now. Adding more arrives with account setup, which needs somewhere safe to keep each account\u2019s credentials.',
   'accounts-none': 'No accounts yet.',
   'accounts-failed': 'Could not read your accounts',
   'accounts-synced': 'synced { $when }',

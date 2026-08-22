@@ -36,6 +36,10 @@ export const DEFAULTS = {
   /// the countdown runs, which is what makes undo a cancel rather than a recall
   /// — the only kind that actually works (docs/design Compose).
   undoSendSeconds: '10',
+  /// Warn before sending a message that mentions an attachment and has none.
+  warnMissingAttachment: 'on' as 'on' | 'off',
+  /// Which button the R key and the reply row lead with.
+  replyDefault: 'reply' as 'reply' | 'reply-all',
 
   /// Sidebar width in pixels, and whether it is collapsed to icons. Stored as
   /// strings like every other setting so the persistence layer stays one shape.

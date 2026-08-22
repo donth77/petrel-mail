@@ -48,10 +48,11 @@ export function Accounts({ onNotImplemented }: { onNotImplemented: (label: strin
       <section className="field">
         <div className="field-head">
           <div className="flabel">{t('accounts-yours')}</div>
-          <button type="button" className="btn2" onClick={() => onNotImplemented(t('accounts-add'))}>
-            <Icon icon={Plus} size={13} />
-            {t('accounts-add')}
-          </button>
+          {/* No button until it can do something. Adding an account needs
+              credentials in the keychain and a sync task of its own, which arrive
+              with the provider work; a control that only apologises is worse than
+              an honest sentence. */}
+          <p className="fhelp">{t('accounts-add-later')}</p>
         </div>
         <div className="account-list">
           {accounts.map((a) => (

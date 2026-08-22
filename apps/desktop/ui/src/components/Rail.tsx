@@ -88,7 +88,6 @@ export function Rail({
         accountColor={accountColor}
         onSwitch={onSwitchAccount}
         onSettings={onSettings}
-        onNotImplemented={onNotImplemented}
       />
 
       <div className="rail-label">{t('rail-mailboxes')}</div>
