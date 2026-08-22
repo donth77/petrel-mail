@@ -190,6 +190,7 @@ const mock = {
   ],
   createFolder: async () => 999,
   createTag: async () => 998,
+  send: async () => 'mock-message-id@example.com',
   accounts: async (): Promise<Account[]> => mockAccounts.map((a) => ({ ...a })),
   setAccountColor: async (id: number, color: string) => {
     const a = mockAccounts.find((x) => x.id === id);
@@ -257,6 +258,10 @@ const real = {
   folders: () => invoke<Folder[]>('list_folders'),
   createFolder: (path: string) => invoke<number>('create_folder', { path }),
   createTag: (name: string) => invoke<number>('create_tag', { name }),
+  send: (
+    to: string[], cc: string[], subject: string, body: string,
+    inReplyTo: string | null, references: string[],
+  ) => invoke<string>('send_message', { to, cc, subject, body, inReplyTo, references }),
   accounts: () => invoke<Account[]>('list_accounts'),
   setAccountColor: (accountId: number, color: string) =>
     invoke<void>('set_account_color', { accountId, color }),

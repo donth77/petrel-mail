@@ -46,11 +46,11 @@ export const BINDINGS: Binding[] = [
 
   // ---- write (arrives with compose)
   { id: 'compose', group: 'write', label: 'Compose', display: ['C'],
-    chords: [{ key: 'c' }], available: false },
+    chords: [{ key: 'c' }], available: true },
   { id: 'reply', group: 'write', label: 'Reply · reply all · forward', display: ['R', 'A', 'F'],
-    chords: [{ key: 'r' }], available: false },
+    chords: [{ key: 'r' }], available: true },
   { id: 'send', group: 'write', label: 'Send', display: 'send',
-    chords: [{ key: 'Enter', meta: true }], available: false },
+    chords: [{ key: 'Enter', meta: true }], available: true },
   { id: 'send-later', group: 'write', label: 'Send later', display: 'sendLater',
     chords: [{ key: 'Enter', meta: true, shift: true }], available: false },
   { id: 'save-draft', group: 'write', label: 'Save draft', display: 'save',

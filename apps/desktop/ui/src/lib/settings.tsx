@@ -31,6 +31,11 @@ export const DEFAULTS = {
   /// instant rather than a boolean so a pause cannot outlive its own intent by
   /// being forgotten in the off position.
   notifyPausedUntil: '0',
+
+  /// Seconds to hold a message before it goes. Nothing reaches the server while
+  /// the countdown runs, which is what makes undo a cancel rather than a recall
+  /// — the only kind that actually works (docs/design Compose).
+  undoSendSeconds: '10',
 };
 
 export type Settings = typeof DEFAULTS;

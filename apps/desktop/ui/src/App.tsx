@@ -9,6 +9,7 @@ import { useTriage, type UndoOffer } from './lib/useTriage';
 import { TitleBar } from './components/TitleBar';
 import { Palette } from './components/Palette';
 import { Picker, type PickerOption } from './components/Picker';
+import { Compose, addresses, type Draft } from './components/Compose';
 import { notifiable, postDesktopNotification } from './lib/notify';
 import { Help } from './components/Help';
 import { Settings } from './components/Settings';
@@ -35,6 +36,11 @@ export function App() {
   const [undoOffer, setUndoOffer] = useState<UndoOffer | null>(null);
   const [readerOverlay, setReaderOverlay] = useState(false);
   const [picker, setPicker] = useState<'folder' | 'tag' | null>(null);
+  const [draft, setDraft] = useState<Draft | null>(null);
+  // A message waiting out its undo window. It is held here, in the window, and
+  // has not touched the network — which is the whole reason undo can cancel it
+  // rather than chase it.
+  const [outgoing, setOutgoing] = useState<{ draft: Draft; left: number } | null>(null);
   const [folders, setFolders] = useState<Folder[]>([]);
 
   useEffect(() => {
@@ -123,11 +129,46 @@ export function App() {
     goTo: setView,
     triage: (kind) => void triage.run(kind),
     toggleStar: () => triage.toggleStar(),
-    undo: () => void triage.undo(),
+    undo: () => {
+      // A pending send outranks the last triage action: it is the thing with a
+      // deadline, and it is what the countdown just told you Z would do.
+      if (outgoing) {
+        setDraft(outgoing.draft);
+        setOutgoing(null);
+        setToast(t('compose-cancelled'));
+        return;
+      }
+      void triage.undo();
+    },
     switchAccount: (n) => {
       const acc = accounts[n - 1];
       if (acc) setToast(t('account-switched', { email: acc.email }));
       else setToast(t('account-none-at', { n: String(n) }));
+    },
+    compose: () => setDraft({ to: '', cc: '', subject: '', body: '' }),
+    reply: (all) => {
+      if (!active) return;
+      const who = active.from_addr;
+      setDraft({
+        to: who,
+        cc: '',
+        // Reply threading rides on the headers, not the subject; the Re: is
+        // only what people expect to read.
+        subject: active.subject.match(/^re:/i) ? active.subject : `Re: ${active.subject}`,
+        body: '',
+        inReplyTo: null,
+        references: [],
+      });
+      if (all) setToast(t('not-implemented', { label: t('reader-reply-all') }));
+    },
+    forward: () => {
+      if (!active) return;
+      setDraft({
+        to: '',
+        cc: '',
+        subject: active.subject.match(/^fwd:/i) ? active.subject : `Fwd: ${active.subject}`,
+        body: '',
+      });
     },
     openMove: () => setPicker('folder'),
     openTag: () => setPicker('tag'),
@@ -174,6 +215,35 @@ export function App() {
   }, [query, view, viewName, status?.count]);
 
   const active = useMemo(() => items.find((m) => m.id === activeId) ?? null, [items, activeId]);
+
+  // The undo-send countdown. Nothing has been sent while this runs.
+  useEffect(() => {
+    if (!outgoing) return;
+    if (outgoing.left <= 0) {
+      const d = outgoing.draft;
+      setOutgoing(null);
+      void api
+        .send(
+          addresses(d.to),
+          addresses(d.cc),
+          d.subject,
+          d.body,
+          d.inReplyTo ?? null,
+          d.references ?? [],
+        )
+        .then(() => setToast(t('compose-sent')))
+        .catch((e) => {
+          // The draft comes back rather than evaporating: a failed send that
+          // loses what you wrote is unforgivable, and the error text is often
+          // something only the writer can act on.
+          setDraft(d);
+          setToast(t('compose-failed', { error: String(e) }));
+        });
+      return;
+    }
+    const h = setTimeout(() => setOutgoing((o) => (o ? { ...o, left: o.left - 1 } : null)), 1000);
+    return () => clearTimeout(h);
+  }, [outgoing]);
 
   // Announce mail that arrived while the window was open.
   //
@@ -354,6 +424,25 @@ export function App() {
         />
       )}
 
+      {draft && (
+        <Compose
+          draft={draft}
+          account={accounts[0]?.email ?? ''}
+          onChange={setDraft}
+          onClose={() => setDraft(null)}
+          onNotImplemented={(label) => setToast(t('not-implemented', { label }))}
+          onSend={() => {
+            if (addresses(draft.to).length === 0) {
+              setToast(t('compose-no-recipient'));
+              return;
+            }
+            const wait = Number(settings.undoSendSeconds) || 0;
+            setOutgoing({ draft, left: wait });
+            setDraft(null);
+          }}
+        />
+      )}
+
       <Picker
         open={picker !== null}
         mode={picker ?? 'folder'}
@@ -409,6 +498,23 @@ export function App() {
         onOpenHelp={() => setHelpOpen(true)}
         onNotImplemented={(label) => setToast(t('not-implemented', { label }))}
       />
+      {outgoing && (
+        // Its own bar, not the toast: this one is a control with a deadline,
+        // and burying it in the same channel as "Archived" invites missing it.
+        <div className="sending" role="status">
+          <span className="sending-count mono">{outgoing.left}s</span>
+          <span className="clip">
+            {t('compose-sending', { count: String(outgoing.left) })} — {outgoing.draft.to}
+          </span>
+          <button type="button" className="reply" onClick={() => { setDraft(outgoing.draft); setOutgoing(null); setToast(t('compose-cancelled')); }}>
+            {t('undo')} <span className="kbd">Z</span>
+          </button>
+          <button type="button" className="sending-now" onClick={() => setOutgoing({ ...outgoing, left: 0 })}>
+            {t('compose-send-now')}
+          </button>
+        </div>
+      )}
+
       <Toast
         message={toast}
         onUndo={

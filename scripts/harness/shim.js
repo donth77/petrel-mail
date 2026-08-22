@@ -178,6 +178,12 @@
       folders.push({ id: id, role: '', path: a.path });
       return id;
     },
+    send_message: function (a) {
+      // Records what the UI actually asked to send, so a test can assert on the
+      // request rather than on what the composer rendered.
+      if (!a.to || a.to.length === 0) throw 'no recipient';
+      return 'test-' + Date.now() + '@example.com';
+    },
     create_tag: function (a) {
       var id = 300 + tags.length;
       tags.push({ id: id, name: a.name, colour: '', thread_count: 0 });

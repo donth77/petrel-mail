@@ -564,6 +564,100 @@ fn triage(
         .map_err(|e| e.to_string())
 }
 
+/// Sends a message, then files a copy in Sent.
+///
+/// Called only after the undo window has lapsed: nothing reaches the server
+/// while the countdown is running, which is what makes undo a cancel rather
+/// than a recall. By the time this runs, the user has committed.
+///
+/// The two halves are reported separately on purpose. A send that succeeded and
+/// an append that failed is a delivered message with no local record of it —
+/// annoying, but not a failure to send, and telling someone their mail did not
+/// go when it did is worse than telling them it did not get filed.
+#[tauri::command]
+async fn send_message(
+    to: Vec<String>,
+    cc: Vec<String>,
+    subject: String,
+    body: String,
+    in_reply_to: Option<String>,
+    references: Vec<String>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<String, String> {
+    use petrel_providers::smtp::{Outgoing, SendResult, SmtpConfig, send_tls};
+
+    let cfg = imap_config_from_env().ok_or("no account is configured")?;
+    let smtp = SmtpConfig::for_imap_host(&cfg.host, &cfg.user, &cfg.pass);
+    let domain = cfg
+        .user
+        .split('@')
+        .nth(1)
+        .unwrap_or("localhost")
+        .to_string();
+
+    let msg = Outgoing {
+        from_addr: cfg.user.clone(),
+        from_name: String::new(),
+        to,
+        cc,
+        subject,
+        body_text: body,
+        in_reply_to,
+        references,
+    };
+    if msg.recipients().is_empty() {
+        return Err("a message needs at least one recipient".into());
+    }
+    let (message_id, raw) = msg.render(&domain);
+
+    let outcome = send_tls(&smtp, &msg, &raw).await;
+    match outcome {
+        SendResult::Committed { .. } => {}
+        SendResult::RejectedPermanently { response } => {
+            log_sync(&format!("send rejected: {response}"));
+            return Err(format!("The server refused the message: {response}"));
+        }
+        SendResult::FailedBeforeCommit { stage, detail } => {
+            log_sync(&format!("send failed at {stage}: {detail}"));
+            return Err(format!("Could not send ({stage}): {detail}"));
+        }
+        SendResult::UnknownAfterTransmit { detail } => {
+            // Spike S5's case: the body went, the acknowledgement did not. The
+            // message may well have been delivered, so a retry could duplicate
+            // it. Say so plainly rather than guessing either way.
+            log_sync(&format!(
+                "send outcome unknown: {detail} (message-id {message_id})"
+            ));
+            return Err(
+                "The message may have been sent — the connection dropped before the server \
+                 confirmed. Check your Sent folder before sending it again."
+                    .into(),
+            );
+        }
+    }
+
+    // Filed second, and separately: a failure here has not lost the message.
+    let sent_path = {
+        let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+        let account = store
+            .first_account()
+            .map_err(|e| e.to_string())?
+            .ok_or("no account")?;
+        store
+            .folder_for_role(account, "sent")
+            .ok()
+            .flatten()
+            .and_then(|fid| store.folder_path(fid).ok().flatten())
+    };
+    if let Some(path) = sent_path {
+        if let Err(e) = petrel_providers::imap::append_message(&cfg, &path, &raw).await {
+            log_sync(&format!("sent, but could not file a copy in {path}: {e}"));
+        }
+    }
+    log_sync(&format!("sent {message_id}"));
+    Ok(message_id)
+}
+
 /// Folders for the move picker (V).
 #[tauri::command]
 fn list_folders(state: State<Arc<AppState>>) -> Result<Vec<FolderSummary>, String> {
@@ -1092,6 +1186,7 @@ pub fn run() {
             list_folders,
             create_folder,
             create_tag,
+            send_message,
             list_accounts,
             set_account_color,
             set_account_archive,
