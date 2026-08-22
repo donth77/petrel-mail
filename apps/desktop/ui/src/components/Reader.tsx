@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Archive,
   ChevronDown,
@@ -35,9 +35,17 @@ function Collapsed({ m, onExpand }: { m: ThreadMessage; onExpand: () => void }) 
   );
 }
 
-function Expanded({ m, onCollapse }: { m: ThreadMessage; onCollapse: () => void }) {
+function Expanded({
+  m,
+  focused,
+  onCollapse,
+}: {
+  m: ThreadMessage;
+  focused: boolean;
+  onCollapse: () => void;
+}) {
   return (
-    <article className="msg">
+    <article className="msg" id={`msg-body-${m.id}`} data-focused={focused || undefined}>
       {/* The header is the toggle, the way it is in every mail client: if
           clicking a collapsed message opens it, clicking the open one has to
           close it again, or the only way back is to leave the conversation.
@@ -107,6 +115,9 @@ export function Reader({
   const [messages, setMessages] = useState<ThreadMessage[]>([]);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [error, setError] = useState<string | null>(null);
+  // Which message [ and ] move from. Separate from `expanded` because you can
+  // have several open at once and still be reading one of them.
+  const [focused, setFocused] = useState<number | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -124,6 +135,7 @@ export function Reader({
         // asked for, so a five-message thread does not open as five walls of text.
         const last = ms[ms.length - 1];
         setExpanded(new Set(last ? [last.id] : []));
+        setFocused(last?.id ?? null);
       })
       // Never swallow this: an empty reading pane and a failed call look
       // identical to the user, and only one of them is worth reporting.
@@ -149,6 +161,54 @@ export function Reader({
   }
 
   const subject = thread.subject || '(no subject)';
+  // [ and ] walk the conversation. Handled here rather than in the global map
+  // for the same reason j/k live in the list: the keys mean "within the thing
+  // in front of you", and the component holding that thing is the only one
+  // that knows what is in it.
+  //
+  // Moving expands what it lands on. A navigation key that leaves you looking
+  // at a collapsed line has not taken you anywhere.
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+  const focusedRef = useRef(focused);
+  focusedRef.current = focused;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key !== '[' && e.key !== ']') return;
+      const el = e.target instanceof HTMLElement ? e.target : null;
+      if (
+        el &&
+        (el.tagName === 'INPUT' ||
+          el.tagName === 'TEXTAREA' ||
+          el.isContentEditable)
+      ) {
+        return;
+      }
+      if (document.querySelector('[role="dialog"]:not([hidden])')) return;
+
+      const list = messagesRef.current;
+      if (list.length === 0) return;
+      e.preventDefault();
+
+      const at = list.findIndex((m) => m.id === focusedRef.current);
+      const nextIndex = at < 0 ? list.length - 1 : at + (e.key === ']' ? 1 : -1);
+      const target = list[nextIndex];
+      if (!target) return;
+
+      setFocused(target.id);
+      setExpanded((prev) => new Set(prev).add(target.id));
+      // After the expand has rendered, or there is nothing to scroll to.
+      requestAnimationFrame(() => {
+        document
+          .getElementById(`msg-body-${target.id}`)
+          ?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      });
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   const hidden = messages.filter((m) => !expanded.has(m.id));
   const foldable = hidden.slice(0, Math.max(0, hidden.length - 1));
   const showAll = () => setExpanded(new Set(messages.map((m) => m.id)));
@@ -247,6 +307,7 @@ export function Reader({
             <Expanded
               m={m}
               key={m.id}
+              focused={focused === m.id}
               onCollapse={() =>
                 setExpanded((prev) => {
                   const next = new Set(prev);

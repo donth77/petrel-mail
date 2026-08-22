@@ -36,7 +36,7 @@ export const BINDINGS: Binding[] = [
   { id: 'back', group: 'move', label: 'Back to the list', display: ['U'],
     chords: [{ key: 'u' }], available: true },
   { id: 'msg-nav', group: 'move', label: 'Next / previous message in thread', display: ['[', ']'],
-    chords: [{ key: '[' }, { key: ']' }], available: false },
+    chords: [{ key: '[' }, { key: ']' }], available: true },
   { id: 'panes', group: 'move', label: 'Cycle panes', display: ['F6'],
     chords: [{ key: 'F6' }], available: true },
   { id: 'goto', group: 'move', label: 'Go to Inbox · Starred · Sent · Drafts', display: ['G', 'I S T D'],

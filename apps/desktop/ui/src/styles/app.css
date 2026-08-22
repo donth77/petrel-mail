@@ -2578,3 +2578,10 @@ body.resizing {
   background: var(--hair2);
   color: var(--ink);
 }
+
+/* The message [ and ] last landed on. A quiet marker, not a selection: it
+   says where the keys will move from, which is only useful while you are
+   using them. */
+.msg[data-focused] {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
