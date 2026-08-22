@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { Composite, CompositeItem, useCompositeStore } from '@ariakit/react';
 import { useVirtualizer, defaultRangeExtractor, type Range } from '@tanstack/react-virtual';
-import { Archive, Clock, MoreVertical, Paperclip, Star } from 'lucide-react';
+import { Archive, Clock, Mail, MailOpen, MoreVertical, Paperclip, Star } from 'lucide-react';
 import type { ActionKind, Thread } from '../lib/api';
 import { Icon } from './Icon';
 import { initials, listTime, fullTime } from '../lib/format';
 import { t } from '../lib/strings';
+import { key } from '../lib/keys';
 
 type Props = {
   items: Thread[];
@@ -13,7 +14,6 @@ type Props = {
   density: 'relaxed' | 'compact';
   onActivate: (id: number) => void;
   onAction: (kind: ActionKind, threadId: number) => void;
-  onMore: (threadId: number) => void;
   onNotImplemented: (label: string) => void;
 };
 
@@ -35,7 +35,6 @@ export function MessageList({
   density,
   onActivate,
   onAction,
-  onMore,
   onNotImplemented,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -306,7 +305,14 @@ export function MessageList({
               {/* Spans, not buttons: the row is already a button and nesting
                   interactive elements is invalid and unreachable by keyboard.
                   These are pointer affordances for what E, B and the palette
-                  already do, so they are hidden from assistive tech. */}
+                  already do, so they are hidden from assistive tech.
+
+                  Three, not four. The bar overlays the row's trailing edge, and
+                  a fourth icon covered 37% of a 430px row — burying the
+                  timestamp. "More" was the one to drop: its only job was to
+                  open the palette, which already has its own shortcut and is a
+                  first-class surface in this app. The reader header, which has
+                  room, keeps it. */}
               <span className="row-actions" aria-hidden="true">
                 {/* stopPropagation, or the click also lands on the row behind
                     and selects the conversation we are about to archive. */}
@@ -320,6 +326,28 @@ export function MessageList({
                 >
                   <Icon icon={Archive} size={14} />
                 </span>
+                {/* Second, not last: this is a triage verb, not an overflow
+                    item. The icon names the *action* — an open envelope on an
+                    unread row means "mark this read" — which is how Gmail and
+                    Outlook read, and it stays in the same place whichever
+                    direction you are going. A clickable unread dot cannot do
+                    that: on a read row there is no dot to click, so the one
+                    direction that matters — flagging something to come back
+                    to — would have no target at all. */}
+                <span
+                  className="qact"
+                  title={
+                    m.unread
+                      ? t('qact-mark-read', { key: key('read') })
+                      : t('qact-mark-unread', { key: key('unread') })
+                  }
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onAction(m.unread ? 'mark_read' : 'mark_unread', m.id);
+                  }}
+                >
+                  <Icon icon={m.unread ? MailOpen : Mail} size={14} />
+                </span>
                 <span
                   className="qact"
                   title={t('qact-snooze')}
@@ -329,16 +357,6 @@ export function MessageList({
                   }}
                 >
                   <Icon icon={Clock} size={14} />
-                </span>
-                <span
-                  className="qact"
-                  title={t('qact-more')}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onMore(m.id);
-                  }}
-                >
-                  <Icon icon={MoreVertical} size={14} />
                 </span>
               </span>
             </CompositeItem>

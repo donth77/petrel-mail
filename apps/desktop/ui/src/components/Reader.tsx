@@ -1,5 +1,14 @@
 import { useEffect, useState } from 'react';
-import { Archive, ChevronDown, CornerUpLeft, MoreVertical, Paperclip, Star } from 'lucide-react';
+import {
+  Archive,
+  ChevronDown,
+  CornerUpLeft,
+  Mail,
+  MailOpen,
+  MoreVertical,
+  Paperclip,
+  Star,
+} from 'lucide-react';
 import { api, type ActionKind, type Thread, type ThreadMessage } from '../lib/api';
 import { count as fmtCount, fileSize, fullTime, initials, listTime, messageTime } from '../lib/format';
 import { Icon } from './Icon';
@@ -151,6 +160,17 @@ export function Reader({
               onClick={() => onAction('archive')}
             >
               <Icon icon={Archive} />
+            </button>
+            {/* A conversation you are reading is read by definition, so in
+                practice this is the "put it back, I will deal with it later"
+                gesture — which is why it belongs here and not only on the row. */}
+            <button
+              type="button"
+              className="act-icon"
+              aria-label={thread.unread ? t('reader-mark-read') : t('reader-mark-unread')}
+              onClick={() => onAction(thread.unread ? 'mark_read' : 'mark_unread')}
+            >
+              <Icon icon={thread.unread ? MailOpen : Mail} />
             </button>
             <button
               type="button"

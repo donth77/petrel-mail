@@ -218,12 +218,6 @@ export function App() {
             density={settings.density}
             onActivate={setActiveId}
             onAction={(kind, threadId) => void triage.run(kind, threadId)}
-            onMore={(threadId) => {
-              // Same surface the reader's More opens — the palette already
-              // scopes its commands to whichever conversation is selected.
-              setActiveId(threadId);
-              setPaletteOpen(true);
-            }}
             onNotImplemented={(label) => setToast(t('not-implemented', { label }))}
           />
         )}
