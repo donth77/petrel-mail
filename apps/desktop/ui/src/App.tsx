@@ -9,6 +9,7 @@ import { useTriage, type UndoOffer } from './lib/useTriage';
 import { TitleBar } from './components/TitleBar';
 import { Palette } from './components/Palette';
 import { Picker, type PickerOption } from './components/Picker';
+import { notifiable, postDesktopNotification } from './lib/notify';
 import { Help } from './components/Help';
 import { Settings } from './components/Settings';
 import { useSettings } from './lib/settings';
@@ -38,15 +39,21 @@ export function App() {
 
   useEffect(() => {
     let live = true;
+    let handle: ReturnType<typeof setTimeout>;
     const tick = () =>
       api.status().then((s) => {
         if (!live) return;
         setStatus(s);
-        if (s.seeding) setTimeout(tick, 400);
+        // Keep asking after the first sync finishes, not just during it. The
+        // engine polls the server every couple of minutes; if the window stops
+        // listening once seeding ends, mail arrives into the store and nothing
+        // on screen ever changes.
+        handle = setTimeout(tick, s.seeding ? 400 : 5000);
       });
     tick();
     return () => {
       live = false;
+      clearTimeout(handle);
     };
   }, []);
 
@@ -167,6 +174,44 @@ export function App() {
   }, [query, view, viewName, status?.count]);
 
   const active = useMemo(() => items.find((m) => m.id === activeId) ?? null, [items, activeId]);
+
+  // Announce mail that arrived while the window was open.
+  //
+  // Keyed on ids rather than a count: a count that goes up and down as things
+  // are archived would announce the same message twice, and comparing counts
+  // cannot tell "two arrived" from "one arrived and one left".
+  const announced = useRef<Set<number> | null>(null);
+  useEffect(() => {
+    if (view !== 'inbox' || query) return;
+    // The first list is the mailbox as it already was, not an arrival. Seeding
+    // it silently is what stops a first launch from announcing 200 messages.
+    if (announced.current === null) {
+      if (items.length > 0 || !status?.seeding) {
+        announced.current = new Set(items.map((m) => m.id));
+      }
+      return;
+    }
+    const fresh = items.filter((m) => !announced.current!.has(m.id));
+    items.forEach((m) => announced.current!.add(m.id));
+    if (fresh.length === 0) return;
+
+    const worth = notifiable(settings, fresh, Date.now());
+    if (worth.length === 0) return;
+
+    const top = worth[0];
+    const who = top.from_display || top.from_addr;
+    setToast(
+      worth.length === 1
+        ? t('notify-one', { who })
+        : t('notify-many', { count: fmtCount(worth.length) }),
+    );
+    if (settings.notifyDesktop === 'on') {
+      void postDesktopNotification(
+        who,
+        worth.length === 1 ? top.subject || '(no subject)' : t('notify-many', { count: fmtCount(worth.length) }),
+      );
+    }
+  }, [items, view, query, settings, status?.seeding]);
 
   // Opening a conversation marks it read, as every mail client does.
   //

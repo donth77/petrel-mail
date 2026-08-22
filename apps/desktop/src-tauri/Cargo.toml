@@ -27,6 +27,10 @@ tauri-build = { version = "2.6", features = [] }
 # makes the dependency explicit rather than borrowed from its internals.
 tokio = { version = "1", features = ["time"] }
 tauri = { version = "2.11", features = [] }
+# Desktop notifications. macOS routes these through Notification Center, which
+# means the OS decides whether they appear — the in-app toast is the fallback
+# that always works.
+tauri-plugin-notification = "2"
 serde.workspace = true
 serde_json.workspace = true
 dirs = "6"

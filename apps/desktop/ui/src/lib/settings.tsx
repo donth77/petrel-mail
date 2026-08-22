@@ -17,6 +17,20 @@ export const DEFAULTS = {
   readingTextSize: '15',
   language: 'system',
   clock: 'system' as ClockPref,
+
+  // Notifications (docs/design SettingsNotifications).
+  //
+  // What earns an interruption, rather than a bare on/off: "all new mail" is
+  // the setting people turn off entirely after a week, and turning it off is
+  // how you stop hearing about the one message that mattered.
+  notifyLevel: 'all' as 'all' | 'priority' | 'none',
+  /// Desktop notifications go through the OS, which can refuse them. The in-app
+  /// toast is separate and always available, so this only governs the OS ones.
+  notifyDesktop: 'on' as 'on' | 'off',
+  /// A timestamp in ms; notifications stay silent until it passes. Stored as an
+  /// instant rather than a boolean so a pause cannot outlive its own intent by
+  /// being forgotten in the off position.
+  notifyPausedUntil: '0',
 };
 
 export type Settings = typeof DEFAULTS;

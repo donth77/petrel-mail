@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { Accounts } from './settings/Accounts';
 import { Appearance } from './settings/Appearance';
+import { Notifications } from './settings/Notifications';
 import { Icon } from './Icon';
 import { t, type StringId } from '../lib/strings';
 
@@ -72,7 +73,8 @@ export function Settings({ open, onClose, onOpenHelp, onNotImplemented }: Props)
           </DialogDismiss>
           {pane === 'appearance' && <Appearance />}
           {pane === 'accounts' && <Accounts onNotImplemented={onNotImplemented} />}
-          {pane !== 'appearance' && pane !== 'accounts' && (
+          {pane === 'notifications' && <Notifications />}
+          {pane !== 'appearance' && pane !== 'accounts' && pane !== 'notifications' && (
             <div className="empty">
               <h2>{t(PANES.find((p) => p.id === pane)!.label)}</h2>
               <p>{t('settings-not-built')}</p>
