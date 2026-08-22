@@ -36,7 +36,30 @@ export const DEFAULTS = {
   /// the countdown runs, which is what makes undo a cancel rather than a recall
   /// — the only kind that actually works (docs/design Compose).
   undoSendSeconds: '10',
+
+  /// Sidebar width in pixels, and whether it is collapsed to icons. Stored as
+  /// strings like every other setting so the persistence layer stays one shape.
+  railWidth: '236',
+  railCollapsed: 'off' as 'on' | 'off',
 };
+
+/** Width of the collapsed rail: one icon plus its hit area, nothing else. */
+export const RAIL_COLLAPSED = 56;
+export const RAIL_MIN = 180;
+export const RAIL_MAX = 380;
+
+/** Keeps a stored width usable. A rail dragged to 12px, or corrupted to NaN by
+ *  a hand-edited settings row, would otherwise be unrecoverable without
+ *  clearing settings — the handle would be too small to grab. */
+export function clampRail(value: string | number): number {
+  // Empty and whitespace are "no value", not zero. Number('') is 0, so without
+  // this an absent width clamps to the minimum and the sidebar silently comes
+  // back at its narrowest instead of the width it is supposed to default to.
+  if (typeof value === 'string' && value.trim() === '') return Number(DEFAULTS.railWidth);
+  const n = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(n)) return Number(DEFAULTS.railWidth);
+  return Math.min(RAIL_MAX, Math.max(RAIL_MIN, Math.round(n)));
+}
 
 export type Settings = typeof DEFAULTS;
 type Key = keyof Settings;
@@ -80,7 +103,18 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
     else root.setAttribute('data-theme', settings.theme);
     root.style.setProperty('--accent-user', settings.accent);
     root.style.setProperty('--reading-size', `${settings.readingTextSize}px`);
-  }, [settings.theme, settings.accent, settings.readingTextSize]);
+    // The rail's width is a token so the three-pane grid picks it up without
+    // the layout needing to know a drag happened.
+    root.style.setProperty(
+      '--rail-size',
+      settings.railCollapsed === 'on' ? `${RAIL_COLLAPSED}px` : `${clampRail(settings.railWidth)}px`,
+    );
+    // Depends on the whole object, not a hand-listed subset. `settings` is
+    // memoised on `stored`, so this runs exactly when a preference changes —
+    // and adding a line to the body can no longer silently do nothing because
+    // its key was left out of the list, which is precisely what happened when
+    // the rail width was added here.
+  }, [settings]);
 
   useEffect(() => {
     setFormatPrefs({

@@ -2224,3 +2224,61 @@ mark {
 .picker-opt[data-active-item] .picker-when {
   color: var(--accent-ink);
 }
+
+/* Resizable, collapsible rail.
+   Width lives in --rail-size, which the three-pane grid already consumes, so
+   the layout needs to know nothing about dragging. */
+.rail {
+  position: relative;
+}
+
+.rail-resize {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: -3px;
+  inline-size: 6px;
+  cursor: col-resize;
+  /* Above the rail's own content so a drag near a button still grabs the
+     handle rather than the button. */
+  z-index: 5;
+}
+
+.rail-resize:hover,
+.rail-resize:focus-visible {
+  background: var(--accent);
+  opacity: 0.5;
+  outline: none;
+}
+
+/* While dragging, stop the pointer selecting text or turning into an I-beam
+   over whatever it happens to cross. */
+body.resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* Collapsed: icons only. The labels are removed from the flow rather than
+   hidden with opacity, so nothing is left to wrap or overflow at 56px — and
+   each item keeps a title so the icon is still identifiable. */
+.rail[data-collapsed] .rail-text,
+.rail[data-collapsed] .rail-label,
+.rail[data-collapsed] .account span:not(.dot),
+.rail[data-collapsed] .count {
+  display: none;
+}
+
+.rail[data-collapsed] .rail-item,
+.rail[data-collapsed] .account {
+  justify-content: center;
+  padding-inline: 0;
+  gap: 0;
+}
+
+.rail[data-collapsed] .account {
+  block-size: 36px;
+}
+
+.rail[data-collapsed] .tag-swatch {
+  inline-size: 10px;
+  block-size: 10px;
+}

@@ -96,7 +96,11 @@
       return tags;
     },
     list_accounts: function () {
-      return [];
+      return [
+        { id: 1, kind: 'gmail', email: 'you@example.com', display_name: '',
+          color: '#0E7C86', local_archive: 0, message_count: rows.length,
+          unread_count: 0, last_sync_ms: now, folders: [] },
+      ];
     },
     get_settings: function () {
       return {};

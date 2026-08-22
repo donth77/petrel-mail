@@ -14,13 +14,13 @@ import { snoozeOptions } from './lib/snooze';
 import { notifiable, postDesktopNotification } from './lib/notify';
 import { Help } from './components/Help';
 import { Settings } from './components/Settings';
-import { useSettings } from './lib/settings';
+import { clampRail, useSettings } from './lib/settings';
 import { Toast } from './components/Toast';
 import { MessageList } from './components/MessageList';
 import { Reader } from './components/Reader';
 
 export function App() {
-  const { settings } = useSettings();
+  const { settings, set } = useSettings();
   const [status, setStatus] = useState<Status | null>(null);
   const [items, setItems] = useState<Thread[]>([]);
   const [query, setQuery] = useState('');
@@ -384,11 +384,32 @@ export function App() {
       <div className="shell" data-layout={settings.layout === 'off' ? 'no-reader' : settings.layout}>
       <Rail
         account={accounts[0]?.email ?? status?.source ?? t('app-name')}
+        accounts={accounts}
         accountColor={accounts[0]?.color || 'var(--accent)'}
         unread={unread}
         view={view}
         tags={tags}
         railRef={railRef}
+        collapsed={settings.railCollapsed === 'on'}
+        onToggleCollapsed={() =>
+          set('railCollapsed', settings.railCollapsed === 'on' ? 'off' : 'on')
+        }
+        onResize={(xOrDelta) => {
+          // A pointer gives an absolute x; the keyboard gives a delta. The rail
+          // starts at the window edge, so its width *is* the pointer's x.
+          const next =
+            Math.abs(xOrDelta) < 64 && xOrDelta !== 0
+              ? clampRail(settings.railWidth) + xOrDelta
+              : xOrDelta;
+          set('railWidth', String(clampRail(next)));
+        }}
+        onSwitchAccount={(n) => {
+          const acc = accounts[n - 1];
+          if (acc) setToast(t('account-switched', { email: acc.email }));
+          else setToast(t('account-none-at', { n: String(n) }));
+        }}
+        onSettings={() => setSettingsOpen(true)}
+        onNotImplemented={(label) => setToast(t('not-implemented', { label }))}
         onView={(v) => {
           if (v === 'help') setHelpOpen(true);
           else if (v === 'settings') setSettingsOpen(true);
