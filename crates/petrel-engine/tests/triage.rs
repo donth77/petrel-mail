@@ -554,7 +554,7 @@ fn pending_actions_come_back_in_the_order_they_were_made() {
 /// worse than one that never offered.
 #[test]
 fn deleting_forever_leaves_the_list_and_cannot_be_undone() {
-    let (mut store, account, ids) = seeded();
+    let (store, account, ids) = seeded();
     let trash = store.ensure_folder(account, "trash", "Trash").unwrap();
     store.place_message(ids[0], trash).unwrap();
     let thread = store.thread_of(ids[0]).unwrap().unwrap_or(-ids[0]);

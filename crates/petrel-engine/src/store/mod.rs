@@ -3159,7 +3159,7 @@ impl Store {
     ) -> Result<Vec<ThreadListing>> {
         let mut rows = self.search_threads(query, limit)?;
         if newest_first {
-            rows.sort_by(|a, b| b.date_ms.cmp(&a.date_ms));
+            rows.sort_by_key(|r| std::cmp::Reverse(r.date_ms));
         }
         Ok(rows)
     }

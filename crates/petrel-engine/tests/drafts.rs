@@ -191,7 +191,7 @@ mod outbox {
 /// would flatten the message the user actually wrote.
 #[test]
 fn a_draft_remembers_its_formatting() {
-    let mut s = Store::open_in_memory().unwrap();
+    let s = Store::open_in_memory().unwrap();
     let account = s.ensure_test_account().unwrap();
     let id = s
         .save_draft(

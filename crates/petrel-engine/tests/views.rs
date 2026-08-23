@@ -449,7 +449,7 @@ mod by_id {
 
     #[test]
     fn finds_a_conversation_that_is_in_no_view_at_all() {
-        let (mut store, account, ids) = seeded();
+        let (store, account, ids) = seeded();
         // Archived and starred: absent from the inbox, which is where the
         // window used to look.
         let archive = store.ensure_folder(account, "archive", "archive").unwrap();

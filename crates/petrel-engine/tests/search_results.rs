@@ -276,7 +276,7 @@ mod the_bin {
 
     #[test]
     fn spam_is_not_a_search_result() {
-        let (mut store, ids) = seeded();
+        let (store, ids) = seeded();
         let account = store.first_account().unwrap().unwrap();
         let spam = store.ensure_folder(account, "spam", "spam").unwrap();
         store.place_message(ids[0], spam).unwrap();
@@ -286,7 +286,7 @@ mod the_bin {
 
     #[test]
     fn trash_is_not_a_search_result_either() {
-        let (mut store, ids) = seeded();
+        let (store, ids) = seeded();
         let account = store.first_account().unwrap().unwrap();
         let trash = store.ensure_folder(account, "trash", "trash").unwrap();
         store.place_message(ids[1], trash).unwrap();
@@ -298,7 +298,7 @@ mod the_bin {
     fn asking_for_spam_by_name_searches_it() {
         // The grammar is the way in: nothing else reaches these messages, and
         // a reader who types `in:spam` has said what they want.
-        let (mut store, ids) = seeded();
+        let (store, ids) = seeded();
         let account = store.first_account().unwrap().unwrap();
         let spam = store.ensure_folder(account, "spam", "spam").unwrap();
         store.place_message(ids[0], spam).unwrap();
@@ -313,7 +313,7 @@ mod the_bin {
     fn a_condition_only_search_leaves_the_bin_out_too() {
         // `has:attachment` and friends take a different path through the store
         // than a search with words in it, and the rule has to hold on both.
-        let (mut store, ids) = seeded();
+        let (store, ids) = seeded();
         let account = store.first_account().unwrap().unwrap();
         let spam = store.ensure_folder(account, "spam", "spam").unwrap();
         store.place_message(ids[0], spam).unwrap();
@@ -332,7 +332,7 @@ mod the_bin {
 
     #[test]
     fn the_spam_view_itself_still_shows_it() {
-        let (mut store, ids) = seeded();
+        let (store, ids) = seeded();
         let account = store.first_account().unwrap().unwrap();
         let spam = store.ensure_folder(account, "spam", "spam").unwrap();
         store.place_message(ids[0], spam).unwrap();
