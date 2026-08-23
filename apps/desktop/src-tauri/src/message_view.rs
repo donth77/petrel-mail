@@ -458,7 +458,14 @@ pub fn handle(
     let (body, report) = match parsed.body_html.as_deref() {
         Some(html) => {
             let s = petrel_mime::sanitize_html(html, allow_remote);
-            (s.html, s.report)
+            // After sanitizing, point `cid:` images at the part route — the
+            // webview cannot follow a cid, but it can fetch the same bytes
+            // from the message's own protocol. Root-relative, so it resolves
+            // against this document's origin on every platform spelling.
+            let html = petrel_mime::resolve_cids(&s.html, &parsed.attachments, |part| {
+                format!("/attachment/{token}/{part}")
+            });
+            (html, s.report)
         }
         None => (
             petrel_mime::plain_text_to_html(&parsed.body_text),

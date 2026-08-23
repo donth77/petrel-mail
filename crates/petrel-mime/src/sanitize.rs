@@ -326,6 +326,46 @@ pub fn sanitize_html(html: &str, allow_remote: bool) -> Sanitized {
     }
 }
 
+/// Points `cid:` images at somewhere a webview can actually fetch.
+///
+/// A `cid:` URL names one of the message's own MIME parts, and only a native
+/// mail renderer knows how to follow it — to a webview it is a broken image.
+/// The parts themselves are already served one by one over the message
+/// protocol, so this rewrites each reference to that route and the picture
+/// arrives from the message's own bytes, never the network.
+///
+/// Runs on *sanitized* HTML — the sanitizer keeps `cid:` URLs precisely so
+/// this can resolve them — and matches the sanitizer's serialized form, which
+/// HTML-escapes attribute values. A reference to a part the message does not
+/// carry stays as it is: a broken placeholder is truthful, and inventing a
+/// URL for it would only turn "the sender forgot the image" into a 404.
+pub fn resolve_cids(
+    html: &str,
+    attachments: &[crate::Attachment],
+    href: impl Fn(usize) -> String,
+) -> String {
+    let mut out = html.to_string();
+    for (index, att) in attachments.iter().enumerate() {
+        let Some(id) = att.content_id.as_deref() else {
+            continue;
+        };
+        // The id as the sanitizer would have serialized it inside an
+        // attribute. Angle brackets are already stripped at parse time.
+        let escaped = id
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;");
+        let target = href(index);
+        // Both quoted attribute forms, because `src` on an img and
+        // `background` on a table both survive sanitization.
+        for needle in [format!("=\"cid:{escaped}\""), format!("='cid:{escaped}'")] {
+            out = out.replace(&needle, &format!("=\"{target}\""));
+        }
+    }
+    out
+}
+
 /// Renders a plain-text body as safe HTML, preserving quote structure.
 pub fn plain_text_to_html(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 64);
@@ -482,6 +522,64 @@ mod tests {
         assert!(!res.html.contains("beacon.png"), "{}", res.html);
         // Inline parts are the message's own content, not a network fetch.
         assert!(res.html.contains("cid:inline-part-1"), "{}", res.html);
+    }
+
+    #[test]
+    fn cid_images_resolve_to_the_part_route_after_sanitizing() {
+        let attachments = vec![
+            crate::Attachment {
+                filename: Some("logo.png".into()),
+                content_type: Some("image/png".into()),
+                size: 10,
+                content_id: Some("logo@mailer.example".into()),
+                is_inline: true,
+            },
+            crate::Attachment {
+                filename: Some("report.pdf".into()),
+                content_type: Some("application/pdf".into()),
+                size: 99,
+                content_id: None,
+                is_inline: false,
+            },
+            crate::Attachment {
+                filename: None,
+                content_type: Some("image/jpeg".into()),
+                size: 12,
+                content_id: Some("photo&2@mailer.example".into()),
+                is_inline: true,
+            },
+        ];
+        // Through the real sanitizer first, because that is the shape the
+        // resolver actually receives — escaped attributes and all.
+        let sanitized = sanitize_html(
+            r#"<img src="cid:logo@mailer.example"><img src="cid:photo&2@mailer.example">"#,
+            false,
+        );
+        let out = resolve_cids(&sanitized.html, &attachments, |i| {
+            format!("/attachment/tok/{i}")
+        });
+        assert!(out.contains(r#"src="/attachment/tok/0""#), "{out}");
+        // The ampersand id matches through the sanitizer's own escaping, and
+        // resolves to index 2 — position in the part list, not among cids.
+        assert!(out.contains(r#"src="/attachment/tok/2""#), "{out}");
+        assert!(!out.contains("cid:"), "{out}");
+    }
+
+    #[test]
+    fn a_cid_no_part_answers_stays_a_cid() {
+        let attachments = vec![crate::Attachment {
+            filename: None,
+            content_type: Some("image/png".into()),
+            size: 5,
+            content_id: Some("present@x".into()),
+            is_inline: true,
+        }];
+        let out = resolve_cids(r#"<img src="cid:missing@x">"#, &attachments, |i| {
+            format!("/attachment/tok/{i}")
+        });
+        // The sender referenced a part they never attached. A truthful broken
+        // image, not an invented URL.
+        assert_eq!(out, r#"<img src="cid:missing@x">"#);
     }
 
     #[test]

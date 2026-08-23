@@ -40,6 +40,8 @@ type Props = {
   onSaveDraft: () => void;
   onSendLater: () => void;
   onPopOut: () => void;
+  /** Passing notes to the toast — a refused paste, and nothing graver. */
+  onNotice?: (text: string) => void;
 };
 
 /** Splits a recipient field into addresses.
@@ -56,7 +58,7 @@ export { splitRecipients as addresses } from '../lib/recipients';
  * are reading, and taking over the screen to write two lines loses the thing
  * being replied to. Popping out is a deliberate escalation, not the default.
  */
-export function Compose({ draft, account, onChange, onClose, onSend, onAttach, onDropFiles, onSaveDraft, onSendLater, onPopOut }: Props) {
+export function Compose({ draft, account, onChange, onClose, onSend, onAttach, onDropFiles, onSaveDraft, onSendLater, onPopOut, onNotice }: Props) {
   const { over: dropping, dropProps } = useFileDropZone(onDropFiles);
   const toRef = useRef<HTMLInputElement>(null);
   const [showCc, setShowCc] = useState(draft.cc.length > 0);
@@ -170,6 +172,7 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
         html={draft.html}
         autoFocus={Boolean(draft.to)}
         onChange={(html, doc) => onChange({ ...draft, html, body: plainTextFromDoc(doc) })}
+        onNotice={onNotice}
       />
 
       {(draft.attachments?.length ?? 0) > 0 && (

@@ -3,8 +3,10 @@ import {
   Select, SelectItem, SelectPopover, SelectProvider,
 } from '@ariakit/react';
 import { EditorContent, useEditor, type Editor } from '@tiptap/react';
+import { TextSelection } from '@tiptap/pm/state';
 import StarterKit from '@tiptap/starter-kit';
 import { Blockquote } from '@tiptap/extension-blockquote';
+import { Image } from '@tiptap/extension-image';
 import { TextStyle } from '@tiptap/extension-text-style';
 import { FontFamily } from '@tiptap/extension-text-style/font-family';
 import { FontSize } from '@tiptap/extension-text-style/font-size';
@@ -13,6 +15,7 @@ import {
   Strikethrough, Type, Underline, type LucideIcon,
 } from 'lucide-react';
 import type { DocNode } from '../lib/plain-text';
+import { EMBED_CAP, asDataUrl, pastedImages } from '../lib/paste-image';
 import { Icon } from './Icon';
 import { t } from '../lib/strings';
 import { Tip } from './Tip';
@@ -82,6 +85,8 @@ type Props = {
   onChange: (html: string, doc: DocNode) => void;
   onKeyDown?: (e: React.KeyboardEvent) => void;
   autoFocus?: boolean;
+  /** Something worth saying that is not worth a dialog — a refused paste. */
+  onNotice?: (text: string) => void;
 };
 
 /**
@@ -99,7 +104,7 @@ type Props = {
  * `**bold**`, `- ` for a list, `> ` for a quote. Someone who types markdown out
  * of habit gets what they meant rather than the punctuation.
  */
-export function RichText({ html, onChange, onKeyDown, autoFocus }: Props) {
+export function RichText({ html, onChange, onKeyDown, autoFocus, onNotice }: Props) {
   // The link card: its own text and address, so a link can be labelled rather
   // than only wrapped around whatever happened to be selected.
   const [link, setLink] = useState<
@@ -138,6 +143,9 @@ export function RichText({ html, onChange, onKeyDown, autoFocus }: Props) {
       // stylesheet in the head is stripped by most webmail, and a class name
       // means nothing at the other end.
       CiteBlockquote,
+      // Pasted pictures. Base64 stays allowed because a draft *is* a data:
+      // URI until send, when each becomes a MIME part of its own.
+      Image.configure({ allowBase64: true }),
       TextStyle,
       FontFamily,
       FontSize,
@@ -147,6 +155,36 @@ export function RichText({ html, onChange, onKeyDown, autoFocus }: Props) {
       attributes: {
         class: 'rich-body',
         'aria-label': t('compose-body'),
+      },
+      // A pasted screenshot lands in the body, where it was aimed. Only a
+      // clipboard that is purely images counts (the policy's call, not
+      // this one's); text pastes fall through to the editor untouched.
+      handlePaste: (view, event) => {
+        const images = pastedImages(event.clipboardData);
+        if (images.length === 0) return false;
+        for (const file of images) {
+          if (file.size > EMBED_CAP) {
+            onNotice?.(t('compose-img-too-big'));
+            continue;
+          }
+          void asDataUrl(file).then((src) => {
+            // Fresh state on arrival: reading the file is asynchronous and
+            // the document may have moved under it.
+            const { image, paragraph } = view.state.schema.nodes;
+            let tr = view.state.tr.replaceSelectionWith(image.create({ src }));
+            // The caret goes after the picture, not on it. Left selected,
+            // the next thing typed would replace what was just pasted — and
+            // when the picture is the last thing in the message there is no
+            // text position to move to until a paragraph is put there.
+            const at = tr.selection.to;
+            if (!tr.doc.resolve(at).nodeAfter?.isTextblock) {
+              tr = tr.insert(at, paragraph.create());
+            }
+            tr = tr.setSelection(TextSelection.near(tr.doc.resolve(at), 1));
+            view.dispatch(tr.scrollIntoView());
+          });
+        }
+        return true;
       },
     },
     onUpdate: ({ editor }) => onChange(editor.getHTML(), editor.getJSON() as DocNode),

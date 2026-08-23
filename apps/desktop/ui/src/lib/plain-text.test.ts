@@ -69,4 +69,18 @@ describe('plainTextFromDoc', () => {
     expect(plainTextFromDoc(doc())).toBe('');
     expect(plainTextFromDoc(null)).toBe('');
   });
+
+  it('a pasted image leaves a placeholder in the text half', () => {
+    const doc = {
+      type: 'doc',
+      content: [
+        { type: 'paragraph', content: [{ type: 'text', text: 'Look:' }] },
+        { type: 'image', attrs: { src: 'data:image/png;base64,xxxx', alt: null } },
+        { type: 'paragraph', content: [{ type: 'text', text: 'seen?' }] },
+      ],
+    };
+    // The convention incoming mail uses, so a text-only client reads a
+    // message, not a hole.
+    expect(plainTextFromDoc(doc)).toBe('Look:\n\n[image]\n\nseen?');
+  });
 });

@@ -1387,6 +1387,7 @@ export function App() {
           onDropFiles={(files) => void dropAttachments(files)}
           onSaveDraft={() => void saveDraft(draft)}
           onSendLater={() => setPicker('send-later')}
+          onNotice={setToast}
           onPopOut={() => {
             // Saved first: the new window is given an id, and that id is also
             // what stops the two windows becoming separate unsaved copies of

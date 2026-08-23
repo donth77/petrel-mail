@@ -72,6 +72,8 @@ export const en = {
   'drag-count': '{ $count } conversations',
   'pane-resize': 'Resize the conversation list',
   'compose-drop': 'Drop to attach',
+  'compose-img-too-big':
+    'That image is too large to embed \u2014 attach it instead, so the size stays visible.',
   'reader-earlier': '{ $count } earlier messages',
   'reader-none-title': 'Nothing selected',
   'reader-none-body': 'Pick a conversation with J and K, or press Enter to open one.',

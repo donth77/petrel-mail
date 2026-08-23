@@ -32,3 +32,6 @@ path = "../petrel-engine"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
+
+[dev-dependencies.petrel-mime]
+path = "../petrel-mime"

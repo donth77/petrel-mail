@@ -18,6 +18,7 @@
     "@tauri-apps/plugin-dialog": "^2.7.2",
     "@tauri-apps/plugin-notification": "^2.3.3",
     "@tiptap/extension-blockquote": "^3.30.2",
+    "@tiptap/extension-image": "^3.30.2",
     "@tiptap/extension-text-style": "^3.30.2",
     "@tiptap/pm": "^3.30.2",
     "@tiptap/react": "^3.30.2",

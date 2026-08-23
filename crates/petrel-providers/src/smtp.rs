@@ -71,6 +71,79 @@ pub fn encoded_size(raw_len: usize) -> usize {
     base64 + base64.div_ceil(76) * 2
 }
 
+/// One pasted image, split out of the HTML for the wire.
+struct InlineImage {
+    mime: String,
+    cid: String,
+    bytes: Vec<u8>,
+}
+
+/// Splits pasted images out of the HTML so the wire never carries a data: URI.
+///
+/// The composer embeds a pasted screenshot as `src="data:image/png;base64,…"`,
+/// which is the right form for a draft — it survives save and reload with no
+/// file lifecycle at all — and the wrong form for the wire: receiving clients
+/// strip data: URIs as a spoofing vector, ours included. On the way out each
+/// one becomes a MIME part of its own, referenced as `cid:`, which is the form
+/// every client renders.
+///
+/// The same image pasted twice becomes one part referenced twice. Anything
+/// that is not a well-formed base64 image data URI is left exactly as it was —
+/// this is an extractor, not a validator.
+fn extract_inline_images(html: &str, seed: &str) -> (String, Vec<InlineImage>) {
+    use base64::Engine as _;
+    const NEEDLE: &str = "src=\"data:image/";
+
+    let mut out = String::with_capacity(html.len());
+    let mut parts: Vec<InlineImage> = Vec::new();
+    // Payload string -> index in `parts`, for the pasted-twice case.
+    let mut seen: Vec<(String, usize)> = Vec::new();
+    let mut rest = html;
+
+    while let Some(pos) = rest.find(NEEDLE) {
+        out.push_str(&rest[..pos]);
+        let after = &rest[pos..];
+        // The attribute runs to the closing quote; a data: URI contains none.
+        let Some(close) = after["src=\"".len()..].find('"') else {
+            // Unterminated attribute — pass the tail through untouched.
+            out.push_str(after);
+            rest = "";
+            break;
+        };
+        let uri = &after["src=\"".len().."src=\"".len() + close];
+        let advance = "src=\"".len() + close + 1;
+
+        // data:image/png;base64,AAAA — anything else passes through as-is.
+        let parsed = uri
+            .strip_prefix("data:")
+            .and_then(|u| u.split_once(";base64,"))
+            .and_then(|(mime, payload)| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(payload)
+                    .ok()
+                    .map(|bytes| (mime.to_string(), payload, bytes))
+            });
+        match parsed {
+            Some((mime, payload, bytes)) => {
+                let index = match seen.iter().find(|(p, _)| p == payload) {
+                    Some((_, i)) => *i,
+                    None => {
+                        let cid = format!("img{}.{}", parts.len(), seed);
+                        parts.push(InlineImage { mime, cid, bytes });
+                        seen.push((payload.to_string(), parts.len() - 1));
+                        parts.len() - 1
+                    }
+                };
+                out.push_str(&format!("src=\"cid:{}\"", parts[index].cid));
+            }
+            None => out.push_str(&after[..advance]),
+        }
+        rest = &after[advance..];
+    }
+    out.push_str(rest);
+    (out, parts)
+}
+
 /// What to send, before it becomes bytes.
 #[derive(Debug, Clone)]
 pub struct Outgoing {
@@ -119,21 +192,77 @@ impl Outgoing {
         let mut b = MessageBuilder::new()
             .from((self.from_name.as_str(), self.from_addr.as_str()))
             .subject(self.subject.as_str())
-            .text_body(self.body_text.as_str())
             .message_id(message_id.as_str());
 
-        // mail_builder assembles the tree: text plus html becomes
-        // multipart/alternative, and attachments wrap that in multipart/mixed.
-        if let Some(html) = &self.body_html {
-            b = b.html_body(html.as_str());
-        }
+        // Pasted images ride the draft as data: URIs; the wire gets them as
+        // parts of their own, referenced by cid. Seeded from the Message-ID so
+        // the ids are as unique as the message they belong to.
+        let (html, inline) = match &self.body_html {
+            Some(html) => {
+                let (rewritten, inline) = extract_inline_images(html, &message_id);
+                (Some(rewritten), inline)
+            }
+            None => (None, Vec::new()),
+        };
 
-        for a in &self.attachments {
-            b = b.attachment(
-                a.content_type.as_str(),
-                a.filename.as_str(),
-                a.bytes.as_slice(),
-            );
+        if inline.is_empty() {
+            // mail_builder assembles the tree: text plus html becomes
+            // multipart/alternative, and attachments wrap that in
+            // multipart/mixed.
+            b = b.text_body(self.body_text.as_str());
+            if let Some(html) = &html {
+                b = b.html_body(html.as_str());
+            }
+            for a in &self.attachments {
+                b = b.attachment(
+                    a.content_type.as_str(),
+                    a.filename.as_str(),
+                    a.bytes.as_slice(),
+                );
+            }
+        } else {
+            // With inline images the tree is assembled by hand, because
+            // mail_builder's automatic shape puts every extra part in
+            // multipart/mixed — where clients list an image as an attachment
+            // instead of rendering it in the body. The shape that renders
+            // everywhere is the one Thunderbird writes:
+            //
+            //   multipart/mixed            (only when attachments exist)
+            //     multipart/related
+            //       multipart/alternative  (text, then html)
+            //       image parts            (inline, each with its cid)
+            //     attachment parts
+            use mail_builder::mime::MimePart;
+            let html = html.as_deref().unwrap_or_default();
+            let mut related = Vec::with_capacity(inline.len() + 1);
+            related.push(MimePart::new(
+                "multipart/alternative",
+                vec![
+                    MimePart::new("text/plain", self.body_text.as_str()),
+                    MimePart::new("text/html", html),
+                ],
+            ));
+            for img in &inline {
+                related.push(
+                    MimePart::new(img.mime.as_str(), img.bytes.as_slice())
+                        .inline()
+                        .cid(img.cid.as_str()),
+                );
+            }
+            let core = MimePart::new("multipart/related", related);
+            b = b.body(if self.attachments.is_empty() {
+                core
+            } else {
+                let mut mixed = Vec::with_capacity(self.attachments.len() + 1);
+                mixed.push(core);
+                for a in &self.attachments {
+                    mixed.push(
+                        MimePart::new(a.content_type.as_str(), a.bytes.as_slice())
+                            .attachment(a.filename.as_str()),
+                    );
+                }
+                MimePart::new("multipart/mixed", mixed)
+            });
         }
 
         for addr in &self.to {

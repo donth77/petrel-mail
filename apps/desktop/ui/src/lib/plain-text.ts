@@ -91,6 +91,13 @@ function block(node: DocNode): string {
     case 'hardBreak':
       return '\n';
 
+    case 'image':
+      // The text half cannot carry the picture, but it can say one was here —
+      // the same '[image: …]' convention incoming mail already uses.
+      return typeof node.attrs?.alt === 'string' && node.attrs.alt
+        ? `[image: ${node.attrs.alt}]`
+        : '[image]';
+
     case 'text':
       return runToText(node);
 

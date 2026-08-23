@@ -9,4 +9,4 @@ pub mod parse;
 pub mod sanitize;
 
 pub use parse::{Attachment, ParsedMessage, attachment_bytes, parse_message};
-pub use sanitize::{SanitizeReport, Sanitized, plain_text_to_html, sanitize_html};
+pub use sanitize::{SanitizeReport, Sanitized, plain_text_to_html, resolve_cids, sanitize_html};

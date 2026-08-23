@@ -88,6 +88,7 @@ export function ComposeWindow({ draftId }: { draftId: number }) {
         // Closing keeps the message, exactly as the docked composer does.
         onClose={() => void save(draft).then(close)}
         onSaveDraft={() => void save(draft).then(() => setToast(t('compose-saved')))}
+        onNotice={setToast}
         onAttach={() => {
           void pickAttachments(draft.attachments ?? [], api.attachmentInfo)
             .then((result) => {

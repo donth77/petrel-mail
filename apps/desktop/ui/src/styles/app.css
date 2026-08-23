@@ -3340,6 +3340,21 @@ body.resizing {
 /* The editor's own markup. Paragraph spacing is margin rather than a gap,
    because this is also roughly what the HTML will do in the recipient's
    client — what is written should look like what arrives. */
+/* A pasted image sits in the flow like a paragraph does. Never wider than
+   the composer, whatever the screenshot's own size, and marked when selected
+   so deleting one feels like deleting anything else. */
+.rich-body img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 6px 0;
+  border-radius: 3px;
+}
+.rich-body img.ProseMirror-selectednode {
+  outline: 2px solid var(--accent, #2a7de1);
+  outline-offset: 1px;
+}
+
 .rich-body p {
   margin: 0 0 0.75em;
 }

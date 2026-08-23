@@ -165,3 +165,123 @@ fn plain_text_alone_is_not_wrapped_in_multipart() {
     let raw = String::from_utf8_lossy(&bytes);
     assert!(!raw.contains("multipart/alternative"), "{raw}");
 }
+
+/// Pasted images: data: URIs in the draft become cid parts on the wire.
+mod inline_images {
+    use super::*;
+    use petrel_providers::smtp::Attachment;
+
+    /// A 1x1 PNG — the smallest real image bytes can make.
+    const PNG: &[u8] = &[
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F,
+        0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00,
+        0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
+        0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ];
+
+    fn data_uri(bytes: &[u8]) -> String {
+        use base64::Engine as _;
+        format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        )
+    }
+
+    #[test]
+    fn a_pasted_image_travels_as_a_cid_part_our_own_reader_resolves() {
+        let mut m = base();
+        let jpeg = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46];
+        // The PNG pasted twice, a JPEG once — the duplicate must not become a
+        // second copy of the bytes.
+        m.body_html = Some(format!(
+            r#"<p>before</p><img src="{png}"><img src="{jpg}"><p>and again:</p><img src="{png}">"#,
+            png = data_uri(PNG),
+            jpg = data_uri(&jpeg).replace("image/png", "image/jpeg"),
+        ));
+        let (_, bytes) = m.render("example.com");
+        let s = text(&bytes);
+
+        // The wire shape that renders everywhere: related wrapping the
+        // alternative, images as parts. No data: URI survives.
+        assert!(s.contains("multipart/related"), "{s}");
+        assert!(s.contains("multipart/alternative"), "{s}");
+        assert!(!s.contains("data:image/"), "a data: URI leaked to the wire");
+
+        // Now the full circle: our own parser, sanitizer and resolver receive
+        // it, exactly as the reader would.
+        let parsed = petrel_mime::parse_message(&bytes).expect("parses");
+        let html = parsed.body_html.expect("has html body");
+        assert!(html.contains("cid:"), "{html}");
+        assert_eq!(
+            parsed.attachments.len(),
+            2,
+            "two distinct images, not three: {:?}",
+            parsed.attachments
+        );
+
+        let sanitized = petrel_mime::sanitize_html(&html, false);
+        let resolved = petrel_mime::resolve_cids(&sanitized.html, &parsed.attachments, |i| {
+            format!("/attachment/tok/{i}")
+        });
+        assert!(!resolved.contains("cid:"), "{resolved}");
+        // The duplicate paste points at the same part, twice.
+        assert_eq!(
+            resolved.matches("/attachment/tok/0").count(),
+            2,
+            "{resolved}"
+        );
+        assert_eq!(
+            resolved.matches("/attachment/tok/1").count(),
+            1,
+            "{resolved}"
+        );
+
+        // And the part the reader would fetch is byte-for-byte the paste.
+        let (meta, body) = petrel_mime::attachment_bytes(&bytes, 0).expect("part 0");
+        assert_eq!(body, PNG, "bytes round-tripped");
+        assert_eq!(meta.content_type.as_deref(), Some("image/png"));
+        assert!(meta.is_inline);
+    }
+
+    #[test]
+    fn inline_images_and_attachments_share_a_message() {
+        let mut m = base();
+        m.body_html = Some(format!(r#"<img src="{}">"#, data_uri(PNG)));
+        m.attachments = vec![Attachment {
+            filename: "notes.txt".into(),
+            content_type: "text/plain".into(),
+            bytes: b"hello".to_vec(),
+        }];
+        let (_, bytes) = m.render("example.com");
+        let s = text(&bytes);
+        assert!(s.contains("multipart/mixed"), "{s}");
+        assert!(s.contains("multipart/related"), "{s}");
+        assert!(s.contains("notes.txt"), "{s}");
+
+        let parsed = petrel_mime::parse_message(&bytes).expect("parses");
+        // The image, then the file — reader indexes line up with part order.
+        assert_eq!(parsed.attachments.len(), 2);
+        assert!(parsed.attachments[0].is_inline);
+        assert_eq!(parsed.attachments[1].filename.as_deref(), Some("notes.txt"));
+        // The text alternative still reads as a message.
+        assert!(
+            parsed.body_text.contains("Body text."),
+            "{}",
+            parsed.body_text
+        );
+    }
+
+    #[test]
+    fn a_malformed_data_uri_is_left_alone() {
+        let mut m = base();
+        m.body_html = Some(r#"<img src="data:image/png;base64,@@not-base64@@">"#.into());
+        let (_, bytes) = m.render("example.com");
+        let s = text(&bytes);
+        // Not extractable, so it goes out as it came in — an extractor, not a
+        // validator. (mail_builder may split the body across encoded lines, so
+        // look for the marker, not the whole URI.)
+        assert!(s.contains("not-base64"), "{s}");
+        assert!(!s.contains("multipart/related"), "{s}");
+    }
+}

@@ -3060,6 +3060,7 @@ dependencies = [
  "futures",
  "mail-builder",
  "petrel-engine",
+ "petrel-mime",
  "rustls",
  "tempfile",
  "thiserror 2.0.20",
