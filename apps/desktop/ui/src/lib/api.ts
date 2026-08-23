@@ -38,7 +38,7 @@ export type Thread = {
 
 export type Tag = { id: number; name: string; colour: string; thread_count: number };
 
-export type Attachment = { filename: string; size: number };
+export type Attachment = { filename: string; size: number; part: number; mime: string };
 
 /** A message read back for quoting: sanitized, with remote content stripped. */
 /** One server, as discovery found it or the form typed it. */
@@ -383,6 +383,12 @@ const mock = {
   addAccount: async () => 2,
   removeAccount: async () => {},
   setActiveAccount: async () => {},
+  attachmentIsExecutable: async (filename: string) =>
+    /\.(exe|bat|sh|js|jar|dmg|app|py)$/i.test(filename),
+  saveAttachment: async () => {},
+  openAttachment: async () => {},
+  attachmentUrl: async (messageId: number, part: number) =>
+    `./msg.html?attachment=${messageId}-${part}`,
   outbox: async (): Promise<OutboxRow[]> => {
     const now = Date.now();
     return [
@@ -426,8 +432,8 @@ const mock = {
       recipients: ['Dana Wu', 'me'],
       recipient_addrs: ['dana@example.com', 'you@example.com'],
       attachments: [
-        { filename: 'contract-v3.pdf', size: 2202009 },
-        { filename: 'annex-logistics.xlsx', size: 49152 },
+        { filename: 'contract-v3.pdf', size: 2202009, part: 0, mime: 'application/pdf' },
+        { filename: 'annex-logistics.xlsx', size: 49152, part: 1, mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
       ],
     },
   ],
@@ -469,6 +475,14 @@ const real = {
   addAccount: (setup: AccountSetup) => invoke<number>('add_account', { setup }),
   removeAccount: (accountId: number) => invoke<void>('remove_account', { accountId }),
   setActiveAccount: (accountId: number) => invoke<void>('set_active_account', { accountId }),
+  attachmentIsExecutable: (filename: string) =>
+    invoke<boolean>('attachment_is_executable', { filename }),
+  saveAttachment: (messageId: number, part: number, path: string) =>
+    invoke<void>('save_attachment', { messageId, part, path }),
+  openAttachment: (messageId: number, part: number) =>
+    invoke<void>('open_attachment', { messageId, part }),
+  attachmentUrl: (messageId: number, part: number) =>
+    invoke<string>('attachment_url', { messageId, part }),
   outbox: () => invoke<OutboxRow[]>('list_outbox'),
   outboxSendNow: (id: number) => invoke<void>('outbox_send_now', { id }),
   outboxEdit: (id: number) => invoke<void>('outbox_edit', { id }),

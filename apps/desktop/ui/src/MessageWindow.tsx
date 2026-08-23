@@ -79,6 +79,7 @@ export function MessageWindow({ threadId }: { threadId: number }) {
       <Reader
         thread={thread}
         view="inbox"
+        onToast={setToast}
         // Already the whole window, and already its own window, so neither
         // control is offered here at all.
         full

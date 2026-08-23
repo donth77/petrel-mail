@@ -134,6 +134,10 @@ pub struct FolderMapping {
 pub struct Attachment {
     pub filename: String,
     pub size: i64,
+    /// Which part of the message this is, for fetching its bytes on demand.
+    pub part: i64,
+    /// The declared type — what decides whether it can be previewed in place.
+    pub mime: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -996,10 +1000,11 @@ impl Store {
         servers: &AccountServers,
     ) -> Result<i64> {
         let json = serde_json::to_string(servers).unwrap_or_else(|_| "{}".into());
+        let colour = self.next_account_colour()?;
         self.conn.execute(
-            "INSERT INTO accounts(kind, email, display_name, settings_json)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![kind, email, display_name, json],
+            "INSERT INTO accounts(kind, email, display_name, settings_json, color)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![kind, email, display_name, json, colour],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
@@ -1741,6 +1746,51 @@ impl Store {
             a.active = Some(a.id) == active;
         }
         Ok(out)
+    }
+
+    /// The colours an account can wear, in the order they are handed out.
+    /// The same six the Settings pane offers, so an assigned colour is always
+    /// one the person could have chosen — and can change to any other.
+    pub const ACCOUNT_COLOURS: [&'static str; 6] = [
+        "#0E7C86", "#9A6B1F", "#6B7F87", "#3B6EA5", "#6B5CA5", "#5E7C4A",
+    ];
+
+    /// The first palette colour no other account is wearing.
+    ///
+    /// Two accounts with the same colour are indistinguishable in the
+    /// switcher, which is the one place the colour exists to be read. With
+    /// more accounts than colours it wraps, which is the least bad answer.
+    pub fn next_account_colour(&self) -> Result<&'static str> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT coalesce(color,'') FROM accounts")?;
+        let used: Vec<String> = stmt
+            .query_map([], |r| r.get(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(Self::ACCOUNT_COLOURS
+            .iter()
+            .find(|c| !used.iter().any(|u| u.eq_ignore_ascii_case(c)))
+            .copied()
+            .unwrap_or(Self::ACCOUNT_COLOURS[used.len() % Self::ACCOUNT_COLOURS.len()]))
+    }
+
+    /// Gives an account a colour if it has none — the rows made before
+    /// colours were assigned, and the one the environment makes.
+    pub fn ensure_account_colour(&self, account_id: i64) -> Result<()> {
+        let has: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT color FROM accounts WHERE id = ?1",
+                [account_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        if has.as_deref().unwrap_or("").is_empty() {
+            let c = self.next_account_colour()?;
+            self.set_account_color(account_id, c)?;
+        }
+        Ok(())
     }
 
     pub fn set_account_color(&self, account_id: i64, color: &str) -> Result<()> {
@@ -3791,7 +3841,8 @@ impl Store {
             let recipient_addrs: Vec<String> = pairs.into_iter().map(|(_, a)| a).collect();
 
             let mut att = self.conn.prepare_cached(
-                "SELECT coalesce(filename,''), coalesce(size, 0) FROM attachments
+                "SELECT coalesce(filename,''), coalesce(size, 0), part_id, coalesce(mime,'')
+                 FROM attachments
                  WHERE message_id = ?1 AND filename IS NOT NULL AND filename <> ''
                  ORDER BY id",
             )?;
@@ -3800,6 +3851,8 @@ impl Store {
                     Ok(Attachment {
                         filename: r.get(0)?,
                         size: r.get(1)?,
+                        part: r.get(2)?,
+                        mime: r.get(3)?,
                     })
                 })?
                 .collect::<std::result::Result<Vec<_>, _>>()?;

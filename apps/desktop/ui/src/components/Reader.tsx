@@ -7,15 +7,15 @@ import {
   Mail,
   MailOpen,
   MoreVertical,
-  Paperclip,
   Reply as ReplyIcon,
   Star,
 } from 'lucide-react';
 import { api, type ActionKind, type Thread, type ThreadMessage } from '../lib/api';
-import { count as fmtCount, fileSize, fullTime, initials, messageTime } from '../lib/format';
+import { count as fmtCount, fullTime, initials, messageTime } from '../lib/format';
 import { FindBar } from './FindBar';
 import { Icon } from './Icon';
 import { MessageBody } from './MessageBody';
+import { Attachments } from './Attachments';
 import { MoreMenu } from './MoreMenu';
 import { Tip } from './Tip';
 import { key } from '../lib/keys';
@@ -46,12 +46,14 @@ function Expanded({
   onCollapse,
   onReply,
   onForward,
+  onToast,
 }: {
   m: ThreadMessage;
   focused: boolean;
   onCollapse: () => void;
   onReply?: (messageId: number, all: boolean) => void;
   onForward?: (messageId: number) => void;
+  onToast: (text: string) => void;
 }) {
   return (
     <article className="msg" id={`msg-body-${m.id}`} data-focused={focused || undefined}>
@@ -135,15 +137,7 @@ function Expanded({
       <MessageBody messageId={m.id} title={m.subject || '(no subject)'} />
 
       {m.attachments.length > 0 && (
-        <div className="msg-attachments">
-          {m.attachments.map((a) => (
-            <button type="button" className="att" key={a.filename}>
-              <Icon icon={Paperclip} size={12} />
-              {a.filename}
-              <span className="mono att-size">{fileSize(a.size)}</span>
-            </button>
-          ))}
-        </div>
+        <Attachments messageId={m.id} attachments={m.attachments} onToast={onToast} />
       )}
     </article>
   );
@@ -163,12 +157,15 @@ export function Reader({
   onSnooze,
   onReplyTo,
   onForwardFrom,
+  onToast,
 }: {
   thread: Thread | null;
   /** Reply to one message of the thread rather than to its newest. Absent in
       the popped-out window, which has no composer to open. */
   onReplyTo?: (messageId: number, all: boolean) => void;
   onForwardFrom?: (messageId: number) => void;
+  /** Where outcomes are reported — "Saved contract.pdf", or why not. */
+  onToast: (text: string) => void;
   /** Which view is open, so the destructive action can mean the right thing. */
   view: string;
   /** Reading pane has the window to itself. */
@@ -454,6 +451,7 @@ export function Reader({
               focused={focused === m.id}
               onReply={onReplyTo}
               onForward={onForwardFrom}
+              onToast={onToast}
               onCollapse={() =>
                 setExpanded((prev) => {
                   const next = new Set(prev);

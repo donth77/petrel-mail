@@ -173,7 +173,7 @@
           color: '#0E7C86', local_archive: 0, active: active === 1, message_count: rows.length,
           unread_count: 0, last_sync_ms: now, folders: [] },
         { id: 2, kind: 'imap', email: 'tom@northbay.example', display_name: '',
-          color: '#6B46C1', local_archive: 0, active: active === 2, message_count: 41,
+          color: '#9A6B1F', local_archive: 0, active: active === 2, message_count: 41,
           unread_count: 3, last_sync_ms: now, folders: [] },
       ];
     },
@@ -203,9 +203,24 @@
           date_ms: now,
           subject: 'Conversation 1',
           recipients: '',
-          attachments: [],
+          // Two files, one previewable and one not, so both verbs and the
+          // executable warning can be exercised in the browser.
+          attachments: [
+            { filename: 'diagram.png', size: 48123, part: 0, mime: 'image/png' },
+            { filename: 'setup.sh', size: 1290, part: 1, mime: 'text/x-shellscript' },
+          ],
         },
       ];
+    },
+    attachment_is_executable: function (a) {
+      return /\.(exe|bat|sh|js|jar|dmg|app|py)$/i.test(String(a.filename || ''));
+    },
+    save_attachment: function () { return null; },
+    open_attachment: function () { return null; },
+    attachment_url: function (a) {
+      // A real image URL, so the preview frame shows something: a data-URI
+      // cannot cross the shim boundary, so the stand-in page serves one.
+      return './msg.html?attachment=' + a.messageId + '-' + a.part;
     },
     message_url: function () {
       // A stand-in frame, so the reading pane actually has one. Set

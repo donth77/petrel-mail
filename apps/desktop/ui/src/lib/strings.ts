@@ -98,6 +98,8 @@ export const en = {
   'onb-found': 'Found it — { $provider }',
   'onb-found-domain': '{ $domain } uses { $provider }.',
   'onb-found-mx': '{ $domain } is hosted by { $provider }.',
+  'onb-no-imap':
+    '{ $detail } Its mail can only be read in its own app or website, so Petrel can’t add it.',
   'onb-not-found': 'We couldn’t find settings for { $domain }.',
   'onb-not-found-help': 'That happens with smaller providers. You can enter the servers yourself — we’ve filled in the usual names.',
   'onb-direct':
@@ -131,6 +133,17 @@ export const en = {
   'onb-add-another': 'Add another account',
   'onb-failed': 'Could not sign in — { $error }',
   'onb-add-failed': 'Could not save the account — { $error }',
+  // Attachments on the reading side.
+  'att-preview': 'Preview',
+  'att-open': 'Open',
+  'att-save': 'Save { $name }',
+  'att-saved': 'Saved { $name }',
+  'att-save-failed': 'Could not save — { $error }',
+  'att-open-failed': 'Could not open — { $error }',
+  'att-exec-confirm': 'Open “{ $name }”?',
+  'att-exec-body':
+    'This is a program, not a document. Opening it runs it, with everything running things can do — mail is how most malware arrives. Only continue if you asked the sender for this file.',
+  'att-exec-open': 'Open it anyway',
   'outbox-title': 'Outbox — every message Petrel is holding',
   'outbox-to': 'To { $who }',
   'outbox-attachments': '{ $count } attachment',

@@ -66,6 +66,12 @@ pub enum Via {
 pub enum Error {
     #[error("that does not look like an email address")]
     NotAnAddress,
+    /// The domain's mail is hosted somewhere that offers no IMAP at all —
+    /// Proton without its Bridge, HEY, Tuta. Recognised so the answer can be
+    /// "this provider does not support mail clients" rather than a manual
+    /// form pre-filled with servers that do not exist.
+    #[error("{provider} does not offer IMAP, so no mail client can connect to it")]
+    NoImap { provider: String },
     #[error("could not reach {host}:{port} — {detail}")]
     Unreachable {
         host: String,
@@ -141,8 +147,25 @@ fn known_by_domain(domain: &str) -> Option<Discovered> {
 /// A custom domain says nothing about who hosts its mail; its MX record does.
 /// Matched by suffix, because providers put their MX on a subdomain of the
 /// same name they put their IMAP on.
-fn known_by_mx(mx_host: &str) -> Option<Discovered> {
+/// `Err(NoImap)` for hosts that offer none; `None` for hosts not recognised.
+fn known_by_mx(mx_host: &str) -> Result<Option<Discovered>, Error> {
     let h = mx_host.trim_end_matches('.').to_ascii_lowercase();
+    let no_imap = |provider: &str| {
+        Err(Error::NoImap {
+            provider: provider.to_string(),
+        })
+    };
+    // The providers that have no IMAP. Matched first so that an answer of
+    // "none" cannot be mistaken for "not recognised".
+    if h.ends_with("protonmail.ch") || h.ends_with("proton.me") {
+        return no_imap("Proton Mail");
+    }
+    if h.ends_with("app.hey.com") || h.ends_with(".hey.com") {
+        return no_imap("HEY");
+    }
+    if h.ends_with("tutanota.de") || h.ends_with("tuta.com") {
+        return no_imap("Tuta");
+    }
     let d = if h.ends_with("privateemail.com") {
         Discovered {
             provider: "Namecheap Private Email".into(),
@@ -188,14 +211,114 @@ fn known_by_mx(mx_host: &str) -> Option<Discovered> {
             auth: Auth::AppPassword,
             app_password_url: None,
         }
-    } else if h.ends_with("protonmail.ch") || h.ends_with("proton.me") {
-        // Proton has no IMAP without its Bridge, so there is nothing to
-        // configure here. Recognised so the message can say why.
-        return None;
+    } else if h.ends_with("zoho.com") || h.ends_with("zoho.eu") || h.ends_with("zohomail.com") {
+        Discovered {
+            provider: "Zoho Mail".into(),
+            via: Via::Mx,
+            imap: server("imap.zoho.com", 993),
+            smtp: server("smtp.zoho.com", 465),
+            auth: Auth::AppPassword,
+            app_password_url: Some("https://accounts.zoho.com/home#security/app_password".into()),
+        }
+    } else if h.ends_with("migadu.com") {
+        Discovered {
+            provider: "Migadu".into(),
+            via: Via::Mx,
+            imap: server("imap.migadu.com", 993),
+            smtp: server("smtp.migadu.com", 465),
+            auth: Auth::Password,
+            app_password_url: None,
+        }
+    } else if h.ends_with("mailbox.org") {
+        Discovered {
+            provider: "mailbox.org".into(),
+            via: Via::Mx,
+            imap: server("imap.mailbox.org", 993),
+            smtp: server("smtp.mailbox.org", 465),
+            auth: Auth::Password,
+            app_password_url: None,
+        }
+    } else if h.ends_with("posteo.de") {
+        Discovered {
+            provider: "Posteo".into(),
+            via: Via::Mx,
+            imap: server("posteo.de", 993),
+            smtp: server("posteo.de", 465),
+            auth: Auth::Password,
+            app_password_url: None,
+        }
+    } else if h.ends_with("runbox.com") {
+        Discovered {
+            provider: "Runbox".into(),
+            via: Via::Mx,
+            imap: server("mail.runbox.com", 993),
+            smtp: server("mail.runbox.com", 465),
+            auth: Auth::Password,
+            app_password_url: None,
+        }
+    } else if h.ends_with("purelymail.com") {
+        Discovered {
+            provider: "Purelymail".into(),
+            via: Via::Mx,
+            imap: server("mailserver.purelymail.com", 993),
+            smtp: server("mailserver.purelymail.com", 465),
+            auth: Auth::Password,
+            app_password_url: None,
+        }
+    } else if h.ends_with("mxrouting.net") || h.ends_with("mxroute.com") {
+        // MXroute puts each customer on a named server; the MX host *is* the
+        // mail host, so it is used as-is rather than looked up.
+        Discovered {
+            provider: "MXroute".into(),
+            via: Via::Mx,
+            imap: server(&h.replace("-relay", ""), 993),
+            smtp: server(&h.replace("-relay", ""), 465),
+            auth: Auth::Password,
+            app_password_url: None,
+        }
+    } else if h.ends_with("1and1.com") || h.ends_with("ionos.com") || h.ends_with("ionos.de") {
+        Discovered {
+            provider: "IONOS".into(),
+            via: Via::Mx,
+            imap: server("imap.ionos.com", 993),
+            smtp: server("smtp.ionos.com", 465),
+            auth: Auth::Password,
+            app_password_url: None,
+        }
+    } else if h.ends_with("emig.gmx.net") || h.ends_with("gmx.net") {
+        Discovered {
+            provider: "GMX".into(),
+            via: Via::Mx,
+            imap: server("imap.gmx.net", 993),
+            smtp: server("mail.gmx.net", 465),
+            auth: Auth::Password,
+            app_password_url: None,
+        }
+    } else if h.ends_with("yahoodns.net") {
+        // Yahoo and AOL share one mail system; AOL's MX says so in its name.
+        if h.contains("aol") {
+            Discovered {
+                provider: "AOL Mail".into(),
+                via: Via::Mx,
+                imap: server("imap.aol.com", 993),
+                smtp: server("smtp.aol.com", 465),
+                auth: Auth::AppPassword,
+                app_password_url: Some("https://login.aol.com/account/security".into()),
+            }
+        } else {
+            Discovered {
+                provider: "Yahoo Mail".into(),
+                via: Via::Mx,
+                imap: server("imap.mail.yahoo.com", 993),
+                smtp: server("smtp.mail.yahoo.com", 465),
+                auth: Auth::AppPassword,
+                app_password_url: Some("https://login.yahoo.com/account/security".into()),
+            }
+        }
     } else {
-        return None;
+        return Ok(None);
     };
-    Some(d)
+    Ok(Some(d))
 }
 
 /// Thunderbird's ISPDB, which answers for thousands of providers with a
@@ -300,7 +423,7 @@ pub async fn discover(address: &str) -> Result<Option<Discovered>, Error> {
         return Ok(Some(d));
     }
     if let Some(mx) = mx_host(&domain).await
-        && let Some(d) = known_by_mx(&mx)
+        && let Some(d) = known_by_mx(&mx)?
     {
         return Ok(Some(d));
     }
@@ -350,7 +473,7 @@ mod tests {
     fn a_custom_domain_is_recognised_from_its_mx() {
         // This is the whole reason the MX step exists: nothing about the
         // domain says Namecheap, but the MX does.
-        let d = known_by_mx("mx1.privateemail.com.").unwrap();
+        let d = known_by_mx("mx1.privateemail.com.").unwrap().unwrap();
         assert_eq!(d.provider, "Namecheap Private Email");
         assert_eq!(d.imap.host, "mail.privateemail.com");
         assert_eq!(d.smtp.port, 465);
@@ -361,13 +484,77 @@ mod tests {
         );
         assert_eq!(d.via, Via::Mx);
 
-        let w = known_by_mx("aspmx.l.google.com").unwrap();
+        let w = known_by_mx("aspmx.l.google.com").unwrap().unwrap();
         assert_eq!(w.provider, "Google Workspace");
-        assert!(
-            known_by_mx("mail.protonmail.ch").is_none(),
-            "no IMAP without Bridge"
+        assert!(known_by_mx("mx.unknown-host.example").unwrap().is_none());
+    }
+
+    #[test]
+    fn the_hosts_that_hold_custom_domains_are_known() {
+        // Each MX host as real DNS returns it for that provider's own domain.
+        let cases = [
+            ("mx.zoho.com.", "Zoho Mail", "imap.zoho.com"),
+            ("mx.migadu.com.", "Migadu", "imap.migadu.com"),
+            ("mx1.mailbox.org.", "mailbox.org", "imap.mailbox.org"),
+            ("mx01.posteo.de.", "Posteo", "posteo.de"),
+            ("mx.runbox.com.", "Runbox", "mail.runbox.com"),
+            (
+                "mailserver.purelymail.com.",
+                "Purelymail",
+                "mailserver.purelymail.com",
+            ),
+            ("mxint01.1and1.com.", "IONOS", "imap.ionos.com"),
+            ("mx00.emig.gmx.net.", "GMX", "imap.gmx.net"),
+            (
+                "mta5.am0.yahoodns.net.",
+                "Yahoo Mail",
+                "imap.mail.yahoo.com",
+            ),
+            ("mx-aol.mail.gm0.yahoodns.net.", "AOL Mail", "imap.aol.com"),
+            (
+                "in2-smtp.messagingengine.com.",
+                "Fastmail",
+                "imap.fastmail.com",
+            ),
+        ];
+        for (mx, provider, imap) in cases {
+            let d = known_by_mx(mx)
+                .unwrap()
+                .unwrap_or_else(|| panic!("{mx} not recognised"));
+            assert_eq!(d.provider, provider, "{mx}");
+            assert_eq!(d.imap.host, imap, "{mx}");
+            assert!(d.imap.tls && d.smtp.tls, "{mx}");
+        }
+    }
+
+    #[test]
+    fn mxroute_uses_the_customers_own_server() {
+        // Each customer is on a named server, and the MX host is that server.
+        let d = known_by_mx("arrow.mxrouting.net.").unwrap().unwrap();
+        assert_eq!(d.provider, "MXroute");
+        assert_eq!(d.imap.host, "arrow.mxrouting.net");
+        let relay = known_by_mx("arrow-relay.mxrouting.net.").unwrap().unwrap();
+        assert_eq!(
+            relay.imap.host, "arrow.mxrouting.net",
+            "the relay name is not the mail host"
         );
-        assert!(known_by_mx("mx.unknown-host.example").is_none());
+    }
+
+    #[test]
+    fn providers_with_no_imap_say_so() {
+        // An answer, not an absence: a manual form pre-filled with servers
+        // that do not exist would send someone guessing at hostnames for a
+        // provider that no mail client can reach.
+        for (mx, who) in [
+            ("mail.protonmail.ch.", "Proton Mail"),
+            ("home-mx.app.hey.com.", "HEY"),
+            ("mail.tutanota.de.", "Tuta"),
+        ] {
+            match known_by_mx(mx) {
+                Err(Error::NoImap { provider }) => assert_eq!(provider, who, "{mx}"),
+                other => panic!("{mx}: expected NoImap, got {other:?}"),
+            }
+        }
     }
 
     #[test]

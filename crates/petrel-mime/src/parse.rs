@@ -18,6 +18,29 @@ pub struct Attachment {
     pub is_inline: bool,
 }
 
+/// The bytes of one attachment, re-read from the raw message.
+///
+/// Attachment bodies are never stored a second time: the raw message already
+/// holds them, and `ParsedMessage` keeps only what the list needs. When one is
+/// opened or saved, the part is found by the same index the store recorded at
+/// ingest — the position in `attachments()` — and decoded then. A message with
+/// a 20MB attachment costs 20MB on disk once, not twice.
+pub fn attachment_bytes(raw: &[u8], index: usize) -> Option<(Attachment, Vec<u8>)> {
+    let msg = mail_parser::MessageParser::default().parse(raw)?;
+    let part = msg.attachments().nth(index)?;
+    let meta = Attachment {
+        filename: part.attachment_name().map(|s| s.to_string()),
+        content_type: part.content_type().map(|ct| match ct.subtype() {
+            Some(sub) => format!("{}/{}", ct.ctype(), sub),
+            None => ct.ctype().to_string(),
+        }),
+        size: part.contents().len(),
+        content_id: part.content_id().map(|s| s.to_string()),
+        is_inline: part.content_id().is_some(),
+    };
+    Some((meta, part.contents().to_vec()))
+}
+
 /// A parsed view of a message. Never authoritative — the raw bytes are.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ParsedMessage {
@@ -281,6 +304,51 @@ Content-Disposition: attachment; filename=\"contract.pdf\"\r\n\r\n\
         assert_eq!(a.filename.as_deref(), Some("contract.pdf"));
         assert_eq!(a.content_type.as_deref(), Some("application/pdf"));
         assert!(a.size > 0);
+    }
+
+    #[test]
+    fn attachment_bytes_come_back_by_the_same_index_the_list_uses() {
+        // Two attachments, so the index has to mean something. Base64 on the
+        // second, because that is how real attachments arrive and the bytes
+        // handed back must be the decoded ones.
+        let raw = b"From: a@example.com\r\n\
+Subject: two files\r\n\
+MIME-Version: 1.0\r\n\
+Content-Type: multipart/mixed; boundary=B\r\n\r\n\
+--B\r\n\
+Content-Type: text/plain\r\n\r\n\
+Both attached.\r\n\
+--B\r\n\
+Content-Type: text/csv\r\n\
+Content-Disposition: attachment; filename=\"a.csv\"\r\n\r\n\
+x,y\r\n1,2\r\n\
+--B\r\n\
+Content-Type: image/png\r\n\
+Content-Transfer-Encoding: base64\r\n\
+Content-Disposition: attachment; filename=\"b.png\"\r\n\r\n\
+iVBORw0KGgo=\r\n\
+--B--\r\n";
+        let listed = parse_message(raw).unwrap().attachments;
+        assert_eq!(listed.len(), 2);
+
+        let (meta0, bytes0) = attachment_bytes(raw, 0).unwrap();
+        assert_eq!(meta0.filename.as_deref(), listed[0].filename.as_deref());
+        assert_eq!(bytes0, b"x,y\r\n1,2");
+
+        let (meta1, bytes1) = attachment_bytes(raw, 1).unwrap();
+        assert_eq!(meta1.filename.as_deref(), Some("b.png"));
+        // Decoded: the PNG magic, not the base64 text.
+        assert_eq!(&bytes1[..4], b"\x89PNG");
+        assert_eq!(
+            meta1.size,
+            bytes1.len(),
+            "the listed size is the decoded size"
+        );
+
+        assert!(
+            attachment_bytes(raw, 2).is_none(),
+            "past the end is None, not a panic"
+        );
     }
 
     /// Hostile and broken input must degrade, never panic — this is the engine

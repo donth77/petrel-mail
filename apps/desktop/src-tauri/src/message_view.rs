@@ -390,6 +390,52 @@ pub fn handle(
     allow_remote: impl Fn(i64) -> bool,
 ) -> Response<Vec<u8>> {
     let path = request.uri().path().to_string();
+
+    // Attachment previews: /attachment/{token}/{part}. Same token scheme as
+    // bodies, and only the types the pane can show inline — an image or a
+    // PDF renders; everything else is refused here, so a preview can never
+    // become a way of opening a file. Save and Open are commands with their
+    // own confirmations; this route is only for looking.
+    if let Some(rest) = path.strip_prefix("/attachment/") {
+        let mut it = rest.splitn(2, '/');
+        let (Some(token), Some(part)) = (it.next(), it.next()) else {
+            return error_response(404, "not found");
+        };
+        let Ok(part) = part.parse::<usize>() else {
+            return error_response(404, "not found");
+        };
+        let Some(message_id) = tokens.resolve(token) else {
+            return error_response(403, "unknown or expired message token");
+        };
+        let Some(hash) = lookup_blob(message_id) else {
+            return error_response(404, "message body not stored");
+        };
+        let Ok(raw) = blobs.read(&hash) else {
+            return error_response(410, "message body unavailable (failed verification)");
+        };
+        let Some((meta, bytes)) = petrel_mime::attachment_bytes(&raw, part) else {
+            return error_response(404, "no such attachment");
+        };
+        let mime = meta.content_type.unwrap_or_default();
+        let previewable = mime.starts_with("image/") || mime == "application/pdf";
+        if !previewable {
+            return error_response(415, "this type is saved or opened, not previewed");
+        }
+        return Response::builder()
+            .status(200)
+            .header("Content-Type", mime)
+            // Same fence as a message body: no scripts, no fetches. A PDF
+            // renders in the webview's own viewer; an SVG cannot run script.
+            .header(
+                "Content-Security-Policy",
+                "default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:",
+            )
+            .header("X-Content-Type-Options", "nosniff")
+            .header("Content-Disposition", "inline")
+            .body(bytes)
+            .expect("attachment response");
+    }
+
     let Some(token) = path.strip_prefix("/message/") else {
         return error_response(404, "not found");
     };

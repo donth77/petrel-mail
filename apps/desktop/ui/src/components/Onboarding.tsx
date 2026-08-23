@@ -30,7 +30,7 @@ function domainOf(address: string): string {
   return address.slice(address.lastIndexOf('@') + 1).toLowerCase();
 }
 
-export function Onboarding({ onDone }: { onDone: () => void }) {
+export function Onboarding({ onDone }: { onDone: (added: { id: number; email: string } | null) => void }) {
   const [step, setStep] = useState<Step>({ kind: 'ask' });
   const [address, setAddress] = useState('');
   const [password, setPassword] = useState('');
@@ -38,6 +38,8 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
   const [testing, setTesting] = useState<'idle' | 'imap' | 'smtp' | 'ok' | string>('idle');
   const [error, setError] = useState<string | null>(null);
   const addressRef = useRef<HTMLInputElement>(null);
+  // What was stored, so the caller can show it when the person is done.
+  const [added, setAdded] = useState<{ id: number; email: string } | null>(null);
 
   useEffect(() => {
     if (step.kind === 'ask') addressRef.current?.focus();
@@ -54,7 +56,12 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
       if (found) setStep({ kind: 'confirm', address: a, found });
       else await goManual(a, null);
     } catch (e) {
-      setError(String(e));
+      // "Proton Mail does not offer IMAP…" is an answer, not a failure: the
+      // provider cannot be reached by any mail client, and the right thing
+      // is to say so rather than open a form full of servers that do not
+      // exist. Anything else is a real failure and reads as one.
+      const msg = String(e).replace(/^Error:\s*/, '');
+      setError(/does not offer IMAP/.test(msg) ? t('onb-no-imap', { detail: msg }) : msg);
       setStep({ kind: 'ask' });
     }
   };
@@ -100,7 +107,8 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
       return;
     }
     try {
-      await api.addAccount(setup);
+      const id = await api.addAccount(setup);
+      setAdded({ id, email: setup.email });
       setStep({ kind: 'syncing', address: setup.email });
     } catch (e) {
       setError(t('onb-add-failed', { error: String(e) }));
@@ -325,7 +333,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
           </form>
         )}
 
-        {step.kind === 'syncing' && <FirstSync address={step.address} onDone={onDone} />}
+        {step.kind === 'syncing' && <FirstSync address={step.address} onDone={() => onDone(added)} />}
       </div>
     </div>
   );

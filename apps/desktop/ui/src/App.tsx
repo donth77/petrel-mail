@@ -1051,10 +1051,16 @@ export function App() {
               : xOrDelta;
           set('railWidth', String(clampRail(next)));
         }}
+        // The same call the ⌘1…9 keys make. This was a stub that only
+        // showed the toast, so the menu said "Switched to…" and switched
+        // nothing while the keys worked — the button and the key had drifted.
         onSwitchAccount={(n) => {
           const acc = accounts[n - 1];
-          if (acc) setToast(t('account-switched', { email: acc.email }));
-          else setToast(t('account-none-at', { n: String(n) }));
+          if (!acc) {
+            setToast(t('account-none-at', { n: String(n) }));
+            return;
+          }
+          if (!acc.active) void switchAccount(acc.id, acc.email);
         }}
         onSettings={() => setSettingsOpen('accounts')}
         onAddAccount={() => setAddingAccount(true)}
@@ -1305,6 +1311,7 @@ export function App() {
         <Reader
           thread={active}
           view={view}
+          onToast={setToast}
           onReplyTo={(messageId, all) => {
             if (active) void startReply(active.id, all, messageId);
           }}
@@ -1349,11 +1356,13 @@ export function App() {
             }}
           >
             <Onboarding
-              onDone={() => {
+              onDone={(added) => {
                 setAddingAccount(false);
-                // The new account is synced and stored; re-read the list so
-                // the switcher offers it, and the counts so the rail knows.
-                setAccountEpoch((n) => n + 1);
+                // You just walked three screens to add it: show it. Adding
+                // an account and then leaving the old one on screen read as
+                // the add having failed, while the new mail synced unseen.
+                if (added != null) void switchAccount(added.id, added.email);
+                else setAccountEpoch((n) => n + 1);
               }}
             />
           </div>

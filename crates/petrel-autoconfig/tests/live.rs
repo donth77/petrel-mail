@@ -58,3 +58,34 @@ async fn a_real_namecheap_domain_is_found_from_the_address_alone() {
     assert_eq!(d.imap.host, "mail.privateemail.com");
     assert_eq!(d.smtp.host, "mail.privateemail.com");
 }
+
+/// The extended MX table against real DNS: each provider's own domain
+/// resolves, by MX, to the right servers. Their own domains are used
+/// because a customer's custom domain is not ours to name.
+#[tokio::test]
+#[ignore]
+async fn the_custom_domain_hosts_resolve_by_real_dns() {
+    let cases = [
+        ("someone@migadu.com", "Migadu"),
+        ("someone@mailbox.org", "mailbox.org"),
+        ("someone@runbox.com", "Runbox"),
+        ("someone@purelymail.com", "Purelymail"),
+        ("someone@mxroute.com", "MXroute"),
+    ];
+    for (addr, provider) in cases {
+        let d = discover(addr)
+            .await
+            .unwrap()
+            .unwrap_or_else(|| panic!("{addr} not discovered"));
+        assert_eq!(d.provider, provider, "{addr} via {:?}", d.via);
+    }
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_provider_with_no_imap_is_an_answer_not_a_form() {
+    match discover("someone@hey.com").await {
+        Err(petrel_autoconfig::Error::NoImap { provider }) => assert_eq!(provider, "HEY"),
+        other => panic!("expected NoImap, got {other:?}"),
+    }
+}
