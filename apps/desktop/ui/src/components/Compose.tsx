@@ -33,6 +33,9 @@ type Props = {
   onClose: () => void;
   onSend: () => void;
   onAttach: () => void;
+  /** Files dragged in from the desktop. Separate from `onAttach`, which opens
+      the picker: these arrive as bytes and have to be written down first. */
+  onDropFiles: (files: FileList) => void;
   onSaveDraft: () => void;
   onSendLater: () => void;
   onPopOut: () => void;
@@ -52,7 +55,23 @@ export { splitRecipients as addresses } from '../lib/recipients';
  * are reading, and taking over the screen to write two lines loses the thing
  * being replied to. Popping out is a deliberate escalation, not the default.
  */
-export function Compose({ draft, account, onChange, onClose, onSend, onAttach, onSaveDraft, onSendLater, onPopOut }: Props) {
+/**
+ * Whether a drag is carrying files from outside the application.
+ *
+ * Checked on every drag event because the composer sits over a window where
+ * conversations are also being dragged about, and it must not light up for one
+ * of those — nor swallow it. `types` is the only thing readable mid-drag; the
+ * files themselves are withheld until the drop.
+ */
+function hasFiles(dt: DataTransfer | null): boolean {
+  return !!dt && Array.from(dt.types).includes('Files');
+}
+
+export function Compose({ draft, account, onChange, onClose, onSend, onAttach, onDropFiles, onSaveDraft, onSendLater, onPopOut }: Props) {
+  // Whether a file is being dragged over the composer. Counted rather than
+  // toggled: dragging across a child element fires leave-then-enter, and a
+  // boolean flickers off every time the pointer crosses an input.
+  const [dragDepth, setDragDepth] = useState(0);
   const toRef = useRef<HTMLInputElement>(null);
   const [showCc, setShowCc] = useState(draft.cc.length > 0);
 
@@ -71,6 +90,29 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
     <section
       className="compose"
       aria-label={t('compose-title')}
+      data-dropping={dragDepth > 0 || undefined}
+      onDragEnter={(e) => {
+        if (!hasFiles(e.dataTransfer)) return;
+        e.preventDefault();
+        setDragDepth((n) => n + 1);
+      }}
+      onDragOver={(e) => {
+        // Cancelling is what makes a drop possible at all: the default answer
+        // to a dragged file is to refuse it and let the OS open it instead.
+        if (!hasFiles(e.dataTransfer)) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+      }}
+      onDragLeave={(e) => {
+        if (!hasFiles(e.dataTransfer)) return;
+        setDragDepth((n) => Math.max(0, n - 1));
+      }}
+      onDrop={(e) => {
+        if (!hasFiles(e.dataTransfer)) return;
+        e.preventDefault();
+        setDragDepth(0);
+        if (e.dataTransfer.files.length > 0) onDropFiles(e.dataTransfer.files);
+      }}
       onKeyDown={(e) => {
         if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key === 'Enter') {
           e.preventDefault();
@@ -96,6 +138,16 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
         }
       }}
     >
+      {/* Shown over the composer rather than in it, so nothing shifts as the
+          pointer arrives and the fields stay where they were aimed at. It takes
+          no pointer events of its own — it must not become the thing the drop
+          lands on, or the section beneath would never hear it. */}
+      {dragDepth > 0 && (
+        <div className="compose-drop" aria-hidden="true">
+          <span>{t('compose-drop')}</span>
+        </div>
+      )}
+
       <header className="compose-head">
         <span className="compose-title">{draft.inReplyTo ? t('compose-reply') : t('compose-new')}</span>
         {/* Closing keeps the message. Discarding what someone wrote because

@@ -100,3 +100,23 @@ export function chips(sender: string | null, year: number, view: string): Chip[]
   if (scope) list.push({ id: 'scope', label: `In ${scope}`, token: `in:${view}` });
   return list;
 }
+
+/**
+ * The one place a search has to be narrowed for you.
+ *
+ * Search leaves Spam and Trash out of every result, which is right everywhere
+ * except standing inside them: there, an unscoped search returns nothing at all
+ * and the mailbox is simply not searchable. Being in Spam is asking for spam,
+ * so the token is written for you.
+ *
+ * Written into the field rather than applied behind it, so it reads as part of
+ * the query, lights the chip that matches it, and can be deleted to widen —
+ * the same rule every other filter here follows. Applied only as a search
+ * begins, never on each keystroke, so deleting the token does not fight you.
+ */
+export function scopedQuery(next: string, previous: string, view: string): string {
+  const starting = !previous.trim() && next.trim().length > 0;
+  const binned = view === 'spam' || view === 'trash';
+  if (!starting || !binned) return next;
+  return `in:${view} ${next}`;
+}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ATTACHMENT_LIMIT, encodedSize, fits } from './attachments';
+import { ATTACHMENT_LIMIT, encodedSize, fits, stageDropped } from './attachments';
 
 describe('encodedSize', () => {
   it('is always at least the raw size', () => {
@@ -39,5 +39,39 @@ describe('fits', () => {
     // 20MB on disk is about 27MB on the wire. A check against the raw size
     // would wave this through.
     expect(fits([], 20 * 1024 * 1024)).toBe(false);
+  });
+});
+
+describe('stageDropped', () => {
+  const file = (name: string, size: number) =>
+    ({ name, size, arrayBuffer: async () => new ArrayBuffer(size) }) as unknown as File;
+  const stage = async (name: string, bytes: Uint8Array) => ({
+    path: `/staged/${name}`,
+    name,
+    size: bytes.byteLength,
+  });
+
+  it('stages what fits and reports what does not', async () => {
+    const res = await stageDropped([file('ok.pdf', 1000), file('huge.mov', ATTACHMENT_LIMIT)], [], stage);
+    expect(res.kept.map((a) => a.name)).toEqual(['ok.pdf']);
+    expect(res.rejected).toEqual(['huge.mov']);
+  });
+
+  it('counts what is already attached', async () => {
+    const existing = [{ path: '/a', name: 'a.bin', size: ATTACHMENT_LIMIT - 2000 }];
+    const res = await stageDropped([file('b.bin', 100_000)], existing, stage);
+    expect(res.kept).toHaveLength(1);
+    expect(res.rejected).toEqual(['b.bin']);
+  });
+
+  it('never writes down a file it is going to refuse', async () => {
+    // A 400MB video dropped by accident should be refused, not copied into the
+    // application's storage first and refused second.
+    const staged: string[] = [];
+    await stageDropped([file('huge.mov', ATTACHMENT_LIMIT * 2)], [], async (n, b) => {
+      staged.push(n);
+      return { path: `/staged/${n}`, name: n, size: b.byteLength };
+    });
+    expect(staged).toEqual([]);
   });
 });

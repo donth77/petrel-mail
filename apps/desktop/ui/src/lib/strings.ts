@@ -71,6 +71,7 @@ export const en = {
   'msg-actions': 'Actions for this message',
   'drag-count': '{ $count } conversations',
   'pane-resize': 'Resize the conversation list',
+  'compose-drop': 'Drop to attach',
   'reader-earlier': '{ $count } earlier messages',
   'reader-none-title': 'Nothing selected',
   'reader-none-body': 'Pick a conversation with J and K, or press Enter to open one.',

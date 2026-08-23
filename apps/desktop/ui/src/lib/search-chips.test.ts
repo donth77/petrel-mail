@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { chips, hasToken, toggleToken, tokensOf } from './search-chips';
+import { chips, hasToken, scopedQuery, toggleToken, tokensOf } from './search-chips';
 
 describe('tokensOf', () => {
   it('keeps a quoted value whole', () => {
@@ -88,5 +88,31 @@ describe('the scope chip', () => {
   it('comes last, after the conditions', () => {
     const ids = chips(null, 2026, 'inbox').map((c) => c.id);
     expect(ids[ids.length - 1]).toBe('scope');
+  });
+});
+
+describe('scopedQuery', () => {
+  it('scopes a search that begins inside Spam or Trash', () => {
+    // Without this the mailbox is unsearchable: search excludes junk, so an
+    // unscoped search from inside Spam matches nothing at all.
+    expect(scopedQuery('refund', '', 'spam')).toBe('in:spam refund');
+    expect(scopedQuery('receipt', '', 'trash')).toBe('in:trash receipt');
+  });
+
+  it('leaves every other mailbox alone', () => {
+    for (const view of ['inbox', 'archive', 'sent', 'starred', 'tag:Urgent']) {
+      expect(scopedQuery('annex', '', view), view).toBe('annex');
+    }
+  });
+
+  it('only writes the token as the search begins', () => {
+    // Otherwise deleting it would fight the person deleting it.
+    expect(scopedQuery('in:spam refun', 'in:spam refund', 'spam')).toBe('in:spam refun');
+    expect(scopedQuery('refund', 'refun', 'spam')).toBe('refund');
+  });
+
+  it('does nothing when the field is being cleared', () => {
+    expect(scopedQuery('', 'refund', 'spam')).toBe('');
+    expect(scopedQuery('   ', '', 'spam')).toBe('   ');
   });
 });

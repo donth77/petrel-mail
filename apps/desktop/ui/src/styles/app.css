@@ -3611,3 +3611,31 @@ body.resizing {
   opacity: 0.5;
   outline: none;
 }
+
+/* A file being dragged onto the composer.
+
+   Over the composer, not in it: an overlay that took part in layout would
+   shift the fields the moment the pointer arrived, which is exactly when
+   someone is aiming at them. Transparent to the pointer, so the drop lands on
+   the composer underneath rather than on the sign describing it. */
+.compose-drop {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: grid;
+  place-items: center;
+  border: 2px dashed var(--accent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+.compose[data-dropping] {
+  /* The composer already has a stacking context in most states; this makes it
+     certain, so the overlay is positioned against the composer and not against
+     whatever ancestor happens to be positioned. */
+  position: relative;
+}

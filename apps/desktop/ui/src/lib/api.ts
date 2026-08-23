@@ -314,6 +314,9 @@ const mock = {
   untrustSender: async () => {},
   // Searched across every row the mock can produce, not through one view —
   // finding a conversation wherever it lives is the whole point of the call.
+  stageAttachment: async (name: string, bytes: Uint8Array) => ({
+    path: `/tmp/staged/${name}`, name, size: bytes.length,
+  }),
   openExternal: async (url: string) => {
     // The browser stand-in cannot hand a URL to the system, and opening one in
     // the harness tab would navigate away from the app under test.
@@ -371,6 +374,8 @@ const real = {
     invoke<Thread[]>('list_threads', { view, offset, limit }),
   threadById: (threadId: number) => invoke<Thread | null>('thread_by_id', { threadId }),
   openExternal: (url: string) => invoke<void>('open_external', { url }),
+  stageAttachment: (name: string, bytes: Uint8Array) =>
+    invoke<{ path: string; name: string; size: number }>('stage_attachment', { name, bytes }),
   tags: () => invoke<Tag[]>('list_tags'),
   viewCounts: (mode: string) => invoke<[string, number][]>('view_counts', { mode }),
   popoutMessage: (threadId: number) => invoke<void>('popout_message', { threadId }),

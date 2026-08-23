@@ -60,3 +60,33 @@ export async function pickAttachments(
   }
   return { kept, rejected };
 }
+
+/**
+ * Takes files dragged in from the desktop.
+ *
+ * Shares the size rule and the de-duplication with `pickAttachments` for the
+ * same reason that function is shared at all: a file that is too large is too
+ * large however it arrived, and two definitions of "fits" would eventually
+ * disagree.
+ *
+ * The size is checked before the file is written down, not after. A 400MB video
+ * dropped by accident should be refused, not copied into the application's
+ * own storage first and refused second.
+ */
+export async function stageDropped(
+  files: readonly File[],
+  existing: readonly Attached[],
+  stage: (name: string, bytes: Uint8Array) => Promise<Attached>,
+): Promise<{ kept: Attached[]; rejected: string[] }> {
+  const kept = [...existing];
+  const rejected: string[] = [];
+  for (const file of files) {
+    if (!fits(kept, file.size)) {
+      rejected.push(file.name);
+      continue;
+    }
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    kept.push(await stage(file.name, bytes));
+  }
+  return { kept, rejected };
+}

@@ -345,6 +345,15 @@
         return p.addr.indexOf(q) === 0 || p.display.toLowerCase().indexOf(q) === 0;
       });
     },
+    // No filesystem in a browser, so the staged path is a stand-in. The point
+    // is that the command exists and answers with the shape the composer
+    // expects — a missing one made a dropped file look like a broken feature
+    // when only the harness was missing.
+    stage_attachment: function (args) {
+      var name = (args && args.name) || 'attachment';
+      var bytes = (args && args.bytes) || [];
+      return { path: '/staged/' + name, name: name, size: bytes.length || 0 };
+    },
     quote_message: function () {
       return {
         html: '<p>Could you take a look before Friday?</p><p>Thanks,<br>Dana</p>',

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from './lib/api';
 import { Compose, addresses, type Draft } from './components/Compose';
 import { Picker } from './components/Picker';
-import { ATTACHMENT_LIMIT, pickAttachments } from './lib/attachments';
+import { ATTACHMENT_LIMIT, pickAttachments, stageDropped } from './lib/attachments';
 import { fileSize } from './lib/format';
 import { snoozeOptions } from './lib/snooze';
 import { Toast } from './components/Toast';
@@ -82,6 +82,21 @@ export function ComposeWindow({ draftId }: { draftId: number }) {
           void pickAttachments(draft.attachments ?? [], api.attachmentInfo)
             .then((result) => {
               if (!result) return;
+              setDraft({ ...draft, attachments: result.kept });
+              if (result.rejected.length > 0) {
+                setToast(
+                  t('compose-too-large', {
+                    name: result.rejected.join(', '),
+                    limit: fileSize(ATTACHMENT_LIMIT),
+                  }),
+                );
+              }
+            })
+            .catch((e) => setToast(t('compose-attach-failed', { error: String(e) })));
+        }}
+        onDropFiles={(files) => {
+          void stageDropped([...files], draft.attachments ?? [], api.stageAttachment)
+            .then((result) => {
               setDraft({ ...draft, attachments: result.kept });
               if (result.rejected.length > 0) {
                 setToast(

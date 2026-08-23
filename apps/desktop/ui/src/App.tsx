@@ -8,7 +8,7 @@ import {
   type Tag,
   type Thread,
 } from './lib/api';
-import { chips, hasToken, toggleToken } from './lib/search-chips';
+import { chips, hasToken, scopedQuery, toggleToken } from './lib/search-chips';
 import { count as fmtCount, fileSize } from './lib/format';
 import { t, type StringId } from './lib/strings';
 import { Search } from 'lucide-react';
@@ -25,7 +25,7 @@ import { replyTargets } from './lib/reply';
 import { forwardBody, replyBody } from './lib/quote';
 import { dropMeaning } from './lib/dnd';
 import { startingBody, startingHtml } from './lib/signature';
-import { ATTACHMENT_LIMIT, pickAttachments } from './lib/attachments';
+import { ATTACHMENT_LIMIT, pickAttachments, stageDropped } from './lib/attachments';
 import { extend, prune, targets, toggle } from './lib/selection';
 import { notifiable, postDesktopNotification } from './lib/notify';
 import { Help } from './components/Help';
@@ -539,6 +539,30 @@ export function App() {
     }
   };
 
+  /** Files dragged onto the composer from the desktop. */
+  const dropAttachments = async (files: FileList) => {
+    try {
+      const current = draftRef.current;
+      if (!current) return;
+      const result = await stageDropped(
+        [...files],
+        current.attachments ?? [],
+        api.stageAttachment,
+      );
+      setDraft({ ...draftRef.current!, attachments: result.kept });
+      if (result.rejected.length > 0) {
+        setToast(
+          t('compose-too-large', {
+            name: result.rejected.join(', '),
+            limit: fileSize(ATTACHMENT_LIMIT),
+          }),
+        );
+      }
+    } catch (e) {
+      setToast(t('compose-attach-failed', { error: String(e) }));
+    }
+  };
+
   // The undo-send countdown. Nothing has been sent while this runs.
   useEffect(() => {
     if (!outgoing) return;
@@ -843,7 +867,7 @@ export function App() {
               spellCheck={false}
               value={query}
               placeholder={t('search-placeholder')}
-              onChange={(e) => setQuery(e.target.value)}
+              onChange={(e) => setQuery(scopedQuery(e.target.value, query, view))}
               onFocus={() => setSearching(true)}
               onKeyDown={(e) => {
                 // Escape leaves search rather than merely leaving the field:
@@ -1084,6 +1108,7 @@ export function App() {
             setDraft(null);
           }}
           onAttach={() => void attach()}
+          onDropFiles={(files) => void dropAttachments(files)}
           onSaveDraft={() => void saveDraft(draft)}
           onSendLater={() => setPicker('send-later')}
           onPopOut={() => {

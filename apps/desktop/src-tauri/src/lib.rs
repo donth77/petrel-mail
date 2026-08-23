@@ -1338,6 +1338,53 @@ fn delete_draft(id: i64, state: State<Arc<AppState>>) -> Result<(), String> {
 /// Statted here rather than in the window: the file picker hands back paths,
 /// and asking the OS for a size is something the backend can already do
 /// without a second plugin and a second capability to review.
+
+/// Writes a dropped file to disk and reports where it landed.
+///
+/// A file picked from the dialog arrives as a path, because the dialog is the
+/// system's and hands one over. A file dragged in from the desktop does not:
+/// the webview gives the page bytes and deliberately withholds the path, so
+/// there is nothing for the sender to open later. Staging it is what turns the
+/// one into the other, and means everything downstream — the size rule, the
+/// list in the composer, the send itself — keeps working on paths and does not
+/// learn that drops exist.
+///
+/// The name is reduced to a file name and nothing else. It arrives from a drag
+/// the application did not compose, so `../../.ssh/id_rsa` has to be a file
+/// called `id_rsa` in the staging directory and not a path out of it.
+#[tauri::command]
+fn stage_attachment(name: String, bytes: Vec<u8>) -> Result<AttachmentInfo, String> {
+    let stem = std::path::Path::new(&name)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .filter(|n| !n.is_empty() && n != "." && n != "..")
+        .unwrap_or_else(|| "attachment".to_string());
+
+    let dir = data_dir().join("staged");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+
+    // Prefixed rather than overwritten: dropping two files of the same name
+    // from different folders is ordinary, and the second must not replace the
+    // first after the first is already listed in the composer.
+    let unique = format!(
+        "{}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0),
+        stem
+    );
+    let path = dir.join(unique);
+    let size = bytes.len() as u64;
+    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+
+    Ok(AttachmentInfo {
+        name: stem,
+        size,
+        path: path.to_string_lossy().into_owned(),
+    })
+}
+
 #[tauri::command]
 fn attachment_info(paths: Vec<String>) -> Vec<AttachmentInfo> {
     paths
@@ -2021,6 +2068,7 @@ pub fn run() {
             list_threads,
             thread_by_id,
             open_external,
+            stage_attachment,
             list_tags,
             view_counts,
             remote_status,
