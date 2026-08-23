@@ -38,3 +38,23 @@ async fn an_unknown_domain_means_the_manual_form() {
     let d = discover("someone@example.invalid").await.unwrap();
     assert!(d.is_none());
 }
+
+/// A real custom domain on Namecheap, from the environment so no address is
+/// written into the repository. Set PETREL_NC_USER (see .env.namecheap);
+/// skipped silently when it is not.
+#[tokio::test]
+#[ignore]
+async fn a_real_namecheap_domain_is_found_from_the_address_alone() {
+    let Ok(addr) = std::env::var("PETREL_NC_USER") else {
+        eprintln!("PETREL_NC_USER not set; skipping");
+        return;
+    };
+    let d = discover(&addr)
+        .await
+        .unwrap()
+        .expect("should be discovered");
+    assert_eq!(d.via, Via::Mx, "a custom domain can only be found by MX");
+    assert_eq!(d.provider, "Namecheap Private Email");
+    assert_eq!(d.imap.host, "mail.privateemail.com");
+    assert_eq!(d.smtp.host, "mail.privateemail.com");
+}
