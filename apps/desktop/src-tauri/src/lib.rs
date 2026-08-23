@@ -73,6 +73,10 @@ struct AppState {
 
 #[derive(serde::Serialize)]
 struct Status {
+    /// Whether any account can sign in — set up in the app, or given by the
+    /// environment. `false` is the first-run signal: the window shows
+    /// onboarding instead of an empty mailbox pretending to be a mailbox.
+    configured: bool,
     seeding: bool,
     count: usize,
     /// What the server says it holds across the synced folders, or 0 if it has
@@ -150,7 +154,20 @@ fn now_ms() -> i64 {
 
 #[tauri::command]
 fn status(state: State<Arc<AppState>>) -> Status {
+    let configured = state
+        .store
+        .lock()
+        .ok()
+        .and_then(|s| {
+            s.first_account()
+                .ok()
+                .flatten()
+                .map(|a| imap_config_for(&s, a).is_some())
+        })
+        .unwrap_or(false)
+        || imap_config_from_env().is_some();
     Status {
+        configured,
         seeding: state.seeding.load(Ordering::Relaxed),
         count: state.seeded.load(Ordering::Relaxed),
         server_total: state.server_total.load(Ordering::Relaxed),
@@ -174,6 +191,64 @@ fn status(state: State<Arc<AppState>>) -> Status {
 /// Reads account settings from the environment. Credentials never appear in
 /// argv (visible to every process on the machine) or in a config file we wrote;
 /// the keychain replaces this at M4 when account setup exists.
+/// The keychain entry for an account's password.
+///
+/// Keyed by the account's row id rather than its address, so renaming an
+/// account or adding a second one with the same address on another server
+/// cannot point two accounts at one secret.
+fn keychain_entry(account_id: i64) -> Result<keyring::Entry, String> {
+    keyring::Entry::new("dev.petrel.desktop", &format!("account-{account_id}"))
+        .map_err(|e| format!("keychain: {e}"))
+}
+
+/// The IMAP configuration for an account that was set up in the app.
+///
+/// The store has the servers; the keychain has the password. Either missing
+/// means this account was not set up here — which, today, means it is the
+/// developer row driven by the environment, and the caller falls back.
+fn imap_config_for(store: &Store, account_id: i64) -> Option<ImapConfig> {
+    let servers = store.account_servers(account_id).ok().flatten()?;
+    if servers.imap_host.is_empty() {
+        return None;
+    }
+    let pass = keychain_entry(account_id).ok()?.get_password().ok()?;
+    Some(ImapConfig {
+        host: servers.imap_host,
+        port: servers.imap_port,
+        user: servers.username,
+        pass,
+        security: Security::Tls,
+    })
+}
+
+/// The SMTP half, for the same account. Explicit rather than derived from
+/// the IMAP host by string substitution: autoconfig answers both, and a
+/// provider like Namecheap uses one host for both while another uses two.
+fn smtp_config_for(store: &Store, account_id: i64) -> Option<petrel_providers::smtp::SmtpConfig> {
+    let servers = store.account_servers(account_id).ok().flatten()?;
+    if servers.smtp_host.is_empty() {
+        return None;
+    }
+    let pass = keychain_entry(account_id).ok()?.get_password().ok()?;
+    Some(petrel_providers::smtp::SmtpConfig {
+        host: servers.smtp_host,
+        port: servers.smtp_port,
+        user: servers.username,
+        pass,
+    })
+}
+
+/// The account's IMAP configuration from wherever it lives: the app's own
+/// setup first, the environment as the developer override.
+fn imap_config(state: &AppState, account_id: i64) -> Option<ImapConfig> {
+    state
+        .store
+        .lock()
+        .ok()
+        .and_then(|s| imap_config_for(&s, account_id))
+        .or_else(imap_config_from_env)
+}
+
 fn imap_config_from_env() -> Option<ImapConfig> {
     let host = std::env::var("PETREL_IMAP_HOST").ok()?;
     let user = std::env::var("PETREL_IMAP_USER").ok()?;
@@ -1153,8 +1228,24 @@ async fn attempt(
     use petrel_engine::outbox::AttemptOutcome;
     use petrel_providers::smtp::{Attachment, Outgoing, SendResult, SmtpConfig, send_tls};
 
-    let cfg = imap_config_from_env().ok_or("no account is configured")?;
-    let smtp = SmtpConfig::for_imap_host(&cfg.host, &cfg.user, &cfg.pass);
+    let account_id = {
+        let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+        store.first_account().ok().flatten()
+    };
+    let cfg = account_id
+        .and_then(|a| imap_config(state, a))
+        .ok_or("no account is configured")?;
+    // The SMTP host the account was set up with. Derived from the IMAP host
+    // only for the environment-driven account, which has no record of its own.
+    let smtp = account_id
+        .and_then(|a| {
+            state
+                .store
+                .lock()
+                .ok()
+                .and_then(|st| smtp_config_for(&st, a))
+        })
+        .unwrap_or_else(|| SmtpConfig::for_imap_host(&cfg.host, &cfg.user, &cfg.pass));
     let domain = cfg
         .user
         .split('@')
@@ -1483,7 +1574,7 @@ async fn send_due(state: Arc<AppState>, account: i64) {
         return;
     }
     log_sync(&format!("{} queued message(s) due", due.len()));
-    let Some(cfg) = imap_config_from_env() else {
+    let Some(cfg) = imap_config(&state, account) else {
         return;
     };
 
@@ -1603,6 +1694,139 @@ async fn send_due(state: Arc<AppState>, account: i64) {
     }
 }
 
+/// Step 1 → 2 of onboarding: what an address tells us about its servers.
+#[tauri::command]
+async fn discover_account(
+    address: String,
+) -> Result<Option<petrel_autoconfig::Discovered>, String> {
+    petrel_autoconfig::discover(&address)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// The manual form's pre-fill when nothing answered: the conventional hosts.
+#[tauri::command]
+fn guess_servers(
+    address: String,
+) -> Option<(petrel_autoconfig::Server, petrel_autoconfig::Server)> {
+    petrel_autoconfig::guess(&address)
+}
+
+#[derive(serde::Deserialize)]
+struct AccountSetup {
+    email: String,
+    username: String,
+    password: String,
+    imap_host: String,
+    imap_port: u16,
+    smtp_host: String,
+    smtp_port: u16,
+    provider: String,
+}
+
+/// "Reached both servers over TLS. Certificates check out." — or why not.
+///
+/// Runs before anything is stored. The two halves are reported separately so
+/// the form can say which server is wrong rather than "something failed".
+#[tauri::command]
+async fn test_account(setup: AccountSetup) -> Result<(), String> {
+    // On a spawned task rather than the command's own future. Tauri drives
+    // async commands from its own runtime, and a TLS handshake — which
+    // builds a root store and blocks on the socket — run inline there stalled
+    // without ever resolving. Spawned, it runs where the sync already does.
+    tauri::async_runtime::spawn(test_account_inner(setup))
+        .await
+        .map_err(|e| format!("test task: {e}"))?
+}
+
+async fn test_account_inner(setup: AccountSetup) -> Result<(), String> {
+    let imap = ImapConfig {
+        host: setup.imap_host.clone(),
+        port: setup.imap_port,
+        user: setup.username.clone(),
+        pass: setup.password.clone(),
+        security: Security::Tls,
+    };
+    petrel_providers::imap::login_check(&imap)
+        .await
+        .map_err(|e| format!("Incoming (IMAP) — {e}"))?;
+    let smtp = petrel_providers::smtp::SmtpConfig {
+        host: setup.smtp_host.clone(),
+        port: setup.smtp_port,
+        user: setup.username.clone(),
+        pass: setup.password.clone(),
+    };
+    petrel_providers::smtp::login_check(&smtp)
+        .await
+        .map_err(|e| format!("Outgoing (SMTP) — {e}"))?;
+    Ok(())
+}
+
+/// Stores the account: servers on the row, password in the keychain, and
+/// then starts syncing it. Only ever called after `test_account` passed, so
+/// a wrong password never reaches the keychain.
+#[tauri::command]
+fn add_account(setup: AccountSetup, state: State<Arc<AppState>>) -> Result<i64, String> {
+    let servers = petrel_engine::store::AccountServers {
+        imap_host: setup.imap_host,
+        imap_port: setup.imap_port,
+        smtp_host: setup.smtp_host,
+        smtp_port: setup.smtp_port,
+        username: setup.username,
+        provider: setup.provider.clone(),
+    };
+    let kind = if setup.provider.to_ascii_lowercase().contains("gmail")
+        || setup.provider.to_ascii_lowercase().contains("google")
+    {
+        "gmail"
+    } else {
+        "imap"
+    };
+    let id = {
+        let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+        // The row the environment made, if that is what is here, gives way:
+        // an account set up in the app is the account.
+        if let Ok(Some(first)) = store.first_account() {
+            if store.account_servers(first).ok().flatten().is_none()
+                && imap_config_from_env().is_none()
+            {
+                let _ = store.remove_account(first);
+            }
+        }
+        store
+            .add_account(kind, &setup.email, "", &servers)
+            .map_err(|e| e.to_string())?
+    };
+    // Keychain second, so a keychain refusal does not leave a row with no
+    // way to sign in. If it fails, the row goes too.
+    if let Err(e) = keychain_entry(id).and_then(|k| {
+        k.set_password(&setup.password)
+            .map_err(|e| format!("keychain: {e}"))
+    }) {
+        if let Ok(store) = state.store.lock() {
+            let _ = store.remove_account(id);
+        }
+        return Err(e);
+    }
+    // Syncing starts now, not at the next launch: step 3 of onboarding is
+    // "Getting your mail", and it is watching.
+    if let Some(cfg) = imap_config(&state, id) {
+        spawn_real_sync(Arc::clone(&state), id, cfg);
+    }
+    Ok(id)
+}
+
+/// Removes an account, its mail and its password.
+#[tauri::command]
+fn remove_account(account_id: i64, state: State<Arc<AppState>>) -> Result<(), String> {
+    if let Ok(k) = keychain_entry(account_id) {
+        // A missing entry is fine; the point is that none remains.
+        let _ = k.delete_credential();
+    }
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    store.remove_account(account_id).map_err(|e| e.to_string())
+}
+
 /// The outbox, row by row, with each message's state.
 #[tauri::command]
 fn list_outbox(
@@ -1661,7 +1885,7 @@ async fn outbox_check(id: i64, state: State<'_, Arc<AppState>>) -> Result<String
     let Some(mid) = message_id else {
         return Ok("Indeterminate".into());
     };
-    let cfg = imap_config_from_env().ok_or("no account is configured")?;
+    let cfg = imap_config(&state, account).ok_or("no account is configured")?;
     let evidence = sent_folder_evidence(&state, &cfg, account, &mid).await;
     let next = reconcile(AttemptOutcome::UnknownAfterTransmit, evidence);
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
@@ -2387,6 +2611,13 @@ fn data_dir() -> std::path::PathBuf {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Chosen once, here, for the whole process. rustls picks a crypto provider
+    // on its own only while exactly one is compiled in; the moment a second
+    // dependency brought another, every TLS handshake that ran before the sync
+    // had warmed one up panicked — which is to say, the onboarding connection
+    // test on a first run. An application is supposed to say which it wants.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
     let dir = data_dir();
     std::fs::create_dir_all(&dir).expect("create data directory");
     eprintln!("[store] data directory: {}", dir.display());
@@ -2447,7 +2678,17 @@ pub fn run() {
         }
     }
 
-    match imap_config_from_env() {
+    // The account set up in the app first; the environment as the developer
+    // override when there is none. Before this every launch without the
+    // variables was a demo — which is how demo tags ended up decorating a
+    // store full of real mail.
+    let configured = state
+        .store
+        .lock()
+        .ok()
+        .and_then(|s| imap_config_for(&s, account))
+        .or_else(imap_config_from_env);
+    match configured {
         Some(cfg) => {
             eprintln!("[sync] account configured: {} @ {}", cfg.user, cfg.host);
             spawn_real_sync(state.clone(), account, cfg);
@@ -2506,6 +2747,11 @@ pub fn run() {
             rename_tag,
             set_tag_colour,
             delete_tag,
+            discover_account,
+            guess_servers,
+            test_account,
+            add_account,
+            remove_account,
             list_outbox,
             outbox_send_now,
             outbox_edit,

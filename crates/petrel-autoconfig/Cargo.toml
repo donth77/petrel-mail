@@ -1,8 +1,20 @@
 [package]
 name = "petrel-autoconfig"
-description = "Account autodiscovery: autoconfig XML, ISPDB, MX, SRV, Autodiscover, probing"
+description = "Account autodiscovery: known providers, ISPDB, MX — and a connection test"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+# DNS for the MX step. System-resolver config, so it follows the machine's
+# VPN and split-horizon setup rather than hardcoding a public resolver.
+hickory-resolver = { version = "0.26", default-features = false, features = ["system-config", "tokio"] }
+# The ISPDB is plain HTTPS returning small XML; a full HTTP client is not
+# warranted for one GET, and reqwest would pull in its own TLS stack.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+tokio = { version = "1", features = ["rt", "time"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

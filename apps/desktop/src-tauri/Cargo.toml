@@ -37,6 +37,13 @@ tauri-plugin-dialog = "2"
 serde.workspace = true
 serde_json.workspace = true
 dirs = "6"
+# Only to name the TLS crypto provider at startup; see `run()`.
+rustls = "0.23"
+# Account passwords live in the OS keychain, never in a file. The spec is
+# explicit about it and the onboarding copy promises it.
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+# Turning an address into server settings.
+petrel-autoconfig = { path = "../../../crates/petrel-autoconfig" }
 petrel-engine = { path = "../../../crates/petrel-engine" }
 petrel-providers = { path = "../../../crates/petrel-providers" }
 petrel-mime = { path = "../../../crates/petrel-mime" }

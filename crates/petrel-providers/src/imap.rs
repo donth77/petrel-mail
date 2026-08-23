@@ -1141,6 +1141,37 @@ where
 }
 
 /// Connects, authenticates, and reports what the server supports and holds.
+/// Connects and signs in, and does nothing else.
+///
+/// The onboarding connection test. A full probe lists folders and fetches
+/// mail; this answers the only question the form is asking — are the host,
+/// the port and the password right — and answers it in one round trip, so a
+/// wrong password is reported before anything has been stored.
+pub async fn login_check(cfg: &ImapConfig) -> Result<()> {
+    match cfg.security {
+        Security::Tls => {
+            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
+            let session = client
+                .login(&cfg.user, &cfg.pass)
+                .await
+                .map_err(|(e, _)| e)?;
+            let mut session = session;
+            session.logout().await?;
+            Ok(())
+        }
+        #[cfg(feature = "insecure-plaintext")]
+        Security::InsecurePlaintext => {
+            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
+            let mut session = Client::new(tcp)
+                .login(&cfg.user, &cfg.pass)
+                .await
+                .map_err(|(e, _)| e)?;
+            session.logout().await?;
+            Ok(())
+        }
+    }
+}
+
 pub async fn probe(cfg: &ImapConfig, fetch_limit: u32) -> Result<ProbeReport> {
     match cfg.security {
         Security::Tls => {

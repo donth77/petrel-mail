@@ -277,6 +277,44 @@ impl SmtpConfig {
     }
 }
 
+/// Connects, signs in and hangs up.
+///
+/// The onboarding test's second half. Getting as far as a 235 after AUTH is
+/// the whole question: the host answers on this port over TLS, and these
+/// credentials are accepted for sending. No MAIL FROM is issued — a test
+/// that left a half-open envelope on the server would be a worse test.
+pub async fn login_check(cfg: &SmtpConfig) -> std::result::Result<(), String> {
+    use base64::Engine as _;
+    use tokio::io::{AsyncWriteExt, BufReader};
+    let tls = crate::imap::tls_stream_for(&cfg.host, cfg.port)
+        .await
+        .map_err(|e| e.to_string())?;
+    let (r, mut w) = tokio::io::split(tls);
+    let mut reader = BufReader::new(r);
+    let banner = read_reply(&mut reader).await.map_err(|e| e.to_string())?;
+    if !banner.starts_with("220") {
+        return Err(format!("greeting: {}", banner.trim()));
+    }
+    w.write_all(b"EHLO petrel\r\n")
+        .await
+        .map_err(|e| e.to_string())?;
+    let ehlo = read_reply(&mut reader).await.map_err(|e| e.to_string())?;
+    if !ehlo.starts_with("250") {
+        return Err(format!("EHLO: {}", ehlo.trim()));
+    }
+    let plain =
+        base64::engine::general_purpose::STANDARD.encode(format!("\0{}\0{}", cfg.user, cfg.pass));
+    w.write_all(format!("AUTH PLAIN {plain}\r\n").as_bytes())
+        .await
+        .map_err(|e| e.to_string())?;
+    let auth = read_reply(&mut reader).await.map_err(|e| e.to_string())?;
+    if !auth.starts_with("235") {
+        return Err(format!("sign-in refused: {}", auth.trim()));
+    }
+    let _ = w.write_all(b"QUIT\r\n").await;
+    Ok(())
+}
+
 /// Sends over implicit TLS with AUTH PLAIN.
 ///
 /// Shares its outcome taxonomy with the plaintext path deliberately: the whole

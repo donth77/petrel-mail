@@ -42,6 +42,7 @@ import { Toast } from './components/Toast';
 import { MessageList } from './components/MessageList';
 import { Reader } from './components/Reader';
 import { Outbox } from './components/Outbox';
+import { Onboarding } from './components/Onboarding';
 import { PaneResize } from './components/PaneResize';
 
 export function App() {
@@ -888,6 +889,21 @@ export function App() {
       live = false;
     };
   }, [status?.count, status?.seeding, settings.badges, items]);
+
+  // First run: no account can sign in, so there is nothing to show but the
+  // way to add one. Decided from the status the app reports, not from an
+  // empty list — a mailbox that is merely empty is not a first run. And it
+  // stays up until the person chooses "Start reading", so the first sync is
+  // watched rather than happening behind a mailbox that looks broken.
+  const [onboarded, setOnboarded] = useState(false);
+  if (status && !status.configured && !onboarded) {
+    return (
+      <div className="app-frame">
+        <TitleBar synced="" />
+        <Onboarding onDone={() => setOnboarded(true)} />
+      </div>
+    );
+  }
 
   return (
     <div className="app-frame">

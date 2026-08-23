@@ -89,6 +89,21 @@ pub mod flags {
     pub const DELETED: i64 = 1 << 4;
 }
 
+/// Where an account's mail lives, as discovered or as typed. Stored on the
+/// account row; the password is the keychain's.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub struct AccountServers {
+    pub imap_host: String,
+    pub imap_port: u16,
+    pub smtp_host: String,
+    pub smtp_port: u16,
+    /// The sign-in name, which is usually the address but not always.
+    pub username: String,
+    /// "Gmail", "Namecheap Private Email" — what the account was set up as.
+    #[serde(default)]
+    pub provider: String,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AccountSummary {
     pub id: i64,
@@ -918,6 +933,51 @@ impl Store {
                 r.get(0)
             })
             .ok())
+    }
+
+    /// Creates an account with its server settings. The password is not
+    /// here and never will be: it goes to the OS keychain, keyed by this id.
+    pub fn add_account(
+        &self,
+        kind: &str,
+        email: &str,
+        display_name: &str,
+        servers: &AccountServers,
+    ) -> Result<i64> {
+        let json = serde_json::to_string(servers).unwrap_or_else(|_| "{}".into());
+        self.conn.execute(
+            "INSERT INTO accounts(kind, email, display_name, settings_json)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![kind, email, display_name, json],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// An account's server settings, if it has been set up with any. The
+    /// row the environment variables created has none, which is how the
+    /// caller tells the two apart.
+    pub fn account_servers(&self, account_id: i64) -> Result<Option<AccountServers>> {
+        let json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT settings_json FROM accounts WHERE id = ?1",
+                [account_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(json.and_then(|j| serde_json::from_str::<AccountServers>(&j).ok()))
+    }
+
+    /// Removes an account and everything it holds.
+    ///
+    /// The foreign keys cascade from `accounts`, so messages, folders, tags
+    /// and placements go with the row. Blobs are not touched here: they are
+    /// content-addressed and may be shared, and the blob GC reclaims what
+    /// nothing references any more.
+    pub fn remove_account(&self, account_id: i64) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM accounts WHERE id = ?1", [account_id])?;
+        Ok(())
     }
 
     pub fn ensure_test_account(&self) -> Result<i64> {

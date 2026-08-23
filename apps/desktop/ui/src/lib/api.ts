@@ -41,6 +41,31 @@ export type Tag = { id: number; name: string; colour: string; thread_count: numb
 export type Attachment = { filename: string; size: number };
 
 /** A message read back for quoting: sanitized, with remote content stripped. */
+/** One server, as discovery found it or the form typed it. */
+export type Server = { host: string; port: number; tls: boolean };
+
+/** What discovery found for an address. */
+export type Discovered = {
+  provider: string;
+  via: 'known-provider' | 'ispdb' | 'mx';
+  imap: Server;
+  smtp: Server;
+  auth: 'password' | 'app-password';
+  app_password_url: string | null;
+};
+
+/** Everything needed to test and then store an account. */
+export type AccountSetup = {
+  email: string;
+  username: string;
+  password: string;
+  imap_host: string;
+  imap_port: number;
+  smtp_host: string;
+  smtp_port: number;
+  provider: string;
+};
+
 /** One message in the outbox, with where its send attempt left it. */
 export type OutboxRow = {
   id: number;
@@ -150,6 +175,9 @@ export type ActionReceipt = {
 };
 
 export type Status = {
+  /** Whether any account can sign in. `false` means first run: show
+   *  onboarding rather than an empty mailbox. */
+  configured: boolean;
   /** Present when a sync failed. A login that fails must not read as an empty
    *  mailbox — the two look identical until something says so. */
   sync_error?: string | null;
@@ -229,6 +257,7 @@ const mockAccounts: Account[] = [
 
 const mock = {
   status: async (): Promise<Status> => ({
+    configured: true,
     seeding: false, count: 10000, server_total: 12500, source: 'tom@northbay.example',
     retention: 'mirror', data_dir: '~/Library/Application Support/Petrel',
   }),
@@ -338,6 +367,19 @@ const mock = {
   stageAttachment: async (name: string, bytes: Uint8Array) => ({
     path: `/tmp/staged/${name}`, name, size: bytes.length,
   }),
+  discoverAccount: async (address: string): Promise<Discovered | null> =>
+    address.endsWith('@gmail.com')
+      ? { provider: 'Gmail', via: 'known-provider', imap: { host: 'imap.gmail.com', port: 993, tls: true },
+          smtp: { host: 'smtp.gmail.com', port: 465, tls: true }, auth: 'app-password',
+          app_password_url: 'https://myaccount.google.com/apppasswords' }
+      : null,
+  guessServers: async (address: string): Promise<[Server, Server] | null> => {
+    const d = address.split('@')[1];
+    return d ? [{ host: `imap.${d}`, port: 993, tls: true }, { host: `smtp.${d}`, port: 465, tls: true }] : null;
+  },
+  testAccount: async () => {},
+  addAccount: async () => 2,
+  removeAccount: async () => {},
   outbox: async (): Promise<OutboxRow[]> => {
     const now = Date.now();
     return [
@@ -417,6 +459,11 @@ const real = {
     invoke<Thread[]>('list_threads', { view, offset, limit }),
   threadById: (threadId: number) => invoke<Thread | null>('thread_by_id', { threadId }),
   openExternal: (url: string) => invoke<void>('open_external', { url }),
+  discoverAccount: (address: string) => invoke<Discovered | null>('discover_account', { address }),
+  guessServers: (address: string) => invoke<[Server, Server] | null>('guess_servers', { address }),
+  testAccount: (setup: AccountSetup) => invoke<void>('test_account', { setup }),
+  addAccount: (setup: AccountSetup) => invoke<number>('add_account', { setup }),
+  removeAccount: (accountId: number) => invoke<void>('remove_account', { accountId }),
   outbox: () => invoke<OutboxRow[]>('list_outbox'),
   outboxSendNow: (id: number) => invoke<void>('outbox_send_now', { id }),
   outboxEdit: (id: number) => invoke<void>('outbox_edit', { id }),

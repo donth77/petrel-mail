@@ -83,7 +83,12 @@
       // toast whose dismissal timer restarted on every render.
       var seeding = false;
       try { seeding = localStorage.getItem('__petrel_seeding') === '1'; } catch (e) {}
+      // localStorage.__petrel_unconfigured models a first run, so the harness
+      // can show onboarding without deleting anyone's account.
+      var configured = true;
+      try { configured = localStorage.getItem('__petrel_unconfigured') !== '1'; } catch (e) {}
       return {
+        configured: configured,
         seeding: seeding,
         // A denominator larger than what is held, so the coverage line has
         // something true to say during a backfill.
@@ -361,6 +366,36 @@
     },
     // The outbox, one row per state, so all five designs can be seen at
     // once without staging five real failures.
+    discover_account: function (a) {
+      var addr = String(a.address || '');
+      var domain = addr.split('@')[1] || '';
+      if (domain === 'gmail.com') {
+        return { provider: 'Gmail', via: 'known-provider',
+          imap: { host: 'imap.gmail.com', port: 993, tls: true },
+          smtp: { host: 'smtp.gmail.com', port: 465, tls: true },
+          auth: 'app-password', app_password_url: 'https://myaccount.google.com/apppasswords' };
+      }
+      if (domain === 'northbay.example') {
+        return { provider: 'Namecheap Private Email', via: 'mx',
+          imap: { host: 'mail.privateemail.com', port: 993, tls: true },
+          smtp: { host: 'mail.privateemail.com', port: 465, tls: true },
+          auth: 'password', app_password_url: null };
+      }
+      return null;
+    },
+    guess_servers: function (a) {
+      var domain = String(a.address || '').split('@')[1] || 'example';
+      return [{ host: 'imap.' + domain, port: 993, tls: true }, { host: 'smtp.' + domain, port: 465, tls: true }];
+    },
+    test_account: function (a) {
+      if (a.setup && a.setup.password === 'wrong') throw new Error('Incoming (IMAP) — [AUTHENTICATIONFAILED] Invalid credentials');
+      return null;
+    },
+    add_account: function () {
+      try { localStorage.removeItem('__petrel_unconfigured'); } catch (e) {}
+      return 2;
+    },
+    remove_account: function () { return null; },
     list_outbox: function () {
       var now = Date.now();
       return [

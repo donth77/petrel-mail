@@ -2,12 +2,17 @@ import { useEffect, useState } from 'react';
 import { api, type Account } from '../../lib/api';
 import { count as fmtCount, listTime } from '../../lib/format';
 import { t } from '../../lib/strings';
+import { Dialog } from '@ariakit/react';
+import { Onboarding } from '../Onboarding';
+import { Confirm } from '../Confirm';
 
 const COLORS = ['#0E7C86', '#9A6B1F', '#6B7F87', '#3B6EA5', '#6B5CA5', '#5E7C4A'];
 const ROLES = ['archive', 'sent', 'drafts', 'spam', 'trash'] as const;
 
 export function Accounts() {
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [adding, setAdding] = useState(false);
+  const [removing, setRemoving] = useState<Account | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -46,11 +51,10 @@ export function Accounts() {
       <section className="field">
         <div className="field-head">
           <div className="flabel">{t('accounts-yours')}</div>
-          {/* No button until it can do something. Adding an account needs
-              credentials in the keychain and a sync task of its own, which arrive
-              with the provider work; a control that only apologises is worse than
-              an honest sentence. */}
-          <p className="fhelp">{t('accounts-add-later')}</p>
+          {/* The same three steps a first run walks, in a dialog. */}
+          <button type="button" className="reply" onClick={() => setAdding(true)}>
+            {t('accounts-add')}
+          </button>
         </div>
         <div className="account-list">
           {accounts.map((a) => (
@@ -157,7 +161,7 @@ export function Accounts() {
             </div>
           </section>
 
-          <section className="field last">
+          <section className="field">
             <div className="flabel">{t('accounts-folders')}</div>
             <p className="fhelp">{t('accounts-folders-help')}</p>
             {account.folders.length > 0 ? (
@@ -176,8 +180,43 @@ export function Accounts() {
               <p className="fhelp folder-none">{t('accounts-folders-none')}</p>
             )}
           </section>
+
+          <section className="field last">
+            <div className="flabel">{t('accounts-remove')}</div>
+            <p className="fhelp">{t('accounts-remove-help')}</p>
+            <button type="button" className="reply danger" onClick={() => setRemoving(account)}>
+              {t('accounts-remove')}
+            </button>
+          </section>
         </>
       )}
+      {adding && (
+        <Dialog open onClose={() => setAdding(false)} className="onboarding-dialog" backdrop={<div className="palette-backdrop" />}>
+          <Onboarding
+            onDone={() => {
+              setAdding(false);
+              void load();
+            }}
+          />
+        </Dialog>
+      )}
+
+      <Confirm
+        open={removing !== null}
+        title={t('accounts-remove-confirm', { email: removing?.email ?? '' })}
+        detail={t('accounts-remove-body')}
+        confirmLabel={t('accounts-remove')}
+        onClose={() => setRemoving(null)}
+        onConfirm={() => {
+          const a = removing;
+          setRemoving(null);
+          if (!a) return;
+          void api
+            .removeAccount(a.id)
+            .then(() => load())
+            .catch((e) => setError(String(e)));
+        }}
+      />
     </div>
   );
 }
