@@ -590,6 +590,67 @@ fn folders_to_sync(state: &AppState, account: i64) -> Vec<(String, String, i64)>
         .collect()
 }
 
+/// Mends one folder after the server renumbered it (UIDVALIDITY reset).
+///
+/// The order is the safety: quarantine and re-map by Message-ID first (the
+/// store's transaction), then download what could not be matched, and record
+/// the new validity *last* — so a crash anywhere in between leaves the old
+/// value in place and the next pass simply runs recovery again. Message rows
+/// and blobs are never deleted; the worst case is re-downloading, never data.
+async fn recover_folder(
+    state: &Arc<AppState>,
+    account: i64,
+    cfg: &ImapConfig,
+    name: &str,
+    folder_id: i64,
+) -> Result<usize, String> {
+    let depth: u32 = std::env::var("PETREL_SYNC_LIMIT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(200);
+    let map = petrel_providers::imap::fetch_id_map(cfg, name, depth)
+        .await
+        .map_err(|e| format!("id map: {e}"))?;
+    let outcome = {
+        let mut store = state.store.lock().map_err(|_| "store lock poisoned")?;
+        store
+            .remap_folder_after_reset(folder_id, &map.entries, map.complete)
+            .map_err(|e| format!("remap: {e}"))?
+    };
+    let mut refetched = 0usize;
+    if !outcome.to_fetch.is_empty() {
+        let st = Arc::clone(state);
+        refetched = petrel_providers::imap::fetch_uids_each(
+            cfg,
+            name,
+            &outcome.to_fetch,
+            |uid, flags, raw| {
+                let Ok(mut store) = st.store.lock() else {
+                    return;
+                };
+                if let Ok(ingested) =
+                    store.ingest_raw(&st.blobs, account, Some(folder_id), Some(uid), raw)
+                {
+                    let _ = store.set_message_flags(ingested.message_id, flags);
+                }
+            },
+        )
+        .await
+        .map_err(|e| format!("refetch: {e}"))?;
+    }
+    {
+        let mut store = state.store.lock().map_err(|_| "store lock poisoned")?;
+        store
+            .set_folder_validity(folder_id, map.uid_validity)
+            .map_err(|e| format!("record validity: {e}"))?;
+    }
+    log_sync(&format!(
+        "{name}: re-mapped {} placement(s), re-downloaded {refetched}, dropped {}",
+        outcome.rematched, outcome.dropped
+    ));
+    Ok(refetched)
+}
+
 fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
     spawn_drain_worker(Arc::clone(&state), account, cfg.clone());
     spawn_outbox_clock(Arc::clone(&state), account);
@@ -736,7 +797,15 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
                 .await
             };
             match result {
-                Ok(seen) => log_sync(&format!("{name}: ingested {seen}")),
+                Ok((seen, validity)) => {
+                    log_sync(&format!("{name}: ingested {seen}"));
+                    // Adopted with the UIDs, not later: UIDs recorded without
+                    // their validity are UIDs a reset cannot be detected
+                    // against, and the gap would be exactly this window.
+                    if let Ok(mut store) = state.store.lock() {
+                        let _ = store.set_folder_validity(*folder_id, validity);
+                    }
+                }
                 // One unreadable folder must not cost the others. A mailbox the
                 // account cannot select is a bad reason to have no Sent mail.
                 Err(e) => log_sync(&format!("{name}: fetch FAILED: {e}")),
@@ -866,18 +935,25 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
             let mut fresh = 0usize;
             let mut trouble: Option<String> = None;
             for (_role, name, folder_id) in &folders_to_sync(&state, account) {
-                let since = state
-                    .store
-                    .lock()
-                    .ok()
-                    .and_then(|s| s.max_uid(*folder_id).ok().flatten())
-                    .unwrap_or(0);
+                let (since, expected) = {
+                    let guard = state.store.lock().ok();
+                    (
+                        guard
+                            .as_ref()
+                            .and_then(|s| s.max_uid(*folder_id).ok().flatten())
+                            .unwrap_or(0),
+                        guard
+                            .as_ref()
+                            .and_then(|s| s.folder_validity(*folder_id).ok().flatten()),
+                    )
+                };
                 let polled = {
                     let state = Arc::clone(&state);
                     petrel_providers::imap::fetch_since_each(
                         &cfg,
                         name,
                         since,
+                        expected,
                         |uid, flags, raw| {
                             let Ok(mut store) = state.store.lock() else {
                                 return;
@@ -896,9 +972,33 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
                     )
                     .await
                 };
-                if let Err(e) = polled {
-                    log_sync(&format!("poll {name} failed: {e}"));
-                    trouble = Some(format!("{e}"));
+                use petrel_providers::imap::FetchOutcome;
+                match polled {
+                    Ok(FetchOutcome::Fetched { uid_validity, .. }) => {
+                        // A folder synced before validity was tracked adopts
+                        // the server's value on its first clean pass.
+                        if expected.is_none()
+                            && let Ok(mut store) = state.store.lock()
+                        {
+                            let _ = store.set_folder_validity(*folder_id, uid_validity);
+                        }
+                    }
+                    Ok(FetchOutcome::ValidityChanged { now }) => {
+                        log_sync(&format!(
+                            "{name}: UIDVALIDITY reset ({expected:?} -> {now:?}); re-mapping"
+                        ));
+                        match recover_folder(&state, account, &cfg, name, *folder_id).await {
+                            Ok(refetched) => fresh += refetched,
+                            Err(e) => {
+                                log_sync(&format!("{name}: recovery failed: {e}"));
+                                trouble = Some(e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log_sync(&format!("poll {name} failed: {e}"));
+                        trouble = Some(format!("{e}"));
+                    }
                 }
             }
             if fresh > 0 {

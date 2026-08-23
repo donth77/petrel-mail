@@ -130,6 +130,18 @@ pub struct FolderMapping {
     pub path: String,
 }
 
+/// What mending a renumbered folder found. See `remap_folder_after_reset`.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RemapOutcome {
+    /// Placements whose new UID was learned from the Message-ID match.
+    pub rematched: usize,
+    /// Placements dropped because a complete listing proved the folder no
+    /// longer holds them. Message rows and blobs are untouched.
+    pub dropped: usize,
+    /// Server UIDs the store could not match: download these in full.
+    pub to_fetch: Vec<u32>,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Attachment {
     pub filename: String,
@@ -1975,6 +1987,103 @@ impl Store {
                 |r| r.get::<_, Option<i64>>(0),
             )?
             .map(|u| u as u32))
+    }
+
+    /// The UIDVALIDITY the folder's stored UIDs were recorded under.
+    ///
+    /// `None` means it was never recorded — the folder has not completed a
+    /// sync since this began being tracked — which callers treat as "adopt
+    /// whatever the server says", never as a mismatch.
+    pub fn folder_validity(&self, folder_id: i64) -> Result<Option<u32>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT uidvalidity FROM folders WHERE id = ?1",
+                params![folder_id],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .optional()?
+            .flatten()
+            .map(|v| v as u32))
+    }
+
+    /// Records the UIDVALIDITY the folder's UIDs now belong to.
+    ///
+    /// In a recovery this is deliberately the *last* step, after the re-map
+    /// and the re-fetch of unknowns: a crash anywhere earlier leaves the old
+    /// value in place, so the next pass sees the mismatch again and re-runs
+    /// recovery — which is idempotent — instead of trusting half-mended UIDs.
+    pub fn set_folder_validity(&mut self, folder_id: i64, v: Option<u32>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE folders SET uidvalidity = ?2 WHERE id = ?1",
+            params![folder_id, v.map(|v| v as i64)],
+        )?;
+        Ok(())
+    }
+
+    /// Mends a folder after the server renumbered it (UIDVALIDITY reset).
+    ///
+    /// The folder is still the folder and the mail is still the mail; what
+    /// died is the numbering. Every stored UID is first quarantined to NULL —
+    /// a NULL UID is already how "not addressable on the server" is spelled
+    /// here, so queued actions hold automatically instead of firing at
+    /// whatever message inherited the number. Then each server (uid,
+    /// Message-ID) pair is matched against what the store already holds, by
+    /// the same key ingest dedupes on, and the placement learns its new UID.
+    ///
+    /// What the server listed but the store cannot match comes back in
+    /// `to_fetch`: those are downloaded again in full. Worst case a reset
+    /// costs re-download — never data, which is why nothing here touches a
+    /// message row or a blob.
+    ///
+    /// Placements still NULL after the pass are dropped only when `complete`
+    /// says the listing covered the whole mailbox. A depth-limited listing
+    /// proves nothing about mail older than its window, and evicting history
+    /// because the window ended is exactly the data loss this exists to avoid.
+    pub fn remap_folder_after_reset(
+        &mut self,
+        folder_id: i64,
+        server: &[(u32, Option<String>)],
+        complete: bool,
+    ) -> Result<RemapOutcome> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "UPDATE placements SET uid = NULL WHERE folder_id = ?1",
+            params![folder_id],
+        )?;
+        let account: i64 = tx.query_row(
+            "SELECT account_id FROM folders WHERE id = ?1",
+            params![folder_id],
+            |r| r.get(0),
+        )?;
+        let mut out = RemapOutcome::default();
+        for (uid, mid) in server {
+            let matched = match mid {
+                Some(mid) => tx.execute(
+                    "UPDATE placements SET uid = ?1 WHERE folder_id = ?2 AND message_id = (
+                         SELECT id FROM messages WHERE account_id = ?3 AND message_id_hdr = ?4
+                     )",
+                    params![*uid as i64, folder_id, account, mid],
+                )?,
+                // No Message-ID on the wire: indistinguishable from mail we
+                // have (whose ingest key was a blob hash), so refetch it and
+                // let ingest's own dedupe decide.
+                None => 0,
+            };
+            if matched > 0 {
+                out.rematched += 1;
+            } else {
+                out.to_fetch.push(*uid);
+            }
+        }
+        if complete {
+            out.dropped = tx.execute(
+                "DELETE FROM placements WHERE folder_id = ?1 AND uid IS NULL",
+                params![folder_id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(out)
     }
 
     /// The server path of a folder, for addressing it over IMAP.

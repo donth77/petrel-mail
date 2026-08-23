@@ -64,6 +64,8 @@ jobs:
           cargo test -p petrel-providers --features insecure-plaintext --test ambiguous_send -- --ignored --nocapture --test-threads=1
           # Server → parse → store → search, and resync without duplication.
           cargo test -p petrel-providers --features insecure-plaintext --test sync_vertical -- --ignored --nocapture
+          # UIDVALIDITY reset recovery — scripted in-process server, no container.
+          cargo test -p petrel-providers --features insecure-plaintext --test uidvalidity_reset -- --nocapture
           docker stop petrel-greenmail
       # Fast benchmark sanity at reduced scale; the full 100k run is manual.
       - run: PETREL_BENCH_N=10000 cargo test --release -p petrel-engine --test store_spike -- --ignored --nocapture

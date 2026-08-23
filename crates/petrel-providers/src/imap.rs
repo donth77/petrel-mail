@@ -340,12 +340,15 @@ fn flags_to_bits<'a>(flags: impl Iterator<Item = async_imap::types::Flag<'a>>) -
 /// the whole batch is done — which reads as a hang, and on a large mailbox is
 /// one in every sense that matters. Streaming lets the store take each message
 /// as it comes and the UI count climb while it does.
+/// Fetches the newest `limit` messages, reporting the mailbox's UIDVALIDITY
+/// alongside the count so a first sync can adopt it — UIDs recorded without
+/// their validity are UIDs a later reset cannot be detected against.
 pub async fn fetch_raw_each<F>(
     cfg: &ImapConfig,
     folder: &str,
     limit: u32,
     on_message: F,
-) -> Result<usize>
+) -> Result<(usize, Option<u32>)>
 where
     F: FnMut(u32, i64, &[u8]),
 {
@@ -368,7 +371,7 @@ async fn fetch_each_session<S, F>(
     folder: &str,
     limit: u32,
     mut on_message: F,
-) -> Result<usize>
+) -> Result<(usize, Option<u32>)>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
     F: FnMut(u32, i64, &[u8]),
@@ -397,8 +400,9 @@ where
             }
         }
     }
+    let uid_validity = mailbox.uid_validity;
     session.logout().await?;
-    Ok(n)
+    Ok((n, uid_validity))
 }
 
 pub async fn fetch_raw(cfg: &ImapConfig, folder: &str, limit: u32) -> Result<Vec<(u32, Vec<u8>)>> {
@@ -788,24 +792,56 @@ where
 /// A `{n}:*` range always returns at least one message even when nothing is
 /// new (the server clamps it to the last one), so anything at or below
 /// `since_uid` is dropped here rather than re-ingested every poll.
+/// What a watermark fetch found when it looked at the folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FetchOutcome {
+    /// The folder is the one the stored UIDs belong to; fetched normally.
+    Fetched {
+        count: usize,
+        /// The UIDVALIDITY the mailbox reported, for a first sync to adopt.
+        uid_validity: Option<u32>,
+    },
+    /// The server renumbered the folder. Nothing was fetched: a watermark
+    /// against renumbered UIDs would skip real mail and misread the rest,
+    /// so the caller must re-map before any UID is trusted again.
+    ValidityChanged { now: Option<u32> },
+}
+
 pub async fn fetch_since_each<F>(
     cfg: &ImapConfig,
     folder: &str,
     since_uid: u32,
+    expected_validity: Option<u32>,
     on_message: F,
-) -> Result<usize>
+) -> Result<FetchOutcome>
 where
     F: FnMut(u32, i64, &[u8]),
 {
     match cfg.security {
         Security::Tls => {
             let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
-            fetch_since_session(client, cfg, folder, since_uid, on_message).await
+            fetch_since_session(
+                client,
+                cfg,
+                folder,
+                since_uid,
+                expected_validity,
+                on_message,
+            )
+            .await
         }
         #[cfg(feature = "insecure-plaintext")]
         Security::InsecurePlaintext => {
             let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
-            fetch_since_session(Client::new(tcp), cfg, folder, since_uid, on_message).await
+            fetch_since_session(
+                Client::new(tcp),
+                cfg,
+                folder,
+                since_uid,
+                expected_validity,
+                on_message,
+            )
+            .await
         }
     }
 }
@@ -815,8 +851,9 @@ async fn fetch_since_session<S, F>(
     cfg: &ImapConfig,
     folder: &str,
     since_uid: u32,
+    expected_validity: Option<u32>,
     mut on_message: F,
-) -> Result<usize>
+) -> Result<FetchOutcome>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
     F: FnMut(u32, i64, &[u8]),
@@ -825,7 +862,17 @@ where
         .login(&cfg.user, &cfg.pass)
         .await
         .map_err(|(e, _)| e)?;
-    session.select(folder).await?;
+    let mailbox = session.select(folder).await?;
+    let uid_validity = mailbox.uid_validity;
+    // Checked before a single byte is fetched: after a reset the watermark
+    // is meaningless, and `{since+1}:*` in the new numbering could be
+    // anything — most of the folder, or none of it.
+    if let Some(expected) = expected_validity
+        && uid_validity != Some(expected)
+    {
+        session.logout().await?;
+        return Ok(FetchOutcome::ValidityChanged { now: uid_validity });
+    }
     let mut n = 0usize;
     {
         let mut fetches = session
@@ -841,6 +888,154 @@ where
                 if uid <= since_uid {
                     continue;
                 }
+                on_message(uid, bits, body);
+                n += 1;
+            }
+        }
+    }
+    session.logout().await?;
+    Ok(FetchOutcome::Fetched {
+        count: n,
+        uid_validity,
+    })
+}
+
+/// The identity of a folder's mail, without its bytes.
+///
+/// What recovery needs after a UIDVALIDITY reset: which Message-IDs the
+/// server holds, under which new UIDs. Header-only, so listing a folder
+/// costs a line per message, not a body per message.
+#[derive(Debug, Clone, Default)]
+pub struct IdMap {
+    pub uid_validity: Option<u32>,
+    /// (uid, Message-ID without brackets) — the id is absent when the
+    /// message never had one.
+    pub entries: Vec<(u32, Option<String>)>,
+    /// Whether the listing covered the whole mailbox. A depth-limited
+    /// listing proves nothing about mail older than its window, and the
+    /// store must not evict on it.
+    pub complete: bool,
+}
+
+/// Lists the newest `depth` messages as (uid, Message-ID) pairs.
+pub async fn fetch_id_map(cfg: &ImapConfig, folder: &str, depth: u32) -> Result<IdMap> {
+    match cfg.security {
+        Security::Tls => {
+            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
+            id_map_session(client, cfg, folder, depth).await
+        }
+        #[cfg(feature = "insecure-plaintext")]
+        Security::InsecurePlaintext => {
+            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
+            id_map_session(Client::new(tcp), cfg, folder, depth).await
+        }
+    }
+}
+
+async fn id_map_session<S>(
+    client: Client<S>,
+    cfg: &ImapConfig,
+    folder: &str,
+    depth: u32,
+) -> Result<IdMap>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
+{
+    let mut session = client
+        .login(&cfg.user, &cfg.pass)
+        .await
+        .map_err(|(e, _)| e)?;
+    let mailbox = session.select(folder).await?;
+    let mut map = IdMap {
+        uid_validity: mailbox.uid_validity,
+        entries: Vec::new(),
+        complete: mailbox.exists <= depth,
+    };
+    if mailbox.exists > 0 {
+        // Sequence numbers, deliberately: they are the one address that is
+        // valid in any numbering, which is the whole situation here.
+        let start = mailbox
+            .exists
+            .saturating_sub(depth.saturating_sub(1))
+            .max(1);
+        let mut fetches = session
+            .fetch(
+                format!("{start}:*"),
+                "(UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])",
+            )
+            .await?;
+        while let Some(fetch) = fetches.next().await {
+            let fetch = fetch?;
+            if let Some(uid) = fetch.uid {
+                map.entries
+                    .push((uid, fetch.header().and_then(message_id_of)));
+            }
+        }
+    }
+    session.logout().await?;
+    Ok(map)
+}
+
+/// Fetches an explicit set of messages in full, by UID.
+///
+/// The second half of recovery: the UIDs the store could not re-map are
+/// downloaded again and handed to ingest, whose own dedupe decides whether
+/// each is truly new. Chunked so a large mend never builds one enormous
+/// command line.
+pub async fn fetch_uids_each<F>(
+    cfg: &ImapConfig,
+    folder: &str,
+    uids: &[u32],
+    mut on_message: F,
+) -> Result<usize>
+where
+    F: FnMut(u32, i64, &[u8]),
+{
+    let mut n = 0usize;
+    for chunk in uids.chunks(200) {
+        let set = chunk
+            .iter()
+            .map(|u| u.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        match cfg.security {
+            Security::Tls => {
+                let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
+                n += uid_set_session(client, cfg, folder, &set, &mut on_message).await?;
+            }
+            #[cfg(feature = "insecure-plaintext")]
+            Security::InsecurePlaintext => {
+                let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
+                n += uid_set_session(Client::new(tcp), cfg, folder, &set, &mut on_message).await?;
+            }
+        }
+    }
+    Ok(n)
+}
+
+async fn uid_set_session<S, F>(
+    client: Client<S>,
+    cfg: &ImapConfig,
+    folder: &str,
+    set: &str,
+    on_message: &mut F,
+) -> Result<usize>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
+    F: FnMut(u32, i64, &[u8]),
+{
+    let mut session = client
+        .login(&cfg.user, &cfg.pass)
+        .await
+        .map_err(|(e, _)| e)?;
+    session.select(folder).await?;
+    let mut n = 0usize;
+    {
+        let mut fetches = session.uid_fetch(set, "(UID FLAGS RFC822)").await?;
+        while let Some(fetch) = fetches.next().await {
+            let fetch = fetch?;
+            let bits = flags_to_bits(fetch.flags());
+            if let (Some(uid), Some(body)) = (fetch.uid, fetch.body()) {
                 on_message(uid, bits, body);
                 n += 1;
             }

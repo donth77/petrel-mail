@@ -97,7 +97,9 @@ async fn main() {
         })
         .await
         {
-            Ok(seen) => println!("fetch {folder:<20}: saw {seen}, got {n} ({bytes} bytes)"),
+            Ok((seen, validity)) => println!(
+                "fetch {folder:<20}: saw {seen}, got {n} ({bytes} bytes), uidvalidity {validity:?}"
+            ),
             Err(e) => println!("fetch {folder:<20}: FAILED {e}"),
         }
     }
