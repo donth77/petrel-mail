@@ -351,6 +351,11 @@
         text: 'Could you take a look before Friday?\n\nThanks,\nDana',
         from: 'Dana Wu',
         date_ms: Date.now() - 3600000,
+        // A forward's header block needs the message's own recipients and
+        // subject. Returning the reply's shape here is what let a forward that
+        // reads them ship as working — the stand-in has to match the command.
+        to: 'Sam Ortiz <sam@example.com>, you@example.com',
+        subject: 'Q3 vendor contracts',
       };
     },
     popout_message: function () {

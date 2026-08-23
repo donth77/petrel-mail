@@ -39,7 +39,14 @@ export type Tag = { id: number; name: string; colour: string; thread_count: numb
 export type Attachment = { filename: string; size: number };
 
 /** A message read back for quoting: sanitized, with remote content stripped. */
-export type Quoted = { html: string; text: string; from: string; date_ms: number };
+export type Quoted = {
+  html: string;
+  text: string;
+  from: string;
+  date_ms: number;
+  to: string;
+  subject: string;
+};
 
 /** Somebody worth offering while a recipient is typed. */
 export type Correspondent = { addr: string; display: string; written_to: boolean };
@@ -286,6 +293,8 @@ const mock = {
     mode === 'off' ? [] : [['inbox', 3], ['drafts', 1], ['spam', 2]],
   popoutMessage: async () => {},
   quoteMessage: async (): Promise<Quoted> => ({
+    to: 'Sam Ortiz <sam@example.com>',
+    subject: 'Q3 vendor contracts',
     html: '<p>The original message, as it was written.</p>',
     text: 'The original message, as it was written.',
     from: 'Dana Wu',
@@ -303,6 +312,15 @@ const mock = {
   trustSender: async () => 'sam@example.com',
   trustedSenders: async (): Promise<string[]> => [],
   untrustSender: async () => {},
+  // Searched across every row the mock can produce, not through one view —
+  // finding a conversation wherever it lives is the whole point of the call.
+  openExternal: async (url: string) => {
+    // The browser stand-in cannot hand a URL to the system, and opening one in
+    // the harness tab would navigate away from the app under test.
+    console.info('[mock] would open externally:', url);
+  },
+  threadById: async (threadId: number): Promise<Thread | null> =>
+    mockRows(500).find((r: Thread) => r.thread_id === threadId) ?? null,
   threadDetail: async (): Promise<ThreadMessage[]> => [
     {
       id: 1, from_display: 'Dana Wu', from_addr: 'dana@northbay.example',
@@ -351,6 +369,8 @@ const real = {
   status: () => invoke<Status>('status'),
   threads: (view: string, offset: number, limit: number) =>
     invoke<Thread[]>('list_threads', { view, offset, limit }),
+  threadById: (threadId: number) => invoke<Thread | null>('thread_by_id', { threadId }),
+  openExternal: (url: string) => invoke<void>('open_external', { url }),
   tags: () => invoke<Tag[]>('list_tags'),
   viewCounts: (mode: string) => invoke<[string, number][]>('view_counts', { mode }),
   popoutMessage: (threadId: number) => invoke<void>('popout_message', { threadId }),

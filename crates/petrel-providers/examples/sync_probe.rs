@@ -103,6 +103,105 @@ async fn main() {
     }
     println!();
 
+    // How many of the messages we would actually sync carry \Flagged, against
+    // how many the server holds as starred overall. Counts only — no subjects,
+    // no senders, no bodies.
+    for folder in ["INBOX", "[Gmail]/Starred"] {
+        let mut seen = 0usize;
+        let mut flagged = 0usize;
+        match petrel_providers::imap::fetch_flags_only(&cfg, folder, 200).await {
+            Ok(rows) => {
+                for bits in rows {
+                    seen += 1;
+                    if bits & 4 != 0 {
+                        flagged += 1;
+                    }
+                }
+                println!("flags {folder:<18}: {flagged} starred of the newest {seen}");
+            }
+            Err(e) => println!("flags {folder:<18}: FAILED {e}"),
+        }
+    }
+    println!();
+
+    // Can Gmail tell us where a message actually lives? System labels only —
+    // user labels are the account owner's business, so they are counted, never
+    // named.
+    // The two sweeps, timed: the first one that has no watermark, and the
+    // incremental one that follows it. The second is what runs on every sync.
+    {
+        let t = Instant::now();
+        match petrel_providers::imap::sweep_gmail_labels(&cfg, "[Gmail]/All Mail", 100_000, None)
+            .await
+        {
+            Ok(first) => {
+                let archived = first
+                    .labels
+                    .iter()
+                    .filter(|(_, ls)| !ls.iter().any(|l| l.ends_with("Inbox")))
+                    .count();
+                println!(
+                    "sweep full  : {} message(s) in {:.1?} — {archived} archived, modseq {:?}",
+                    first.labels.len(),
+                    t.elapsed(),
+                    first.modseq
+                );
+
+                let t2 = Instant::now();
+                match petrel_providers::imap::sweep_gmail_labels(
+                    &cfg,
+                    "[Gmail]/All Mail",
+                    100_000,
+                    first.modseq,
+                )
+                .await
+                {
+                    Ok(next) => println!(
+                        "sweep since : {} changed message(s) in {:.1?}",
+                        next.labels.len(),
+                        t2.elapsed()
+                    ),
+                    Err(e) => println!("sweep since FAILED: {e}"),
+                }
+                println!();
+            }
+            Err(e) => println!("sweep full FAILED: {e}\n"),
+        }
+    }
+
+    for probe_folder in ["INBOX", "[Gmail]/All Mail"] {
+        match petrel_providers::imap::fetch_gmail_labels(&cfg, probe_folder, 60).await {
+            Ok(rows) => {
+                let mut system: std::collections::BTreeMap<String, usize> = Default::default();
+                let mut with_user = 0usize;
+                let mut none_at_all = 0usize;
+                for labels in &rows {
+                    if labels.is_empty() {
+                        none_at_all += 1;
+                    }
+                    for l in labels {
+                        if l.starts_with('\\') {
+                            *system.entry(l.clone()).or_default() += 1;
+                        } else {
+                            with_user += 1;
+                        }
+                    }
+                }
+                println!(
+                    "gmail labels in {probe_folder} over {} message(s):",
+                    rows.len()
+                );
+                for (name, n) in system {
+                    println!("            {n:>4}  {name}");
+                }
+                println!("            {with_user:>4}  <user labels, unnamed>");
+                println!("            {none_at_all:>4}  no labels reported");
+                println!();
+            }
+            Err(e) => println!("gmail labels FAILED: {e}\n"),
+        }
+    }
+
     let t1 = Instant::now();
     match petrel_providers::imap::fetch_raw(&cfg, "INBOX", limit).await {
         Ok(msgs) => {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   api,
   type Account,
@@ -22,7 +22,7 @@ import { Compose, addresses, type Draft } from './components/Compose';
 import { snoozeOptions } from './lib/snooze';
 import { promisesMissingAttachment } from './lib/compose-checks';
 import { replyTargets } from './lib/reply';
-import { replyBody } from './lib/quote';
+import { forwardBody, replyBody } from './lib/quote';
 import { startingBody, startingHtml } from './lib/signature';
 import { ATTACHMENT_LIMIT, pickAttachments } from './lib/attachments';
 import { extend, prune, targets, toggle } from './lib/selection';
@@ -30,6 +30,7 @@ import { notifiable, postDesktopNotification } from './lib/notify';
 import { Help } from './components/Help';
 import { Settings } from './components/Settings';
 import { clampRail, useSettings } from './lib/settings';
+import { useMessageLinks } from './lib/links';
 import { Confirm } from './components/Confirm';
 import { RowMenu } from './components/RowMenu';
 import { Toast } from './components/Toast';
@@ -274,14 +275,7 @@ export function App() {
       if (active) void startReply(active.id, all || settings.replyDefault === 'reply-all');
     },
     forward: () => {
-      if (!active) return;
-      setDraft({
-        to: '',
-        cc: '',
-        subject: active.subject.match(/^fwd:/i) ? active.subject : `Fwd: ${active.subject}`,
-        body: startingBody(identity, true),
-        html: startingHtml(identity, true),
-      });
+      if (active) void startForward(active.id);
     },
     snooze: () => setPicker('snooze'),
     select: () => {
@@ -358,12 +352,22 @@ export function App() {
    * knows who spoke last, so a reply-all built from it would leave off
    * everyone else who was on the thread.
    */
-  const startReply = async (id: number, all: boolean) => {
+  /**
+   * Starts a reply.
+   *
+   * `targetId` names the message being replied to. Without one it is the newest,
+   * which is what the conversation-level Reply means — but a thread is a
+   * sequence of different questions from different people, and answering the
+   * third one should quote the third one and address whoever sent it.
+   */
+  const startReply = async (id: number, all: boolean, targetId?: number) => {
     const row = items.find((m) => m.id === id);
     if (!row) return;
     try {
       const messages = await api.threadDetail(row.thread_id);
-      const last = messages[messages.length - 1];
+      const last =
+        (targetId != null ? messages.find((m) => m.id === targetId) : undefined) ??
+        messages[messages.length - 1];
       if (!last) return;
       const { to, cc } = replyTargets(last, identity?.address ?? '', all);
       attachmentWarned.current = false;
@@ -389,6 +393,48 @@ export function App() {
           : startingHtml(identity, true),
         inReplyTo: null,
         references: [],
+      });
+    } catch (e) {
+      setToast(t('compose-resume-failed', { error: String(e) }));
+    }
+  };
+
+  /**
+   * Starts a forward, carrying the message with it.
+   *
+   * `targetId` names which message of the thread to send on; without one it is
+   * the newest. Forwarding used to open an empty draft with a `Fwd:` subject
+   * and nothing under it, which is not a forward — the recipient got a subject
+   * line and no message.
+   */
+  const startForward = async (id: number, targetId?: number) => {
+    const row = items.find((m) => m.id === id);
+    if (!row) return;
+    try {
+      const messages = await api.threadDetail(row.thread_id);
+      const target =
+        (targetId != null ? messages.find((m) => m.id === targetId) : undefined) ??
+        messages[messages.length - 1];
+      if (!target) return;
+      attachmentWarned.current = false;
+      const quoted = await api.quoteMessage(target.id).catch(() => null);
+      const subject = quoted?.subject?.trim() || row.subject;
+      setDraft({
+        to: '',
+        cc: '',
+        subject: subject.match(/^fwd:/i) ? subject : `Fwd: ${subject}`,
+        body: startingBody(identity, true),
+        html: quoted
+          ? forwardBody(
+              startingHtml(identity, true),
+              quoted.from,
+              quoted.to,
+              subject,
+              quoted.date_ms,
+              quoted.html,
+              settings.language === 'system' ? undefined : settings.language,
+            )
+          : startingHtml(identity, true),
       });
     } catch (e) {
       setToast(t('compose-resume-failed', { error: String(e) }));
@@ -628,6 +674,25 @@ export function App() {
       live = false;
     };
   }, [status?.count, status?.seeding]);
+
+  // A `mailto:` in a message opens a message here rather than in whichever
+  // other mail program the machine prefers. Web links go to the browser; that
+  // decision lives in `useMessageLinks`.
+  useMessageLinks(
+    useCallback(
+      (addr: string) => {
+        attachmentWarned.current = false;
+        setDraft({
+          to: addr,
+          cc: '',
+          subject: '',
+          body: startingBody(identity, false),
+          html: startingHtml(identity, false),
+        });
+      },
+      [identity],
+    ),
+  );
 
   // The rail's numbers come from the engine, not from the loaded page: counting
   // the rows in view told the inbox badge whatever the *current* view's unread
@@ -924,6 +989,12 @@ export function App() {
         <Reader
           thread={active}
           view={view}
+          onReplyTo={(messageId, all) => {
+            if (active) void startReply(active.id, all, messageId);
+          }}
+          onForwardFrom={(messageId) => {
+            if (active) void startForward(active.id, messageId);
+          }}
           full={readerFull}
           finding={finding}
           onCloseFind={() => setFinding(false)}
@@ -1232,7 +1303,7 @@ export function App() {
           <span className="kbd">/</span> search
         </span>
         <span>
-          <span className="kbd">⌘K</span> commands
+          <span className="kbd">⌘K</span> {t('palette-title')}
         </span>
       </footer>
       </div>

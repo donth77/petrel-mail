@@ -88,7 +88,7 @@ export const BINDINGS: Binding[] = [
   // ---- everywhere
   { id: 'search', group: 'everywhere', label: 'Search', display: ['/'],
     chords: [{ key: '/' }], available: true },
-  { id: 'palette', group: 'everywhere', label: 'Search mail · run a command', display: 'palette',
+  { id: 'palette', group: 'everywhere', label: 'Quick Palette', display: 'palette',
     chords: [{ key: 'k', meta: true }], available: true },
   { id: 'help', group: 'everywhere', label: 'This list', display: ['?'],
     chords: [{ key: '?' }], available: true },

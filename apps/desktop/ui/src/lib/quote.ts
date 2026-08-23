@@ -53,3 +53,50 @@ export function replyBody(
     `<blockquote type="cite">${originalHtml}</blockquote>`,
   ].join('');
 }
+
+/**
+ * A forward's starting body.
+ *
+ * Deliberately *not* `<blockquote type="cite">`, which is what a reply uses.
+ * That markup asks the receiving client to fold the quoted text away behind a
+ * "show quoted text" control — right for a reply, where the history is context
+ * beneath your new sentence, and wrong for a forward, where the forwarded
+ * message is the entire point and arriving collapsed hides it.
+ *
+ * The header block is the form every client writes and every client recognises,
+ * which is what lets a forwarded message still read as one after it has been
+ * forwarded on again.
+ */
+export function forwardBody(
+  signature: string,
+  from: string,
+  to: string,
+  subject: string,
+  dateMs: number,
+  originalHtml: string,
+  locale?: string,
+): string {
+  const when = new Date(dateMs);
+  const date = when.toLocaleDateString(locale, {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  });
+  const time = when.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' });
+  const lines = [
+    `From: ${escape(from)}`,
+    `Date: ${escape(`${date} at ${time}`)}`,
+    `Subject: ${escape(subject)}`,
+    // Omitted rather than left blank when the original had no visible
+    // recipients — a header line reading "To:" with nothing after it looks
+    // like the forward lost something.
+    ...(to.trim() ? [`To: ${escape(to)}`] : []),
+  ];
+  return [
+    '<p></p>',
+    signature,
+    `<p>---------- Forwarded message ----------<br>${lines.join('<br>')}</p>`,
+    originalHtml,
+  ].join('');
+}

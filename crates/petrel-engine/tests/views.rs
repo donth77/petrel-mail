@@ -303,3 +303,189 @@ fn tag_views_exclude_the_bins_like_starred_does() {
         "binned mail should not still be tagged urgent"
     );
 }
+
+/// A star is not a place.
+///
+/// Starred is synced as a folder so that a star on old or archived mail is
+/// visible at all — but arriving through it says nothing about where the
+/// message lives. The inbox treats a message with no known placement as being
+/// in the inbox, so one that came only from Starred must be filed, or every
+/// archived favourite reappears in the inbox.
+#[test]
+fn a_starred_placement_alone_does_not_put_a_message_in_the_inbox() {
+    let (store, account, ids) = seeded();
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+    let starred = store
+        .ensure_folder(account, "starred", "[Gmail]/Starred")
+        .unwrap();
+    let archive = store
+        .ensure_folder(account, "archive", "[Gmail]/All Mail")
+        .unwrap();
+
+    // One starred and in the inbox; one starred and archived.
+    store.place_message(ids[0], inbox).unwrap();
+    store.place_message(ids[0], starred).unwrap();
+    store.set_flags(ids[0], flags::FLAGGED, 0).unwrap();
+
+    store.place_message(ids[1], starred).unwrap();
+    store.place_message(ids[1], archive).unwrap();
+    store.set_flags(ids[1], flags::FLAGGED, 0).unwrap();
+
+    let in_inbox = subjects(&store, &ListView::Inbox);
+    assert!(
+        in_inbox.contains(&"m0".to_string()),
+        "the inbox one stays: {in_inbox:?}"
+    );
+    assert!(
+        !in_inbox.contains(&"m1".to_string()),
+        "the archived one must not: {in_inbox:?}"
+    );
+
+    // Both are starred, wherever they live — that is the whole point.
+    let starred_view = subjects(&store, &ListView::Starred);
+    assert!(starred_view.contains(&"m0".to_string()));
+    assert!(starred_view.contains(&"m1".to_string()));
+}
+
+/// Gmail's labels decide where a message lives, because IMAP cannot say.
+mod gmail_labels {
+    use super::*;
+    use petrel_engine::blob::BlobStore;
+
+    /// Ingested through the real path, because the sweep matches on the
+    /// Message-ID header and only ingest records one.
+    fn held() -> (Store, BlobStore, tempfile::TempDir, i64) {
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = BlobStore::open(dir.path()).unwrap();
+        let mut store = Store::open_in_memory().unwrap();
+        let account = store.ensure_test_account().unwrap();
+        for i in 0..3 {
+            let raw = format!(
+                "From: sam@example.com\r\nSubject: m{i}\r\nMessage-ID: <m{i}@example.com>\r\n\r\nbody",
+            );
+            store
+                .ingest_raw(&blobs, account, None, None, raw.as_bytes())
+                .unwrap();
+        }
+        (store, blobs, dir, account)
+    }
+
+    fn label(id: &str, labels: &[&str]) -> (String, Vec<String>) {
+        (id.into(), labels.iter().map(|s| (*s).to_string()).collect())
+    }
+
+    #[test]
+    fn a_message_without_the_inbox_label_is_archived() {
+        let (store, _b, _d, account) = held();
+        let n = store
+            .apply_gmail_labels(
+                account,
+                &[
+                    label("m0@example.com", &["\\Inbox"]),
+                    label("m1@example.com", &["\\Important"]),
+                ],
+            )
+            .unwrap();
+        assert_eq!(n, 2);
+
+        assert!(subjects(&store, &ListView::Inbox).contains(&"m0".to_string()));
+        assert_eq!(
+            subjects(&store, &ListView::Folder("archive".into())),
+            ["m1"]
+        );
+    }
+
+    /// The star that started all this: carried by the sweep, so it shows on
+    /// mail that was never fetched from the Starred mailbox.
+    #[test]
+    fn the_starred_label_sets_the_flag() {
+        let (store, _b, _d, account) = held();
+        store
+            .apply_gmail_labels(
+                account,
+                &[label("m2@example.com", &["\\Inbox", "\\Starred"])],
+            )
+            .unwrap();
+        assert_eq!(subjects(&store, &ListView::Starred), ["m2"]);
+    }
+
+    /// Unstarring on the server has to reach us too, or a star can be set and
+    /// never cleared.
+    #[test]
+    fn losing_the_label_clears_the_flag() {
+        let (store, _b, _d, account) = held();
+        store
+            .apply_gmail_labels(
+                account,
+                &[label("m0@example.com", &["\\Inbox", "\\Starred"])],
+            )
+            .unwrap();
+        assert_eq!(subjects(&store, &ListView::Starred), ["m0"]);
+
+        store
+            .apply_gmail_labels(account, &[label("m0@example.com", &["\\Inbox"])])
+            .unwrap();
+        assert!(subjects(&store, &ListView::Starred).is_empty());
+    }
+
+    /// A message we do not hold is not worth a row we could not open.
+    #[test]
+    fn labels_for_unknown_messages_are_ignored() {
+        let (store, _b, _d, account) = held();
+        let n = store
+            .apply_gmail_labels(account, &[label("never-seen@example.com", &["\\Inbox"])])
+            .unwrap();
+        assert_eq!(n, 0);
+    }
+}
+
+/// Finding one conversation when you know its id and nothing else.
+///
+/// The popped-out window's case: it is handed an id and cannot say which
+/// mailbox the conversation is in. Looking through a view only ever found the
+/// ones that happened to be in the view guessed at.
+mod by_id {
+    use super::*;
+
+    #[test]
+    fn finds_a_conversation_that_is_in_no_view_at_all() {
+        let (mut store, account, ids) = seeded();
+        // Archived and starred: absent from the inbox, which is where the
+        // window used to look.
+        let archive = store.ensure_folder(account, "archive", "archive").unwrap();
+        store.place_message(ids[0], archive).unwrap();
+        store.set_flags(ids[0], flags::FLAGGED, 0).unwrap();
+
+        let thread = thread_of(&store, ids[0]);
+        assert!(
+            !subjects(&store, &ListView::Inbox).contains(&"m0".to_string()),
+            "precondition: the conversation must not be in the inbox"
+        );
+
+        let found = store.thread_by_id(thread).unwrap();
+        assert_eq!(found.map(|t| t.subject), Some("m0".to_string()));
+    }
+
+    #[test]
+    fn reports_nothing_for_an_id_that_does_not_exist() {
+        let (store, _account, _ids) = seeded();
+        assert!(store.thread_by_id(987_654).unwrap().is_none());
+    }
+
+    #[test]
+    fn agrees_with_the_listing_it_shares_a_query_with() {
+        let (store, _account, ids) = seeded();
+        let thread = thread_of(&store, ids[3]);
+        let from_view = store
+            .list_threads(&ListView::Inbox, 0, 50)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.thread_id == thread)
+            .expect("in the inbox");
+        let by_id = store.thread_by_id(thread).unwrap().expect("found by id");
+        assert_eq!(by_id.subject, from_view.subject);
+        assert_eq!(by_id.date_ms, from_view.date_ms);
+        assert_eq!(by_id.message_count, from_view.message_count);
+        assert_eq!(by_id.starred, from_view.starred);
+    }
+}

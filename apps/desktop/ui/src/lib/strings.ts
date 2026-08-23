@@ -62,6 +62,13 @@ export const en = {
   'reader-failed': 'Could not open this conversation',
   'reader-to': 'to { $who }',
   'reader-collapse': 'Collapse message from { $who }',
+  // Named "this message" throughout, because the row at the foot of the
+  // conversation answers the newest message and these answer the one they sit
+  // on. Without the distinction the two Replies look like the same command.
+  'msg-reply': 'Reply to this message',
+  'msg-reply-all': 'Reply all to this message',
+  'msg-forward': 'Forward this message',
+  'msg-actions': 'Actions for this message',
   'reader-earlier': '{ $count } earlier messages',
   'reader-none-title': 'Nothing selected',
   'reader-none-body': 'Pick a conversation with J and K, or press Enter to open one.',
@@ -304,7 +311,7 @@ export const en = {
   'recipient-suggestions': 'Matching people',
   'recipient-written-to': 'you have emailed',
   'reader-expand': 'Fill the window',
-  'reader-shrink': 'Back to the list',
+  'reader-shrink': 'Exit full window',
   'reader-popout': 'Open in a new window',
   'popout-failed': 'Could not open a window — { $error }',
   'popout-missing': 'That conversation is no longer here.',
@@ -346,6 +353,7 @@ export const en = {
   'picker-folder-foot-labels':
     'Gmail calls these labels. This adds the one you pick and takes the conversation out of the inbox — any other labels it has stay on it.',
   'picker-tag-foot': 'Tags stay on the conversation wherever it is filed.',
+  'palette-title': 'Quick Palette',
   'palette-placeholder': 'Search mail, or type a command…',
   'palette-group-mail': 'Mail',
   'palette-group-conversation': 'This conversation',

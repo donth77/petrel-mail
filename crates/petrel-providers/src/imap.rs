@@ -447,6 +447,228 @@ where
     Ok(out)
 }
 
+/// Where Gmail keeps every message, keyed by its Message-ID header.
+///
+/// Swept from All Mail, which is the only mailbox that holds everything, and
+/// the only place the `\Inbox` label is reported — Gmail omits the label of the
+/// mailbox you are already looking at, so asking INBOX whether a message is in
+/// the inbox always answers no.
+///
+/// Keyed on the Message-ID rather than the UID because UIDs are per-mailbox: a
+/// message has one number in All Mail and a different one in INBOX, and nothing
+/// connects them. The header is the same wherever it is read from.
+///
+/// Labels only, plus one header field — a few dozen bytes per message against
+/// twelve kilobytes for a body.
+///
+/// Incremental where the server allows it. Sweeping the whole mailbox every
+/// sync is fine at fifteen hundred messages and hopeless at a hundred thousand,
+/// so with CONDSTORE the second sweep onward asks only for what has changed
+/// since the last one — which is usually nothing, and costs a round trip.
+///
+/// Returns the mailbox's modification sequence alongside the labels, to be
+/// handed back on the next call.
+pub struct LabelSweep {
+    pub labels: Vec<(String, Vec<String>)>,
+    /// Pass to the next sweep as `since`. None when the server has no CONDSTORE
+    /// and every sweep must therefore be a full one.
+    pub modseq: Option<u64>,
+}
+
+pub async fn sweep_gmail_labels(
+    cfg: &ImapConfig,
+    folder: &str,
+    limit: u32,
+    since: Option<u64>,
+) -> Result<LabelSweep> {
+    match cfg.security {
+        Security::Tls => {
+            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
+            sweep_labels_session(client, cfg, folder, limit, since).await
+        }
+        #[cfg(feature = "insecure-plaintext")]
+        Security::InsecurePlaintext => {
+            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
+            sweep_labels_session(Client::new(tcp), cfg, folder, limit, since).await
+        }
+    }
+}
+
+async fn sweep_labels_session<S>(
+    client: Client<S>,
+    cfg: &ImapConfig,
+    folder: &str,
+    limit: u32,
+    since: Option<u64>,
+) -> Result<LabelSweep>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
+{
+    let mut session = client
+        .login(&cfg.user, &cfg.pass)
+        .await
+        .map_err(|(e, _)| e)?;
+    // EXAMINE: reading where mail lives must not mark any of it seen.
+    let mailbox = session.examine(folder).await?;
+    let modseq = mailbox.highest_modseq;
+    let mut out = Vec::new();
+    if mailbox.exists > 0 {
+        const ITEMS: &str = "(X-GM-LABELS BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])";
+        // Everything that changed, wherever it sits — against the newest slice
+        // when there is no watermark to work from.
+        let (range, query) = match since {
+            Some(m) => ("1:*".to_string(), format!("{ITEMS} (CHANGEDSINCE {m})")),
+            None => {
+                let last = mailbox.exists;
+                let first = last.saturating_sub(limit.saturating_sub(1)).max(1);
+                (format!("{first}:{last}"), ITEMS.to_string())
+            }
+        };
+        let mut fetches = session.fetch(range, query).await?;
+        while let Some(fetch) = fetches.next().await {
+            let fetch = fetch?;
+            let Some(header) = fetch.header() else {
+                continue;
+            };
+            let Some(id) = message_id_of(header) else {
+                continue;
+            };
+            out.push((
+                id,
+                fetch
+                    .gmail_labels()
+                    .map(|ls| ls.iter().map(|l| l.to_string()).collect())
+                    .unwrap_or_default(),
+            ));
+        }
+    }
+    session.logout().await?;
+    Ok(LabelSweep {
+        labels: out,
+        modseq,
+    })
+}
+
+/// Pulls the Message-ID value out of a one-field header block.
+fn message_id_of(header: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(header);
+    let line = text
+        .lines()
+        .find(|l| l.to_ascii_lowercase().starts_with("message-id:"))?;
+    let value = line.split_once(':')?.1.trim();
+    // Stored without the angle brackets, as ingest stores it.
+    Some(
+        value
+            .trim_start_matches('<')
+            .trim_end_matches('>')
+            .to_string(),
+    )
+}
+
+/// Gmail's own labels for the newest `limit` messages in a folder.
+///
+/// `X-GM-LABELS` is the only way to know where Gmail actually keeps a message.
+/// Over plain IMAP a message is only ever "in" the mailbox you fetched it from,
+/// so archived — which on Gmail means *not carrying the Inbox label* — is not
+/// something the protocol can express. This is Gmail telling us directly.
+pub async fn fetch_gmail_labels(
+    cfg: &ImapConfig,
+    folder: &str,
+    limit: u32,
+) -> Result<Vec<Vec<String>>> {
+    match cfg.security {
+        Security::Tls => {
+            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
+            gmail_labels_session(client, cfg, folder, limit).await
+        }
+        #[cfg(feature = "insecure-plaintext")]
+        Security::InsecurePlaintext => {
+            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
+            gmail_labels_session(Client::new(tcp), cfg, folder, limit).await
+        }
+    }
+}
+
+async fn gmail_labels_session<S>(
+    client: Client<S>,
+    cfg: &ImapConfig,
+    folder: &str,
+    limit: u32,
+) -> Result<Vec<Vec<String>>>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
+{
+    let mut session = client
+        .login(&cfg.user, &cfg.pass)
+        .await
+        .map_err(|(e, _)| e)?;
+    let mailbox = session.examine(folder).await?;
+    let mut out = Vec::new();
+    if mailbox.exists > 0 {
+        let last = mailbox.exists;
+        let first = last.saturating_sub(limit.saturating_sub(1)).max(1);
+        let mut fetches = session
+            .fetch(format!("{first}:{last}"), "(X-GM-LABELS)")
+            .await?;
+        while let Some(fetch) = fetches.next().await {
+            let fetch = fetch?;
+            out.push(
+                fetch
+                    .gmail_labels()
+                    .map(|ls| ls.iter().map(|l| l.to_string()).collect())
+                    .unwrap_or_default(),
+            );
+        }
+    }
+    session.logout().await?;
+    Ok(out)
+}
+
+/// Just the flags of the newest `limit` messages in a folder.
+///
+/// For answering "is this message starred on the server" without pulling any
+/// bodies: a diagnostic, and cheap enough to run against a real mailbox.
+pub async fn fetch_flags_only(cfg: &ImapConfig, folder: &str, limit: u32) -> Result<Vec<i64>> {
+    match cfg.security {
+        Security::Tls => {
+            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
+            flags_only_session(client, cfg, folder, limit).await
+        }
+        #[cfg(feature = "insecure-plaintext")]
+        Security::InsecurePlaintext => {
+            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
+            flags_only_session(Client::new(tcp), cfg, folder, limit).await
+        }
+    }
+}
+
+async fn flags_only_session<S>(
+    client: Client<S>,
+    cfg: &ImapConfig,
+    folder: &str,
+    limit: u32,
+) -> Result<Vec<i64>>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
+{
+    let mut session = client
+        .login(&cfg.user, &cfg.pass)
+        .await
+        .map_err(|(e, _)| e)?;
+    let mailbox = session.examine(folder).await?;
+    let mut out = Vec::new();
+    if mailbox.exists > 0 {
+        let last = mailbox.exists;
+        let first = last.saturating_sub(limit.saturating_sub(1)).max(1);
+        let mut fetches = session.fetch(format!("{first}:{last}"), "(FLAGS)").await?;
+        while let Some(fetch) = fetches.next().await {
+            out.push(flags_to_bits(fetch?.flags()));
+        }
+    }
+    session.logout().await?;
+    Ok(out)
+}
+
 /// How many messages each folder holds.
 ///
 /// EXAMINE rather than SELECT: read-only, so counting cannot mark anything seen
@@ -931,6 +1153,16 @@ pub fn special_use_role(folder: &FolderInfo) -> Option<&'static str> {
     }
     if has("archive") || has("all") {
         return Some("archive");
+    }
+    // RFC 6154's \Flagged mailbox — Gmail's [Gmail]/Starred.
+    //
+    // Worth syncing as a folder even though starred is a flag we already read,
+    // because we only read the flags of messages we fetch. A star on older mail,
+    // or on anything archived, is invisible otherwise: the server knows, and the
+    // Starred view sits empty. It is also small by nature — a list of things
+    // someone picked out by hand.
+    if has("flagged") || has("starred") {
+        return Some("starred");
     }
     None
 }

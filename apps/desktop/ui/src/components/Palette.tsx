@@ -124,7 +124,7 @@ export function Palette({ open, onClose, subject, ctx, onOpen }: Props) {
       className="palette-backdrop"
       {...clickAway(onClose)}
       backdrop={<div className="palette-scrim" onClick={onClose} />}
-      aria-label={t('palette-placeholder')}
+      aria-label={t('palette-title')}
     >
       <ComboboxProvider
         open

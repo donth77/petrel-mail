@@ -88,6 +88,24 @@ fn is_remote(url: &str) -> bool {
     u.starts_with("http://") || u.starts_with("https://") || u.starts_with("//")
 }
 
+/// Gives a protocol-relative URL a scheme of its own.
+///
+/// `//host/logo.png` means "whatever scheme this document uses", which is a
+/// sensible default on the web and a broken one here: the reading frame is
+/// served over `petrel-msg:`, so the browser resolves it to
+/// `petrel-msg://host/logo.png` and asks us for a message we do not have. The
+/// image then fails silently even though the reader allowed remote content.
+///
+/// Resolved to `https:` rather than `http:` because a URL that declined to
+/// name a scheme has expressed no preference, and one of the two is encrypted.
+fn absolute_scheme(url: &str) -> std::borrow::Cow<'static, str> {
+    let trimmed = url.trim_start();
+    if trimmed.starts_with("//") {
+        return format!("https:{trimmed}").into();
+    }
+    url.to_owned().into()
+}
+
 /// Filters a `style` attribute down to the allowlist. Any declaration that
 /// could fetch a resource or reposition content is dropped rather than
 /// rewritten — a mangled style is a cosmetic problem, a fetching one is a
@@ -175,13 +193,57 @@ fn tag_attributes() -> HashMap<&'static str, HashSet<&'static str>> {
     m.insert("a", ["href", "title"].into_iter().collect());
     m.insert(
         "img",
-        ["src", "alt", "title", "width", "height"]
+        [
+            "src", "alt", "title", "width", "height", "border", "hspace", "vspace",
+        ]
+        .into_iter()
+        .collect(),
+    );
+    // The presentational table attributes, which in mail are not decoration
+    // but structure. A great deal of real mail is a mosaic of image slices
+    // positioned entirely by `<td width>` and held flush by `cellspacing="0"`;
+    // drop those and the browser falls back to auto-layout and its default 2px
+    // border-spacing, so the picture arrives cut into strips with white seams
+    // between them. Every attribute here is geometry or a colour word: none of
+    // them can fetch, script, or reposition content over the rest of the page.
+    //
+    // `background` is the exception: it takes a URL, so it is a remote fetch
+    // and a tracking vector like any image. It is listed here but decided in
+    // the attribute filter below, on exactly the same terms as `img src` —
+    // removed and counted when remote content is blocked.
+    let cell = [
+        "colspan",
+        "rowspan",
+        "align",
+        "valign",
+        "width",
+        "height",
+        "bgcolor",
+        "background",
+    ];
+    m.insert("td", cell.into_iter().collect());
+    m.insert("th", cell.into_iter().collect());
+    m.insert(
+        "tr",
+        ["align", "valign", "height", "bgcolor", "background"]
             .into_iter()
             .collect(),
     );
-    m.insert("td", ["colspan", "rowspan", "align"].into_iter().collect());
-    m.insert("th", ["colspan", "rowspan", "align"].into_iter().collect());
-    m.insert("table", ["width", "align"].into_iter().collect());
+    m.insert(
+        "table",
+        [
+            "width",
+            "height",
+            "align",
+            "bgcolor",
+            "border",
+            "cellpadding",
+            "cellspacing",
+            "background",
+        ]
+        .into_iter()
+        .collect(),
+    );
     m
 }
 
@@ -231,12 +293,16 @@ pub fn sanitize_html(html: &str, allow_remote: bool) -> Sanitized {
         .id_prefix(Some("m-"))
         .attribute_filter(
             move |element, attribute, value| match (element, attribute) {
-                ("img", "src") => {
+                // `background` is a URL like `src` is, so it answers to the
+                // same rule. Sharing the arm is the point: a second place that
+                // decides whether mail may fetch something is a second place
+                // for the two answers to drift apart.
+                ("img", "src") | (_, "background") => {
                     if is_remote(value) && !allow_remote {
                         blocked_cb.fetch_add(1, Ordering::Relaxed);
                         return None;
                     }
-                    Some(value.into())
+                    Some(absolute_scheme(value))
                 }
                 (_, "style") => {
                     let filtered = filter_style(value);
@@ -302,6 +368,91 @@ mod tests {
         assert!(!out.contains("onerror"), "{out}");
         assert!(!out.contains("<iframe"), "{out}");
         assert!(out.contains("hi"), "legitimate text must survive: {out}");
+    }
+
+    #[test]
+    fn table_geometry_survives() {
+        // A sliced-image mosaic is positioned entirely by these attributes.
+        // Losing them does not degrade the picture, it dismantles it.
+        let res = sanitize_html(
+            r##"<table cellpadding="0" cellspacing="0" border="0" bgcolor="#ff0000">
+                 <tr valign="top"><td width="320" height="15" bgcolor="#ffffff">a</td></tr>
+               </table>"##,
+            true,
+        );
+        for want in [
+            "cellpadding=\"0\"",
+            "cellspacing=\"0\"",
+            "width=\"320\"",
+            "height=\"15\"",
+            "valign=\"top\"",
+            "bgcolor",
+        ] {
+            assert!(res.html.contains(want), "lost {want}: {}", res.html);
+        }
+    }
+
+    #[test]
+    fn cell_backgrounds_follow_the_remote_content_rule() {
+        // A `background` URL fetches exactly like an image source, so it is
+        // counted and removed on the same terms rather than treated as layout.
+        let markup = r#"<table background="http://cdn.example/bg.png"><tr><td>x</td></tr></table>"#;
+
+        let blocked = sanitize_html(markup, false);
+        assert!(!blocked.html.contains("cdn.example"), "{}", blocked.html);
+        assert_eq!(blocked.report.blocked_remote, 1);
+
+        let allowed = sanitize_html(markup, true);
+        assert!(
+            allowed.html.contains("http://cdn.example/bg.png"),
+            "{}",
+            allowed.html
+        );
+        assert_eq!(allowed.report.blocked_remote, 0);
+    }
+
+    #[test]
+    fn layout_attributes_cannot_smuggle_a_fetch() {
+        // The geometry allowlist must stay geometry: anything taking a URL has
+        // to go through the remote-content decision, never round it.
+        let res = sanitize_html(
+            r#"<td style="background-image: url('https://evil.example/x')" width="10">a</td>"#,
+            true,
+        );
+        assert!(!res.html.contains("evil.example"), "{}", res.html);
+    }
+
+    #[test]
+    fn protocol_relative_images_are_given_a_scheme() {
+        // `//host/x.png` inherits the document's scheme, and the document is
+        // served over `petrel-msg:` — so left alone it resolves to a message
+        // URL that cannot exist, and the image fails with remote content on.
+        let res = sanitize_html(r#"<img src="//cdn.example/logo.png">"#, true);
+        assert!(
+            res.html.contains("https://cdn.example/logo.png"),
+            "{}",
+            res.html
+        );
+    }
+
+    #[test]
+    fn protocol_relative_images_are_still_blocked_when_remote_is_off() {
+        let res = sanitize_html(r#"<img src="//cdn.example/logo.png">"#, false);
+        assert!(!res.html.contains("cdn.example"), "{}", res.html);
+        assert_eq!(res.report.blocked_remote, 1);
+    }
+
+    #[test]
+    fn plaintext_image_hosts_survive_when_remote_is_allowed() {
+        // Older mail is full of these; the reading pane's policy has to admit
+        // the scheme as well as keeping the URL.
+        let res = sanitize_html(r#"<img src="http://image.example/spacer.gif">"#, true);
+        assert!(
+            res.html.contains("http://image.example/spacer.gif"),
+            "{}",
+            res.html
+        );
+        assert_eq!(res.report.blocked_remote, 0);
     }
 
     #[test]

@@ -132,6 +132,11 @@ export function MessageBody({ messageId, title }: { messageId: number; title: st
         </div>
       )}
       {sender && <div className="blocked-remote quiet">{t('remote-trusted', { addr: sender })}</div>}
+    {/* No `scrolling="no"`: that turns off both axes, and sideways is the last
+        resort for a message too wide to shrink to a readable size — without it
+        such a message is simply cut off with no way to reach the rest. The
+        frame still never scrolls vertically; the document's own CSS holds that,
+        and the height below is what makes it unnecessary. */}
     <iframe
       ref={frameRef}
       className="msg-frame"
@@ -139,7 +144,6 @@ export function MessageBody({ messageId, title }: { messageId: number; title: st
       sandbox="allow-scripts"
       title={title}
       style={{ height }}
-      scrolling="no"
     />
     </>
   );

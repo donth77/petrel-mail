@@ -2609,6 +2609,45 @@ impl Store {
         offset: u32,
         limit: u32,
     ) -> Result<Vec<ThreadListing>> {
+        self.listing_rows(
+            &view.predicate("messages"),
+            &view.predicate("m"),
+            limit,
+            offset,
+            view.bound().map(str::to_string),
+        )
+    }
+
+    /// One conversation, found by its id rather than by looking for it in a
+    /// view.
+    ///
+    /// A popped-out window knows which conversation it was opened for and
+    /// nothing else about where it lives. Answering that by scanning a mailbox
+    /// only works while the conversation happens to be in the mailbox guessed
+    /// at — so a starred, archived, sent or merely old conversation opens into
+    /// a window reporting it no longer exists.
+    pub fn thread_by_id(&self, thread_id: i64) -> Result<Option<ThreadListing>> {
+        // Bound as the same third parameter a view's folder role or tag name
+        // would occupy, which is why this reads as a string.
+        let rows = self.listing_rows(
+            "coalesce(thread_id, -id) = cast(?3 AS INTEGER)",
+            "coalesce(m.thread_id, -m.id) = cast(?3 AS INTEGER)",
+            1,
+            0,
+            Some(thread_id.to_string()),
+        )?;
+        Ok(rows.into_iter().next())
+    }
+
+    /// The conversation-list query, shared by the views and by a lookup of one.
+    fn listing_rows(
+        &self,
+        inner: &str,
+        outer: &str,
+        limit: u32,
+        offset: u32,
+        bound: Option<String>,
+    ) -> Result<Vec<ThreadListing>> {
         let sql = format!(
             "SELECT coalesce(m.thread_id, -m.id), m.id, coalesce(m.from_display,''), coalesce(m.from_addr,''),
                     coalesce(m.subject,''), coalesce(m.snippet,''), m.date_ms, t.n,
@@ -2637,16 +2676,16 @@ impl Store {
              WHERE m.deleted_at_ms IS NULL AND {outer}
              GROUP BY coalesce(m.thread_id, -m.id)
              ORDER BY m.date_ms DESC LIMIT ?1 OFFSET ?2",
-            inner = view.predicate("messages"),
-            outer = view.predicate("m"),
+            inner = inner,
+            outer = outer,
         );
         let mut stmt = self.conn.prepare_cached(&sql)?;
         // Two params, or three when the view binds a folder role or tag name.
         // rusqlite rejects a count that does not match what the SQL references,
         // so this cannot be a fixed tuple.
         let mut args: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(limit), Box::new(offset)];
-        if let Some(b) = view.bound() {
-            args.push(Box::new(b.to_string()));
+        if let Some(b) = bound {
+            args.push(Box::new(b));
         }
         let rows = stmt.query_map(rusqlite::params_from_iter(args), |row| {
             Ok(ThreadListing {
@@ -2945,6 +2984,72 @@ impl Store {
         )?;
         let rows = stmt.query_map(params![account_id], |r| r.get(0))?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// Files messages where Gmail says they are.
+    ///
+    /// Over plain IMAP a message is only ever "in" the mailbox it was fetched
+    /// from, so archived — which on Gmail means *not carrying the Inbox label*
+    /// — is not something the protocol can express, and Petrel could only infer
+    /// it. These are Gmail's own labels, so the inference goes away.
+    ///
+    /// Local work outranks the server. A message with a queued action has been
+    /// moved by the user and not yet delivered; taking the server's older
+    /// opinion would undo it on screen and then send the undo.
+    ///
+    /// Returns how many were refiled.
+    pub fn apply_gmail_labels(
+        &self,
+        account_id: i64,
+        labelled: &[(String, Vec<String>)],
+    ) -> Result<usize> {
+        // The label arrives quoted and how many backslashes survive is a detail
+        // of the parser, so match on the name rather than the escaping.
+        let has = |ls: &[String], name: &str| ls.iter().any(|l| l.ends_with(name));
+
+        let inbox = self.ensure_folder(account_id, "inbox", "INBOX")?;
+        let archive = self.ensure_folder(account_id, "archive", "archive")?;
+        let mut changed = 0usize;
+
+        for (msg_id, labels) in labelled {
+            let existing: Option<i64> = self
+                .conn
+                .query_row(
+                    "SELECT id FROM messages
+                     WHERE account_id = ?1 AND message_id_hdr = ?2 AND deleted_at_ms IS NULL",
+                    params![account_id, msg_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            // Not held. Knowing where a message we do not have lives is not
+            // worth a row we could not open.
+            let Some(id) = existing else { continue };
+            if self.message_has_pending(id)? {
+                continue;
+            }
+
+            let in_inbox = has(labels, "Inbox");
+            let (add, drop) = if in_inbox {
+                (inbox, archive)
+            } else {
+                (archive, inbox)
+            };
+            self.conn.execute(
+                "DELETE FROM placements WHERE message_id = ?1 AND folder_id = ?2",
+                params![id, drop],
+            )?;
+            self.place_message(id, add)?;
+
+            // Starred is a flag rather than a place, and the same sweep carries
+            // it — which is the whole reason a star on old mail was invisible.
+            if has(labels, "Starred") {
+                self.set_flags(id, flags::FLAGGED, 0)?;
+            } else {
+                self.set_flags(id, 0, flags::FLAGGED)?;
+            }
+            changed += 1;
+        }
+        Ok(changed)
     }
 
     /// Every live message in one conversation, oldest first — the reading pane

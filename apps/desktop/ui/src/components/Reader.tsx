@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
+import { Menu, MenuButton, MenuItem, MenuProvider } from '@ariakit/react';
 import {
   Archive,
   ChevronDown,
   CornerUpLeft,
   Mail,
   MailOpen,
+  MoreVertical,
   Paperclip,
+  Reply as ReplyIcon,
   Star,
 } from 'lucide-react';
 import { api, type ActionKind, type Thread, type ThreadMessage } from '../lib/api';
@@ -16,6 +19,7 @@ import { MessageBody } from './MessageBody';
 import { MoreMenu } from './MoreMenu';
 import { Tip } from './Tip';
 import { key } from '../lib/keys';
+import { useHoveredLink } from '../lib/links';
 import { t } from '../lib/strings';
 
 /** A message that is not the one you came here to read: one line, expandable. */
@@ -40,47 +44,92 @@ function Expanded({
   m,
   focused,
   onCollapse,
+  onReply,
+  onForward,
 }: {
   m: ThreadMessage;
   focused: boolean;
   onCollapse: () => void;
+  onReply?: (messageId: number, all: boolean) => void;
+  onForward?: (messageId: number) => void;
 }) {
   return (
     <article className="msg" id={`msg-body-${m.id}`} data-focused={focused || undefined}>
-      {/* The header is the toggle, the way it is in every mail client: if
+      {/* The toggle is the header's own area rather than the whole header,
+          because the actions live in it now and a button cannot contain
+          buttons — the markup is invalid and assistive technology reads the
+          nested controls as part of the outer one's label.
+
+          Clicking it still collapses, the way it does in every mail client: if
           clicking a collapsed message opens it, clicking the open one has to
-          close it again, or the only way back is to leave the conversation.
-          A button rather than a click handler on the header, so it is
-          reachable from the keyboard and announces itself as expanded. */}
-      <header
-        className="msg-head"
-        role="button"
-        tabIndex={0}
-        aria-expanded="true"
-        aria-label={t('reader-collapse', { who: m.from_display || m.from_addr })}
-        onClick={onCollapse}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            onCollapse();
-          }
-        }}
-      >
-        <span className="avatar" aria-hidden="true">
-          {initials(m.from_display, m.from_addr)}
-        </span>
-        <span className="msg-who">
-          <span className="msg-name">{m.from_display || m.from_addr}</span>
-          <span className="msg-to">
-            {m.recipients.length > 0 && <>{t('reader-to', { who: m.recipients.join(', ') })} · </>}
-            <span className="mono">{m.from_addr}</span>
+          close it again, or the only way back is to leave the conversation. A
+          real button, so Enter and Space work without being reimplemented and
+          it announces itself as expanded. */}
+      <header className="msg-head">
+        <button
+          type="button"
+          className="msg-toggle"
+          aria-expanded="true"
+          aria-label={t('reader-collapse', { who: m.from_display || m.from_addr })}
+          onClick={onCollapse}
+        >
+          <span className="avatar" aria-hidden="true">
+            {initials(m.from_display, m.from_addr)}
           </span>
-        </span>
+          <span className="msg-who">
+            <span className="msg-name">{m.from_display || m.from_addr}</span>
+            <span className="msg-to">
+              {m.recipients.length > 0 && <>{t('reader-to', { who: m.recipients.join(', ') })} · </>}
+              <span className="mono">{m.from_addr}</span>
+            </span>
+          </span>
+        </button>
         <Tip label={fullTime(m.date_ms)}>
           <time className="mono msg-time" dateTime={new Date(m.date_ms).toISOString()}>
             {messageTime(m.date_ms)}
           </time>
         </Tip>
+        {/* Answering *this* message, as against the row at the foot of the
+            conversation, which answers the newest. A thread is a sequence of
+            different questions from different people, and forwarding one
+            message out of the middle of a long one had no other way to happen.
+
+            Absent in the popped-out window, which has no composer to open. */}
+        {(onReply || onForward) && (
+          <div className="msg-acts">
+            {onReply && (
+              <Tip label={t('msg-reply')}>
+                <button
+                  type="button"
+                  className="act-icon"
+                  aria-label={t('msg-reply')}
+                  onClick={() => onReply(m.id, false)}
+                >
+                  <Icon icon={ReplyIcon} size={15} />
+                </button>
+              </Tip>
+            )}
+            <MenuProvider placement="bottom-end">
+              <Tip label={t('msg-actions')}>
+                <MenuButton className="act-icon" aria-label={t('msg-actions')}>
+                  <Icon icon={MoreVertical} size={15} />
+                </MenuButton>
+              </Tip>
+              <Menu portal gutter={6} className="menu" aria-label={t('msg-actions')}>
+                {onReply && (
+                  <MenuItem className="menu-item" onClick={() => onReply(m.id, true)}>
+                    {t('msg-reply-all')}
+                  </MenuItem>
+                )}
+                {onForward && (
+                  <MenuItem className="menu-item" onClick={() => onForward(m.id)}>
+                    {t('msg-forward')}
+                  </MenuItem>
+                )}
+              </Menu>
+            </MenuProvider>
+          </div>
+        )}
       </header>
 
       <MessageBody messageId={m.id} title={m.subject || '(no subject)'} />
@@ -112,8 +161,14 @@ export function Reader({
   onMove,
   onTag,
   onSnooze,
+  onReplyTo,
+  onForwardFrom,
 }: {
   thread: Thread | null;
+  /** Reply to one message of the thread rather than to its newest. Absent in
+      the popped-out window, which has no composer to open. */
+  onReplyTo?: (messageId: number, all: boolean) => void;
+  onForwardFrom?: (messageId: number) => void;
   /** Which view is open, so the destructive action can mean the right thing. */
   view: string;
   /** Reading pane has the window to itself. */
@@ -140,6 +195,10 @@ export function Reader({
   // have several open at once and still be reading one of them.
   const [focused, setFocused] = useState<number | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
+
+  // With the other hooks, above the empty-pane early return: a hook called
+  // after it runs on some renders and not others, which is not a hook.
+  const hoveredLink = useHoveredLink();
 
   // Scrolling a long message from the keyboard.
   //
@@ -288,6 +347,7 @@ export function Reader({
   const hidden = messages.filter((m) => !expanded.has(m.id));
   const foldable = hidden.slice(0, Math.max(0, hidden.length - 1));
   const showAll = () => setExpanded(new Set(messages.map((m) => m.id)));
+  const newest = messages[messages.length - 1];
 
   return (
     <section className="reader" aria-label={subject}>
@@ -392,6 +452,8 @@ export function Reader({
               m={m}
               key={m.id}
               focused={focused === m.id}
+              onReply={onReplyTo}
+              onForward={onForwardFrom}
               onCollapse={() =>
                 setExpanded((prev) => {
                   const next = new Set(prev);
@@ -405,21 +467,50 @@ export function Reader({
           );
         })}
 
-        {messages.length > 0 && (
+        {/* These answer the newest message, which is what the conversation's
+            Reply means everywhere — the per-message controls in each header
+            answer the one they sit on. Both routes go through the same call so
+            the button and the R key cannot come to mean different things.
+
+            Shown only where there is something to open. The popped-out window
+            has no composer, and three buttons that do nothing when pressed are
+            worse than three buttons that are not there. */}
+        {messages.length > 0 && newest && (onReplyTo || onForwardFrom) && (
           <div className="reply-row">
-            <button type="button" className="reply primary">
-              <Icon icon={CornerUpLeft} size={14} />
-              {t('reader-reply')} <span className="kbd on-accent">R</span>
-            </button>
-            <button type="button" className="reply">
-              {t('reader-reply-all')} <span className="kbd">A</span>
-            </button>
-            <button type="button" className="reply">
-              {t('reader-forward')} <span className="kbd">F</span>
-            </button>
+            {onReplyTo && (
+              <button
+                type="button"
+                className="reply primary"
+                onClick={() => onReplyTo(newest.id, false)}
+              >
+                <Icon icon={CornerUpLeft} size={14} />
+                {t('reader-reply')} <span className="kbd on-accent">R</span>
+              </button>
+            )}
+            {onReplyTo && (
+              <button type="button" className="reply" onClick={() => onReplyTo(newest.id, true)}>
+                {t('reader-reply-all')} <span className="kbd">A</span>
+              </button>
+            )}
+            {onForwardFrom && (
+              <button type="button" className="reply" onClick={() => onForwardFrom(newest.id)}>
+                {t('reader-forward')} <span className="kbd">F</span>
+              </button>
+            )}
           </div>
         )}
       </div>
+
+      {/* Where a browser puts it: bottom-left, over the content rather than
+          displacing it, so the page does not shift every time the pointer
+          crosses a link. Truncated by CSS rather than here — the beginning of
+          a URL is the part that says who you are about to visit, and cutting
+          it from the front to fit is how a deceptive link stays deceptive. */}
+      {hoveredLink && !finding && (
+        <div className="link-peek mono" role="status">
+          {hoveredLink}
+        </div>
+      )}
 
       {/* At the foot of the pane, as every find bar is — out of the way of what
           you are reading, and where the eye is not. */}

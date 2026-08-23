@@ -10,12 +10,19 @@
      tell the difference. ?blocked=N says how much was refused. -->
 <meta charset="utf-8">
 <style>
+  /* Mirrors the real frame: it is sized to its content, so it must not grow a
+     vertical scrollbar of its own, and sideways is the last resort for content
+     too wide to shrink. */
+  html { overflow-y: hidden; overflow-x: auto; }
+  #petrel-fit { transform-origin: 0 0; }
   :root { --petrel-size: 15px; }
   body { margin: 0; padding: 14px 16px; font: var(--petrel-size)/1.6 system-ui, sans-serif; }
   mark.petrel-find { background: #fbf0c9; }
   mark.petrel-find.on { background: #f6c945; }
 </style>
+<div id="petrel-box"><div id="petrel-fit">
 <div id="content"><p>Message body stand-in.</p></div>
+</div></div>
 <script>
   // ?tall=N repeats the body so the pane has something to scroll, and ?wide=1
   // adds a table wider than any window — the two shapes real mail arrives in
@@ -28,6 +35,9 @@
       p.textContent = 'Paragraph ' + (i + 1) + ' of a message longer than the window.';
       c.appendChild(p);
     }
+    var link = document.createElement('p');
+    link.innerHTML = 'A message with <a href="https://example.com/a/very/long/path/that/will/not/fit">a link in it</a>.';
+    c.appendChild(link);
     if (q.get('wide')) {
       var t = document.createElement('table');
       t.setAttribute('border', '1');
@@ -40,12 +50,53 @@
 <script>
   (function () {
     var blocked = Number(new URLSearchParams(location.search).get('blocked') || 0);
+
+    // The real frame scales a too-wide message rather than letting it be cut
+    // off. Mirrored here because ?wide=1 exists precisely to produce that
+    // shape, and a stand-in that clipped where the real one scales would keep
+    // reporting a height the app then got wrong.
+    function hover(url) {
+      try { parent.postMessage({ petrelHover: url || '' }, '*'); } catch (e) {}
+    }
+    addEventListener('mouseover', function (e) {
+      var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+      if (a) hover(a.href);
+    });
+    addEventListener('mouseout', function (e) {
+      var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+      if (a) hover('');
+    });
+    addEventListener('click', function (e) {
+      var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+      if (!a) return;
+      e.preventDefault();
+      try { parent.postMessage({ petrelOpen: a.href }, '*'); } catch (err) {}
+    });
+
+    var MIN_SCALE = 0.5;
+    function fit() {
+      var box = document.getElementById('petrel-box');
+      var inner = document.getElementById('petrel-fit');
+      if (!box || !inner) return;
+      inner.style.transform = '';
+      box.style.height = '';
+      var avail = inner.clientWidth;
+      var natural = inner.scrollWidth;
+      if (avail > 0 && natural > avail + 1) {
+        var k = Math.max(avail / natural, MIN_SCALE);
+        inner.style.transform = 'scale(' + k + ')';
+        box.style.height = Math.ceil(inner.getBoundingClientRect().height) + 'px';
+      }
+    }
+
     function post() {
+      fit();
       parent.postMessage({
         petrelHeight: document.documentElement.scrollHeight,
         petrelBlocked: blocked,
       }, '*');
     }
+    addEventListener('resize', post);
     addEventListener('load', post);
     post();
 

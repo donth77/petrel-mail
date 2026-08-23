@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { api, type Thread } from './lib/api';
 import { Reader } from './components/Reader';
 import { Toast } from './components/Toast';
 import { t } from './lib/strings';
+import { useMessageLinks } from './lib/links';
 
 /**
  * One conversation, alone in its own window.
@@ -23,13 +24,14 @@ export function MessageWindow({ threadId }: { threadId: number }) {
 
   useEffect(() => {
     let live = true;
-    // Found by asking for the conversation rather than the message: the list
-    // row is what the reader renders, and it is keyed by thread.
+    // Asked for by id, not looked for in a mailbox. This window knows which
+    // conversation it was opened onto and nothing about where that conversation
+    // lives, so scanning the inbox found only the ones that happened to be
+    // there — a starred or archived message opened into "no longer here".
     api
-      .threads('inbox', 0, 500)
-      .then((rows) => {
+      .threadById(threadId)
+      .then((found) => {
         if (!live) return;
-        const found = rows.find((r) => r.thread_id === threadId) ?? null;
         setThread(found);
         setGone(found === null);
       })
@@ -38,6 +40,20 @@ export function MessageWindow({ threadId }: { threadId: number }) {
       live = false;
     };
   }, [threadId]);
+
+  // This window has no composer of its own, so a mail link starts a draft and
+  // opens one. Web links go to the browser, the same as in the main window —
+  // the policy is shared rather than reimplemented here.
+  useMessageLinks(
+    useCallback(async (addr: string) => {
+      try {
+        const id = await api.saveDraft(null, addr, '', '', '');
+        await api.popoutCompose(id);
+      } catch (e) {
+        setToast(String(e));
+      }
+    }, []),
+  );
 
   const close = async () => {
     try {

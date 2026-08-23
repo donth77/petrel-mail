@@ -637,6 +637,8 @@ mark {
   min-inline-size: 0;
   min-block-size: 0;
   background: var(--surface);
+  /* Anchors the hovered-link readout to the pane rather than to the window. */
+  position: relative;
 }
 
 .reader-head {
@@ -845,6 +847,31 @@ mark {
   gap: 11px;
   padding: 13px 16px;
   border-block-end: 1px solid var(--hair2);
+}
+
+/* The header's clickable area, now that the actions sit beside it rather than
+   inside it. It takes the row's spare width so the whole empty stretch still
+   collapses the message, which is the target people actually aim at. */
+.msg-toggle {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  flex-grow: 1;
+  min-inline-size: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.msg-acts {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
 }
 
 .msg-who {
@@ -2072,7 +2099,7 @@ mark {
 }
 
 /* An expanded message's header is a toggle, so it has to look like one. */
-.msg-head {
+.msg-toggle {
   cursor: pointer;
 }
 
@@ -3074,22 +3101,20 @@ body.resizing {
   align-self: center;
 }
 
-/* Centred in its gutter, which is a matter of the track's width rather than
-   the box's margins — a margin inside a fixed track shrinks the box's room
-   instead of pushing the next column along, which is why the first attempt at
-   this moved the left edge and left the right one where it was.
+/* Centred between the dot and the avatar, which its own track already
+   expresses: the checkbox sits in a 25px column with an equal 10px gap on
+   either side, so the midpoint of the track and the midpoint of the space
+   between its two neighbours are the same point. Centring in the track is
+   therefore the whole rule, and no offset has to be worked out or maintained.
 
-   Left of the box: border (3) + padding (11) + the dot's column (7) + gap (10)
-   = 31 + the box's own offset. Right of it: whatever the track has spare, plus
-   the gap. With a 25px track and the box pulled 6px left, both sides come to
-   25 — and 4px of clear air stays between the dot and the box so the two never
-   look welded together. It costs the row 9px of width.
+   It replaces a hand-computed nudge that measured from the row's edge instead
+   of from the dot, which left the box drifting toward the dot and reading as
+   attached to it.
 
    The dot keeps its column throughout. An unread marker that dropped out of
    the flow would shift every row's text sideways as it was read. */
 .row-check {
-  justify-self: start;
-  margin-inline-start: -6px;
+  justify-self: center;
   display: grid;
   place-items: center;
   inline-size: 16px;
@@ -3500,4 +3525,31 @@ body.resizing {
 .findbar .act-icon:disabled {
   opacity: 0.4;
   cursor: default;
+}
+
+/* The destination of the link under the pointer.
+
+   Positioned like a browser's status bar and for the same reason: mail is
+   where deceptive links arrive, and these open in a browser with no address
+   bar to check them against on the way. Overlaid rather than in the layout, so
+   the pane does not shift as the pointer crosses a link. Clipped at the end,
+   never the start — the host is the part that tells you where you are going. */
+.link-peek {
+  position: absolute;
+  inset-block-end: 0;
+  inset-inline-start: 0;
+  max-inline-size: min(70%, 620px);
+  padding: 3px 9px;
+  font-size: 11.5px;
+  color: var(--ink2);
+  background: var(--bg2, var(--bg));
+  border-block-start: 1px solid var(--hair2);
+  border-inline-end: 1px solid var(--hair2);
+  border-start-end-radius: 5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: ltr;
+  pointer-events: none;
+  z-index: 3;
 }

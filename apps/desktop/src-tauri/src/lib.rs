@@ -410,15 +410,17 @@ async fn drain_actions(
 ///   so syncing it would roughly double the store — and since it is what the
 ///   archive role maps to, it would make the Archive view mean "all your mail"
 ///   rather than "mail you archived".
-/// * **Starred is excluded.** It is a view of the `\Flagged` flag, which
-///   already arrives with every message we fetch. Fetching it as a folder would
-///   download the same messages a second time to learn something we know.
+/// * **Starred is included**, despite being a flag we already read. We only
+///   read the flags of messages we *fetch* — a star on older mail, or on
+///   anything archived into All Mail, never arrives, and the Starred view sits
+///   empty while the server knows better. It is small by nature: a list of
+///   things someone picked out by hand.
 /// * **Snoozed is not here to exclude.** Gmail has the feature, but does not
 ///   expose it over IMAP — there is no such mailbox in the folder list.
 /// * **Outbox likewise**: mail that has not reached a server yet is ours alone.
-fn folders_to_sync(state: &AppState, account: i64) -> Vec<(String, i64)> {
+fn folders_to_sync(state: &AppState, account: i64) -> Vec<(String, String, i64)> {
     // Inbox first so the view the user is looking at fills before the rest.
-    const ROLES: [&str; 5] = ["inbox", "sent", "drafts", "spam", "trash"];
+    const ROLES: [&str; 6] = ["inbox", "sent", "drafts", "spam", "trash", "starred"];
     let Ok(store) = state.store.lock() else {
         return Vec::new();
     };
@@ -430,7 +432,7 @@ fn folders_to_sync(state: &AppState, account: i64) -> Vec<(String, i64)> {
         .filter_map(|role| {
             all.iter()
                 .find(|f| f.role == *role)
-                .map(|f| (f.path.clone(), f.id))
+                .map(|f| ((*role).to_string(), f.path.clone(), f.id))
         })
         .collect()
 }
@@ -458,6 +460,9 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
         let mut has_move = false;
         let mut has_idle = false;
         let mut has_uidplus = false;
+        // Whether this account's folders are labels, which decides whether the
+        // label sweep below has anything to ask for.
+        let mut looks_like_gmail = false;
         // Folders first. Without them every message ingests with no placement,
         // so the rail's views have nothing to filter on and archiving has
         // nowhere to put anything — which is how a sync can look like it worked
@@ -489,7 +494,7 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
                 // one we can identify from what it advertises before any mail
                 // arrives. Recording it here is what makes archiving keep the
                 // user's other labels instead of clearing them.
-                let looks_like_gmail = cfg.host.contains("gmail")
+                looks_like_gmail = cfg.host.contains("gmail")
                     || report.folders.iter().any(|f| f.name.starts_with("[Gmail]"));
                 if let Ok(store) = state.store.lock() {
                     match store.sync_folders(account, &rows) {
@@ -541,7 +546,7 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
         // EXAMINE per folder, once per sync — read-only, and cheap enough that
         // an honest denominator is worth it.
         {
-            let names: Vec<String> = targets.iter().map(|(n, _)| n.clone()).collect();
+            let names: Vec<String> = targets.iter().map(|(_, n, _)| n.clone()).collect();
             if let Ok(counts) = petrel_providers::imap::folder_counts(&cfg, &names).await {
                 let total: usize = counts.iter().map(|(_, n)| *n as usize).sum();
                 state.server_total.store(total, Ordering::Relaxed);
@@ -550,7 +555,7 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
                 ));
             }
         }
-        for (name, folder_id) in &targets {
+        for (_role, name, folder_id) in &targets {
             let result = {
                 let state = Arc::clone(&state);
                 petrel_providers::imap::fetch_raw_each(&cfg, name, limit, |uid, flags, raw| {
@@ -591,6 +596,57 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
         } else {
             *state.source.lock().unwrap() = format!("{} · {ok} message(s) synced", cfg.user);
         }
+        // Where Gmail actually keeps each message.
+        //
+        // After the bodies rather than before: this decides filing, and filing
+        // an empty mailbox helps nobody. Over plain IMAP a message is only ever
+        // in the mailbox it was fetched from, so archived — not carrying the
+        // Inbox label — is not something the protocol can express.
+        //
+        // Bounded on the first pass and incremental after it. A full sweep is
+        // seconds at a thousand messages and minutes at a hundred thousand,
+        // but with CONDSTORE every sweep after the first asks only for what
+        // changed, which is usually nothing and costs one round trip.
+        if looks_like_gmail {
+            let since: Option<u64> = state
+                .store
+                .lock()
+                .ok()
+                .and_then(|s| s.settings().ok())
+                .and_then(|s| s.get("gmail_labels_modseq").and_then(|v| v.parse().ok()));
+            // No separate progress line: `source` is the account label, not a
+            // status channel, and writing to it puts this sentence where the
+            // address belongs. The sweep runs before `seeding` is cleared, so
+            // the sync indicator already spans it — and the list reloads when
+            // that clears, which is what reveals the refiling.
+            let bound: u32 = std::env::var("PETREL_LABEL_SWEEP")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(5_000);
+            match petrel_providers::imap::sweep_gmail_labels(&cfg, "[Gmail]/All Mail", bound, since)
+                .await
+            {
+                Ok(sweep) => {
+                    let filed = state
+                        .store
+                        .lock()
+                        .ok()
+                        .and_then(|s| s.apply_gmail_labels(account, &sweep.labels).ok())
+                        .unwrap_or(0);
+                    log_sync(&format!(
+                        "labels: {} reported, {filed} refiled",
+                        sweep.labels.len()
+                    ));
+                    if let (Some(m), Ok(store)) = (sweep.modseq, state.store.lock()) {
+                        let _ = store.set_setting("gmail_labels_modseq", &m.to_string());
+                    }
+                }
+                // Not fatal: without it, filing falls back to the folder each
+                // message arrived from, which is what it was before.
+                Err(e) => log_sync(&format!("label sweep failed: {e}")),
+            }
+        }
+
         state.seeding.store(false, Ordering::Relaxed);
 
         // From here on, poll. The first pass took a window of recent mail;
@@ -650,7 +706,7 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
             // what is new in Sent, and sharing one would skip most of it.
             let mut fresh = 0usize;
             let mut trouble: Option<String> = None;
-            for (name, folder_id) in &folders_to_sync(&state, account) {
+            for (_role, name, folder_id) in &folders_to_sync(&state, account) {
                 let since = state
                     .store
                     .lock()
@@ -731,6 +787,60 @@ fn list_threads(
     store
         .list_threads(&view, offset, limit.min(2000))
         .map_err(|e| e.to_string())
+}
+
+/// Opens a link from a message in the user's browser.
+///
+/// Mail is the most-phished medium there is, so the scheme is checked here
+/// rather than trusted from the frame. Only the two web schemes are handed to
+/// the system: `file:` would open local content, `javascript:` is an execution
+/// vector, and the custom schemes registered by other applications on the
+/// machine are a large and unaudited surface reachable from any sender.
+///
+/// `mailto:` is deliberately absent — the app answers that itself by opening a
+/// composer, rather than handing a mail link to some other mail program.
+#[tauri::command]
+fn open_external(url: String) -> Result<(), String> {
+    let lower = url.trim().to_ascii_lowercase();
+    if !(lower.starts_with("http://") || lower.starts_with("https://")) {
+        return Err("only http and https links can be opened".into());
+    }
+    // Passed as a single argument to the platform's opener, never through a
+    // shell, so nothing in the URL can be read as a command.
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("open");
+        c.arg(&url);
+        c
+    };
+    #[cfg(target_os = "linux")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(&url);
+        c
+    };
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("rundll32.exe");
+        c.arg("url.dll,FileProtocolHandler").arg(&url);
+        c
+    };
+    cmd.spawn().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// One conversation by id, for a window that was opened onto it.
+///
+/// Separate from `list_threads` because a popped-out window has an id and no
+/// view: it cannot say which mailbox to look in, and guessing is what made it
+/// claim that starred and archived conversations no longer existed.
+#[tauri::command]
+fn thread_by_id(
+    thread_id: i64,
+    state: State<Arc<AppState>>,
+) -> Result<Option<ThreadListing>, String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    store.thread_by_id(thread_id).map_err(|e| e.to_string())
 }
 
 /// Tags for the rail. Comes from the account, not from whatever rows happen to
@@ -1463,6 +1573,12 @@ struct Quoted {
     text: String,
     from: String,
     date_ms: i64,
+    /// The message's own recipients and subject, for a forward's header block.
+    /// Taken from the message rather than from the conversation: a thread's
+    /// subject drifts, and forwarding one message out of the middle of it
+    /// should say what *that* message said.
+    to: String,
+    subject: String,
 }
 
 /// Reads a message back for quoting.
@@ -1497,11 +1613,23 @@ fn quote_message(message_id: i64, state: State<Arc<AppState>>) -> Result<Quoted,
         None => petrel_mime::plain_text_to_html(&parsed.body_text),
     };
 
+    let to = parsed
+        .to
+        .iter()
+        .map(|(name, addr)| match name {
+            Some(n) if !n.trim().is_empty() => format!("{n} <{addr}>"),
+            _ => addr.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+
     Ok(Quoted {
         html,
         text: parsed.body_text,
         from,
         date_ms,
+        to,
+        subject: parsed.subject.clone().unwrap_or_default(),
     })
 }
 
@@ -1891,6 +2019,8 @@ pub fn run() {
             status,
             list_messages,
             list_threads,
+            thread_by_id,
+            open_external,
             list_tags,
             view_counts,
             remote_status,
