@@ -330,24 +330,87 @@ fn img_src(allow_remote: bool) -> &'static str {
     }
 }
 
-fn document(body: &str, blocked_remote: usize, nonce: &str) -> String {
+/// How the frame is allowed to be colored, decided per message.
+///
+/// The chrome around the frame is the app's and follows the app theme; this
+/// only governs the message's own canvas. Mail that *styled itself* without
+/// ever saying it works in the dark keeps its light canvas whatever the app
+/// looks like — recoloring someone else's design because our chrome changed
+/// is how mail ends up grey-on-grey. Mail with no styling of its own (plain
+/// text, which we mark up ourselves) and mail whose sender declared
+/// `color-scheme: dark` support both follow the app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FrameTheme {
+    /// Styled mail, no declaration: the light canvas it was designed on.
+    AlwaysLight,
+    /// Follows the app. `stamp` is the app's explicit choice; `None` is the
+    /// system setting, where the frame's own media query decides — the same
+    /// three-state pattern the app's tokens use.
+    Adaptive { stamp: Option<&'static str> },
+}
+
+impl FrameTheme {
+    /// Reads the app's choice out of the frame URL's query string.
+    ///
+    /// Carried in the URL rather than pushed in afterwards because the frame
+    /// must be *born* the right color: a postMessage arriving after first
+    /// paint is a white flash on every dark-mode message open.
+    fn adaptive_from_query(query: Option<&str>) -> Self {
+        let stamp = query
+            .unwrap_or("")
+            .split('&')
+            .find_map(|kv| kv.strip_prefix("theme="))
+            .and_then(|v| match v {
+                "dark" => Some("dark"),
+                "light" => Some("light"),
+                _ => None,
+            });
+        FrameTheme::Adaptive { stamp }
+    }
+}
+
+fn document(body: &str, blocked_remote: usize, nonce: &str, theme: FrameTheme) -> String {
     // The count goes out to the app rather than into a banner here. A notice
     // drawn inside the frame can only ever be a notice: the frame has no script
     // of its own, no IPC and no same-origin access, so "Show images" drawn here
     // would be a button that cannot do anything. Outside, it can.
     let reporter = HEIGHT_REPORTER.replace("BLOCKED", &blocked_remote.to_string());
     let banner = "";
+    // The light palette is the only definition on bare :root, so an
+    // AlwaysLight frame is simply one with no dark blocks — same variables,
+    // one meaning. The dark values are the reading pane's own (surface, ink,
+    // hairline from the app's dark tokens), not an inversion of the light.
+    let dark_css = match theme {
+        FrameTheme::AlwaysLight => String::new(),
+        FrameTheme::Adaptive { .. } => {
+            const DARK_VARS: &str = "color-scheme: dark; \
+             --mv-bg: #142329; --mv-ink: #E4EDEE; --mv-ink2: #96A9AF; \
+             --mv-hair: #24363D; --mv-mark: #453A14; --mv-mark-on: #8F6E17;";
+            format!(
+                "@media (prefers-color-scheme: dark) {{ \
+                   :root:not([data-theme='light']) {{ {DARK_VARS} }} }} \
+                 :root[data-theme='dark'] {{ {DARK_VARS} }}"
+            )
+        }
+    };
+    let stamp = match theme {
+        FrameTheme::Adaptive { stamp: Some(mode) } => format!(" data-theme=\"{mode}\""),
+        _ => String::new(),
+    };
     format!(
-        r#"<!doctype html><html><head><meta charset="utf-8">
+        r#"<!doctype html><html{stamp}><head><meta charset="utf-8">
 <style>
   /* The frame is sized to its content by the host, so it must never grow its
      own vertical scrollbar — a scroll region inside a scroll region. Sideways
      is different: it is the last resort for content too wide to shrink to a
      readable size, and reaching it beats having it silently cut off. */
   html {{ overflow-y: hidden; overflow-x: auto; }}
-  :root {{ color-scheme: light; }}
+  :root {{ color-scheme: light;
+          --mv-bg: #fff; --mv-ink: #182730; --mv-ink2: #54666e;
+          --mv-hair: #d9e1e2; --mv-mark: #fbf0c9; --mv-mark-on: #f6c945; }}
+  {dark_css}
   :root {{ --petrel-size: 15px; }}
-  body {{ margin: 0; padding: 14px 16px; background: #fff; color: #182730;
+  body {{ margin: 0; padding: 14px 16px; background: var(--mv-bg); color: var(--mv-ink);
          font: var(--petrel-size)/1.6 -apple-system, system-ui, sans-serif;
          word-wrap: break-word; }}
   /* `height: auto` cannot be the blanket rule here. It overrides the height a
@@ -366,14 +429,14 @@ fn document(body: &str, blocked_remote: usize, nonce: &str) -> String {
      A message laid out at a fixed width is scaled instead — see the fitter in
      the script below, which shrinks the whole thing as one piece. */
   #petrel-fit {{ transform-origin: 0 0; }}
-  blockquote {{ margin: 8px 0; padding-left: 12px; border-left: 2px solid #d9e1e2; color: #54666e; }}
+  blockquote {{ margin: 8px 0; padding-left: 12px; border-left: 2px solid var(--mv-hair); color: var(--mv-ink2); }}
   .banner {{ background: #f6eedd; border: 1px solid #e2d3ae; color: #6b5220;
             padding: 8px 10px; border-radius: 4px; font-size: 12.5px; margin-bottom: 12px; }}
   .petrel-plain {{ white-space: pre-wrap;
                   font: calc(var(--petrel-size) * 0.92)/1.6 ui-monospace, SFMono-Regular, monospace; }}
-  .petrel-plain .q {{ color: #54666e; }}
-  mark.petrel-find {{ background: #fbf0c9; color: inherit; }}
-  mark.petrel-find.on {{ background: #f6c945; }}
+  .petrel-plain .q {{ color: var(--mv-ink2); }}
+  mark.petrel-find {{ background: var(--mv-mark); color: inherit; }}
+  mark.petrel-find.on {{ background: var(--mv-mark-on); }}
 </style></head><body>{banner}<div id="petrel-box"><div id="petrel-fit">{body}</div></div><script nonce="{nonce}">{reporter}</script></body></html>"#
     )
 }
@@ -455,8 +518,14 @@ pub fn handle(
     let allow_remote = allow_remote(message_id);
 
     // Prefer HTML; fall back to the plain part. Fail closed to text.
-    let (body, report) = match parsed.body_html.as_deref() {
+    // The theme rides with the body decision, because they share a premise:
+    // whose colors are these? HTML mail styled itself — it goes dark only if
+    // its sender said the colors survive that (the meta is read from the raw
+    // HTML; the sanitizer strips it before rendering). Plain text is marked
+    // up by us, so its colors are ours to theme, like any other chrome.
+    let (body, report, theme) = match parsed.body_html.as_deref() {
         Some(html) => {
+            let declared = petrel_mime::declares_dark(html);
             let s = petrel_mime::sanitize_html(html, allow_remote);
             // After sanitizing, point `cid:` images at the part route — the
             // webview cannot follow a cid, but it can fetch the same bytes
@@ -465,11 +534,17 @@ pub fn handle(
             let html = petrel_mime::resolve_cids(&s.html, &parsed.attachments, |part| {
                 format!("/attachment/{token}/{part}")
             });
-            (html, s.report)
+            let theme = if declared {
+                FrameTheme::adaptive_from_query(request.uri().query())
+            } else {
+                FrameTheme::AlwaysLight
+            };
+            (html, s.report, theme)
         }
         None => (
             petrel_mime::plain_text_to_html(&parsed.body_text),
             Default::default(),
+            FrameTheme::adaptive_from_query(request.uri().query()),
         ),
     };
 
@@ -509,13 +584,73 @@ pub fn handle(
         .header("Content-Security-Policy", csp)
         .header("X-Content-Type-Options", "nosniff")
         .header("Referrer-Policy", "no-referrer")
-        .body(document(&body, report.blocked_remote, &nonce).into_bytes())
+        .body(document(&body, report.blocked_remote, &nonce, theme).into_bytes())
         .expect("message response")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::img_src;
+    use super::{FrameTheme, document, img_src};
+
+    #[test]
+    fn styled_mail_without_a_declaration_keeps_its_light_canvas() {
+        let doc = document("<p>hi</p>", 0, "n", FrameTheme::AlwaysLight);
+        assert!(!doc.contains("prefers-color-scheme"), "{doc}");
+        assert!(!doc.contains("data-theme"), "{doc}");
+        // The light values are the only definition, so the frame cannot
+        // render any other way.
+        assert!(doc.contains("--mv-bg: #fff"), "{doc}");
+    }
+
+    #[test]
+    fn an_adaptive_frame_carries_both_palettes_and_the_stamp_wins() {
+        // System: both palettes present, nothing stamped — the media query
+        // decides, exactly as the app's own tokens do.
+        let system = document("<p>hi</p>", 0, "n", FrameTheme::Adaptive { stamp: None });
+        assert!(system.contains("prefers-color-scheme: dark"), "{system}");
+        assert!(system.contains(":root[data-theme='dark']"), "{system}");
+        assert!(!system.contains("<html data-theme"), "{system}");
+
+        // An explicit app choice is stamped on the root, and the guarded
+        // blocks make it win in both directions.
+        let dark = document(
+            "<p>hi</p>",
+            0,
+            "n",
+            FrameTheme::Adaptive {
+                stamp: Some("dark"),
+            },
+        );
+        assert!(dark.contains(r#"<html data-theme="dark">"#), "{dark}");
+        assert!(dark.contains(":root:not([data-theme='light'])"), "{dark}");
+        assert!(dark.contains("--mv-bg: #142329"), "{dark}");
+    }
+
+    #[test]
+    fn the_theme_query_is_read_defensively() {
+        assert_eq!(
+            FrameTheme::adaptive_from_query(Some("theme=dark")),
+            FrameTheme::Adaptive {
+                stamp: Some("dark")
+            }
+        );
+        assert_eq!(
+            FrameTheme::adaptive_from_query(Some("x=1&theme=light")),
+            FrameTheme::Adaptive {
+                stamp: Some("light")
+            }
+        );
+        // System, absent, or nonsense: nothing stamped, media query decides.
+        // Nonsense matters — the value ends up inside an attribute, so only
+        // the two known words are ever written back out.
+        for q in [Some("theme=system"), Some("theme=\"><script>"), None] {
+            assert_eq!(
+                FrameTheme::adaptive_from_query(q),
+                FrameTheme::Adaptive { stamp: None },
+                "{q:?}"
+            );
+        }
+    }
 
     /// The regression this file exists to prevent. `https:`-only looked like
     /// the careful choice and silently emptied every message whose images

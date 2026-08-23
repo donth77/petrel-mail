@@ -366,6 +366,35 @@ pub fn resolve_cids(
     out
 }
 
+/// Whether a message says its colors work in the dark.
+///
+/// The convention is a `<meta name="color-scheme" content="light dark">` (or
+/// Apple's earlier `supported-color-schemes`) in the head — a sender's
+/// statement that their inline colors were designed for both grounds. It is
+/// read from the *raw* HTML because the sanitizer strips `head` and `meta`
+/// before rendering; the declaration is consumed here and never reaches the
+/// frame.
+///
+/// Only the meta form is honored. A `color-scheme` property inside a style
+/// sheet never survives sanitization anyway (style tags are removed whole),
+/// so honoring it would mean trusting a declaration whose machinery we then
+/// take away.
+pub fn declares_dark(html: &str) -> bool {
+    let lower = html.to_ascii_lowercase();
+    let mut rest = lower.as_str();
+    while let Some(start) = rest.find("<meta") {
+        let tag = match rest[start..].find('>') {
+            Some(end) => &rest[start..start + end],
+            None => &rest[start..],
+        };
+        if tag.contains("color-scheme") && tag.contains("dark") {
+            return true;
+        }
+        rest = &rest[start + "<meta".len()..];
+    }
+    false
+}
+
 /// Renders a plain-text body as safe HTML, preserving quote structure.
 pub fn plain_text_to_html(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 64);
@@ -522,6 +551,32 @@ mod tests {
         assert!(!res.html.contains("beacon.png"), "{}", res.html);
         // Inline parts are the message's own content, not a network fetch.
         assert!(res.html.contains("cid:inline-part-1"), "{}", res.html);
+    }
+
+    #[test]
+    fn a_sender_declaring_dark_support_is_recognised() {
+        assert!(declares_dark(
+            r#"<html><head><meta name="color-scheme" content="light dark"></head><body>x</body></html>"#
+        ));
+        // Apple's earlier spelling of the same statement.
+        assert!(declares_dark(
+            r#"<head><META NAME="supported-color-schemes" CONTENT="light dark"></head>"#
+        ));
+        // Attribute order is the sender's business.
+        assert!(declares_dark(
+            r#"<meta content="dark light" name="color-scheme">"#
+        ));
+    }
+
+    #[test]
+    fn mail_that_never_mentions_dark_is_not_volunteered_for_it() {
+        assert!(!declares_dark(r#"<p>ordinary mail</p>"#));
+        // Saying "light only" is a declaration *against* dark.
+        assert!(!declares_dark(
+            r#"<meta name="color-scheme" content="light only">"#
+        ));
+        // The word elsewhere in the message is not a declaration.
+        assert!(!declares_dark(r#"<p>a dark and stormy color-scheme</p>"#));
     }
 
     #[test]

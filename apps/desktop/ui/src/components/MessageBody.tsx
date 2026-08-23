@@ -30,12 +30,19 @@ export function MessageBody({ messageId, title }: { messageId: number; title: st
     setBlocked(0);
     api
       .messageUrl(messageId)
-      .then((u) => live && setUrl(u || null))
+      // The app's theme rides the URL so the frame is *born* the right color
+      // — anything pushed in after first paint is a white flash on every
+      // message open. Which messages may actually go dark is the frame's own
+      // decision (sender-declared, or plain text); this only says what the
+      // app looks like today.
+      .then((u) =>
+        live && setUrl(u ? `${u}${u.includes('?') ? '&' : '?'}theme=${settings.theme}` : null),
+      )
       .catch(() => live && setUrl(null));
     return () => {
       live = false;
     };
-  }, [messageId, reload]);
+  }, [messageId, reload, settings.theme]);
 
   useEffect(() => {
     function onMessage(e: MessageEvent) {
