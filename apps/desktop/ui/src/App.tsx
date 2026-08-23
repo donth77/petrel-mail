@@ -48,6 +48,11 @@ import { PaneResize } from './components/PaneResize';
 export function App() {
   const { settings, set } = useSettings();
   const [status, setStatus] = useState<Status | null>(null);
+  // Bumped when the active account changes. Every effect that reads the
+  // store keys on it, so a switch reloads the list, the counts, the tags, the
+  // folders and the identity together — rather than each noticing separately
+  // or, worse, some not noticing at all.
+  const [accountEpoch, setAccountEpoch] = useState(0);
   const [items, setItems] = useState<Thread[]>([]);
   const [query, setQuery] = useState('');
   // Best match or newest, for a search. Not a saved preference: it answers a
@@ -141,7 +146,7 @@ export function App() {
       live = false;
       clearTimeout(h);
     };
-  }, [query, view, newestFirst, status?.count, status?.seeding]);
+  }, [query, view, newestFirst, status?.count, status?.seeding, accountEpoch]);
 
   // A new query starts at the top.
   //
@@ -310,8 +315,12 @@ export function App() {
     },
     switchAccount: (n) => {
       const acc = accounts[n - 1];
-      if (acc) setToast(t('account-switched', { email: acc.email }));
-      else setToast(t('account-none-at', { n: String(n) }));
+      if (!acc) {
+        setToast(t('account-none-at', { n: String(n) }));
+        return;
+      }
+      if (acc.active) return;
+      void switchAccount(acc.id, acc.email);
     },
     compose: () => {
       attachmentWarned.current = false;
@@ -543,6 +552,28 @@ export function App() {
     }
   };
 
+  /**
+   * Shows a different account.
+   *
+   * The active account lives in the store, so one call changes what every
+   * command reads; the epoch then makes the window re-read all of it. The
+   * open conversation and any selection belong to the old account and are
+   * dropped — a row id from one account means nothing in another.
+   */
+  const switchAccount = async (id: number, email: string) => {
+    try {
+      await api.setActiveAccount(id);
+      setActiveId(null);
+      setSelected(new Set());
+      setView('inbox');
+      setQuery('');
+      setAccountEpoch((n) => n + 1);
+      setToast(t('account-switched', { email }));
+    } catch (e) {
+      setToast(t('account-switch-failed', { error: String(e) }));
+    }
+  };
+
   /** The parts of a draft that are not its text, as the store keeps them. */
   const envelopeOf = (d: Draft) => ({
     cc: d.cc,
@@ -752,6 +783,11 @@ export function App() {
   // still appears in the rail.
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [accounts, setAccounts] = useState<Account[]>([]);
+  // The account the window is showing. Everything that used to read
+  // `accounts[0]` — the rail's label, the composer's From, the Gmail-only
+  // note in the folder picker — reads this, so a switch changes all of them.
+  const activeAccount = accounts.find((a) => a.active) ?? accounts[0];
+
   const [identity, setIdentity] = useState<Identity | null>(null);
 
   // Folders show their full path so "Contracts/2026" is distinguishable from
@@ -832,7 +868,7 @@ export function App() {
     // The seeding flag is the honest trigger. It changes when a sync starts and
     // when it finishes — twice, not sixty times — which is exactly when folders
     // may have appeared and a re-read is worth doing.
-  }, [status?.seeding]);
+  }, [status?.seeding, accountEpoch]);
 
   // A message that needs a decision raises a notification, once.
   //
@@ -888,7 +924,7 @@ export function App() {
     return () => {
       live = false;
     };
-  }, [status?.count, status?.seeding, settings.badges, items]);
+  }, [status?.count, status?.seeding, settings.badges, items, accountEpoch]);
 
   // First run: no account can sign in, so there is nothing to show but the
   // way to add one. Decided from the status the app reports, not from an
@@ -930,9 +966,9 @@ export function App() {
         }
       >
       <Rail
-        account={accounts[0]?.email ?? status?.source ?? t('app-name')}
+        account={activeAccount?.email ?? status?.source ?? t('app-name')}
         accounts={accounts}
-        accountColor={accounts[0]?.color || 'var(--accent)'}
+        accountColor={activeAccount?.color || 'var(--accent)'}
         unread={unread}
         counts={counts}
         outboxNeedsAttention={counts['outbox:attention'] ?? 0}
@@ -1292,7 +1328,7 @@ export function App() {
       {draft && (
         <Compose
           draft={draft}
-          account={accounts[0]?.email ?? ''}
+          account={activeAccount?.email ?? ''}
           onChange={setDraft}
           onClose={() => {
             // Keeping it, not discarding it. Losing what someone wrote because
@@ -1361,7 +1397,7 @@ export function App() {
         // Folders are labels only on Gmail. Telling a Fastmail or Exchange user
         // about label behaviour is telling them something false about their own
         // mail, so the note is shown to the accounts it describes.
-        labelsNotFolders={accounts[0]?.kind === 'gmail'}
+        labelsNotFolders={activeAccount?.kind === 'gmail'}
         open={picker !== null}
         mode={picker === 'send-later' ? 'snooze' : (picker ?? 'folder')}
         subject={active?.subject ?? null}

@@ -119,6 +119,8 @@ pub struct AccountSummary {
     /// engine records its own timestamp.
     pub newest_ms: Option<i64>,
     pub folders: Vec<FolderMapping>,
+    /// Whether this is the one the window shows.
+    pub active: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -925,7 +927,56 @@ impl Store {
         Ok(Store { conn })
     }
 
+    /// The account the window is showing.
+    ///
+    /// One at a time, by design: a merged inbox is the single largest source
+    /// of send-from-the-wrong-address mistakes, and scoping removes the risk
+    /// rather than mitigating it. The choice is remembered in settings, and
+    /// falls back to the first account when there is no choice yet or the
+    /// chosen one has been removed — so every caller that used to read "the
+    /// first account" now reads "the active account" and nothing else changes.
+    pub fn active_account(&self) -> Result<Option<i64>> {
+        let chosen: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'active_account'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?
+            .and_then(|v| v.parse().ok());
+        if let Some(id) = chosen {
+            let exists: bool = self
+                .conn
+                .query_row("SELECT 1 FROM accounts WHERE id = ?1", [id], |_| Ok(()))
+                .optional()?
+                .is_some();
+            if exists {
+                return Ok(Some(id));
+            }
+        }
+        self.first_account()
+    }
+
+    /// Makes an account the one the window shows.
+    pub fn set_active_account(&self, account_id: i64) -> Result<()> {
+        self.set_setting("active_account", &account_id.to_string())
+    }
+
+    /// Every account, oldest first — the order the switcher numbers them in.
+    pub fn account_ids(&self) -> Result<Vec<i64>> {
+        let mut stmt = self.conn.prepare("SELECT id FROM accounts ORDER BY id")?;
+        let ids = stmt
+            .query_map([], |r| r.get(0))?
+            .collect::<std::result::Result<Vec<i64>, _>>()?;
+        Ok(ids)
+    }
+
     /// The first account row, if the store has been used before.
+    ///
+    /// Only the fallback for `active_account` and the seam onboarding uses to
+    /// find the environment-driven row. Everything that shows or acts on mail
+    /// wants `active_account`.
     pub fn first_account(&self) -> Result<Option<i64>> {
         Ok(self
             .conn
@@ -1663,6 +1714,7 @@ impl Store {
                     unread_count: r.get(7)?,
                     newest_ms: r.get(8)?,
                     folders: Vec::new(),
+                    active: false,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -1683,6 +1735,10 @@ impl Store {
                 })?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
             out.push(a);
+        }
+        let active = self.active_account()?;
+        for a in &mut out {
+            a.active = Some(a.id) == active;
         }
         Ok(out)
     }
@@ -3011,6 +3067,12 @@ impl Store {
         offset: u32,
         bound: Option<String>,
     ) -> Result<Vec<ThreadListing>> {
+        // Scoped to the account on screen. The query was written when one
+        // account was all there was; with two, every view showed both
+        // mailboxes merged — which is exactly the send-from-the-wrong-address
+        // mistake that "one active at a time" exists to prevent. A missing
+        // account (an empty store) scopes to nothing, which lists nothing.
+        let account = self.active_account()?.unwrap_or(-1);
         let sql = format!(
             "SELECT coalesce(m.thread_id, -m.id), m.id, coalesce(m.from_display,''), coalesce(m.from_addr,''),
                     coalesce(m.subject,''), coalesce(m.snippet,''), m.date_ms, t.n,
@@ -3034,14 +3096,15 @@ impl Store {
                       max(CASE WHEN flags & 1 = 0 THEN 1 ELSE 0 END) AS unread,
                       max(CASE WHEN flags & 4 != 0 THEN 1 ELSE 0 END) AS starred,
                       max(has_attachments) AS attach
-               FROM messages WHERE deleted_at_ms IS NULL AND {inner}
+               FROM messages WHERE deleted_at_ms IS NULL AND account_id = {account} AND {inner}
                GROUP BY coalesce(thread_id, -id)
              ) t ON coalesce(m.thread_id, -m.id) = t.thread_id AND m.date_ms = t.md
-             WHERE m.deleted_at_ms IS NULL AND {outer}
+             WHERE m.deleted_at_ms IS NULL AND m.account_id = {account} AND {outer}
              GROUP BY coalesce(m.thread_id, -m.id)
              ORDER BY m.date_ms DESC LIMIT ?1 OFFSET ?2",
             inner = inner,
             outer = outer,
+            account = account,
         );
         let mut stmt = self.conn.prepare_cached(&sql)?;
         // Two params, or three when the view binds a folder role or tag name.
@@ -3136,8 +3199,9 @@ impl Store {
         // be exactly the way it did.
         let needs: i64 = self.conn.query_row(
             "SELECT count(*) FROM messages
-              WHERE send_after_ms IS NOT NULL AND send_state = 'NeedsAttention'",
-            [],
+              WHERE send_after_ms IS NOT NULL AND send_state = 'NeedsAttention'
+                AND account_id = ?1",
+            [self.active_account()?.unwrap_or(-1)],
             |r| r.get(0),
         )?;
         out.push(("outbox:attention".to_string(), needs));
@@ -3159,10 +3223,11 @@ impl Store {
             "SELECT count(*) FROM (
                SELECT coalesce(thread_id, -id) AS tid
                FROM messages
-               WHERE deleted_at_ms IS NULL AND {pred}
+               WHERE deleted_at_ms IS NULL AND account_id = {account} AND {pred}
                GROUP BY coalesce(thread_id, -id)
                {having}
              )",
+            account = self.active_account()?.unwrap_or(-1),
             pred = view.predicate("messages"),
         );
         let mut stmt = self.conn.prepare_cached(&sql)?;

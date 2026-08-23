@@ -118,6 +118,8 @@ export type FolderMapping = { role: string; path: string };
 
 export type Account = {
   id: number;
+  /** The one the window shows. */
+  active: boolean;
   kind: string;
   email: string;
   display_name: string;
@@ -243,7 +245,7 @@ function mockRows(n: number, offset = 0): Thread[] {
 const mockAccounts: Account[] = [
   {
     id: 1, kind: 'imap', email: 'tom@northbay.example', display_name: 'Work',
-    color: '#0E7C86', local_archive: false, message_count: 8421, unread_count: 9,
+    color: '#0E7C86', local_archive: false, message_count: 8421, unread_count: 9, active: true,
     newest_ms: Date.now() - 4 * 60000,
     folders: [
       { role: 'archive', path: '[Gmail]/All Mail' },
@@ -380,6 +382,7 @@ const mock = {
   testAccount: async () => {},
   addAccount: async () => 2,
   removeAccount: async () => {},
+  setActiveAccount: async () => {},
   outbox: async (): Promise<OutboxRow[]> => {
     const now = Date.now();
     return [
@@ -461,9 +464,11 @@ const real = {
   openExternal: (url: string) => invoke<void>('open_external', { url }),
   discoverAccount: (address: string) => invoke<Discovered | null>('discover_account', { address }),
   guessServers: (address: string) => invoke<[Server, Server] | null>('guess_servers', { address }),
-  testAccount: (setup: AccountSetup) => invoke<void>('test_account', { setup }),
+  testAccount: (setup: AccountSetup, which?: 'imap' | 'smtp') =>
+    invoke<void>('test_account', { setup, which: which ?? null }),
   addAccount: (setup: AccountSetup) => invoke<number>('add_account', { setup }),
   removeAccount: (accountId: number) => invoke<void>('remove_account', { accountId }),
+  setActiveAccount: (accountId: number) => invoke<void>('set_active_account', { accountId }),
   outbox: () => invoke<OutboxRow[]>('list_outbox'),
   outboxSendNow: (id: number) => invoke<void>('outbox_send_now', { id }),
   outboxEdit: (id: number) => invoke<void>('outbox_edit', { id }),

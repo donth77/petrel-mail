@@ -159,7 +159,7 @@ fn status(state: State<Arc<AppState>>) -> Status {
         .lock()
         .ok()
         .and_then(|s| {
-            s.first_account()
+            s.active_account()
                 .ok()
                 .flatten()
                 .map(|a| imap_config_for(&s, a).is_some())
@@ -1007,7 +1007,7 @@ fn thread_by_id(
 #[tauri::command]
 fn list_tags(state: State<Arc<AppState>>) -> Result<Vec<TagSummary>, String> {
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
-    let Some(account) = store.first_account().map_err(|e| e.to_string())? else {
+    let Some(account) = store.active_account().map_err(|e| e.to_string())? else {
         return Ok(Vec::new());
     };
     store.tags_for_account(account).map_err(|e| e.to_string())
@@ -1049,7 +1049,7 @@ fn remote_status(message_id: i64, state: State<Arc<AppState>>) -> Result<RemoteS
         .message_sender(message_id)
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
-    let Some(account) = store.first_account().map_err(|e| e.to_string())? else {
+    let Some(account) = store.active_account().map_err(|e| e.to_string())? else {
         return Ok(RemoteStatus {
             from_addr: from,
             allowed: false,
@@ -1084,7 +1084,7 @@ fn show_remote_once(message_id: i64, state: State<Arc<AppState>>) -> Result<(), 
 #[tauri::command]
 fn trust_sender(message_id: i64, state: State<Arc<AppState>>) -> Result<String, String> {
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
-    let Some(account) = store.first_account().map_err(|e| e.to_string())? else {
+    let Some(account) = store.active_account().map_err(|e| e.to_string())? else {
         return Err("no account".into());
     };
     let from = store
@@ -1103,7 +1103,7 @@ fn trust_sender(message_id: i64, state: State<Arc<AppState>>) -> Result<String, 
 #[tauri::command]
 fn trusted_senders(state: State<Arc<AppState>>) -> Result<Vec<String>, String> {
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
-    let Some(account) = store.first_account().map_err(|e| e.to_string())? else {
+    let Some(account) = store.active_account().map_err(|e| e.to_string())? else {
         return Ok(Vec::new());
     };
     store.trusted_senders(account).map_err(|e| e.to_string())
@@ -1112,7 +1112,7 @@ fn trusted_senders(state: State<Arc<AppState>>) -> Result<Vec<String>, String> {
 #[tauri::command]
 fn untrust_sender(addr: String, state: State<Arc<AppState>>) -> Result<(), String> {
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
-    let Some(account) = store.first_account().map_err(|e| e.to_string())? else {
+    let Some(account) = store.active_account().map_err(|e| e.to_string())? else {
         return Ok(());
     };
     store
@@ -1142,7 +1142,7 @@ fn triage(
 ) -> Result<ActionReceipt, String> {
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
     let account = store
-        .first_account()
+        .active_account()
         .map_err(|e| e.to_string())?
         .ok_or("no account")?;
     // The provider's placement model, not a per-call guess: on Gmail an
@@ -1230,7 +1230,7 @@ async fn attempt(
 
     let account_id = {
         let store = state.store.lock().map_err(|_| "store lock poisoned")?;
-        store.first_account().ok().flatten()
+        store.active_account().ok().flatten()
     };
     let cfg = account_id
         .and_then(|a| imap_config(state, a))
@@ -1256,7 +1256,7 @@ async fn attempt(
     let identity = {
         let store = state.store.lock().map_err(|_| "store lock poisoned")?;
         store
-            .first_account()
+            .active_account()
             .ok()
             .flatten()
             .and_then(|a| store.identity(a).ok())
@@ -1331,7 +1331,7 @@ async fn attempt(
     let sent_path = {
         let store = state.store.lock().map_err(|_| "store lock poisoned")?;
         let account = store
-            .first_account()
+            .active_account()
             .map_err(|e| e.to_string())?
             .ok_or("no account")?;
         store
@@ -1436,7 +1436,7 @@ fn complete_addresses(
     state: State<Arc<AppState>>,
 ) -> Result<Vec<petrel_engine::store::Correspondent>, String> {
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
-    let Some(account) = store.first_account().map_err(|e| e.to_string())? else {
+    let Some(account) = store.active_account().map_err(|e| e.to_string())? else {
         return Ok(Vec::new());
     };
     store
@@ -1729,17 +1729,22 @@ struct AccountSetup {
 /// Runs before anything is stored. The two halves are reported separately so
 /// the form can say which server is wrong rather than "something failed".
 #[tauri::command]
-async fn test_account(setup: AccountSetup) -> Result<(), String> {
+async fn test_account(setup: AccountSetup, which: Option<String>) -> Result<(), String> {
     // On a spawned task rather than the command's own future. Tauri drives
     // async commands from its own runtime, and a TLS handshake — which
     // builds a root store and blocks on the socket — run inline there stalled
     // without ever resolving. Spawned, it runs where the sync already does.
-    tauri::async_runtime::spawn(test_account_inner(setup))
+    tauri::async_runtime::spawn(test_account_inner(setup, which))
         .await
         .map_err(|e| format!("test task: {e}"))?
 }
 
-async fn test_account_inner(setup: AccountSetup) -> Result<(), String> {
+/// `which` is "imap", "smtp", or absent for both in turn. Split so the form
+/// can report each half as it happens: some providers take several seconds
+/// per login, and one spinner over both reads as stuck halfway through.
+async fn test_account_inner(setup: AccountSetup, which: Option<String>) -> Result<(), String> {
+    let do_imap = which.as_deref() != Some("smtp");
+    let do_smtp = which.as_deref() != Some("imap");
     let imap = ImapConfig {
         host: setup.imap_host.clone(),
         port: setup.imap_port,
@@ -1747,18 +1752,22 @@ async fn test_account_inner(setup: AccountSetup) -> Result<(), String> {
         pass: setup.password.clone(),
         security: Security::Tls,
     };
-    petrel_providers::imap::login_check(&imap)
-        .await
-        .map_err(|e| format!("Incoming (IMAP) — {e}"))?;
+    if do_imap {
+        petrel_providers::imap::login_check(&imap)
+            .await
+            .map_err(|e| format!("Incoming (IMAP) — {e}"))?;
+    }
     let smtp = petrel_providers::smtp::SmtpConfig {
         host: setup.smtp_host.clone(),
         port: setup.smtp_port,
         user: setup.username.clone(),
         pass: setup.password.clone(),
     };
-    petrel_providers::smtp::login_check(&smtp)
-        .await
-        .map_err(|e| format!("Outgoing (SMTP) — {e}"))?;
+    if do_smtp {
+        petrel_providers::smtp::login_check(&smtp)
+            .await
+            .map_err(|e| format!("Outgoing (SMTP) — {e}"))?;
+    }
     Ok(())
 }
 
@@ -1799,7 +1808,12 @@ fn add_account(setup: AccountSetup, state: State<Arc<AppState>>) -> Result<i64, 
     };
     // Keychain second, so a keychain refusal does not leave a row with no
     // way to sign in. If it fails, the row goes too.
+    // Any item already under this id is stale — a removed account whose
+    // keychain item outlived its row — and gives way, or an account removed
+    // and added again could never sign in: `set_password` refuses to
+    // overwrite on macOS.
     if let Err(e) = keychain_entry(id).and_then(|k| {
+        let _ = k.delete_credential();
         k.set_password(&setup.password)
             .map_err(|e| format!("keychain: {e}"))
     }) {
@@ -1814,6 +1828,23 @@ fn add_account(setup: AccountSetup, state: State<Arc<AppState>>) -> Result<i64, 
         spawn_real_sync(Arc::clone(&state), id, cfg);
     }
     Ok(id)
+}
+
+/// Makes an account the one the window shows. Nothing about syncing changes:
+/// every account is already being kept up to date; this is which one is read.
+#[tauri::command]
+fn set_active_account(account_id: i64, state: State<Arc<AppState>>) -> Result<(), String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    if !store
+        .account_ids()
+        .map_err(|e| e.to_string())?
+        .contains(&account_id)
+    {
+        return Err("no such account".into());
+    }
+    store
+        .set_active_account(account_id)
+        .map_err(|e| e.to_string())
 }
 
 /// Removes an account, its mail and its password.
@@ -1833,7 +1864,7 @@ fn list_outbox(
     state: State<Arc<AppState>>,
 ) -> Result<Vec<petrel_engine::store::OutboxRow>, String> {
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
-    let Some(account) = store.first_account().map_err(|e| e.to_string())? else {
+    let Some(account) = store.active_account().map_err(|e| e.to_string())? else {
         return Ok(Vec::new());
     };
     store.outbox(account).map_err(|e| e.to_string())
@@ -1868,7 +1899,7 @@ async fn outbox_check(id: i64, state: State<'_, Arc<AppState>>) -> Result<String
     let (account, message_id) = {
         let store = state.store.lock().map_err(|_| "store lock poisoned")?;
         let account = store
-            .first_account()
+            .active_account()
             .map_err(|e| e.to_string())?
             .ok_or("no account")?;
         let row = store
@@ -1919,7 +1950,7 @@ fn save_draft(
 ) -> Result<i64, String> {
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
     let account = store
-        .first_account()
+        .active_account()
         .map_err(|e| e.to_string())?
         .ok_or("no account")?;
     let envelope = petrel_engine::store::DraftEnvelope {
@@ -2066,7 +2097,7 @@ fn guess_content_type(path: &std::path::Path) -> String {
 fn get_identity(state: State<Arc<AppState>>) -> Result<Identity, String> {
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
     let account = store
-        .first_account()
+        .active_account()
         .map_err(|e| e.to_string())?
         .ok_or("no account")?;
     store.identity(account).map_err(|e| e.to_string())
@@ -2081,7 +2112,7 @@ fn set_identity(
 ) -> Result<(), String> {
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
     let account = store
-        .first_account()
+        .active_account()
         .map_err(|e| e.to_string())?
         .ok_or("no account")?;
     store
@@ -2128,7 +2159,7 @@ fn export_mbox(
 #[tauri::command]
 fn list_folders(state: State<Arc<AppState>>) -> Result<Vec<FolderSummary>, String> {
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
-    let Some(account) = store.first_account().map_err(|e| e.to_string())? else {
+    let Some(account) = store.active_account().map_err(|e| e.to_string())? else {
         return Ok(Vec::new());
     };
     store.folders(account).map_err(|e| e.to_string())
@@ -2140,7 +2171,7 @@ fn list_folders(state: State<Arc<AppState>>) -> Result<Vec<FolderSummary>, Strin
 fn create_folder(path: String, state: State<Arc<AppState>>) -> Result<i64, String> {
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
     let account = store
-        .first_account()
+        .active_account()
         .map_err(|e| e.to_string())?
         .ok_or("no account")?;
     store
@@ -2153,7 +2184,7 @@ fn create_folder(path: String, state: State<Arc<AppState>>) -> Result<i64, Strin
 fn create_tag(name: String, state: State<Arc<AppState>>) -> Result<i64, String> {
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
     let account = store
-        .first_account()
+        .active_account()
         .map_err(|e| e.to_string())?
         .ok_or("no account")?;
     store
@@ -2682,18 +2713,43 @@ pub fn run() {
     // override when there is none. Before this every launch without the
     // variables was a demo — which is how demo tags ended up decorating a
     // store full of real mail.
-    let configured = state
+    // Every account set up in the app syncs, each on its own tasks. One is
+    // *shown* at a time — that is the switcher's job — but mail arriving for
+    // the other should be there, read or not, the moment you switch to it.
+    // The environment-driven row is the fallback for the developer case only.
+    let mut started = 0;
+    let configs: Vec<(i64, ImapConfig)> = state
         .store
         .lock()
         .ok()
-        .and_then(|s| imap_config_for(&s, account))
-        .or_else(imap_config_from_env);
-    match configured {
-        Some(cfg) => {
+        .map(|s| {
+            s.account_ids()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|id| imap_config_for(&s, id).map(|c| (id, c)))
+                .collect()
+        })
+        .unwrap_or_default();
+    for (id, cfg) in configs {
+        eprintln!(
+            "[sync] account {id} configured: {} @ {}",
+            cfg.user, cfg.host
+        );
+        spawn_real_sync(state.clone(), id, cfg);
+        started += 1;
+    }
+    let configured = if started > 0 {
+        None
+    } else {
+        imap_config_from_env()
+    };
+    match (started, configured) {
+        (n, _) if n > 0 => {}
+        (_, Some(cfg)) => {
             eprintln!("[sync] account configured: {} @ {}", cfg.user, cfg.host);
             spawn_real_sync(state.clone(), account, cfg);
         }
-        None => {
+        (_, None) => {
             // Demo data is for an empty first run only. Seeding it into a store
             // that already holds real mail would mix fabricated messages into
             // someone's actual mailbox — found the hard way when a persistence
@@ -2752,6 +2808,7 @@ pub fn run() {
             test_account,
             add_account,
             remove_account,
+            set_active_account,
             list_outbox,
             outbox_send_now,
             outbox_edit,

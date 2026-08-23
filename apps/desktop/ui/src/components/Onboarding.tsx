@@ -35,7 +35,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
   const [address, setAddress] = useState('');
   const [password, setPassword] = useState('');
   const [username, setUsername] = useState('');
-  const [testing, setTesting] = useState<'idle' | 'running' | 'ok' | string>('idle');
+  const [testing, setTesting] = useState<'idle' | 'imap' | 'smtp' | 'ok' | string>('idle');
   const [error, setError] = useState<string | null>(null);
   const addressRef = useRef<HTMLInputElement>(null);
 
@@ -83,9 +83,14 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
   /** Test, then store, then sync. Storing never happens without the test. */
   const signIn = async (setup: AccountSetup) => {
     setError(null);
-    setTesting('running');
+    // One server at a time, each named while it runs. Some providers take
+    // several seconds per login, and a single spinner over both reads as
+    // stuck by the time the second begins.
     try {
-      await api.testAccount(setup);
+      setTesting('imap');
+      await api.testAccount(setup, 'imap');
+      setTesting('smtp');
+      await api.testAccount(setup, 'smtp');
       setTesting('ok');
     } catch (e) {
       // The command's message already says which server and why; an
@@ -220,7 +225,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
               <button
                 type="submit"
                 className="reply primary"
-                disabled={!password || testing === 'running'}
+                disabled={!password || testing === 'imap' || testing === 'smtp'}
               >
                 {t('onb-sign-in')}
               </button>
@@ -293,7 +298,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
                 <Icon icon={ArrowLeft} size={13} /> {t('onb-back')}
               </button>
               <span className="spacer" />
-              {testing !== 'idle' && testing !== 'running' && (
+              {testing !== 'idle' && testing !== 'imap' && testing !== 'smtp' && (
                 <button
                   type="button"
                   className="reply"
@@ -309,7 +314,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
               <button
                 type="submit"
                 className="reply primary"
-                disabled={!password || !step.imap.host || !step.smtp.host || testing === 'running'}
+                disabled={!password || !step.imap.host || !step.smtp.host || testing === 'imap' || testing === 'smtp'}
               >
                 {t('onb-sign-in')}
               </button>
@@ -324,12 +329,13 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
 }
 
 /** "Reached both servers…" / a reason / nothing, below the sign-in button. */
-function TestLine({ state }: { state: 'idle' | 'running' | 'ok' | string }) {
+function TestLine({ state }: { state: 'idle' | 'imap' | 'smtp' | 'ok' | string }) {
   if (state === 'idle') return null;
-  if (state === 'running')
+  if (state === 'imap' || state === 'smtp')
     return (
-      <p className="onb-test">
-        <Icon icon={Loader2} size={13} className="spin" /> {t('onb-testing')}
+      <p className="onb-test" aria-live="polite">
+        <Icon icon={Loader2} size={13} className="spin" />{' '}
+        {t(state === 'imap' ? 'onb-testing-imap' : 'onb-testing-smtp')}
       </p>
     );
   if (state === 'ok')

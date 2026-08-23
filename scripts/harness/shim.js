@@ -164,11 +164,22 @@
       return out;
     },
     list_accounts: function () {
+      // Two accounts, so switching can be exercised. Which is active is
+      // remembered across calls the way the store remembers it.
+      var active = 1;
+      try { active = Number(localStorage.getItem('__petrel_active_account') || 1); } catch (e) {}
       return [
         { id: 1, kind: 'gmail', email: 'you@example.com', display_name: '',
-          color: '#0E7C86', local_archive: 0, message_count: rows.length,
+          color: '#0E7C86', local_archive: 0, active: active === 1, message_count: rows.length,
           unread_count: 0, last_sync_ms: now, folders: [] },
+        { id: 2, kind: 'imap', email: 'tom@northbay.example', display_name: '',
+          color: '#6B46C1', local_archive: 0, active: active === 2, message_count: 41,
+          unread_count: 3, last_sync_ms: now, folders: [] },
       ];
+    },
+    set_active_account: function (a) {
+      try { localStorage.setItem('__petrel_active_account', String(a.accountId)); } catch (e) {}
+      return null;
     },
     get_settings: function () {
       return {};

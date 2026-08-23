@@ -118,7 +118,8 @@ export const en = {
   'onb-username': 'Username',
   'onb-incoming': 'Incoming · IMAP',
   'onb-outgoing': 'Outgoing · SMTP',
-  'onb-testing': 'Reaching the servers…',
+  'onb-testing-imap': 'Reaching the incoming server…',
+  'onb-testing-smtp': 'Incoming server reached. Now the outgoing one…',
   'onb-tested': 'Reached both servers over TLS. Certificates check out.',
   'onb-retest': 'Re-test',
   'onb-getting': 'Getting your mail',
@@ -304,6 +305,7 @@ export const en = {
   'storage-export-failed': 'Export failed — { $error }',
   'settings-not-built': 'This pane is not built yet.',
   'accounts-yours': 'Your accounts',
+  'account-switch-failed': 'Could not switch accounts — { $error }',
   'accounts-add': 'Add account',
   'accounts-remove': 'Remove account',
   'accounts-remove-help':

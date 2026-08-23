@@ -312,12 +312,23 @@ fn threads_never_span_accounts() {
         store.thread_of(b.message_id).unwrap(),
         "each account keeps its own conversation; actions must not cross"
     );
+    // And the list shows one account at a time — never both merged. A
+    // merged inbox is the single largest source of send-from-the-wrong-
+    // address mistakes, and it was exactly what this listed before the
+    // query learned which account was on screen.
     assert_eq!(
         store
             .list_threads(&ListView::Inbox, 0, 20)
             .expect("list")
             .len(),
-        2
+        1
+    );
+    store.set_active_account(other).unwrap();
+    let rows = store.list_threads(&ListView::Inbox, 0, 20).expect("list");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].id, b.message_id,
+        "the other account's copy, once switched"
     );
 }
 
