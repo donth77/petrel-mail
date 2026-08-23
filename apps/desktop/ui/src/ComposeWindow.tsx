@@ -7,6 +7,7 @@ import { fileSize } from './lib/format';
 import { snoozeOptions } from './lib/snooze';
 import { Toast } from './components/Toast';
 import { t } from './lib/strings';
+import { useSettings } from './lib/settings';
 import { useDropGuard } from './lib/useFileDrop';
 
 /**
@@ -25,6 +26,8 @@ import { useDropGuard } from './lib/useFileDrop';
 export function ComposeWindow({ draftId }: { draftId: number }) {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  // For the undo window's length; the provider wraps every window.
+  const { settings } = useSettings();
   useDropGuard();
   const [error, setError] = useState<string | null>(null);
   const [account, setAccount] = useState('');
@@ -59,7 +62,12 @@ export function ComposeWindow({ draftId }: { draftId: number }) {
 
   const save = async (d: Draft) => {
     try {
-      const id = await api.saveDraft(d.savedId ?? null, d.to, d.subject, d.body, d.html);
+      const id = await api.saveDraft(d.savedId ?? null, d.to, d.subject, d.body, d.html, {
+        cc: d.cc,
+        inReplyTo: d.inReplyTo ?? null,
+        references: d.references ?? [],
+        attachments: (d.attachments ?? []).map((a) => a.path),
+      });
       setDraft({ ...d, savedId: id });
       return id;
     } catch (e) {
@@ -120,21 +128,14 @@ export function ComposeWindow({ draftId }: { draftId: number }) {
             setToast(t('compose-no-recipient'));
             return;
           }
-          void api
-            .send(
-              addresses(draft.to),
-              addresses(draft.cc),
-              draft.subject,
-              draft.body,
-              draft.html || null,
-              draft.inReplyTo ?? null,
-              draft.references ?? [],
-              (draft.attachments ?? []).map((a) => a.path),
-            )
-            .then(() => {
-              if (draft.savedId != null) void api.deleteDraft(draft.savedId).catch(() => {});
-              return close();
-            })
+          // Into the outbox with the same undo window the main composer
+          // gives, rather than straight onto the wire. A popped-out send
+          // had no window at all before this — and no retry, no outbox row
+          // on failure, nothing but a toast in a window about to close.
+          const wait = Number(settings.undoSendSeconds) || 0;
+          void save(draft)
+            .then((id) => (id == null ? null : api.scheduleSend(id, Date.now() + wait * 1000)))
+            .then(() => close())
             .catch((e) => setToast(t('compose-failed', { error: String(e) })));
         }}
       />

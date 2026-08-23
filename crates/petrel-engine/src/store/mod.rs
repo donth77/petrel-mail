@@ -11,7 +11,7 @@ use rusqlite::functions::FunctionFlags;
 use rusqlite::{Connection, params};
 use std::path::Path;
 
-pub const SCHEMA_VERSION: i64 = 11;
+pub const SCHEMA_VERSION: i64 = 12;
 /// Bumped whenever text extraction changes; a mismatch forces reindexing.
 pub const EXTRACTOR_VERSION: i64 = 1;
 
@@ -210,12 +210,27 @@ fn format_asctime(ms: i64) -> String {
 pub struct DraftRecord {
     pub id: i64,
     pub to: String,
+    pub cc: String,
     pub subject: String,
     /// Plain text: the snippet, the search index, and the text half of the
     /// message that goes out.
     pub body: String,
     /// The rich-text half, empty for a draft written before there was one.
     pub html: String,
+    /// What threads a reply into its conversation, and what is attached.
+    pub envelope: DraftEnvelope,
+}
+
+/// The parts of an outgoing message that are not its text.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DraftEnvelope {
+    #[serde(default)]
+    pub in_reply_to: Option<String>,
+    #[serde(default)]
+    pub references: Vec<String>,
+    /// Paths on this machine. A draft is local; the file is read when it goes.
+    #[serde(default)]
+    pub attachments: Vec<String>,
 }
 
 /// Who a message is sent as.
@@ -881,6 +896,9 @@ impl Store {
         }
         if ver < 11 {
             conn.execute_batch(include_str!("migrations/0011-outbox-state.sql"))?;
+        }
+        if ver < 12 {
+            conn.execute_batch(include_str!("migrations/0012-draft-envelope.sql"))?;
         }
         if ver < SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -1887,6 +1905,32 @@ impl Store {
         body: &str,
         html: &str,
     ) -> Result<i64> {
+        self.save_draft_full(
+            account_id,
+            draft_id,
+            to,
+            "",
+            subject,
+            body,
+            html,
+            &DraftEnvelope::default(),
+        )
+    }
+
+    /// Saves a draft with everything it needs to go out, not only its text.
+    #[allow(clippy::too_many_arguments)]
+    pub fn save_draft_full(
+        &self,
+        account_id: i64,
+        draft_id: Option<i64>,
+        to: &str,
+        cc: &str,
+        subject: &str,
+        body: &str,
+        html: &str,
+        envelope: &DraftEnvelope,
+    ) -> Result<i64> {
+        let envelope_json = serde_json::to_string(envelope).unwrap_or_else(|_| "{}".into());
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
@@ -1901,17 +1945,18 @@ impl Store {
                 self.conn.execute(
                     "UPDATE messages
                      SET date_ms = ?2, subject = ?3, snippet = ?4, draft_body = ?5,
-                         draft_html = ?6
+                         draft_html = ?6, draft_envelope = ?7
                      WHERE id = ?1",
-                    params![id, now, subject, snippet, body, html],
+                    params![id, now, subject, snippet, body, html, envelope_json],
                 )?;
                 id
             }
             None => {
                 self.conn.execute(
                     "INSERT INTO messages(account_id, date_ms, from_addr, from_display,
-                                          subject, snippet, draft_body, draft_html, flags)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                                          subject, snippet, draft_body, draft_html, flags,
+                                          draft_envelope)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                     params![
                         account_id,
                         now,
@@ -1921,7 +1966,8 @@ impl Store {
                         snippet,
                         body,
                         html,
-                        flags::DRAFT | flags::SEEN
+                        flags::DRAFT | flags::SEEN,
+                        envelope_json
                     ],
                 )?;
                 self.conn.last_insert_rowid()
@@ -1934,16 +1980,18 @@ impl Store {
             "DELETE FROM message_addresses WHERE message_id = ?1",
             params![id],
         )?;
-        for addr in to
-            .split([',', ';'])
-            .map(str::trim)
-            .filter(|a| !a.is_empty())
-        {
-            self.conn.execute(
-                "INSERT INTO message_addresses(message_id, role, addr_norm, display)
-                 VALUES (?1, 'to', ?2, ?2)",
-                params![id, addr],
-            )?;
+        for (role, list) in [("to", to), ("cc", cc)] {
+            for addr in list
+                .split([',', ';'])
+                .map(str::trim)
+                .filter(|a| !a.is_empty())
+            {
+                self.conn.execute(
+                    "INSERT INTO message_addresses(message_id, role, addr_norm, display)
+                     VALUES (?1, ?2, ?3, ?3)",
+                    params![id, role, addr],
+                )?;
+            }
         }
 
         let folder = self.ensure_folder(account_id, "drafts", "drafts")?;
@@ -2133,12 +2181,27 @@ impl Store {
 
     /// Reads a draft back for editing.
     pub fn load_draft(&self, id: i64) -> Result<DraftRecord> {
-        let (subject, body, html): (String, String, String) = self.conn.query_row(
-            "SELECT coalesce(subject,''), coalesce(draft_body,''), coalesce(draft_html,'')
-             FROM messages WHERE id = ?1",
-            params![id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )?;
+        let (subject, body, html, envelope_json): (String, String, String, Option<String>) =
+            self.conn.query_row(
+                "SELECT coalesce(subject,''), coalesce(draft_body,''), coalesce(draft_html,''),
+                        draft_envelope
+                 FROM messages WHERE id = ?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )?;
+        let envelope = envelope_json
+            .and_then(|j| serde_json::from_str(&j).ok())
+            .unwrap_or_default();
+        let addresses = |role: &str| -> Result<Vec<String>> {
+            let mut stmt = self.conn.prepare(
+                "SELECT addr_norm FROM message_addresses WHERE message_id = ?1 AND role = ?2",
+            )?;
+            let v = stmt
+                .query_map(params![id, role], |r| r.get(0))?
+                .collect::<std::result::Result<Vec<String>, _>>()?;
+            Ok(v)
+        };
+        let cc = addresses("cc")?;
         let mut stmt = self.conn.prepare(
             "SELECT addr_norm FROM message_addresses WHERE message_id = ?1 AND role = 'to'",
         )?;
@@ -2148,9 +2211,11 @@ impl Store {
         Ok(DraftRecord {
             id,
             to: to.join(", "),
+            cc: cc.join(", "),
             subject,
             body,
             html,
+            envelope,
         })
     }
 

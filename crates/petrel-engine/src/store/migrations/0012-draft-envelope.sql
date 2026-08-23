@@ -1,0 +1,13 @@
+-- Everything a draft needs to go out that is not its text.
+--
+-- A draft kept its recipients, subject and body, and lost its cc, the headers
+-- that thread a reply into its conversation, and the files attached to it.
+-- That was tolerable while the composer sent directly and a draft was only
+-- ever a draft. It is not tolerable once every send goes through the outbox,
+-- because then a reply that waits ten seconds in the undo window arrives
+-- un-threaded and without its attachments.
+--
+-- JSON, because it is read by exactly one consumer — the sender — and never
+-- queried: {"in_reply_to": "...", "references": [...], "attachments": [...]}.
+-- Cc goes where every other address goes, in message_addresses with its role.
+ALTER TABLE messages ADD COLUMN draft_envelope TEXT;

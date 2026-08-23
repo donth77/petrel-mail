@@ -87,7 +87,11 @@ export function App() {
   // A message waiting out its undo window. It is held here, in the window, and
   // has not touched the network — which is the whole reason undo can cancel it
   // rather than chase it.
-  const [outgoing, setOutgoing] = useState<{ draft: Draft; left: number } | null>(null);
+  // The send waiting out its undo window. The message itself is in the
+  // outbox; this is only what the toast needs to count down and to name it.
+  const [outgoing, setOutgoing] = useState<{ id: number; subject: string; left: number } | null>(null);
+  const outgoingRef = useRef(outgoing);
+  outgoingRef.current = outgoing;
   const [folders, setFolders] = useState<Folder[]>([]);
 
   useEffect(() => {
@@ -226,6 +230,24 @@ export function App() {
   const railRef = useRef<HTMLElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
+  /**
+   * Pulls a send back out of its undo window and into the composer.
+   *
+   * Out of the outbox and back, text and all: the store has the whole
+   * message, so nothing is reconstructed here. One function, because the
+   * Z key and the bar's Undo button must mean the same thing.
+   */
+  const cancelPendingSend = () => {
+    const o = outgoingRef.current;
+    if (!o) return;
+    setOutgoing(null);
+    void api
+      .outboxEdit(o.id)
+      .then(() => resumeDraft(o.id))
+      .then(() => setToast(t('compose-cancelled')))
+      .catch((e) => setToast(t('compose-resume-failed', { error: String(e) })));
+  };
+
   useKeyboard({
     openConversation: () => {
       // Enter opens what the list has focused; with the reading pane off it is
@@ -280,9 +302,7 @@ export function App() {
       // A pending send outranks the last triage action: it is the thing with a
       // deadline, and it is what the countdown just told you Z would do.
       if (outgoing) {
-        setDraft(outgoing.draft);
-        setOutgoing(null);
-        setToast(t('compose-cancelled'));
+        cancelPendingSend();
         return;
       }
       void triage.undo();
@@ -522,13 +542,21 @@ export function App() {
     }
   };
 
+  /** The parts of a draft that are not its text, as the store keeps them. */
+  const envelopeOf = (d: Draft) => ({
+    cc: d.cc,
+    inReplyTo: d.inReplyTo ?? null,
+    references: d.references ?? [],
+    attachments: (d.attachments ?? []).map((a) => a.path),
+  });
+
   /**
    * Saves the composer's contents, and remembers the id so saving again
    * updates the same draft rather than leaving a trail of near-identical ones.
    */
   const saveDraft = async (d: Draft) => {
     try {
-      const id = await api.saveDraft(d.savedId ?? null, d.to, d.subject, d.body, d.html);
+      const id = await api.saveDraft(d.savedId ?? null, d.to, d.subject, d.body, d.html, envelopeOf(d));
       setDraft((cur) => (cur ? { ...cur, savedId: id } : cur));
       setToast(t('compose-saved'));
       // The Drafts view is a query, so it only changes when the list reloads.
@@ -602,35 +630,16 @@ export function App() {
     }
   };
 
-  // The undo-send countdown. Nothing has been sent while this runs.
+  // The undo-send countdown. A clock on the toast, nothing more: the message
+  // is in the outbox with its time set, and the outbox clock sends it. When
+  // this reaches zero the toast goes away and the send is the outbox's affair
+  // — which is exactly the point, because a toast that also sends is a send
+  // that is lost the moment the window closes.
   useEffect(() => {
     if (!outgoing) return;
     if (outgoing.left <= 0) {
-      const d = outgoing.draft;
       setOutgoing(null);
-      void api
-        .send(
-          addresses(d.to),
-          addresses(d.cc),
-          d.subject,
-          d.body,
-          d.html || null,
-          d.inReplyTo ?? null,
-          d.references ?? [],
-          (d.attachments ?? []).map((a) => a.path),
-        )
-        .then(() => {
-          // It has gone; leaving it in Drafts would offer to send it twice.
-          if (d.savedId != null) void api.deleteDraft(d.savedId).catch(() => {});
-          setToast(t('compose-sent'));
-        })
-        .catch((e) => {
-          // The draft comes back rather than evaporating: a failed send that
-          // loses what you wrote is unforgivable, and the error text is often
-          // something only the writer can act on.
-          setDraft(d);
-          setToast(t('compose-failed', { error: String(e) }));
-        });
+      setToast(t('compose-sent'));
       return;
     }
     const h = setTimeout(() => setOutgoing((o) => (o ? { ...o, left: o.left - 1 } : null)), 1000);
@@ -1308,9 +1317,26 @@ export function App() {
               return;
             }
             attachmentWarned.current = false;
+            // Into the outbox, never straight onto the wire. The undo window
+            // is the message sitting in the outbox with its time set a few
+            // seconds out — so closing the app mid-countdown does not lose it
+            // (it goes when the app is next open), a failed send lands in the
+            // outbox with its reason rather than as a toast, and the
+            // ambiguous-outcome rule protects every send, not only the
+            // scheduled ones.
             const wait = Number(settings.undoSendSeconds) || 0;
-            setOutgoing({ draft, left: wait });
+            const d = draft;
             setDraft(null);
+            void api
+              .saveDraft(d.savedId ?? null, d.to, d.subject, d.body, d.html, envelopeOf(d))
+              .then((id) => api.scheduleSend(id, Date.now() + wait * 1000).then(() => id))
+              .then((id) => setOutgoing({ id, subject: d.subject, left: wait }))
+              .catch((e) => {
+                // Could not even queue it: the draft comes back. Losing what
+                // someone wrote is the one failure that is unforgivable.
+                setDraft(d);
+                setToast(t('compose-failed', { error: String(e) }));
+              });
           }}
         />
       )}
@@ -1449,12 +1475,24 @@ export function App() {
         <div className="sending" role="status">
           <span className="sending-count mono">{outgoing.left}s</span>
           <span className="clip">
-            {t('compose-sending', { count: String(outgoing.left) })} — {outgoing.draft.to}
+            {t('compose-sending', { count: String(outgoing.left) })} — {outgoing.subject || t('no-subject')}
           </span>
-          <button type="button" className="reply" onClick={() => { setDraft(outgoing.draft); setOutgoing(null); setToast(t('compose-cancelled')); }}>
+          {/* The same path as Z, so the button and the key cannot drift. */}
+          <button type="button" className="reply" onClick={cancelPendingSend}>
             {t('undo')} <span className="kbd">Z</span>
           </button>
-          <button type="button" className="sending-now" onClick={() => setOutgoing({ ...outgoing, left: 0 })}>
+          {/* Tells the outbox, not only the counter: zeroing the clock here
+              would end the toast while the message sat waiting out its
+              window in the store. */}
+          <button
+            type="button"
+            className="sending-now"
+            onClick={() => {
+              const o = outgoing;
+              setOutgoing({ ...o, left: 0 });
+              void api.outboxSendNow(o.id).catch((e) => setToast(t('compose-failed', { error: String(e) })));
+            }}
+          >
             {t('compose-send-now')}
           </button>
         </div>

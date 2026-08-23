@@ -278,7 +278,6 @@ const mock = {
   renameTag: async () => {},
   setTagColour: async () => {},
   deleteTag: async () => {},
-  send: async () => 'mock-message-id@example.com',
   storage: async (): Promise<StorageReport> => ({
     messages: 40, attachments: 2,
     database_bytes: 12_582_912, blob_bytes: 41_943_040, index_bytes: 3_145_728,
@@ -445,21 +444,37 @@ const real = {
   setTagColour: (tagId: number, colour: string) =>
     invoke<void>('set_tag_colour', { tagId, colour }),
   deleteTag: (tagId: number) => invoke<void>('delete_tag', { tagId }),
-  send: (
-    to: string[], cc: string[], subject: string, body: string, html: string | null,
-    inReplyTo: string | null, references: string[], attachments: string[],
-  ) =>
-    invoke<string>('send_message', {
-      to, cc, subject, body, html, inReplyTo, references, attachments,
-    }),
+  // There is deliberately no direct `send` here. Every message leaves through
+  // the outbox — saved, scheduled, sent by the worker — so the undo window,
+  // the retry ladder and the ambiguous-outcome rule apply to all of them.
+  // A binding that sent straight to the wire would be a way around all three.
   storage: () => invoke<StorageReport>('storage_report'),
   exportMbox: (view: string, path: string) => invoke<string>('export_mbox', { view, path }),
   identity: () => invoke<Identity>('get_identity'),
   setIdentity: (displayName: string, signature: string, signatureOnReply: boolean) =>
     invoke<void>('set_identity', { displayName, signature, signatureOnReply }),
+  // The whole message, not only its text. A draft that drops its cc, its
+  // reply headers or its attachments is fine as long as a draft is only ever
+  // a draft; once every send waits in the outbox, it is the message.
   saveDraft: (
-    draftId: number | null, to: string, subject: string, body: string, html: string,
-  ) => invoke<number>('save_draft', { draftId, to, subject, body, html }),
+    draftId: number | null,
+    to: string,
+    subject: string,
+    body: string,
+    html: string,
+    rest: { cc?: string; inReplyTo?: string | null; references?: string[]; attachments?: string[] } = {},
+  ) =>
+    invoke<number>('save_draft', {
+      draftId,
+      to,
+      cc: rest.cc ?? '',
+      subject,
+      body,
+      html,
+      inReplyTo: rest.inReplyTo ?? null,
+      references: rest.references ?? [],
+      attachments: rest.attachments ?? [],
+    }),
   loadDraft: (id: number) => invoke<DraftRecord>('load_draft', { id }),
   deleteDraft: (id: number) => invoke<void>('delete_draft', { id }),
   scheduleSend: (draftId: number, atMs: number | null) =>

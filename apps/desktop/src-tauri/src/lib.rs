@@ -1507,18 +1507,26 @@ async fn send_due(state: Arc<AppState>, account: i64) {
                 .unwrap_or(0)
         };
 
+        let cc: Vec<String> =
+            d.cc.split([',', ';'])
+                .map(|a| a.trim().to_string())
+                .filter(|a| !a.is_empty())
+                .collect();
+        // The whole message, not only its text: a reply that waited in the
+        // undo window still threads into its conversation, and still carries
+        // what was attached to it.
         let result = attempt(
             &state,
             to,
-            Vec::new(),
+            cc,
             d.subject,
             d.body,
             // Stored alongside the text, so a message posted hours ago goes
             // out in the form it was written rather than flattened by the wait.
             Some(d.html).filter(|h| !h.trim().is_empty()),
-            None,
-            Vec::new(),
-            Vec::new(),
+            d.envelope.in_reply_to,
+            d.envelope.references,
+            d.envelope.attachments,
         )
         .await;
 
@@ -1672,12 +1680,17 @@ async fn outbox_check(id: i64, state: State<'_, Arc<AppState>>) -> Result<String
 
 /// Saves the composer's contents so they survive closing it.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 fn save_draft(
     draft_id: Option<i64>,
     to: String,
+    cc: Option<String>,
     subject: String,
     body: String,
     html: String,
+    in_reply_to: Option<String>,
+    references: Option<Vec<String>>,
+    attachments: Option<Vec<String>>,
     state: State<Arc<AppState>>,
 ) -> Result<i64, String> {
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
@@ -1685,8 +1698,22 @@ fn save_draft(
         .first_account()
         .map_err(|e| e.to_string())?
         .ok_or("no account")?;
+    let envelope = petrel_engine::store::DraftEnvelope {
+        in_reply_to,
+        references: references.unwrap_or_default(),
+        attachments: attachments.unwrap_or_default(),
+    };
     store
-        .save_draft(account, draft_id, &to, &subject, &body, &html)
+        .save_draft_full(
+            account,
+            draft_id,
+            &to,
+            cc.as_deref().unwrap_or(""),
+            &subject,
+            &body,
+            &html,
+            &envelope,
+        )
         .map_err(|e| e.to_string())
 }
 

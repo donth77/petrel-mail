@@ -218,3 +218,88 @@ fn a_draft_remembers_its_formatting() {
         .unwrap();
     assert_eq!(s.load_draft(plain).unwrap().html, "");
 }
+
+/// A draft is the message, once every send waits in the outbox.
+///
+/// It used to keep only its text. That was fine while the composer sent
+/// directly and a draft was only ever a draft; it is not fine once a reply
+/// waits ten seconds in the undo window and has to come out the other side
+/// still threaded into its conversation and still carrying its files.
+mod the_whole_message {
+    use petrel_engine::store::{DraftEnvelope, Store};
+
+    #[test]
+    fn cc_headers_and_attachments_survive_the_round_trip() {
+        let store = Store::open_in_memory().unwrap();
+        let account = store.ensure_test_account().unwrap();
+        let envelope = DraftEnvelope {
+            in_reply_to: Some("<parent@example.com>".into()),
+            references: vec!["<root@example.com>".into(), "<parent@example.com>".into()],
+            attachments: vec!["/tmp/board-pack.pdf".into()],
+        };
+        let id = store
+            .save_draft_full(
+                account,
+                None,
+                "sam@example.com, dana@example.com",
+                "finance@example.com",
+                "Re: Board pack",
+                "As attached.",
+                "<p>As attached.</p>",
+                &envelope,
+            )
+            .unwrap();
+
+        let back = store.load_draft(id).unwrap();
+        assert_eq!(back.to, "sam@example.com, dana@example.com");
+        assert_eq!(back.cc, "finance@example.com");
+        assert_eq!(back.envelope, envelope);
+    }
+
+    #[test]
+    fn saving_again_replaces_rather_than_accumulates() {
+        // Edit a draft, remove the cc, save: the cc is gone, not doubled.
+        let store = Store::open_in_memory().unwrap();
+        let account = store.ensure_test_account().unwrap();
+        let id = store
+            .save_draft_full(
+                account,
+                None,
+                "a@x",
+                "c@x",
+                "s",
+                "b",
+                "",
+                &DraftEnvelope::default(),
+            )
+            .unwrap();
+        store
+            .save_draft_full(
+                account,
+                Some(id),
+                "a@x",
+                "",
+                "s",
+                "b",
+                "",
+                &DraftEnvelope::default(),
+            )
+            .unwrap();
+        let back = store.load_draft(id).unwrap();
+        assert_eq!(back.cc, "");
+        assert_eq!(back.to, "a@x");
+    }
+
+    #[test]
+    fn an_old_draft_with_no_envelope_still_loads() {
+        // Rows written before the column existed hold NULL there.
+        let store = Store::open_in_memory().unwrap();
+        let account = store.ensure_test_account().unwrap();
+        let id = store
+            .save_draft(account, None, "a@x", "s", "b", "")
+            .unwrap();
+        let back = store.load_draft(id).unwrap();
+        assert_eq!(back.envelope, DraftEnvelope::default());
+        assert_eq!(back.cc, "");
+    }
+}
