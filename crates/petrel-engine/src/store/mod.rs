@@ -1997,6 +1997,27 @@ impl Store {
         ids.into_iter().map(|id| self.load_draft(id)).collect()
     }
 
+    /// When the next outbox message becomes due, if any is waiting.
+    ///
+    /// The instant a clock should wake at: the earliest of each sendable
+    /// message's scheduled time and its retry time, whichever is later for
+    /// that message. Held messages do not count — they have no time, they
+    /// have a person.
+    pub fn next_due_ms(&self, account_id: i64) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT min(max(send_after_ms, coalesce(send_next_ms, 0)))
+                   FROM messages
+                  WHERE account_id = ?1 AND send_after_ms IS NOT NULL
+                    AND coalesce(send_state, 'RetryQueued') IN ('UndoWindow', 'RetryQueued')",
+                [account_id],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
     /// Records where a send attempt left a message.
     ///
     /// One call for every transition, so the five columns that describe an

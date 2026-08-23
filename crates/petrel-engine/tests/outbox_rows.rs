@@ -158,3 +158,54 @@ fn the_message_id_is_kept_across_states() {
         Some("<m@x>")
     );
 }
+
+#[test]
+fn the_clock_knows_when_to_wake() {
+    // The drain is not clock-driven on its own: it runs when a triage action
+    // asks or when the sync comes round, and with IDLE the sync sleeps until
+    // the server pushes. A scheduled message therefore needs its own alarm,
+    // and this is what the alarm reads.
+    let store = Store::open_in_memory().unwrap();
+    let account = store.ensure_test_account().unwrap();
+    assert_eq!(
+        store.next_due_ms(account).unwrap(),
+        None,
+        "empty outbox: nothing to wake for"
+    );
+
+    let a = queued(&store, account, 5_000);
+    let b = queued(&store, account, 2_000);
+    assert_eq!(
+        store.next_due_ms(account).unwrap(),
+        Some(2_000),
+        "the earliest"
+    );
+
+    // A retry pushes its own message later; the other is still first.
+    store
+        .set_send_state(
+            b,
+            SendState::RetryQueued,
+            Some("refused"),
+            Some(9_000),
+            None,
+        )
+        .unwrap();
+    assert_eq!(store.next_due_ms(account).unwrap(), Some(5_000));
+
+    // A message held for a person has no time, only a person.
+    store
+        .set_send_state(
+            a,
+            SendState::NeedsAttention,
+            Some("unknown"),
+            None,
+            Some("<m@x>"),
+        )
+        .unwrap();
+    assert_eq!(
+        store.next_due_ms(account).unwrap(),
+        Some(9_000),
+        "only the retry remains"
+    );
+}
