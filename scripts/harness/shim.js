@@ -85,6 +85,9 @@
       try { seeding = localStorage.getItem('__petrel_seeding') === '1'; } catch (e) {}
       return {
         seeding: seeding,
+        // A denominator larger than what is held, so the coverage line has
+        // something true to say during a backfill.
+        server_total: 120,
         count: rows.length,
         source: 'test@example.com',
         retention: '',
@@ -119,8 +122,22 @@
     list_messages: function () {
       return rows;
     },
-    search_messages: function () {
-      return rows;
+    search_messages: function (a) {
+      // Modelled, not stubbed: results have to carry why they matched, and the
+      // ordering has to change when the sort does — a shim that returned the
+      // inbox would let both look right while doing nothing.
+      var q = (a.query || '').toLowerCase();
+      var found = rows.filter(function (r) {
+        return !r.filed && (r.subject + ' ' + r.snippet).toLowerCase().indexOf(q) >= 0;
+      }).map(function (r) {
+        return Object.assign({}, r, {
+          // The engine's markers, not brackets — see the Snippet renderer.
+          match_snippet:
+            '…the revised \u{E000}' + (a.query || '') + '\u{E001} and the pricing sheet…',
+        });
+      });
+      if (a.newest) found.sort(function (x, y) { return y.date_ms - x.date_ms; });
+      return found;
     },
     list_tags: function () {
       return tags;

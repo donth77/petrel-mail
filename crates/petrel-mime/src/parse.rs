@@ -39,13 +39,15 @@ impl ParsedMessage {
     /// Text used for full-text indexing: the plain body when present, else a
     /// crude de-tagging of the HTML part so HTML-only mail is still findable.
     pub fn index_text(&self) -> String {
-        if !self.body_text.trim().is_empty() {
-            return self.body_text.clone();
-        }
-        self.body_html
-            .as_deref()
-            .map(strip_tags)
-            .unwrap_or_default()
+        let raw = if !self.body_text.trim().is_empty() {
+            self.body_text.clone()
+        } else {
+            self.body_html
+                .as_deref()
+                .map(strip_tags)
+                .unwrap_or_default()
+        };
+        strip_placeholders(&raw)
     }
 
     /// Every address on the message, for the address table and `from:`/`to:`
@@ -63,6 +65,45 @@ impl ParsedMessage {
         }
         out
     }
+}
+
+/// Removes the image placeholders a plain-text alternative is padded with.
+///
+/// Every generator that produces a text half of an HTML message leaves a mark
+/// where each image was: Gmail writes `[image: Alt Text]`, others `[cid:…]` or
+/// a bare `[IMAGE]`. In a marketing message there can be dozens, and they
+/// crowd out the words in a search snippet — a result reading
+/// "…[image: Google] [image: Search]…" says nothing about why it matched.
+///
+/// Dropped from the index as well as the snippet, deliberately. Keeping them
+/// searchable would mean a query for a company name matching the alt text of
+/// its logo in every newsletter it has ever sent, which is not the mail anyone
+/// was looking for.
+fn strip_placeholders(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('[') {
+        // Only spans that look like a placeholder. A bracket in prose — and
+        // people do write them — must survive.
+        let after = &rest[open + 1..];
+        let Some(close) = after.find(']') else { break };
+        let inner = &after[..close];
+        let lower = inner.to_ascii_lowercase();
+        let is_placeholder = lower.starts_with("image:")
+            || lower.starts_with("cid:")
+            || lower == "image"
+            || lower.starts_with("image ");
+        out.push_str(&rest[..open]);
+        if !is_placeholder {
+            out.push('[');
+            out.push_str(inner);
+            out.push(']');
+        }
+        rest = &after[close + 1..];
+    }
+    out.push_str(rest);
+    // Placeholders sat between words, so removing them leaves double spaces.
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Minimal tag stripper for indexing HTML-only bodies. This is **not** a
@@ -260,5 +301,40 @@ Content-Disposition: attachment; filename=\"contract.pdf\"\r\n\r\n\
             // The contract is "does not panic"; a None result is acceptable.
             let _ = parse_message(&raw);
         }
+    }
+
+    /// A search snippet full of image placeholders says nothing about why the
+    /// message matched. Marketing mail carries dozens of them.
+    #[test]
+    fn image_placeholders_leave_the_index() {
+        let m = ParsedMessage {
+            body_text: "[image: Google] Your receipt [image: Search] is attached [cid:part1]"
+                .into(),
+            ..Default::default()
+        };
+        let text = m.index_text();
+        assert_eq!(text, "Your receipt is attached");
+        assert!(!text.contains("image:"), "{text}");
+        assert!(!text.contains("cid:"), "{text}");
+    }
+
+    /// A bracket in prose is prose. People write them, and a stripper that
+    /// eats "[see below]" is worse than the noise it removes.
+    #[test]
+    fn brackets_in_ordinary_writing_survive() {
+        let m = ParsedMessage {
+            body_text: "The clause [see section 4] still stands".into(),
+            ..Default::default()
+        };
+        assert_eq!(m.index_text(), "The clause [see section 4] still stands");
+    }
+
+    #[test]
+    fn an_unclosed_bracket_does_not_eat_the_rest() {
+        let m = ParsedMessage {
+            body_text: "half [image: open and then more words".into(),
+            ..Default::default()
+        };
+        assert!(m.index_text().contains("more words"));
     }
 }

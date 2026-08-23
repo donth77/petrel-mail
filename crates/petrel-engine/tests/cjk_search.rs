@@ -6,7 +6,7 @@
 //! *precomposed* syllables: 한 is a single codepoint in the text that arrives in
 //! mail, so 한국 is two tokens, exactly like 東京.
 
-use petrel_engine::store::{NewMessage, Store};
+use petrel_engine::store::{MARK_END, MARK_START, NewMessage, Store};
 
 fn store_with(bodies: &[(&str, &str)]) -> (Store, Vec<i64>) {
     let mut store = Store::open_in_memory().unwrap();
@@ -153,7 +153,10 @@ fn snippets_come_from_the_original_text_not_the_spaced_index() {
     let (store, _) = store_with(&[("会議", "明日の会議は東京で行います")]);
     let hits = store.search("東京", 10).unwrap();
     let snip = &hits[0].snippet;
-    assert!(snip.contains("[東京]"), "match should be bracketed: {snip}");
+    // Named rather than spelled: the marker is private-use precisely so that
+    // nothing else can produce it, and a literal here would drift from it.
+    let marked = format!("{}東京{}", MARK_START, MARK_END);
+    assert!(snip.contains(&marked), "match should be marked: {snip:?}");
     assert!(
         !snip.contains("東 京"),
         "snippet must not show the space-separated index copy: {snip}"

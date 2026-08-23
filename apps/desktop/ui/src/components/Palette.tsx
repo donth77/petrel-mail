@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react';
-import { X } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { Mail, X } from 'lucide-react';
 import {
   Combobox, ComboboxItem, ComboboxList, ComboboxProvider, Dialog, DialogDismiss,
 } from '@ariakit/react';
@@ -7,7 +7,8 @@ import {
   buildCommands, fuzzyMatch, labelOf, nameOf, scoreMatch, suffixOf,
   type Command, type CommandContext,
 } from '../lib/commands';
-import { count as fmtCount } from '../lib/format';
+import { api, type Thread } from '../lib/api';
+import { count as fmtCount, listTime } from '../lib/format';
 import { Icon } from './Icon';
 import { clickAway } from '../lib/dialog';
 import { t } from '../lib/strings';
@@ -42,11 +43,16 @@ type Props = {
   onClose: () => void;
   subject: string | null;
   ctx: CommandContext;
+  /** Opening a conversation the palette found. */
+  onOpen: (threadId: number) => void;
 };
 
 const VISIBLE_LIMIT = 8;
+/** Enough to recognise the one you meant, not so many that the commands vanish
+ *  under a list of mail. Everything else is one Enter away in the full search. */
+const MAIL_LIMIT = 5;
 
-export function Palette({ open, onClose, subject, ctx }: Props) {
+export function Palette({ open, onClose, subject, ctx, onOpen }: Props) {
   const [query, setQuery] = useState('');
   const commands = useMemo(() => buildCommands(ctx), [ctx]);
 
@@ -67,6 +73,32 @@ export function Palette({ open, onClose, subject, ctx }: Props) {
         SCOPES.indexOf(a.cmd.scope) - SCOPES.indexOf(b.cmd.scope) || b.score - a.score,
     );
   }, [commands, query]);
+
+  // Mail, alongside the commands. The palette is where people already go to
+  // find things by typing, and making them close it and aim at a different
+  // box to search their mail is a distinction the app cares about and they do
+  // not.
+  const [mail, setMail] = useState<Thread[]>([]);
+  useEffect(() => {
+    const needle = query.trim();
+    if (!open || needle.length < 2) {
+      setMail([]);
+      return;
+    }
+    let live = true;
+    // Short debounce: this runs against the local index, but a keystroke is
+    // faster than any query and there is no point starting one per character.
+    const h = setTimeout(() => {
+      api
+        .search(needle)
+        .then((rows) => live && setMail(rows.slice(0, MAIL_LIMIT)))
+        .catch(() => live && setMail([]));
+    }, 90);
+    return () => {
+      live = false;
+      clearTimeout(h);
+    };
+  }, [query, open]);
 
   const shown = matched.slice(0, VISIBLE_LIMIT);
   const overflow = matched.length - shown.length;
@@ -109,6 +141,12 @@ export function Palette({ open, onClose, subject, ctx }: Props) {
               className="palette-field"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
+              // The webview offers its own autofill menu over any field it
+              // thinks is a form, which lands on top of the palette's own list
+              // and is not ours to style, dismiss or navigate.
+              autoComplete="off"
+              autoCorrect="off"
+              spellCheck={false}
             />
               <DialogDismiss className="close-btn palette-esc" aria-label={t('close')}>
               <Icon icon={X} size={15} />
@@ -164,7 +202,37 @@ export function Palette({ open, onClose, subject, ctx }: Props) {
               </div>
             ))}
 
-            {matched.length === 0 && (
+            {mail.length > 0 && (
+              <div>
+                <div className="grouplabel">{t('palette-group-mail')}</div>
+                {mail.map((m) => (
+                  <ComboboxItem
+                    key={m.thread_id}
+                    className="cmd"
+                    focusOnHover
+                    setValueOnClick={false}
+                    onClick={() => {
+                      onOpen(m.thread_id);
+                      close();
+                    }}
+                  >
+                    <span className="ico">
+                      <Icon icon={Mail} size={16} />
+                    </span>
+                    <span className="name clip">
+                      {m.subject || t('no-subject')}
+                      <span className="alias">
+                        {' · '}
+                        {m.from_display || m.from_addr}
+                      </span>
+                    </span>
+                    <span className="mono palette-when">{listTime(m.date_ms)}</span>
+                  </ComboboxItem>
+                ))}
+              </div>
+            )}
+
+            {matched.length === 0 && mail.length === 0 && (
               <div className="palette-none">{t('palette-empty', { query })}</div>
             )}
           </ComboboxList>

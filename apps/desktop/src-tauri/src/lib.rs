@@ -54,6 +54,12 @@ struct AppState {
     /// RFC 4315. Without it a message can be marked deleted but not expunged,
     /// because a bare EXPUNGE would take every other \\Deleted message with it.
     server_has_uidplus: AtomicBool,
+    /// How much mail the server says it holds, across the folders we sync.
+    ///
+    /// The denominator of the coverage line, and the reason it exists: a client
+    /// that quietly returns three results out of a possible ten teaches you not
+    /// to trust its search. Zero until a sync has asked.
+    server_total: std::sync::atomic::AtomicUsize,
     /// Messages the user asked to see this once. Deliberately not persisted:
     /// "show images" is a decision about one message on one occasion, and a
     /// version of it that outlived the session would be trust nobody granted.
@@ -67,6 +73,9 @@ struct AppState {
 struct Status {
     seeding: bool,
     count: usize,
+    /// What the server says it holds across the synced folders, or 0 if it has
+    /// not been asked yet.
+    server_total: usize,
     source: String,
     /// The retention mode, in words. Q24's binding rule is that the active
     /// policy is always stated — never something the user has to infer.
@@ -142,6 +151,7 @@ fn status(state: State<Arc<AppState>>) -> Status {
     Status {
         seeding: state.seeding.load(Ordering::Relaxed),
         count: state.seeded.load(Ordering::Relaxed),
+        server_total: state.server_total.load(Ordering::Relaxed),
         source: state
             .source
             .lock()
@@ -430,6 +440,21 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
     tauri::async_runtime::spawn(async move {
         *state.source.lock().unwrap() = format!("syncing {}…", cfg.host);
 
+        // Mail already held was indexed by whatever the extraction did then.
+        // When that improves, the improvement has to be applied backwards or it
+        // only ever reaches mail that has not arrived yet.
+        {
+            if let Ok(mut store) = state.store.lock() {
+                match store.reindex_bodies(&state.blobs) {
+                    Ok(0) => {}
+                    Ok(n) => log_sync(&format!(
+                        "re-indexed {n} message(s) after an extraction change"
+                    )),
+                    Err(e) => log_sync(&format!("re-index failed: {e}")),
+                }
+            }
+        }
+
         let mut has_move = false;
         let mut has_idle = false;
         let mut has_uidplus = false;
@@ -512,6 +537,19 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
         // the one placements are recorded against — which is what makes Sent
         // land in Sent rather than everything piling into the inbox.
         let targets = folders_to_sync(&state, account);
+        // How much there is to find, so search can say what it searched. One
+        // EXAMINE per folder, once per sync — read-only, and cheap enough that
+        // an honest denominator is worth it.
+        {
+            let names: Vec<String> = targets.iter().map(|(n, _)| n.clone()).collect();
+            if let Ok(counts) = petrel_providers::imap::folder_counts(&cfg, &names).await {
+                let total: usize = counts.iter().map(|(_, n)| *n as usize).sum();
+                state.server_total.store(total, Ordering::Relaxed);
+                log_sync(&format!(
+                    "server holds {total} message(s) across synced folders"
+                ));
+            }
+        }
         for (name, folder_id) in &targets {
             let result = {
                 let state = Arc::clone(&state);
@@ -1406,10 +1444,13 @@ fn set_setting(key: String, value: String, state: State<Arc<AppState>>) -> Resul
 #[tauri::command]
 fn search_messages(
     query: String,
+    newest: bool,
     state: State<Arc<AppState>>,
 ) -> Result<Vec<ThreadListing>, String> {
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
-    store.search_threads(&query, 200).map_err(|e| e.to_string())
+    store
+        .search_threads_sorted(&query, 200, newest)
+        .map_err(|e| e.to_string())
 }
 
 /// Issues a one-message URL for the reading pane. The UI never receives the
@@ -1785,6 +1826,7 @@ pub fn run() {
         draining: AtomicBool::new(false),
         server_has_move: AtomicBool::new(false),
         server_has_uidplus: AtomicBool::new(false),
+        server_total: std::sync::atomic::AtomicUsize::new(0),
         shown_once: Mutex::new(std::collections::HashSet::new()),
         tokens: Arc::new(ViewTokens::new()),
         account_id: account,

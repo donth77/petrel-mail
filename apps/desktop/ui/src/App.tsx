@@ -8,6 +8,7 @@ import {
   type Tag,
   type Thread,
 } from './lib/api';
+import { chips, hasToken, toggleToken } from './lib/search-chips';
 import { count as fmtCount, fileSize } from './lib/format';
 import { t, type StringId } from './lib/strings';
 import { Search } from 'lucide-react';
@@ -40,6 +41,17 @@ export function App() {
   const [status, setStatus] = useState<Status | null>(null);
   const [items, setItems] = useState<Thread[]>([]);
   const [query, setQuery] = useState('');
+  // Best match or newest, for a search. Not a saved preference: it answers a
+  // different question about one search — "find the thing" against "retrace the
+  // timeline" — and carrying last week's answer into today's search is wrong
+  // more often than it is right.
+  const [newestFirst, setNewestFirst] = useState(false);
+  // Whether the search field has the user's attention, which is when the
+  // filters are worth showing.
+  const [searching, setSearching] = useState(false);
+  // Find-in-conversation. Held here because ⌘F is a global key and the bar has
+  // to survive the reading pane re-rendering under it.
+  const [finding, setFinding] = useState(false);
   const [activeId, setActiveId] = useState<number | null>(null);
   const [view, setView] = useState('inbox');
 
@@ -93,7 +105,7 @@ export function App() {
   useEffect(() => {
     let live = true;
     const run = () => {
-      const p = query.trim() ? api.search(query) : api.threads(view, 0, 500);
+      const p = query.trim() ? api.search(query, newestFirst) : api.threads(view, 0, 500);
       p.then((rows: Thread[]) => {
         if (!live) return;
         setError(null);
@@ -115,7 +127,18 @@ export function App() {
       live = false;
       clearTimeout(h);
     };
-  }, [query, view, status?.count, status?.seeding]);
+  }, [query, view, newestFirst, status?.count, status?.seeding]);
+
+  // A new query starts at the top.
+  //
+  // Without this the browser decides: the old scroll position usually exceeds
+  // the height of a shorter result list, so it is clamped to whatever the new
+  // bottom happens to be — and typing into the search box appeared to throw the
+  // list to the end. Results are ranked, so the top is also where the answer is.
+  useEffect(() => {
+    const scroller = listRef.current?.querySelector<HTMLElement>('.scroller');
+    if (scroller) scroller.scrollTop = 0;
+  }, [query, view, newestFirst]);
 
   const triage = useTriage({
     items,
@@ -143,10 +166,28 @@ export function App() {
   // rest of the app uses.
   const [rowMenu, setRowMenu] = useState<{ id: number; x: number; y: number } | null>(null);
 
+  useEffect(() => {
+    // The matches belonged to the conversation that just closed.
+    setFinding(false);
+  }, [activeId]);
+
   const [pendingDelete, setPendingDelete] = useState<number[] | null>(null);
   const askDelete = (ids?: number[]) => {
     const list = ids ?? targets(selected, activeId);
     if (list.length > 0) setPendingDelete(list);
+  };
+
+  /** Opening a mailbox, which ends any search that was running.
+   *
+   * Search is not scoped to a view — the "In Inbox" chip is how you narrow it —
+   * so leaving the query in place while switching left the list showing search
+   * results under a header that named the mailbox. It said "Sent · 37 found"
+   * over the same inbox-wide results, which is the header lying about what is
+   * on screen. Picking a mailbox means you want that mailbox.
+   */
+  const goToView = (v: string) => {
+    setQuery('');
+    setView(v);
   };
 
   const railRef = useRef<HTMLElement>(null);
@@ -175,7 +216,7 @@ export function App() {
       target.setAttribute('tabindex', '-1');
       target.focus();
     },
-    goTo: setView,
+    goTo: goToView,
     triage: (kind) => {
       // One key, more things. Acting on the selection when there is one is
       // what makes X worth having: nothing new to learn, it just applies to
@@ -194,6 +235,11 @@ export function App() {
     toggleStar: () => triage.toggleStar(),
     // Only where there is a reading pane to fill. With the layout off there is
     // no pane, and with nothing open there would be nothing to look at.
+    findInMessage: () => {
+      // Only where there is something to find in. With no reading pane, or
+      // nothing open, ⌘F would put up a bar that could never match anything.
+      if (settings.layout !== 'off' && activeRef.current) setFinding(true);
+    },
     toggleReaderFull: () => {
       if (settings.layout !== 'off' && activeRef.current) setReaderFull((f) => !f);
     },
@@ -675,7 +721,7 @@ export function App() {
         onView={(v) => {
           if (v === 'help') setHelpOpen(true);
           else if (v === 'settings') setSettingsOpen('appearance');
-          else setView(v);
+          else goToView(v);
         }}
       />
 
@@ -687,13 +733,53 @@ export function App() {
               ref={searchRef}
               className="search"
               type="search"
+              // Same reason as the palette: the webview's autofill menu is not
+              // ours, and it covers the results underneath it.
+              autoComplete="off"
+              autoCorrect="off"
+              spellCheck={false}
               value={query}
               placeholder={t('search-placeholder')}
               onChange={(e) => setQuery(e.target.value)}
+              onFocus={() => setSearching(true)}
+              onKeyDown={(e) => {
+                // Escape leaves search rather than merely leaving the field:
+                // a blurred box still holding a query is still a search, with
+                // the results and highlights to prove it.
+                if (e.key === 'Escape') {
+                  e.stopPropagation();
+                  setQuery('');
+                  e.currentTarget.blur();
+                }
+              }}
+              // Kept up while a chip is being clicked: blur fires first, and
+              // hiding the row on the way to it would move the target away.
+              onBlur={() => window.setTimeout(() => setSearching(false), 150)}
               aria-label={t('search-placeholder')}
             />
             <span className="kbd">{t('search-hint-key')}</span>
           </div>
+
+          {/* Chips write into the field rather than filtering beside it. Each
+              is lit because its token is in the query — type `is:unread` by
+              hand and the chip lights, which is the point: there is one place
+              the search lives and it is the one you can see. */}
+          {(searching || query.trim()) && (
+            <div className="chip-row" role="group" aria-label={t('search-filters')}>
+              {chips(active?.from_display || active?.from_addr || null, new Date().getFullYear())
+                .map((c) => (
+                  <button
+                    key={c.id}
+                    type="button"
+                    className={hasToken(query, c.token) ? 'filter-chip on' : 'filter-chip'}
+                    aria-pressed={hasToken(query, c.token)}
+                    onClick={() => setQuery(toggleToken(query, c.token))}
+                  >
+                    {c.label}
+                  </button>
+                ))}
+            </div>
+          )}
           {/* No account chip here. One account is active at a time and the
               rail names it, so this repeated it a few inches away — and its dot
               was painted with the theme accent rather than the account's own
@@ -702,11 +788,44 @@ export function App() {
               more than one account. */}
           <div className="view-row">
             <span className="view-name">{viewName}</span>
-            <span className="view-count">
-              {selected.size > 0
-                ? t('list-selected', { count: fmtCount(selected.size) })
-                : t('list-unread', { count: fmtCount(unread) })}
-            </span>
+            {/* Searching is a different question from browsing, so the header
+                answers a different one: how many were found, and in what
+                order — not how many are unread. */}
+            {query.trim() ? (
+              <>
+                <span className="view-count">
+                  {t('search-found', { count: fmtCount(items.length) })}
+                </span>
+                {/* No auto margin here: the count already claims the free
+                    space, and two elements both pushing left split it between
+                    them — which left "N found" adrift in the middle of the row
+                    rather than sitting with the control it belongs to. */}
+                <div className="sort-row tight" role="group" aria-label={t('search-sort')}>
+                  <button
+                    type="button"
+                    className={newestFirst ? undefined : 'on'}
+                    aria-pressed={!newestFirst}
+                    onClick={() => setNewestFirst(false)}
+                  >
+                    {t('search-sort-best')}
+                  </button>
+                  <button
+                    type="button"
+                    className={newestFirst ? 'on' : undefined}
+                    aria-pressed={newestFirst}
+                    onClick={() => setNewestFirst(true)}
+                  >
+                    {t('search-sort-newest')}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <span className="view-count">
+                {selected.size > 0
+                  ? t('list-selected', { count: fmtCount(selected.size) })
+                  : t('list-unread', { count: fmtCount(unread) })}
+              </span>
+            )}
           </div>
         </div>
 
@@ -781,6 +900,24 @@ export function App() {
             }}
           />
         )}
+
+        {/* What was actually searched. During a backfill the index genuinely
+            does not hold everything, and a client that quietly returns three
+            results out of a possible ten teaches you not to trust its search.
+            Saying so keeps "no results" meaning no results.
+
+            Shown only when the two numbers disagree: once everything is held,
+            a line explaining that everything was searched is noise. */}
+        {query.trim() &&
+          (status?.server_total ?? 0) > (status?.count ?? 0) && (
+            <div className="coverage">
+              {t('search-coverage', {
+                searched: fmtCount(status?.count ?? 0),
+                total: fmtCount(status?.server_total ?? 0),
+              })}
+              {status?.seeding ? ` ${t('search-coverage-syncing')}` : ''}
+            </div>
+          )}
       </div>
 
       {(settings.layout !== 'off' || readerOverlay) && (
@@ -788,6 +925,8 @@ export function App() {
           thread={active}
           view={view}
           full={readerFull}
+          finding={finding}
+          onCloseFind={() => setFinding(false)}
           onToggleFull={() => setReaderFull((f) => !f)}
           onPopOut={() => {
             if (!active) return;
@@ -911,6 +1050,14 @@ export function App() {
 
       <Palette
         open={paletteOpen}
+        onOpen={(threadId: number) => {
+          // Opening from the palette puts the conversation in the reading pane
+          // if the current view already holds it. If it does not, the query is
+          // what puts it there — jumping the list to a row it does not contain
+          // would land on nothing.
+          const row = items.find((m) => m.thread_id === threadId);
+          if (row) setActiveId(row.id);
+        }}
         onClose={() => setPaletteOpen(false)}
         subject={active?.subject ?? null}
         ctx={{

@@ -23,6 +23,7 @@ const MAC = {
   read: '⇧I',
   unread: '⇧U',
   extend: '⇧J ⇧K',
+  find: '⌘F',
   palette: '⌘K',
   settings: '⌘,',
 } as const;
@@ -37,6 +38,7 @@ const PC: Record<keyof typeof MAC, string> = {
   read: 'Shift+I',
   unread: 'Shift+U',
   extend: 'Shift+J Shift+K',
+  find: 'Ctrl+F',
   palette: 'Ctrl+K',
   settings: 'Ctrl+,',
 };

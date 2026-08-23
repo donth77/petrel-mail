@@ -22,6 +22,7 @@ export type KeyActions = {
   openTag: () => void;
   toggleStar: () => void;
   toggleReaderFull: () => void;
+  findInMessage: () => void;
   undo: () => void;
 };
 
@@ -77,6 +78,9 @@ export function useKeyboard(actions: KeyActions) {
           if (k === 'k') return e.preventDefault(), a.openPalette();
           if (k === ',') return e.preventDefault(), a.openSettings();
           if (/^[1-9]$/.test(e.key)) return e.preventDefault(), a.switchAccount(Number(e.key));
+          // Free because modified keys stopped falling through to the
+          // single-key commands; before that this forwarded the message.
+          if (k === 'f') return e.preventDefault(), a.findInMessage();
         }
         // Anything else held with ⌘ or ctrl belongs to the system, and this
         // return is the whole of what makes that true.

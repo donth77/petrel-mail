@@ -29,6 +29,9 @@ export type Thread = {
   has_attachments: boolean;
   tags: { name: string; colour: string }[];
   attachment_name: string | null;
+  /** Why this row matched, when it came from a search: the text around the hit
+   *  with the matched words wrapped in `[` and `]`. Null in an ordinary list. */
+  match_snippet: string | null;
 };
 
 export type Tag = { id: number; name: string; colour: string; thread_count: number };
@@ -129,6 +132,9 @@ export type Status = {
   sync_error?: string | null;
   seeding: boolean;
   count: number;
+  /** What the server holds across the synced folders, or 0 before it is asked.
+   *  The denominator of the coverage line under search results. */
+  server_total: number;
   source: string;
   retention: string;
   data_dir: string;
@@ -174,6 +180,8 @@ function mockRows(n: number, offset = 0): Thread[] {
             ? [{ name: 'receipts', colour: '#5E7C4A' }, { name: 'read later', colour: '#9A6B1F' }]
             : [],
       attachment_name: k % 5 === 0 ? 'contract-v3.pdf' : null,
+      // An ordinary list, so nothing matched anything.
+      match_snippet: null,
     };
   });
 }
@@ -195,7 +203,7 @@ const mockAccounts: Account[] = [
 
 const mock = {
   status: async (): Promise<Status> => ({
-    seeding: false, count: 10000, source: 'tom@northbay.example',
+    seeding: false, count: 10000, server_total: 12500, source: 'tom@northbay.example',
     retention: 'mirror', data_dir: '~/Library/Application Support/Petrel',
   }),
   threads: async (view: string, offset: number, limit: number) => {
@@ -213,7 +221,12 @@ const mock = {
     return rows;
   },
   search: async (q: string) =>
-    mockRows(24).filter((r) => r.subject.toLowerCase().includes(q.toLowerCase())),
+    mockRows(24)
+      .filter((r) => r.subject.toLowerCase().includes(q.toLowerCase()))
+      .map((r) => ({
+        ...r,
+        match_snippet: `…the \u{E000}${q}\u{E001} you were looking for…`,
+      })),
   // Fresh objects each call: returning the same reference means React sees no
   // change and the mock silently misreports whether a write took effect.
   triage: async (_t: number, kind: ActionKind, _target?: number): Promise<ActionReceipt> => ({
@@ -386,7 +399,8 @@ const real = {
   setSetting: (key: string, value: string) => invoke<void>('set_setting', { key, value }),
   threadDetail: (threadId: number) =>
     invoke<ThreadMessage[]>('thread_detail', { threadId }),
-  search: (query: string) => invoke<Thread[]>('search_messages', { query }),
+  search: (query: string, newest = false) =>
+    invoke<Thread[]>('search_messages', { query, newest }),
 
   messageUrl: (messageId: number) => invoke<string>('message_url', { messageId }),
   log: (entry: string) => invoke('frontend_log', { entry }).catch(() => {}),

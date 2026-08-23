@@ -3365,3 +3365,139 @@ body.resizing {
   font-size: 12.5px;
   cursor: default;
 }
+
+/* Best match or newest, in the list header while a search is running.
+   Quiet: it is a control you use occasionally, sitting in a row whose job is
+   to tell you what you are looking at. */
+.sort-row {
+  display: flex;
+  gap: 1px;
+  margin-inline-start: auto;
+}
+
+/* Beside the count rather than pushed away from it. */
+.sort-row.tight {
+  margin-inline-start: 8px;
+}
+
+.sort-row button {
+  padding: 2px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--ink3);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.sort-row button:hover {
+  background: var(--hair2);
+  color: var(--ink2);
+}
+
+.sort-row button.on {
+  background: var(--hair2);
+  color: var(--ink);
+  font-weight: 550;
+}
+
+/* --------------------------------------------------------- search filters */
+
+/* The chips under the search field. Each writes its operator into the query,
+   so a lit chip and the text in the field are the same fact stated twice —
+   never two states that can disagree. */
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 8px 14px 2px;
+}
+
+.filter-chip {
+  padding: 3px 10px;
+  border: 1px solid var(--hair);
+  border-radius: 20px;
+  background: none;
+  color: var(--ink2);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.filter-chip:hover {
+  border-color: var(--ink3);
+  color: var(--ink);
+}
+
+.filter-chip.on {
+  border-color: var(--accent);
+  background: color-mix(in oklab, var(--accent) 12%, transparent);
+  color: var(--accent);
+  font-weight: 550;
+}
+
+/* What the search actually covered, under the results. Quiet, and only there
+   when the numbers disagree — a line saying everything was searched is noise. */
+.coverage {
+  flex-shrink: 0;
+  padding: 8px 14px 10px;
+  border-block-start: 1px solid var(--hair2);
+  color: var(--ink3);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+/* When a conversation the palette found was sent or received. Right-aligned so
+   the subjects stay a column the eye can run down. */
+.palette-when {
+  margin-inline-start: auto;
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--ink3);
+}
+
+/* ------------------------------------------------------------- find bar */
+
+/* At the foot of the reading pane, as every find bar is: out of the way of the
+   thing being read, and where the eye is not while reading it. */
+.findbar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-block-start: 1px solid var(--hair);
+  background: var(--bg);
+}
+
+.find-field {
+  flex-grow: 1;
+  min-inline-size: 0;
+  padding: 5px 9px;
+  border: 1px solid var(--hair);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+}
+
+.find-field:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.find-count {
+  flex-shrink: 0;
+  min-inline-size: 68px;
+  text-align: end;
+  font-size: 11.5px;
+  color: var(--ink3);
+}
+
+.findbar .act-icon:disabled {
+  opacity: 0.4;
+  cursor: default;
+}

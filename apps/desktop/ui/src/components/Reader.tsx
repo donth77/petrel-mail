@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { api, type ActionKind, type Thread, type ThreadMessage } from '../lib/api';
 import { count as fmtCount, fileSize, fullTime, initials, messageTime } from '../lib/format';
+import { FindBar } from './FindBar';
 import { Icon } from './Icon';
 import { MessageBody } from './MessageBody';
 import { MoreMenu } from './MoreMenu';
@@ -103,6 +104,8 @@ export function Reader({
   thread,
   view,
   full,
+  finding,
+  onCloseFind,
   onToggleFull,
   onPopOut,
   onAction,
@@ -115,6 +118,10 @@ export function Reader({
   view: string;
   /** Reading pane has the window to itself. */
   full: boolean;
+  /** Find-in-conversation is up. Owned above, because ⌘F is a global key and
+   *  the bar has to survive this pane re-rendering under it. */
+  finding?: boolean;
+  onCloseFind?: () => void;
   /** Both optional, and omitted rather than disabled where they mean nothing —
    *  a conversation already alone in its own window can be neither expanded
    *  nor popped out again, and a button that does nothing is worse than one
@@ -413,6 +420,10 @@ export function Reader({
           </div>
         )}
       </div>
+
+      {/* At the foot of the pane, as every find bar is — out of the way of what
+          you are reading, and where the eye is not. */}
+      {onCloseFind && <FindBar open={Boolean(finding)} onClose={onCloseFind} />}
     </section>
   );
 }

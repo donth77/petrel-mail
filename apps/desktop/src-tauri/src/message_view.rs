@@ -126,6 +126,87 @@ const HEIGHT_REPORTER: &str = r#"
     }
   });
 
+  // Find in this message.
+  //
+  // Here rather than in the app because nothing outside can read this document:
+  // the frame is opaque-origin by design, so the host cannot walk its text, and
+  // window.find would search the app's own chrome instead. The app sends a term
+  // and gets back a count; stepping between matches is the app's job, because
+  // only it knows about the other messages in the thread.
+  var found = [];
+
+  function clearFind() {
+    for (var i = 0; i < found.length; i++) {
+      var m = found[i];
+      var parent = m.parentNode;
+      if (!parent) continue;
+      parent.replaceChild(document.createTextNode(m.textContent), m);
+      parent.normalize();
+    }
+    found = [];
+  }
+
+  function runFind(term) {
+    clearFind();
+    if (!term) { post(); return; }
+    var needle = term.toLowerCase();
+    // Text nodes only, and never inside a mark we just made — otherwise the
+    // walk finds its own highlights and recurses.
+    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+      acceptNode: function (n) {
+        if (!n.nodeValue || !n.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+        var p = n.parentNode;
+        while (p && p !== document.body) {
+          var tag = p.nodeName;
+          if (tag === 'SCRIPT' || tag === 'STYLE') return NodeFilter.FILTER_REJECT;
+          p = p.parentNode;
+        }
+        return n.nodeValue.toLowerCase().indexOf(needle) >= 0
+          ? NodeFilter.FILTER_ACCEPT
+          : NodeFilter.FILTER_REJECT;
+      },
+    });
+    var targets = [];
+    var node;
+    while ((node = walker.nextNode())) targets.push(node);
+
+    for (var t = 0; t < targets.length; t++) {
+      var text = targets[t].nodeValue;
+      var lower = text.toLowerCase();
+      var frag = document.createDocumentFragment();
+      var at = 0;
+      var hit;
+      while ((hit = lower.indexOf(needle, at)) >= 0) {
+        if (hit > at) frag.appendChild(document.createTextNode(text.slice(at, hit)));
+        var mark = document.createElement('mark');
+        mark.className = 'petrel-find';
+        mark.textContent = text.slice(hit, hit + needle.length);
+        frag.appendChild(mark);
+        found.push(mark);
+        at = hit + needle.length;
+      }
+      if (at < text.length) frag.appendChild(document.createTextNode(text.slice(at)));
+      targets[t].parentNode.replaceChild(frag, targets[t]);
+    }
+    try { parent.postMessage({ petrelFound: found.length }, '*'); } catch (e) {}
+    post();
+  }
+
+  function setActive(i) {
+    for (var n = 0; n < found.length; n++) {
+      found[n].className = n === i ? 'petrel-find on' : 'petrel-find';
+    }
+    if (found[i] && found[i].scrollIntoView) {
+      found[i].scrollIntoView({ block: 'center' });
+    }
+  }
+
+  addEventListener('message', function (e) {
+    var d = e.data || {};
+    if (typeof d.petrelFind === 'string') runFind(d.petrelFind);
+    if (typeof d.petrelFindActive === 'number') setActive(d.petrelFindActive);
+  });
+
   addEventListener('keydown', function (e) {
     // Identity only — which key, which modifiers. Nothing about the document.
     try {
@@ -164,6 +245,8 @@ fn document(body: &str, blocked_remote: usize, nonce: &str) -> String {
   .petrel-plain {{ white-space: pre-wrap;
                   font: calc(var(--petrel-size) * 0.92)/1.6 ui-monospace, SFMono-Regular, monospace; }}
   .petrel-plain .q {{ color: #54666e; }}
+  mark.petrel-find {{ background: #fbf0c9; color: inherit; }}
+  mark.petrel-find.on {{ background: #f6c945; }}
 </style></head><body>{banner}{body}<script nonce="{nonce}">{reporter}</script></body></html>"#
     )
 }

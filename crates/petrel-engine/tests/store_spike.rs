@@ -3,7 +3,7 @@
 //! insert/update/delete, is rebuildable, snippets work, CJK behavior is
 //! documented, and (in the ignored benchmark) latency/size numbers are real.
 
-use petrel_engine::store::{NewMessage, Store};
+use petrel_engine::store::{MARK_END, MARK_START, NewMessage, Store};
 use petrel_testkit::MailboxGen;
 
 fn to_new(account_id: i64, g: petrel_testkit::GenMessage) -> NewMessage {
@@ -122,8 +122,10 @@ fn snippet_highlights_match() {
     let hits = store.search("heliotrope", 5).unwrap();
     assert_eq!(hits.len(), 1);
     assert!(
-        hits[0].snippet.contains("[heliotrope]"),
-        "snippet: {}",
+        hits[0]
+            .snippet
+            .contains(&format!("{MARK_START}heliotrope{MARK_END}")),
+        "snippet: {:?}",
         hits[0].snippet
     );
 }

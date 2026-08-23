@@ -28,13 +28,21 @@ type Props = {
   onContextMenu: (threadId: number, x: number, y: number) => void;
 };
 
-/** Marks up `[bracketed]` spans from the engine's snippet as search hits. */
+/** Marks up the engine's match markers as search hits.
+ *
+ * U+E000 and U+E001, not square brackets. Brackets are ordinary text in mail —
+ * the plain-text alternative marketing senders generate is full of things like
+ * [image: Google] — so with brackets as the marker this highlighted the
+ * sender's own punctuation as though it had matched the search. A private-use
+ * codepoint cannot be typed, pasted from a real message, or mistaken for
+ * content. */
+const MARK = /(\u{E000}[^\u{E001}]*\u{E001})/gu;
+
 function Snippet({ text }: { text: string }) {
-  const parts = text.split(/(\[[^\]]*\])/g);
   return (
     <>
-      {parts.map((p, i) =>
-        p.startsWith('[') && p.endsWith(']') ? <mark key={i}>{p.slice(1, -1)}</mark> : p,
+      {text.split(MARK).map((p, i) =>
+        p.startsWith('\u{E000}') ? <mark key={i}>{p.slice(1, -1)}</mark> : p,
       )}
     </>
   );
@@ -186,17 +194,25 @@ export function MessageList({
     if (composite.getState().activeId !== want) composite.setActiveId(want);
   }, [activeId, composite]);
 
-  // Follow the active row when the *selection* moves — not on every render.
-  // `virtualizer` is a fresh object each render, so depending on it re-ran this
-  // effect constantly and snapped the scroll position back to the active row,
-  // which reads as "the list will not scroll".
-  const lastScrolledTo = useRef(-1);
+  // Follow the active row when the *selection* moves — not on every render, and
+  // not when the list changes underneath a selection that has not.
+  //
+  // Keyed on which conversation is active rather than on where it sits. An
+  // index is a position in a list, and replacing the list moves every position:
+  // typing in the search box left the same conversation selected at a different
+  // index, this read that as the selection moving, and threw the list to
+  // wherever the row had landed — usually the end of a short result set.
+  //
+  // `virtualizer` is a fresh object each render, so it must not decide whether
+  // to run; when it did, the effect fired constantly and snapped the scroll
+  // back to the active row, which reads as "the list will not scroll".
+  const lastScrolledFor = useRef<number | null>(null);
   useEffect(() => {
-    if (activeIndex >= 0 && activeIndex !== lastScrolledTo.current) {
-      lastScrolledTo.current = activeIndex;
-      virtualizer.scrollToIndex(activeIndex, { align: 'auto' });
-    }
-  }, [activeIndex, virtualizer]);
+    if (activeId == null || activeIndex < 0) return;
+    if (activeId === lastScrolledFor.current) return;
+    lastScrolledFor.current = activeId;
+    virtualizer.scrollToIndex(activeIndex, { align: 'auto' });
+  }, [activeId, activeIndex, virtualizer]);
 
   const virtualRows = virtualizer.getVirtualItems();
 
@@ -365,7 +381,10 @@ export function MessageList({
                       {m.subject || '(no subject)'}
                     </span>
                     <span className="row-snippet clip">
-                      <Snippet text={m.snippet} />
+                      {/* Why it matched, when it came from a search. The
+                          ordinary opening line is the same on every row and
+                          cannot say what the result was answering. */}
+                      <Snippet text={m.match_snippet ?? m.snippet} />
                     </span>
                     {(m.attachment_name || m.tags.length > 0) && (
                       <span className="row-chips">

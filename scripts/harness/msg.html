@@ -12,6 +12,8 @@
 <style>
   :root { --petrel-size: 15px; }
   body { margin: 0; padding: 14px 16px; font: var(--petrel-size)/1.6 system-ui, sans-serif; }
+  mark.petrel-find { background: #fbf0c9; }
+  mark.petrel-find.on { background: #f6c945; }
 </style>
 <div id="content"><p>Message body stand-in.</p></div>
 <script>
@@ -50,8 +52,67 @@
     // The real frame forwards key identity out, because a focused frame
     // swallows every keystroke. Without this the harness could not exercise
     // the case that matters most: reading a long message after clicking it.
+    // Find in this message, as the real frame does it. Without this the
+    // harness cannot exercise the find bar at all — the searching happens in
+    // here by necessity, so a stand-in that cannot search proves nothing.
+    var found = [];
+    function clearFind() {
+      for (var i = 0; i < found.length; i++) {
+        var m = found[i], p = m.parentNode;
+        if (!p) continue;
+        p.replaceChild(document.createTextNode(m.textContent), m);
+        p.normalize();
+      }
+      found = [];
+    }
+    function runFind(term) {
+      clearFind();
+      if (term) {
+        var needle = term.toLowerCase();
+        var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+          acceptNode: function (n) {
+            if (!n.nodeValue || !n.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+            var p = n.parentNode;
+            while (p && p !== document.body) {
+              if (p.nodeName === 'SCRIPT' || p.nodeName === 'STYLE') return NodeFilter.FILTER_REJECT;
+              p = p.parentNode;
+            }
+            return n.nodeValue.toLowerCase().indexOf(needle) >= 0
+              ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+          },
+        });
+        var targets = [], node;
+        while ((node = walker.nextNode())) targets.push(node);
+        for (var t = 0; t < targets.length; t++) {
+          var text = targets[t].nodeValue, lower = text.toLowerCase();
+          var frag = document.createDocumentFragment(), at = 0, hit;
+          while ((hit = lower.indexOf(needle, at)) >= 0) {
+            if (hit > at) frag.appendChild(document.createTextNode(text.slice(at, hit)));
+            var mark = document.createElement('mark');
+            mark.className = 'petrel-find';
+            mark.textContent = text.slice(hit, hit + needle.length);
+            frag.appendChild(mark);
+            found.push(mark);
+            at = hit + needle.length;
+          }
+          if (at < text.length) frag.appendChild(document.createTextNode(text.slice(at)));
+          targets[t].parentNode.replaceChild(frag, targets[t]);
+        }
+      }
+      parent.postMessage({ petrelFound: found.length }, '*');
+      post();
+    }
+    function setActive(i) {
+      for (var n = 0; n < found.length; n++) {
+        found[n].className = n === i ? 'petrel-find on' : 'petrel-find';
+      }
+      if (found[i] && found[i].scrollIntoView) found[i].scrollIntoView({ block: 'center' });
+    }
+
     // The reading-size preference, as the real frame does it.
     addEventListener('message', function (e) {
+      if (e.data && typeof e.data.petrelFind === 'string') runFind(e.data.petrelFind);
+      if (e.data && typeof e.data.petrelFindActive === 'number') setActive(e.data.petrelFindActive);
       var n = e.data && e.data.petrelSize;
       if (typeof n === 'number' && n >= 10 && n <= 28) {
         document.documentElement.style.setProperty('--petrel-size', n + 'px');

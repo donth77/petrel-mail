@@ -8,5 +8,6 @@ pub mod actions;
 pub mod blob;
 pub mod outbox;
 pub mod retention;
+pub mod search_query;
 pub mod store;
 pub mod threading;

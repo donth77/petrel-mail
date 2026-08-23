@@ -62,6 +62,8 @@ export const BINDINGS: Binding[] = [
     chords: [{ key: '\\' }], available: true },
   { id: 'reader-scroll', group: 'move', label: 'Scroll the message · a page at a time',
     display: ['Space', '⇧Space'], chords: [{ key: ' ' }], available: true },
+  { id: 'find-in-message', group: 'move', label: 'Find in this conversation',
+    display: 'find', chords: [{ key: 'f', meta: true }], available: true },
 
   // ---- act on mail
   { id: 'archive', group: 'act', label: 'Archive', display: ['E'],
@@ -86,7 +88,7 @@ export const BINDINGS: Binding[] = [
   // ---- everywhere
   { id: 'search', group: 'everywhere', label: 'Search', display: ['/'],
     chords: [{ key: '/' }], available: true },
-  { id: 'palette', group: 'everywhere', label: 'Command palette', display: 'palette',
+  { id: 'palette', group: 'everywhere', label: 'Search mail · run a command', display: 'palette',
     chords: [{ key: 'k', meta: true }], available: true },
   { id: 'help', group: 'everywhere', label: 'This list', display: ['?'],
     chords: [{ key: '?' }], available: true },

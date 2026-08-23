@@ -274,6 +274,13 @@ pub struct ThreadListing {
     pub has_attachments: bool,
     /// Every tag on any message in the conversation, deduplicated.
     pub tags: Vec<ThreadRowTag>,
+    /// Why this row matched, when it came from a search: the text around the
+    /// hit, with the matched words wrapped in `[` and `]`.
+    ///
+    /// None for an ordinary list. A search result that shows the same opening
+    /// line as every other row cannot say what it was answering — the reason it
+    /// is there is exactly the part the reader needs.
+    pub match_snippet: Option<String>,
     /// First attachment filename, for the row chip; the reader lists them all.
     pub attachment_name: Option<String>,
 }
@@ -394,6 +401,28 @@ fn first_cjk_run(query: &str) -> String {
 /// Snippets come from the original text in `fts_content`, never from the
 /// space-separated index copy, which would render with gaps between every
 /// character.
+/// The row preview: the opening of a message, on one line.
+///
+/// Shared by ingest and by the re-extraction repair, because two copies of
+/// "the first 160 characters, whitespace collapsed" is how a repaired row ends
+/// up subtly different from a freshly ingested one.
+fn preview_of(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(160)
+        .collect()
+}
+
+/// What wraps a match inside a snippet.
+///
+/// Private-use codepoints rather than punctuation, because every printable
+/// character is something a message might legitimately contain — and one that
+/// appears in mail turns the sender's own text into a false highlight.
+pub const MARK_START: char = '\u{E000}';
+pub const MARK_END: char = '\u{E001}';
+
 fn cjk_snippet(body: &str, query: &str) -> String {
     const PAD: usize = 24;
     let needle = first_cjk_run(query);
@@ -414,9 +443,12 @@ fn cjk_snippet(body: &str, query: &str) -> String {
         out.push('…');
     }
     out.extend(&chars[start..at]);
-    out.push('[');
+    // The same private-use markers the FTS path uses: brackets are ordinary
+    // text in mail, and two snippet sources must mark matches the same way or
+    // the renderer needs to know which produced it.
+    out.push(MARK_START);
     out.extend(&chars[at..at + n]);
-    out.push(']');
+    out.push(MARK_END);
     out.extend(&chars[at + n..end]);
     if end < chars.len() {
         out.push('…');
@@ -871,13 +903,7 @@ impl Store {
             .ok_or_else(|| StoreError::Ingest("unparseable message".into()))?;
 
         let index_text = parsed.index_text();
-        let snippet: String = index_text
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .chars()
-            .take(160)
-            .collect();
+        let snippet = preview_of(&index_text);
         let attachment_names = parsed
             .attachments
             .iter()
@@ -1123,6 +1149,13 @@ impl Store {
         }
     }
 
+    /// Matches are marked with U+E000 and U+E001, not square brackets.
+    ///
+    /// Brackets are ordinary text in mail. The plain-text alternative that
+    /// marketing senders generate is full of things like [image: Google], and
+    /// with brackets as the marker the renderer highlighted the sender's own
+    /// punctuation as though it had matched the search. Nothing types a
+    /// private-use codepoint, so nothing can be mistaken for one.
     pub fn search_unicode(&self, query: &str, limit: u32) -> Result<Vec<SearchHit>> {
         let Some(expr) = match_expr(query, true) else {
             return Ok(Vec::new());
@@ -1130,7 +1163,7 @@ impl Store {
         let mut stmt = self.conn.prepare_cached(
             "SELECT rowid,
                     bm25(fts_messages, 4.0, 1.0, 2.0, 2.0) AS r,
-                    snippet(fts_messages, 1, '[', ']', '…', 12)
+                    snippet(fts_messages, 1, char(57344), char(57345), '…', 12)
              FROM fts_messages
              WHERE fts_messages MATCH ?1
              ORDER BY r
@@ -1179,6 +1212,66 @@ impl Store {
         Ok(self
             .conn
             .query_row("SELECT count(*) FROM fts_cjk", [], |r| r.get(0))?)
+    }
+
+    /// How the indexed text is derived. Bumped when that changes.
+    ///
+    /// The index is built once, when a message arrives, so an improvement to
+    /// extraction reaches only new mail — everything already held keeps
+    /// whatever the old code produced. This is the version that says otherwise.
+    pub const EXTRACTION_VERSION: i64 = 3;
+
+    /// Re-derives the indexed text of every stored message from its bytes.
+    ///
+    /// Runs when the extraction version moves, and not otherwise: it re-parses
+    /// every blob, which is cheap for a few hundred messages and not something
+    /// to do at every launch. Returns how many were rewritten.
+    pub fn reindex_bodies(&mut self, blobs: &crate::blob::BlobStore) -> Result<usize> {
+        let held: i64 = self
+            .settings()?
+            .get("extraction_version")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        if held >= Self::EXTRACTION_VERSION {
+            return Ok(0);
+        }
+
+        let rows: Vec<(i64, String)> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, blob_hash FROM messages
+                 WHERE blob_hash IS NOT NULL AND deleted_at_ms IS NULL",
+            )?;
+            let it = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            it.collect::<std::result::Result<Vec<_>, _>>()?
+        };
+
+        let tx = self.conn.transaction()?;
+        let mut done = 0usize;
+        {
+            // Both the index and the row preview. The first pass rewrote only
+            // the index, which is why placeholders kept showing on rows: the
+            // preview is a separate column, written once at ingest, and no
+            // amount of reindexing touches it.
+            let mut update =
+                tx.prepare("UPDATE fts_content SET body_text = ?2 WHERE message_id = ?1")?;
+            let mut preview = tx.prepare("UPDATE messages SET snippet = ?2 WHERE id = ?1")?;
+            for (id, hash) in rows {
+                // A blob that will not read is not a reason to abandon the
+                // rest; it keeps whatever text it already had.
+                let Ok(raw) = blobs.read(&hash) else { continue };
+                let Some(parsed) = petrel_mime::parse_message(&raw) else {
+                    continue;
+                };
+                let text = parsed.index_text();
+                update.execute(params![id, &text])?;
+                preview.execute(params![id, preview_of(&text)])?;
+                done += 1;
+            }
+        }
+        tx.commit()?;
+        self.rebuild_fts()?;
+        self.set_setting("extraction_version", &Self::EXTRACTION_VERSION.to_string())?;
+        Ok(done)
     }
 
     pub fn rebuild_fts(&self) -> Result<()> {
@@ -2571,6 +2664,7 @@ impl Store {
                 has_attachments: row.get::<_, i64>(11)? != 0,
                 tags: parse_row_tags(row.get::<_, Option<String>>(12)?),
                 attachment_name: row.get::<_, Option<String>>(13)?,
+                match_snippet: None,
             })
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
@@ -2860,17 +2954,56 @@ impl Store {
     /// duplicates collapsed — otherwise a five-message thread where four match
     /// would fill the results with itself. Rank order is preserved: the thread
     /// takes the position of its best-matching message.
+    /// How results are ordered.
+    ///
+    /// Best match by default. Ranking is local BM25 over the extracted text, so
+    /// the thing you are looking for is usually first — sorting by date is for
+    /// retracing a timeline, which is a different question and one click away.
+    pub fn search_threads_sorted(
+        &self,
+        query: &str,
+        limit: u32,
+        newest_first: bool,
+    ) -> Result<Vec<ThreadListing>> {
+        let mut rows = self.search_threads(query, limit)?;
+        if newest_first {
+            rows.sort_by(|a, b| b.date_ms.cmp(&a.date_ms));
+        }
+        Ok(rows)
+    }
+
     pub fn search_threads(&self, query: &str, limit: u32) -> Result<Vec<ThreadListing>> {
-        let hits = self.search_listing(query, limit.saturating_mul(3).min(600))?;
+        let q = crate::search_query::parse(query);
+        if q.is_empty() {
+            return Ok(Vec::new());
+        }
+        let wide = limit.saturating_mul(3).min(600);
+
+        // Words rank; conditions filter. With no words there is nothing for
+        // BM25 to score, so `has:attachment` on its own is a listing in date
+        // order — which is the right answer to a question that named no terms.
+        let hits: Vec<Listing> = if q.text.trim().is_empty() {
+            self.messages_meeting(&q, wide)?
+        } else {
+            let found = self.search_listing(&q.text, wide)?;
+            let keep = self.ids_meeting(&found.iter().map(|h| h.id).collect::<Vec<_>>(), &q)?;
+            found.into_iter().filter(|h| keep.contains(&h.id)).collect()
+        };
         if hits.is_empty() {
             return Ok(Vec::new());
         }
         let mut order: Vec<i64> = Vec::new();
         let mut seen = std::collections::HashSet::new();
+        // The first hit for a conversation is its best one — the list arrives
+        // ranked — so that is the snippet the row shows.
+        let mut why: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
         for h in &hits {
             let tid = self.thread_of(h.id)?.unwrap_or(-h.id);
             if seen.insert(tid) {
                 order.push(tid);
+                if !h.snippet.is_empty() {
+                    why.insert(tid, h.snippet.clone());
+                }
             }
         }
         order.truncate(limit as usize);
@@ -2883,7 +3016,110 @@ impl Store {
         let rank: std::collections::HashMap<i64, usize> =
             order.iter().enumerate().map(|(i, t)| (*t, i)).collect();
         rows.sort_by_key(|r| rank.get(&r.thread_id).copied().unwrap_or(usize::MAX));
+        for row in &mut rows {
+            row.match_snippet = why.remove(&row.thread_id);
+        }
         Ok(rows)
+    }
+
+    /// The SQL for a query's conditions, and the values they bind.
+    ///
+    /// Built rather than interpolated: `from:` and `in:` carry whatever was
+    /// typed, and a search box that reaches SQL is the oldest mistake there is.
+    fn conditions(q: &crate::search_query::SearchQuery) -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
+        let mut sql = String::new();
+        let mut args: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        if let Some(from) = &q.from {
+            sql.push_str(
+                " AND (lower(coalesce(m.from_addr,'')) LIKE ?
+                       OR lower(coalesce(m.from_display,'')) LIKE ?)",
+            );
+            let like = format!("%{}%", from.to_lowercase());
+            args.push(Box::new(like.clone()));
+            args.push(Box::new(like));
+        }
+        if q.has_attachment {
+            sql.push_str(" AND m.has_attachments = 1");
+        }
+        if q.unread {
+            sql.push_str(&format!(" AND m.flags & {} = 0", flags::SEEN));
+        }
+        if q.starred {
+            sql.push_str(&format!(" AND m.flags & {} != 0", flags::FLAGGED));
+        }
+        if let Some(role) = &q.in_role {
+            sql.push_str(
+                " AND EXISTS (SELECT 1 FROM placements p JOIN folders f ON f.id = p.folder_id
+                              WHERE p.message_id = m.id AND f.role = ?)",
+            );
+            args.push(Box::new(role.clone()));
+        }
+        if let Some(after) = q.after_ms {
+            sql.push_str(" AND m.date_ms >= ?");
+            args.push(Box::new(after));
+        }
+        (sql, args)
+    }
+
+    /// Which of these messages meet the query's conditions.
+    fn ids_meeting(
+        &self,
+        ids: &[i64],
+        q: &crate::search_query::SearchQuery,
+    ) -> Result<std::collections::HashSet<i64>> {
+        if ids.is_empty() {
+            return Ok(std::collections::HashSet::new());
+        }
+        let (conds, mut args) = Self::conditions(q);
+        if conds.is_empty() {
+            return Ok(ids.iter().copied().collect());
+        }
+        let holes = std::iter::repeat_n("?", ids.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT m.id FROM messages m
+             WHERE m.deleted_at_ms IS NULL AND m.id IN ({holes}){conds}"
+        );
+        let mut all: Vec<Box<dyn rusqlite::ToSql>> = ids
+            .iter()
+            .map(|i| Box::new(*i) as Box<dyn rusqlite::ToSql>)
+            .collect();
+        all.append(&mut args);
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(all), |r| r.get::<_, i64>(0))?;
+        Ok(rows.collect::<std::result::Result<std::collections::HashSet<_>, _>>()?)
+    }
+
+    /// Every message meeting the conditions, newest first — the answer when a
+    /// query named conditions but no words.
+    fn messages_meeting(
+        &self,
+        q: &crate::search_query::SearchQuery,
+        limit: u32,
+    ) -> Result<Vec<Listing>> {
+        let (conds, mut args) = Self::conditions(q);
+        let sql = format!(
+            "SELECT m.id, coalesce(m.from_display,''), coalesce(m.from_addr,''),
+                    coalesce(m.subject,''), m.date_ms
+             FROM messages m
+             WHERE m.deleted_at_ms IS NULL{conds}
+             ORDER BY m.date_ms DESC LIMIT ?"
+        );
+        args.push(Box::new(limit));
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(args), |r| {
+            Ok(Listing {
+                id: r.get(0)?,
+                from_display: r.get(1)?,
+                from_addr: r.get(2)?,
+                subject: r.get(3)?,
+                date_ms: r.get(4)?,
+                // Nothing was searched for, so there is nothing to mark.
+                snippet: String::new(),
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
     /// The thread-row aggregate, restricted to a set of conversations.
@@ -2936,6 +3172,7 @@ impl Store {
                 has_attachments: row.get::<_, i64>(11)? != 0,
                 tags: parse_row_tags(row.get::<_, Option<String>>(12)?),
                 attachment_name: row.get::<_, Option<String>>(13)?,
+                match_snippet: None,
             })
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
