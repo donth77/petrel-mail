@@ -24,6 +24,9 @@ import { promisesMissingAttachment } from './lib/compose-checks';
 import { replyTargets } from './lib/reply';
 import { forwardBody, replyBody } from './lib/quote';
 import { dropMeaning } from './lib/dnd';
+import { useDrag } from './lib/useDrag';
+import { useDropGuard } from './lib/useFileDrop';
+import { DragPreview } from './components/DragPreview';
 import { startingBody, startingHtml } from './lib/signature';
 import { ATTACHMENT_LIMIT, pickAttachments, stageDropped } from './lib/attachments';
 import { extend, prune, targets, toggle } from './lib/selection';
@@ -55,9 +58,7 @@ export function App() {
   // Find-in-conversation. Held here because ⌘F is a global key and the bar has
   // to survive the reading pane re-rendering under it.
   const [finding, setFinding] = useState(false);
-  // Conversations currently being dragged, so the rail can show which
-  // destinations will take them.
-  const [dragging, setDragging] = useState<number[]>([]);
+
   const [activeId, setActiveId] = useState<number | null>(null);
   const [view, setView] = useState('inbox');
 
@@ -146,7 +147,26 @@ export function App() {
     if (scroller) scroller.scrollTop = 0;
   }, [query, view, newestFirst]);
 
+  // Declared here rather than with the other rail state: the triage hook
+  // below reads tags to show one on a row the moment it is applied.
+  const [tags, setTags] = useState<Tag[]>([]);
+  // The tag awaiting confirmation. Deleting one takes it off every
+  // conversation carrying it, which is not a thing to do on one click.
+  const [deletingTag, setDeletingTag] = useState<{ id: number; name: string } | null>(null);
+
+  // Resolving a tag id to what a row displays. The rail's list is already the
+  // authority on names and colours, so the patch reads from it rather than
+  // inventing a second copy that could disagree.
+  const tagById = useCallback(
+    (id: number) => {
+      const tag = tags.find((x) => x.id === id);
+      return tag ? { name: tag.name, colour: tag.colour } : undefined;
+    },
+    [tags],
+  );
+
   const triage = useTriage({
+    tagById,
     items,
     setItems,
     activeId,
@@ -539,6 +559,18 @@ export function App() {
     }
   };
 
+  // A file dropped anywhere but the composer would otherwise replace the
+  // whole application with that file.
+  useDropGuard();
+
+  const { drag, start: startDrag, startTag } = useDrag(
+    view,
+    dropOnRail,
+    // A tag dropped onto a conversation. The same call the picker makes, so a
+    // drag cannot come to mean something slightly different from the menu.
+    (tagId, threadId) => void triage.run('tag', threadId, tagId),
+  );
+
   /** Files dragged onto the composer from the desktop. */
   const dropAttachments = async (files: FileList) => {
     try {
@@ -701,7 +733,6 @@ export function App() {
 
   // Tags come from the account, so one that has no conversation on this page
   // still appears in the rail.
-  const [tags, setTags] = useState<Tag[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [identity, setIdentity] = useState<Identity | null>(null);
@@ -709,13 +740,44 @@ export function App() {
   // Folders show their full path so "Contracts/2026" is distinguishable from
   // another "2026" elsewhere; tags carry their colour and whether this
   // conversation already has them, because tagging is a set, not a choice.
+  // Re-read the tags as the picker opens.
+  //
+  // They were loaded once at startup and then only when a sync changed the
+  // status — so anything that altered them in between (a tag made in another
+  // window, one created before the account finished opening, an edit that did
+  // not refresh) left the picker showing a list that was merely the last one
+  // seen. It is a local query against SQLite; asking again at the moment the
+  // list is about to be read is cheaper than reasoning about when it went out
+  // of date.
+  useEffect(() => {
+    if (picker !== 'tag') return;
+    let live = true;
+    // Reported, not swallowed. A tag list that failed to load and an account
+    // with no tags produce exactly the same empty picker, so a silent catch
+    // here turns a broken call into "you have no tags" — which is the one
+    // reading of it that stops anyone looking for the real cause.
+    api
+      .tags()
+      .then((t) => live && setTags(t))
+      .catch((e) => api.log(`list_tags failed: ${e}`));
+    return () => {
+      live = false;
+    };
+  }, [picker]);
+
   const pickerOptions: PickerOption[] = useMemo(() => {
     // The same times snooze offers, for the same reason: "tomorrow" means the
     // start of a working day, not twenty-four hours from now.
     if (picker === 'snooze' || picker === 'send-later') return snoozeOptions();
     if (picker === 'tag') {
       const on = new Set((active?.tags ?? []).map((x) => x.name));
-      return tags.map((tg) => ({
+      const listed = new Set(tags.map((tg) => tg.name));
+      // Whatever the conversation actually carries, even if the rail's list
+      // does not have it. A tag visible on the message but absent from the
+      // options is one the reader can see and cannot take off — the list being
+      // briefly incomplete should not make a message impossible to untag.
+      const carried = (active?.tags ?? []).filter((x) => !listed.has(x.name));
+      return [...tags, ...carried].map((tg) => ({
         id: tg.id,
         label: tg.name,
         colour: tg.colour || undefined,
@@ -726,14 +788,34 @@ export function App() {
   }, [picker, folders, tags, active]);
   useEffect(() => {
     let live = true;
-    api.tags().then((t) => live && setTags(t)).catch(() => {});
+    // Reported, not swallowed. A tag list that failed to load and an account
+    // with no tags produce exactly the same empty picker, so a silent catch
+    // here turns a broken call into "you have no tags" — which is the one
+    // reading of it that stops anyone looking for the real cause.
+    api
+      .tags()
+      .then((t) => live && setTags(t))
+      .catch((e) => api.log(`list_tags failed: ${e}`));
     api.folders().then((f) => live && setFolders(f)).catch((e) => api.log(`folders failed: ${e}`));
     api.identity().then((i) => live && setIdentity(i)).catch((e) => api.log(`identity failed: ${e}`));
     api.accounts().then((a) => live && setAccounts(a)).catch(() => {});
     return () => {
       live = false;
     };
-  }, [status?.count, status?.seeding]);
+    // Deliberately *not* keyed on the message count.
+    //
+    // These four are reference data — they change when the user changes them,
+    // not when mail arrives. Keyed on the count they re-ran on every sync poll,
+    // and each re-run's cleanup set `live = false` on the request already in
+    // flight, so the answer was thrown away when it landed. During a sync the
+    // count changes faster than the round trip, so the list was cancelled over
+    // and over and simply stayed empty: no tags in the rail, none in the
+    // picker, and nothing logged, because nothing had failed.
+    //
+    // The seeding flag is the honest trigger. It changes when a sync starts and
+    // when it finishes — twice, not sixty times — which is exactly when folders
+    // may have appeared and a re-read is worth doing.
+  }, [status?.seeding]);
 
   // A `mailto:` in a message opens a message here rather than in whichever
   // other mail program the machine prefers. Web links go to the browser; that
@@ -812,6 +894,46 @@ export function App() {
             .then(() => api.tags().then(setTags))
             .catch((e) => setToast(t('tag-create-failed', { error: String(e) })))
         }
+        onRenameTag={(id, name) => {
+          // The rows carry the tag's *name*, not its id, so a rename that only
+          // refreshed the rail left every chip in the list showing the old one
+          // until something else reloaded them.
+          const was = tags.find((x) => x.id === id)?.name;
+          return api
+            .renameTag(id, name)
+            .then(() => api.tags().then(setTags))
+            .then(() => {
+              if (!was || was === name) return;
+              // A view is named after its tag, so renaming the tag you are
+              // standing in leaves you looking at a name nothing answers to:
+              // the list empties and no rail item is current. Follow the
+              // rename instead — it is the same collection, newly titled.
+              if (view === `tag:${was}`) setView(`tag:${name}`);
+              setItems((prev) =>
+                prev.map((row) =>
+                  row.tags.some((x) => x.name === was)
+                    ? {
+                        ...row,
+                        tags: row.tags.map((x) => (x.name === was ? { ...x, name } : x)),
+                      }
+                    : row,
+                ),
+              );
+            })
+            .catch((e) => setToast(t('tag-rename-failed', { error: String(e) })));
+        }}
+        onColourTag={(id, colour) => {
+          // Painted at once and kept if the write succeeds. A colour is a
+          // glance-level thing; waiting a round trip to see it is the whole
+          // cost of the gesture.
+          setTags((prev) => prev.map((x) => (x.id === id ? { ...x, colour } : x)));
+          void api
+            .setTagColour(id, colour)
+            .then(() => api.tags().then(setTags))
+            .catch((e) => setToast(t('tag-rename-failed', { error: String(e) })));
+        }}
+        onDeleteTag={(tag) => setDeletingTag(tag)}
+        onDragTag={startTag}
         tags={tags}
         railRef={railRef}
         collapsed={settings.railCollapsed === 'on'}
@@ -843,8 +965,11 @@ export function App() {
           else setToast(t('account-none-at', { n: String(n) }));
         }}
         onSettings={() => setSettingsOpen('accounts')}
-        onDropThreads={dropOnRail}
-        dragActive={dragging.length > 0}
+        dropOver={drag?.over ?? null}
+        // Only while conversations are in flight. A tag being carried can only
+        // land on a conversation, so lighting up every mailbox would be
+        // offering somewhere it cannot go.
+        dragActive={drag?.payload.kind === 'threads'}
         onView={(v) => {
           if (v === 'help') setHelpOpen(true);
           else if (v === 'settings') setSettingsOpen('appearance');
@@ -1013,7 +1138,8 @@ export function App() {
               setActiveId(threadId);
               setPicker('snooze');
             }}
-            onDragIds={setDragging}
+            onDragStart={startDrag}
+            dropRow={drag?.overRow ?? null}
             onContextMenu={(id, x, y) => {
               // Right-clicking inside a selection acts on all of it; on a row
               // outside one, the selection is dropped and only that row is in
@@ -1094,6 +1220,8 @@ export function App() {
           onSnooze={() => setPicker('snooze')}
         />
       )}
+
+      <DragPreview drag={drag} />
 
       {draft && (
         <Compose
@@ -1180,13 +1308,20 @@ export function App() {
             setPicker(null);
             return;
           }
+          // Whatever is selected, or the conversation on screen when nothing
+          // is. Passing `undefined` here meant the picker always acted on the
+          // active row alone, so tagging six selected conversations tagged one
+          // of them and silently left the rest — the selection was visible on
+          // screen the whole time.
+          const targets = selected.size > 0 ? [...selected] : [undefined];
           if (picker === 'folder') {
-            void triage.run('move', undefined, id);
+            targets.forEach((t) => void triage.run('move', t, id));
             setPicker(null);
+            if (selected.size > 0) setSelected(new Set());
           } else {
             // Toggling: `on` is the state being moved to, so an applied tag
             // untags rather than re-applying and reporting "Tagged" twice.
-            void triage.run(on ? 'tag' : 'untag', undefined, id);
+            targets.forEach((t) => void triage.run(on ? 'tag' : 'untag', t, id));
           }
         }}
         onCreate={(name) => {
@@ -1197,7 +1332,18 @@ export function App() {
                 setPicker(null);
                 return triage.run('move', undefined, id).then(() => api.folders().then(setFolders));
               }
-              return triage.run('tag', undefined, id).then(() => api.tags().then(setTags));
+              // Re-read the tags *before* applying, not after. The row shows a
+              // tag by name and colour, which the optimistic patch looks up by
+              // id against the loaded list — and a tag created a moment ago is
+              // not in that list yet, so applying first left the row bare until
+              // something else reloaded it.
+              return api.tags().then(setTags).then(() => {
+                // ...and to everything selected, not only the row underneath.
+                const targets = selected.size > 0 ? [...selected] : [undefined];
+                return Promise.all(
+                  targets.map((target) => triage.run('tag', target, id)),
+                ).then(() => undefined);
+              });
             })
             .catch((e) => setToast(t('triage-failed', { error: String(e) })));
         }}
@@ -1319,6 +1465,27 @@ export function App() {
             />
           );
         })()}
+
+      <Confirm
+        open={deletingTag !== null}
+        title={t('tag-delete-confirm', { name: deletingTag?.name ?? '' })}
+        detail={t('tag-delete-body')}
+        confirmLabel={t('tag-delete')}
+        onClose={() => setDeletingTag(null)}
+        onConfirm={() => {
+          const tag = deletingTag;
+          setDeletingTag(null);
+          if (!tag) return;
+          // Leaving the tag's own view would strand the user looking at a list
+          // that can no longer exist.
+          if (view === `tag:${tag.name}`) setView('inbox');
+          void api
+            .deleteTag(tag.id)
+            .then(() => api.tags().then(setTags))
+            .then(() => setToast(t('tag-deleted', { name: tag.name })))
+            .catch((e) => setToast(t('tag-rename-failed', { error: String(e) })));
+        }}
+      />
 
       <Confirm
         open={pendingDelete !== null}

@@ -906,6 +906,70 @@ where
     Ok(())
 }
 
+/// Quotes a label for an IMAP command.
+///
+/// Labels are user-written, so they arrive with spaces, quotes and backslashes
+/// in them. An unquoted one with a space would be read as two labels, and an
+/// unescaped quote would end the string early and leave the rest of the name
+/// being parsed as commands.
+fn quote_imap(value: &str) -> String {
+    let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
+}
+
+/// Adds or removes a Gmail label on one message.
+///
+/// `X-GM-LABELS` is Gmail's own extension and the only way to write a label
+/// over IMAP: a label is not a flag and not a folder, so neither `STORE FLAGS`
+/// nor a copy would express it. On any other server this does not exist, which
+/// is why the caller decides whether to call it.
+pub async fn store_gmail_labels(
+    cfg: &ImapConfig,
+    folder: &str,
+    uid: u32,
+    label: &str,
+    add: bool,
+) -> Result<()> {
+    match cfg.security {
+        Security::Tls => {
+            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
+            store_labels_session(client, cfg, folder, uid, label, add).await
+        }
+        #[cfg(feature = "insecure-plaintext")]
+        Security::InsecurePlaintext => {
+            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
+            store_labels_session(Client::new(tcp), cfg, folder, uid, label, add).await
+        }
+    }
+}
+
+async fn store_labels_session<S>(
+    client: Client<S>,
+    cfg: &ImapConfig,
+    folder: &str,
+    uid: u32,
+    label: &str,
+    add: bool,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
+{
+    let mut session = client
+        .login(&cfg.user, &cfg.pass)
+        .await
+        .map_err(|(e, _)| e)?;
+    session.select(folder).await?;
+    let op = if add { "+X-GM-LABELS" } else { "-X-GM-LABELS" };
+    {
+        let mut updates = session
+            .uid_store(uid.to_string(), format!("{op} ({})", quote_imap(label)))
+            .await?;
+        while updates.next().await.is_some() {}
+    }
+    session.logout().await?;
+    Ok(())
+}
+
 /// Removes one message from the server for good.
 ///
 /// UID EXPUNGE (RFC 4315) when the server has UIDPLUS, because a bare EXPUNGE
@@ -1093,6 +1157,17 @@ pub async fn probe(cfg: &ImapConfig, fetch_limit: u32) -> Result<ProbeReport> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn labels_are_quoted_so_a_name_cannot_become_a_command() {
+        // Labels are written by the user, so they arrive with spaces, quotes
+        // and backslashes in them. Unquoted, "Work stuff" is two labels; with
+        // an unescaped quote, the rest of the name is parsed as IMAP.
+        assert_eq!(super::quote_imap("Urgent"), "\"Urgent\"");
+        assert_eq!(super::quote_imap("Work stuff"), "\"Work stuff\"");
+        assert_eq!(super::quote_imap(r#"say "hi""#), r#""say \"hi\"""#);
+        assert_eq!(super::quote_imap(r"back\slash"), r#""back\\slash""#);
+    }
     use super::{capability_token, parse_capabilities};
 
     #[test]

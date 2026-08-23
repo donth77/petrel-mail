@@ -46,8 +46,8 @@
   rows[5].filed = 'sent';
   rows[6].filed = 'sent';
   rows[7].filed = 'drafts';
-  rows[8].tags = [{ name: 'Urgent', colour: '#A8544B' }];
-  rows[9].tags = [{ name: 'Urgent', colour: '#A8544B' }];
+  rows[8].tags = [{ id: 11, name: 'Urgent', colour: '#A8544B' }];
+  rows[9].tags = [{ id: 11, name: 'Urgent', colour: '#A8544B' }];
 
   var folders = [
     { id: 101, role: '', path: 'Contracts' },
@@ -249,7 +249,7 @@
         else if (a.kind === 'tag') {
           var tg = tags.filter(function (x) { return x.id === a.target; })[0];
           if (tg && !row.tags.some(function (x) { return x.name === tg.name; })) {
-            row.tags.push({ name: tg.name, colour: tg.colour });
+            row.tags.push({ id: tg.id, name: tg.name, colour: tg.colour });
           }
         } else if (a.kind === 'untag') {
           var t2 = tags.filter(function (x) { return x.id === a.target; })[0];
@@ -380,6 +380,28 @@
       var id = 300 + tags.length;
       tags.push({ id: id, name: a.name, colour: '', thread_count: 0 });
       return id;
+    },
+    // Editing a tag, so the harness exercises renaming, colouring and deleting
+    // rather than only creating — the three that had no way in at all.
+    rename_tag: function (a) {
+      var t = tags.find(function (x) { return x.id === a.tagId; });
+      if (!t) return null;
+      var clash = tags.some(function (x) {
+        return x.id !== a.tagId && x.name.toLowerCase() === String(a.name).trim().toLowerCase();
+      });
+      if (clash) throw new Error('a tag called ' + a.name + ' already exists');
+      t.name = String(a.name).trim();
+      return null;
+    },
+    set_tag_colour: function (a) {
+      var t = tags.find(function (x) { return x.id === a.tagId; });
+      if (t) t.colour = a.colour;
+      return null;
+    },
+    delete_tag: function (a) {
+      var i = tags.findIndex(function (x) { return x.id === a.tagId; });
+      if (i >= 0) tags.splice(i, 1);
+      return null;
     },
   };
 

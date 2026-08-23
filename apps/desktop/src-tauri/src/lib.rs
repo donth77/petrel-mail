@@ -54,6 +54,8 @@ struct AppState {
     /// RFC 4315. Without it a message can be marked deleted but not expunged,
     /// because a bare EXPUNGE would take every other \\Deleted message with it.
     server_has_uidplus: AtomicBool,
+    /// Whether this account's tags are Gmail labels rather than IMAP keywords.
+    server_is_gmail: AtomicBool,
     /// How much mail the server says it holds, across the folders we sync.
     ///
     /// The denominator of the coverage line, and the reason it exists: a client
@@ -228,6 +230,7 @@ fn spawn_drain_worker(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
                 cfg.clone(),
                 has_move,
                 has_uidplus,
+                state.server_is_gmail.load(Ordering::Relaxed),
             )
             .await;
             send_due(Arc::clone(&state), account).await;
@@ -263,6 +266,10 @@ async fn drain_actions(
     cfg: ImapConfig,
     has_move: bool,
     has_uidplus: bool,
+    // Whether this account's tags are Gmail labels. Passed in with the other
+    // capabilities rather than sniffed here: the probe already worked it out,
+    // and two places deciding what a server is would eventually disagree.
+    looks_like_gmail: bool,
 ) {
     use petrel_engine::actions::ActionKind;
 
@@ -369,12 +376,46 @@ async fn drain_actions(
                 }
             }
             ActionKind::Snooze | ActionKind::Unsnooze => continue,
-            // Tags are Gmail labels or IMAP keywords depending on the provider,
-            // and neither is wired yet. Left queued rather than marked done, so
-            // they deliver once that lands instead of being silently dropped.
+            // A tag is a Gmail label on Gmail, an IMAP keyword elsewhere.
+            // Only the first is wired; the rest stay queued rather than being
+            // marked done, so they deliver when keywords land instead of being
+            // silently dropped.
             ActionKind::Tag | ActionKind::Untag => {
-                stuck += 1;
-                continue;
+                if !looks_like_gmail {
+                    stuck += 1;
+                    continue;
+                }
+                // The action names the tag by id, not by name: a tag can be
+                // renamed between queueing and delivery, and the action means
+                // "this tag" rather than "whatever it was called at the time".
+                let target = serde_json::from_str::<serde_json::Value>(&item.payload_json)
+                    .ok()
+                    .and_then(|p| p.get("target").and_then(|t| t.as_i64()));
+                let name = target.and_then(|id| {
+                    state
+                        .store
+                        .lock()
+                        .ok()
+                        .and_then(|s| s.tag_name(id).ok())
+                        .flatten()
+                });
+                let Some(name) = name else {
+                    // The tag was deleted before its action went out. There is
+                    // nothing left to name to the server, and retrying forever
+                    // would keep a dead action in the queue.
+                    if let Ok(store) = state.store.lock() {
+                        let _ = store.mark_action_state(item.action_id, "sent");
+                    }
+                    continue;
+                };
+                petrel_providers::imap::store_gmail_labels(
+                    &cfg,
+                    &folder,
+                    uid,
+                    &name,
+                    matches!(kind, ActionKind::Tag),
+                )
+                .await
             }
         };
 
@@ -496,6 +537,9 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
                 // user's other labels instead of clearing them.
                 looks_like_gmail = cfg.host.contains("gmail")
                     || report.folders.iter().any(|f| f.name.starts_with("[Gmail]"));
+                state
+                    .server_is_gmail
+                    .store(looks_like_gmail, Ordering::Relaxed);
                 if let Ok(store) = state.store.lock() {
                     match store.sync_folders(account, &rows) {
                         Ok(n) => log_sync(&format!("{n} folder(s) stored")),
@@ -522,6 +566,7 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
             cfg.clone(),
             has_move,
             has_uidplus,
+            state.server_is_gmail.load(Ordering::Relaxed),
         )
         .await;
         // A message due while the app was closed goes out now, rather than
@@ -697,6 +742,7 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
                 cfg.clone(),
                 has_move,
                 has_uidplus,
+                state.server_is_gmail.load(Ordering::Relaxed),
             )
             .await;
             send_due(Arc::clone(&state), account).await;
@@ -1540,6 +1586,29 @@ fn create_tag(name: String, state: State<Arc<AppState>>) -> Result<i64, String> 
         .map_err(|e| e.to_string())
 }
 
+/// Corrects a tag's name. The colour and every tagged message come with it.
+#[tauri::command]
+fn rename_tag(tag_id: i64, name: String, state: State<Arc<AppState>>) -> Result<(), String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    store.rename_tag(tag_id, &name).map_err(|e| e.to_string())
+}
+
+/// Sets a tag's colour. Local by design: no provider has a field for it.
+#[tauri::command]
+fn set_tag_colour(tag_id: i64, colour: String, state: State<Arc<AppState>>) -> Result<(), String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    store
+        .set_tag_colour(tag_id, &colour)
+        .map_err(|e| e.to_string())
+}
+
+/// Removes a tag from the account and from every message carrying it.
+#[tauri::command]
+fn delete_tag(tag_id: i64, state: State<Arc<AppState>>) -> Result<(), String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    store.delete_tag(tag_id).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn undo_triage(action_id: i64, state: State<Arc<AppState>>) -> Result<bool, String> {
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
@@ -2001,6 +2070,7 @@ pub fn run() {
         draining: AtomicBool::new(false),
         server_has_move: AtomicBool::new(false),
         server_has_uidplus: AtomicBool::new(false),
+        server_is_gmail: AtomicBool::new(false),
         server_total: std::sync::atomic::AtomicUsize::new(0),
         shown_once: Mutex::new(std::collections::HashSet::new()),
         tokens: Arc::new(ViewTokens::new()),
@@ -2082,6 +2152,9 @@ pub fn run() {
             list_folders,
             create_folder,
             create_tag,
+            rename_tag,
+            set_tag_colour,
+            delete_tag,
             send_message,
             storage_report,
             export_mbox,

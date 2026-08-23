@@ -7,7 +7,8 @@ import {
 import type { Account } from '../lib/api';
 import { Icon } from './Icon';
 import { t, type StringId } from '../lib/strings';
-import { DRAG_TYPE, acceptsDrop } from '../lib/dnd';
+import { TagMenu } from './TagMenu';
+import { acceptsDrop } from '../lib/dnd';
 import { AccountMenu } from './AccountMenu';
 import { Tip } from './Tip';
 
@@ -23,62 +24,21 @@ const MAILBOXES: { id: StringId; key: string; glyph: LucideIcon }[] = [
   { id: 'mailbox-trash', key: 'trash', glyph: Trash2 },
 ];
 
-type Tag = { name: string; colour: string; thread_count: number };
+type Tag = { id: number; name: string; colour: string; thread_count: number };
 
 /**
- * The drop handlers a rail destination needs.
+ * Marks a rail destination so a drag can find it.
  *
- * Returned as a bundle rather than written out at each call site because a
- * destination that lights up but does not accept, or accepts but never lit up,
- * is the confusing half-state this avoids by construction.
- *
- * `dragover` must cancel the event or the browser refuses the drop — the
- * default action for a dragged item is "no". `dragleave` fires when the pointer
- * crosses into a child element too, so the highlight is keyed on the row that
- * owns it rather than toggled blindly.
+ * A data attribute rather than event handlers: the drag hit-tests the document
+ * for whatever is under the pointer, so a destination only has to be findable
+ * and say which key it is. That also means a destination cannot miss a drag
+ * because one of its own children swallowed the event.
  */
-function dropProps(
-  railKey: string,
-  view: string,
-  dragActive: boolean,
-  over: string | null,
-  setOver: React.Dispatch<React.SetStateAction<string | null>>,
-  onDrop: (railKey: string, ids: number[]) => void,
-) {
+function dropTarget(railKey: string, view: string, over: string | null) {
   if (!acceptsDrop(railKey, view)) return {};
   return {
-    // Marked while anything is being dragged, not only once the pointer is
-    // here: a destination that reveals itself only on arrival is one you have
-    // to already know about to find.
-    'data-drop-ok': dragActive || undefined,
+    'data-drop-key': railKey,
     'data-drop-over': over === railKey || undefined,
-    onDragOver: (e: React.DragEvent) => {
-      if (!e.dataTransfer.types.includes(DRAG_TYPE)) return;
-      e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
-      setOver(railKey);
-    },
-    onDragLeave: (e: React.DragEvent) => {
-      if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
-      // Cleared only if this row is still the one lit. Leaving one row can
-      // arrive after entering the next, and an unconditional clear would put
-      // the highlight out on the row the pointer just moved onto.
-      setOver((cur) => (cur === railKey ? null : cur));
-    },
-    onDrop: (e: React.DragEvent) => {
-      const raw = e.dataTransfer.getData(DRAG_TYPE);
-      if (!raw) return;
-      e.preventDefault();
-      setOver(null);
-      try {
-        const ids: unknown = JSON.parse(raw);
-        if (Array.isArray(ids) && ids.every((n) => typeof n === 'number')) {
-          onDrop(railKey, ids as number[]);
-        }
-      } catch {
-        // A drag from somewhere else wearing our type. Nothing to do.
-      }
-    },
   };
 }
 
@@ -95,7 +55,8 @@ type Props = {
   onSettings: () => void;
   /** Conversations dropped on a destination. The rail decides where; what that
       means to the store is the caller's business. */
-  onDropThreads: (railKey: string, ids: number[]) => void;
+  /** The destination under the pointer mid-drag, so it can light up. */
+  dropOver: string | null;
   /** Whether a drag is in flight, so destinations can say they will take it
       before the pointer reaches them rather than only once it arrives. */
   dragActive: boolean;
@@ -110,6 +71,11 @@ type Props = {
   /** Make a tag that is attached to nothing yet. Returns once it exists, so the
    *  rail can put the input away only after the work succeeded. */
   onCreateTag: (name: string) => Promise<void>;
+  onRenameTag: (tagId: number, name: string) => Promise<void>;
+  onColourTag: (tagId: number, colour: string) => void;
+  onDeleteTag: (tag: { id: number; name: string }) => void;
+  /** Begins carrying this tag towards a conversation. */
+  onDragTag: (e: React.PointerEvent, tagId: number, name: string) => void;
   railRef?: React.Ref<HTMLElement>;
 };
 
@@ -124,23 +90,29 @@ export function Rail({
   collapsed,
   onView,
   onCreateTag,
+  onRenameTag,
+  onColourTag,
+  onDeleteTag,
+  onDragTag,
   onToggleCollapsed,
   onCompose,
   onResize,
   onSwitchAccount,
   onSettings,
-  onDropThreads,
+  dropOver,
   dragActive,
   railRef,
 }: Props) {
-  // Which destination the pointer is over mid-drag, for the highlight.
-  const [dropOver, setDropOver] = useState<string | null>(null);
+
   // Pointer drag, with the listeners on the window rather than the handle: a
   // fast drag outruns a 6px target, and losing the pointer mid-resize leaves
   // the rail stuck at whatever width the last event happened to land on.
   // Naming a new tag. An inline field rather than a dialog: it is one short
   // string, and a modal for one word is more ceremony than the act deserves.
   const [naming, setNaming] = useState(false);
+  // The tag being renamed, edited in place on its own row rather than in a
+  // dialog: it is one short string, and the row is where you are looking.
+  const [renaming, setRenaming] = useState<number | null>(null);
   const nameInput = useRef<HTMLInputElement>(null);
   useEffect(() => {
     if (naming) nameInput.current?.focus();
@@ -201,7 +173,8 @@ export function Rail({
             className="rail-item"
             aria-current={view === m.key ? 'page' : undefined}
             onClick={() => onView(m.key)}
-            {...dropProps(m.key, view, dragActive, dropOver, setDropOver, onDropThreads)}
+            {...dropTarget(m.key, view, dropOver)}
+            data-drop-ok={dragActive && acceptsDrop(m.key, view) ? true : undefined}
           >
             <Icon icon={m.glyph} />
             <span className="rail-text">{t(m.id)}</span>
@@ -217,12 +190,13 @@ export function Rail({
 
       {/* The header shows even with no tags yet, because the + is how the first
           one gets made — a section that only appears once you already have one
-          is a feature you cannot find. Collapsed there is no header row to put
-          a button in, so it goes; the tag rows themselves stay, because they
-          are still somewhere to go. */}
-      {!collapsed && (
-        <>
-          <div className="rail-label rail-label-row">
+          is a feature you cannot find.
+
+          It stays in the layout when the rail collapses, hidden the same way
+          the Mailboxes heading is. Removing it took its 37px with it and every
+          tag below jumped up, while the mailboxes — whose heading only fades —
+          held still. Two headings, two behaviours, one of them visibly wrong. */}
+      <div className="rail-label rail-label-row">
             <span>{t('rail-tags')}</span>
             <Tip label={t('tag-new')} placement="right">
               <button
@@ -235,14 +209,23 @@ export function Rail({
               </button>
             </Tip>
           </div>
-          {naming && (
+      {/* The field itself only exists while the rail is open: there is nowhere
+          to type in a collapsed one. */}
+      {!collapsed && naming && (
             <input
               ref={nameInput}
               className="rail-new-tag"
               placeholder={t('tag-new-placeholder')}
               aria-label={t('tag-new')}
               autoComplete="off"
-              onBlur={() => setNaming(false)}
+              // Committed on the way out, not discarded. Typing a name and
+              // clicking elsewhere used to lose it silently, which reads as the
+              // tag having been created and then vanished.
+              onBlur={(e) => {
+                const name = e.currentTarget.value.trim();
+                setNaming(false);
+                if (name) void onCreateTag(name);
+              }}
               onKeyDown={(e) => {
                 // Stopped here so the app's single-key shortcuts do not fire
                 // while a tag is being named — typing "e" should not archive.
@@ -257,21 +240,50 @@ export function Rail({
                   setNaming(false);
                   return;
                 }
-                void onCreateTag(name).then(() => setNaming(false));
+                // Blur does the creating; this only ends the editing, so a
+                // name is not created once by Enter and again by the blur that
+                // Enter causes.
+                e.currentTarget.blur();
               }}
             />
           )}
-        </>
-      )}
 
       {tags.map((tag) => (
             <Tip key={tag.name} label={tag.name} placement="right" when={collapsed}>
+            {renaming === tag.id ? (
+              <input
+                key={`rename-${tag.id}`}
+                className="rail-new-tag"
+                defaultValue={tag.name}
+                aria-label={t('tag-rename')}
+                autoComplete="off"
+                autoFocus
+                onFocus={(e) => e.currentTarget.select()}
+                onBlur={(e) => {
+                  const next = e.currentTarget.value.trim();
+                  setRenaming(null);
+                  if (next && next !== tag.name) void onRenameTag(tag.id, next);
+                }}
+                onKeyDown={(e) => {
+                  e.stopPropagation();
+                  if (e.key === 'Escape') {
+                    // Abandoned, so blur must not then commit it.
+                    e.currentTarget.value = tag.name;
+                    setRenaming(null);
+                    return;
+                  }
+                  if (e.key === 'Enter') e.currentTarget.blur();
+                }}
+              />
+            ) : (
             <button
               type="button"
               className="rail-item"
               aria-current={view === `tag:${tag.name}` ? 'page' : undefined}
               onClick={() => onView(`tag:${tag.name}`)}
-              {...dropProps(`tag:${tag.name}`, view, dragActive, dropOver, setDropOver, onDropThreads)}
+              onPointerDown={(e) => onDragTag(e, tag.id, tag.name)}
+              {...dropTarget(`tag:${tag.name}`, view, dropOver)}
+              data-drop-ok={dragActive && acceptsDrop(`tag:${tag.name}`, view) ? true : undefined}
             >
               <span
                 className="tag-swatch"
@@ -282,7 +294,17 @@ export function Rail({
               {!collapsed && tag.thread_count > 0 && (
                 <span className="count">{tag.thread_count}</span>
               )}
+              {!collapsed && (
+                <TagMenu
+                  name={tag.name}
+                  colour={tag.colour}
+                  onRename={() => setRenaming(tag.id)}
+                  onColour={(c) => onColourTag(tag.id, c)}
+                  onDelete={() => onDeleteTag({ id: tag.id, name: tag.name })}
+                />
+              )}
             </button>
+            )}
             </Tip>
       ))}
 

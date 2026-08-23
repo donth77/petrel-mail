@@ -7,6 +7,7 @@ import { fileSize } from './lib/format';
 import { snoozeOptions } from './lib/snooze';
 import { Toast } from './components/Toast';
 import { t } from './lib/strings';
+import { useDropGuard } from './lib/useFileDrop';
 
 /**
  * A popped-out composer, alone in its own window.
@@ -24,6 +25,7 @@ import { t } from './lib/strings';
 export function ComposeWindow({ draftId }: { draftId: number }) {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  useDropGuard();
   const [error, setError] = useState<string | null>(null);
   const [account, setAccount] = useState('');
   const [scheduling, setScheduling] = useState(false);

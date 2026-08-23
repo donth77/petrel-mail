@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { acceptsDrop, draggedIds, dropMeaning } from './dnd';
+import { acceptsDrop, draggableFrom, draggedIds, dropMeaning } from './dnd';
 
 describe('dropMeaning', () => {
   it('reads the destinations that mean something', () => {
@@ -47,5 +47,40 @@ describe('draggedIds', () => {
 
   it('takes the row when nothing is selected', () => {
     expect(draggedIds(4, new Set())).toEqual([4]);
+  });
+});
+
+describe('what can be dragged, and from where', () => {
+  it('will not drag a message that is on its way out', () => {
+    // Outbox messages are mid-flight: the useful actions are edit and recall,
+    // neither of which is a place to drop them.
+    expect(draggableFrom('outbox')).toBe(false);
+    expect(acceptsDrop('trash', 'outbox')).toBe(false);
+    expect(acceptsDrop('tag:Urgent', 'outbox')).toBe(false);
+  });
+
+  it('drags from every mailbox that holds settled mail', () => {
+    for (const view of ['inbox', 'archive', 'sent', 'drafts', 'starred', 'spam', 'trash']) {
+      expect(draggableFrom(view), view).toBe(true);
+    }
+  });
+
+  it('offers only what means something for mail you wrote', () => {
+    for (const from of ['sent', 'drafts']) {
+      // Throwing away and marking apply to anything.
+      expect(acceptsDrop('trash', from), from).toBe(true);
+      expect(acceptsDrop('starred', from), from).toBe(true);
+      expect(acceptsDrop('tag:Urgent', from), from).toBe(true);
+      // Stations in the life of something that arrived do not.
+      expect(acceptsDrop('archive', from), from).toBe(false);
+      expect(acceptsDrop('inbox', from), from).toBe(false);
+      expect(acceptsDrop('spam', from), from).toBe(false);
+    }
+  });
+
+  it('still offers everything from a mailbox of received mail', () => {
+    expect(acceptsDrop('archive', 'inbox')).toBe(true);
+    expect(acceptsDrop('spam', 'inbox')).toBe(true);
+    expect(acceptsDrop('inbox', 'archive')).toBe(true);
   });
 });

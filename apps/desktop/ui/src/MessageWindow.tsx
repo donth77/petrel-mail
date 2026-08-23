@@ -4,6 +4,7 @@ import { Reader } from './components/Reader';
 import { Toast } from './components/Toast';
 import { t } from './lib/strings';
 import { useMessageLinks } from './lib/links';
+import { useDropGuard } from './lib/useFileDrop';
 
 /**
  * One conversation, alone in its own window.
@@ -21,6 +22,7 @@ export function MessageWindow({ threadId }: { threadId: number }) {
   const [thread, setThread] = useState<Thread | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [gone, setGone] = useState(false);
+  useDropGuard();
 
   useEffect(() => {
     let live = true;

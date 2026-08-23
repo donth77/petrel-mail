@@ -61,15 +61,41 @@ export type UndoOffer = {
  * working client feel broken. The cost is that a failure has to put the row
  * back — and say so, rather than leaving a hole where a message used to be.
  */
+/**
+ * A row's tags after a tag or untag, or unchanged for anything else.
+ *
+ * Returns the same array when nothing applies, so React's identity check still
+ * sees an unchanged row and does not re-render the whole list on every archive.
+ */
+function tagPatch(
+  current: Thread['tags'],
+  kind: ActionKind,
+  targetId: number | undefined,
+  tagById?: (id: number) => { name: string; colour: string } | undefined,
+): Thread['tags'] {
+  if (targetId == null) return current;
+  if (kind === 'untag') {
+    const tag = tagById?.(targetId);
+    return tag ? current.filter((x) => x.name !== tag.name) : current;
+  }
+  if (kind !== 'tag') return current;
+  const tag = tagById?.(targetId);
+  if (!tag || current.some((x) => x.name === tag.name)) return current;
+  return [...current, { id: targetId, name: tag.name, colour: tag.colour }];
+}
+
 export function useTriage(opts: {
   items: Thread[];
   setItems: (fn: (prev: Thread[]) => Thread[]) => void;
+  /** A tag by id, so a tagged row can show the tag before the server answers.
+      The action carries an id; a row shows a name and a colour. */
+  tagById?: (id: number) => { name: string; colour: string } | undefined;
   activeId: number | null;
   setActiveId: (id: number | null) => void;
   view: string;
   onMessage: (text: string, undo?: UndoOffer) => void;
 }) {
-  const { items, setItems, activeId, setActiveId, view, onMessage } = opts;
+  const { items, setItems, activeId, setActiveId, view, onMessage, tagById } = opts;
   const [pending, setPending] = useState(false);
   // The last thing done, so Z has something to reverse without the caller
   // tracking it.
@@ -126,6 +152,11 @@ export function useTriage(opts: {
                   starred: kind === 'star' ? true : kind === 'unstar' ? false : m.starred,
                   unread:
                     kind === 'mark_unread' ? true : kind === 'mark_read' ? false : m.unread,
+                  // Tags were missing from this patch, so a tag applied to a
+                  // row stayed invisible until something else happened to
+                  // reload the list — and the picker, which reads the row's
+                  // tags back, showed the tick in the wrong state with it.
+                  tags: tagPatch(m.tags, kind, targetId, tagById),
                 }
               : m,
           ),
@@ -169,7 +200,7 @@ export function useTriage(opts: {
         setPending(false);
       }
     },
-    [items, activeId, setItems, setActiveId, view, onMessage],
+    [items, activeId, setItems, setActiveId, view, onMessage, tagById],
   );
 
   const undo = useCallback(

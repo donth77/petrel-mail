@@ -27,7 +27,9 @@ export type Thread = {
   unread: boolean;
   starred: boolean;
   has_attachments: boolean;
-  tags: { name: string; colour: string }[];
+  /** The tag's id travels with the row so it can be untagged directly, rather
+      than by finding its name in the rail's list. */
+  tags: { id: number; name: string; colour: string }[];
   attachment_name: string | null;
   /** Why this row matched, when it came from a search: the text around the hit
    *  with the matched words wrapped in `[` and `]`. Null in an ordinary list. */
@@ -182,9 +184,12 @@ function mockRows(n: number, offset = 0): Thread[] {
       has_attachments: k % 5 === 0,
       tags:
         k % 4 === 0
-          ? [{ name: 'urgent', colour: '#B0524A' }]
+          ? [{ id: 301, name: 'urgent', colour: '#B0524A' }]
           : k % 7 === 3
-            ? [{ name: 'receipts', colour: '#5E7C4A' }, { name: 'read later', colour: '#9A6B1F' }]
+            ? [
+                { id: 303, name: 'receipts', colour: '#5E7C4A' },
+                { id: 304, name: 'read later', colour: '#9A6B1F' },
+              ]
             : [],
       attachment_name: k % 5 === 0 ? 'contract-v3.pdf' : null,
       // An ordinary list, so nothing matched anything.
@@ -256,6 +261,9 @@ const mock = {
   ],
   createFolder: async () => 999,
   createTag: async () => 998,
+  renameTag: async () => {},
+  setTagColour: async () => {},
+  deleteTag: async () => {},
   send: async () => 'mock-message-id@example.com',
   storage: async (): Promise<StorageReport> => ({
     messages: 40, attachments: 2,
@@ -393,6 +401,10 @@ const real = {
   folders: () => invoke<Folder[]>('list_folders'),
   createFolder: (path: string) => invoke<number>('create_folder', { path }),
   createTag: (name: string) => invoke<number>('create_tag', { name }),
+  renameTag: (tagId: number, name: string) => invoke<void>('rename_tag', { tagId, name }),
+  setTagColour: (tagId: number, colour: string) =>
+    invoke<void>('set_tag_colour', { tagId, colour }),
+  deleteTag: (tagId: number) => invoke<void>('delete_tag', { tagId }),
   send: (
     to: string[], cc: string[], subject: string, body: string, html: string | null,
     inReplyTo: string | null, references: string[], attachments: string[],

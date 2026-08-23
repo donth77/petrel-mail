@@ -95,7 +95,14 @@ export function Picker({ open, mode, options, subject, onClose, onChoose, onCrea
         mode === 'folder' ? 'picker-folder-title' : mode === 'tag' ? 'picker-tag-title' : 'picker-snooze-title',
       )}
     >
-      <ComboboxProvider setValue={setQuery} resetValueOnHide>
+      {/* `open` is pinned, exactly as the palette pins it. Left to itself the
+          combobox shows its list only once the input has focus, and in WebKit
+          focus inside a dialog that has just mounted does not land the way it
+          does in Chromium — so the list stayed `display: none`: four tag rows
+          in the DOM, none of them drawn, a dialog with a search box and nothing
+          to search. The list is the whole point of this dialog; it is never
+          closed while the dialog is. */}
+      <ComboboxProvider open setValue={setQuery} resetValueOnHide>
         <div className="picker-head">
           <Icon icon={mode === 'folder' ? FolderClosed : mode === 'tag' ? TagIcon : Clock} size={14} />
           <Combobox

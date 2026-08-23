@@ -251,6 +251,11 @@ pub struct FolderSummary {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ThreadRowTag {
+    /// Carried so a row can be untagged without consulting the rail's list.
+    /// Without it the only way to name a tag to the engine was to look it up
+    /// by name in that list — and a tag missing from the list for any reason
+    /// became one the reader could see on the message and could not remove.
+    pub id: i64,
     pub name: String,
     pub colour: String,
 }
@@ -2592,6 +2597,63 @@ impl Store {
     }
 
     /// Tags for the rail, with how many conversations carry each.
+    /// Renames a tag, keeping every message that carries it.
+    ///
+    /// The id is what a message is tagged with, so renaming is a change to one
+    /// row and nothing has to be re-applied. Refused when the new name is
+    /// already taken: two tags with one name are indistinguishable in the rail
+    /// and in `tag:` searches, and merging them silently would be a decision
+    /// the user did not ask for.
+    pub fn rename_tag(&self, tag_id: i64, name: &str) -> Result<()> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(StoreError::Rejected("a tag needs a name".into()));
+        }
+        let clash: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT id FROM tags
+                  WHERE account_id = (SELECT account_id FROM tags WHERE id = ?1)
+                    AND lower(name) = lower(?2) AND id <> ?1",
+                params![tag_id, name],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if clash.is_some() {
+            return Err(StoreError::Rejected(format!(
+                "a tag called {name} already exists"
+            )));
+        }
+        self.conn.execute(
+            "UPDATE tags SET name = ?2 WHERE id = ?1",
+            params![tag_id, name],
+        )?;
+        Ok(())
+    }
+
+    /// Sets a tag's colour, which is local to this machine by design — the
+    /// providers have no field for it, so it is ours to keep and never syncs.
+    pub fn set_tag_colour(&self, tag_id: i64, colour: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE tags SET colour = ?2 WHERE id = ?1",
+            params![tag_id, colour],
+        )?;
+        Ok(())
+    }
+
+    /// Removes a tag and takes it off every message carrying it.
+    ///
+    /// The rows in `message_tags` go with it rather than being left orphaned:
+    /// a tag id pointing at nothing would show as a blank chip on the rows that
+    /// still referenced it.
+    pub fn delete_tag(&self, tag_id: i64) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM message_tags WHERE tag_id = ?1", [tag_id])?;
+        self.conn
+            .execute("DELETE FROM tags WHERE id = ?1", [tag_id])?;
+        Ok(())
+    }
+
     pub fn tags_for_account(&self, account_id: i64) -> Result<Vec<TagSummary>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT t.id, t.name, coalesce(t.colour,''),
@@ -2662,7 +2724,8 @@ impl Store {
             "SELECT coalesce(m.thread_id, -m.id), m.id, coalesce(m.from_display,''), coalesce(m.from_addr,''),
                     coalesce(m.subject,''), coalesce(m.snippet,''), m.date_ms, t.n,
                     coalesce(t.participants,''), t.unread, t.starred, t.attach,
-                    (SELECT json_group_array(json_object('name', tg.name, 'colour', coalesce(tg.colour,'')))
+                    (SELECT json_group_array(
+                         json_object('id', tg.id, 'name', tg.name, 'colour', coalesce(tg.colour,'')))
                      FROM (SELECT DISTINCT mt.tag_id FROM message_tags mt
                            JOIN messages mm ON mm.id = mt.message_id
                            WHERE coalesce(mm.thread_id, -mm.id) = t.thread_id) d
@@ -2717,6 +2780,20 @@ impl Store {
             })
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// A tag's name, for the action that has to name it to the server.
+    ///
+    /// The queued action carries the tag's id, because a name can be edited
+    /// between queueing and delivery and the action means "this tag" rather
+    /// than "whatever is called that now".
+    pub fn tag_name(&self, tag_id: i64) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row("SELECT name FROM tags WHERE id = ?1", [tag_id], |r| {
+                r.get::<_, String>(0)
+            })
+            .optional()?)
     }
 
     /// The numbers beside the rail's mailboxes.
