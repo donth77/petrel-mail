@@ -57,6 +57,10 @@ type Props = {
       means to the store is the caller's business. */
   /** The destination under the pointer mid-drag, so it can light up. */
   dropOver: string | null;
+  /** Outbox messages waiting on a decision. Any at all turns the row amber:
+      a message that needs a person must not go unnoticed, and this is where
+      you find out — the sidebar, not a dialog. */
+  outboxNeedsAttention: number;
   /** Whether a drag is in flight, so destinations can say they will take it
       before the pointer reaches them rather than only once it arrives. */
   dragActive: boolean;
@@ -101,6 +105,7 @@ export function Rail({
   onSettings,
   dropOver,
   dragActive,
+  outboxNeedsAttention,
   railRef,
 }: Props) {
 
@@ -172,6 +177,7 @@ export function Rail({
             type="button"
             className="rail-item"
             aria-current={view === m.key ? 'page' : undefined}
+            data-attention={m.key === 'outbox' && outboxNeedsAttention > 0 ? true : undefined}
             onClick={() => onView(m.key)}
             {...dropTarget(m.key, view, dropOver)}
             data-drop-ok={dragActive && acceptsDrop(m.key, view) ? true : undefined}

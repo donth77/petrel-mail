@@ -11,7 +11,7 @@ use rusqlite::functions::FunctionFlags;
 use rusqlite::{Connection, params};
 use std::path::Path;
 
-pub const SCHEMA_VERSION: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 11;
 /// Bumped whenever text extraction changes; a mismatch forces reindexing.
 pub const EXTRACTOR_VERSION: i64 = 1;
 
@@ -258,6 +258,21 @@ pub struct ThreadRowTag {
     pub id: i64,
     pub name: String,
     pub colour: String,
+}
+
+/// One message in the outbox, as the view shows it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OutboxRow {
+    pub id: i64,
+    pub subject: String,
+    pub to: String,
+    pub send_after_ms: i64,
+    /// `petrel_engine::outbox::SendState`, by name.
+    pub state: String,
+    pub error: Option<String>,
+    pub attempts: i64,
+    pub next_ms: Option<i64>,
+    pub attachments: i64,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -863,6 +878,9 @@ impl Store {
         }
         if ver < 10 {
             conn.execute_batch(include_str!("migrations/0010-draft-html.sql"))?;
+        }
+        if ver < 11 {
+            conn.execute_batch(include_str!("migrations/0011-outbox-state.sql"))?;
         }
         if ver < SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -1953,16 +1971,143 @@ impl Store {
     /// A comparison against the clock, not a timer — so a message due while the
     /// app was closed goes out on the next pass instead of being missed by an
     /// alarm that never rang.
+    /// Messages whose turn it is to go.
+    ///
+    /// Two conditions, and the second is the one that matters: the scheduled
+    /// time has passed *and* the message is in a state that may be sent on its
+    /// own. One held for a person — whose outcome could not be proved either
+    /// way — is never picked up here however long it waits. That is the whole
+    /// ambiguous-outcome rule: a retry the engine cannot prove safe is a
+    /// decision, and decisions are handed over rather than made.
+    ///
+    /// `send_next_ms` is the retry ladder's next rung; a freshly scheduled
+    /// message has none and goes on `send_after_ms` alone.
     pub fn due_sends(&self, account_id: i64, now_ms: i64) -> Result<Vec<DraftRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT id FROM messages
-             WHERE account_id = ?1 AND send_after_ms IS NOT NULL AND send_after_ms <= ?2
+             WHERE account_id = ?1
+               AND send_after_ms IS NOT NULL AND send_after_ms <= ?2
+               AND coalesce(send_next_ms, 0) <= ?2
+               AND coalesce(send_state, 'RetryQueued') IN ('UndoWindow', 'RetryQueued')
              ORDER BY send_after_ms",
         )?;
         let ids: Vec<i64> = stmt
             .query_map(params![account_id, now_ms], |r| r.get(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         ids.into_iter().map(|id| self.load_draft(id)).collect()
+    }
+
+    /// Records where a send attempt left a message.
+    ///
+    /// One call for every transition, so the five columns that describe an
+    /// outbox row can never disagree with each other: a state of `Sent` with an
+    /// error attached, or a retry time on a message held for a person, would be
+    /// a row that says two things at once.
+    pub fn set_send_state(
+        &self,
+        id: i64,
+        state: crate::outbox::SendState,
+        error: Option<&str>,
+        next_ms: Option<i64>,
+        message_id: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE messages
+                SET send_state = ?2,
+                    send_error = ?3,
+                    send_next_ms = ?4,
+                    send_message_id = coalesce(?5, send_message_id),
+                    send_attempts = send_attempts + CASE WHEN ?6 THEN 1 ELSE 0 END
+              WHERE id = ?1",
+            params![
+                id,
+                format!("{state:?}"),
+                error,
+                next_ms,
+                message_id,
+                // An attempt is something that reached the wire. Being held,
+                // or merely re-queued by hand, is not one.
+                matches!(
+                    state,
+                    crate::outbox::SendState::Sent
+                        | crate::outbox::SendState::RetryQueued
+                        | crate::outbox::SendState::FailedPermanent
+                        | crate::outbox::SendState::NeedsAttention
+                ),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The Message-ID an outbox row's last attempt went out under, if any.
+    pub fn conn_query_send_message_id(&self, id: i64) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT send_message_id FROM messages WHERE id = ?1",
+                [id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
+    /// Puts a message back on the queue to go at once, whatever state it was
+    /// in. This is "Send now", "Try now" and "Send anyway": the person has
+    /// looked and decided, which is the only thing that may move a message out
+    /// of `NeedsAttention`.
+    pub fn resend_now(&self, id: i64, now_ms: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE messages
+                SET send_state = 'RetryQueued', send_error = NULL,
+                    send_next_ms = NULL, send_after_ms = ?2
+              WHERE id = ?1",
+            params![id, now_ms],
+        )?;
+        Ok(())
+    }
+
+    /// Takes a message out of the outbox and back into Drafts, keeping its
+    /// text. "Edit" on a failed send: the message is not lost, it is yours
+    /// again.
+    pub fn unschedule_send(&self, id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE messages
+                SET send_after_ms = NULL, send_state = NULL, send_error = NULL,
+                    send_next_ms = NULL, send_attempts = 0
+              WHERE id = ?1",
+            params![id],
+        )?;
+        Ok(())
+    }
+
+    /// The outbox, with each row's state spelled out for the UI.
+    pub fn outbox(&self, account_id: i64) -> Result<Vec<OutboxRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT m.id, coalesce(m.subject,''), m.send_after_ms,
+                    coalesce(m.send_state, 'RetryQueued'), m.send_error,
+                    m.send_attempts, m.send_next_ms,
+                    (SELECT count(*) FROM attachments a WHERE a.message_id = m.id),
+                    (SELECT group_concat(addr_norm, ', ') FROM message_addresses
+                      WHERE message_id = m.id AND role = 'to')
+             FROM messages m
+             WHERE m.account_id = ?1 AND m.send_after_ms IS NOT NULL
+             ORDER BY m.send_after_ms",
+        )?;
+        let rows = stmt.query_map(params![account_id], |r| {
+            Ok(OutboxRow {
+                id: r.get(0)?,
+                subject: r.get(1)?,
+                send_after_ms: r.get(2)?,
+                state: r.get(3)?,
+                error: r.get(4)?,
+                attempts: r.get(5)?,
+                next_ms: r.get(6)?,
+                attachments: r.get(7)?,
+                to: r.get::<_, Option<String>>(8)?.unwrap_or_default(),
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
     /// Reads a draft back for editing.
@@ -2837,6 +2982,19 @@ impl Store {
         // a total rather than an unread one. "How much is tagged Urgent" is the
         // question a tag answers, and swapping it for an unread count would
         // lose that to make two different things look alike.
+        // One more row, under its own key: how many outbox messages are
+        // waiting on a person. Reported alongside the counts rather than by a
+        // separate call so the rail learns of it on the same cadence it learns
+        // everything else — a message that needs a decision must not go
+        // unnoticed, and a count fetched only while the Outbox is open would
+        // be exactly the way it did.
+        let needs: i64 = self.conn.query_row(
+            "SELECT count(*) FROM messages
+              WHERE send_after_ms IS NOT NULL AND send_state = 'NeedsAttention'",
+            [],
+            |r| r.get(0),
+        )?;
+        out.push(("outbox:attention".to_string(), needs));
         Ok(out)
     }
 

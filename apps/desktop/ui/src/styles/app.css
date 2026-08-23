@@ -3777,3 +3777,106 @@ body.dragging * {
   background: var(--accent-wash);
   box-shadow: inset 3px 0 0 var(--accent);
 }
+
+/* The outbox.
+
+   Rows, not conversations: each is a message in one of five states, coloured
+   by what it needs. Most need nothing and stay quiet; the one that needs a
+   person is amber, and stays amber until they decide. */
+.outbox {
+  padding: 10px 12px 24px;
+  overflow-y: auto;
+  min-block-size: 0;
+}
+
+.outbox-title {
+  margin: 4px 4px 12px;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  color: var(--ink2);
+}
+
+.outbox-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 12px 14px;
+  margin-block-end: 8px;
+  border: 1px solid var(--hair);
+  border-radius: 9px;
+  background: var(--surface);
+}
+
+.outbox-row[data-tone='muted'] {
+  color: var(--ink2);
+}
+
+.outbox-row[data-tone='red'] {
+  border-color: color-mix(in oklab, var(--bad, #b0524a) 45%, var(--hair));
+}
+
+/* Amber reads as "attention", not "error": nothing has gone wrong that the
+   person did, and the message may well have been delivered. */
+.outbox-row[data-tone='amber'] {
+  border-color: #d9a441;
+  background: color-mix(in oklab, #d9a441 9%, var(--surface));
+}
+
+.outbox-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-inline-size: 0;
+}
+
+.outbox-glyph {
+  flex-shrink: 0;
+  color: var(--ink3);
+}
+
+.outbox-row[data-tone='amber'] .outbox-glyph {
+  color: #a7741e;
+}
+
+.outbox-subject {
+  font-size: 13.5px;
+  font-weight: 650;
+  min-inline-size: 0;
+}
+
+.outbox-needs {
+  color: #a7741e;
+}
+
+.outbox-to {
+  font-size: 12px;
+  color: var(--ink3);
+}
+
+.outbox-why {
+  margin: 4px 0 2px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.outbox-checked {
+  font-weight: 600;
+}
+
+.outbox-acts {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-block-start: 4px;
+}
+
+/* The Outbox row in the rail, while a message is waiting on a decision. */
+.rail-item[data-attention] {
+  color: #a7741e;
+}
+
+.rail-item[data-attention] .count {
+  color: #a7741e;
+  font-weight: 650;
+}

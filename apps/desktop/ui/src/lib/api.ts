@@ -41,6 +41,20 @@ export type Tag = { id: number; name: string; colour: string; thread_count: numb
 export type Attachment = { filename: string; size: number };
 
 /** A message read back for quoting: sanitized, with remote content stripped. */
+/** One message in the outbox, with where its send attempt left it. */
+export type OutboxRow = {
+  id: number;
+  subject: string;
+  to: string;
+  send_after_ms: number;
+  /** `UndoWindow` | `Transmitting` | `RetryQueued` | `FailedPermanent` | `NeedsAttention` */
+  state: string;
+  error: string | null;
+  attempts: number;
+  next_ms: number | null;
+  attachments: number;
+};
+
 export type Quoted = {
   html: string;
   text: string;
@@ -325,6 +339,28 @@ const mock = {
   stageAttachment: async (name: string, bytes: Uint8Array) => ({
     path: `/tmp/staged/${name}`, name, size: bytes.length,
   }),
+  outbox: async (): Promise<OutboxRow[]> => {
+    const now = Date.now();
+    return [
+      { id: 901, subject: 'Re: Q3 vendor contracts — pricing before Friday', to: 'Sam Ortiz, Dana Wu',
+        send_after_ms: now + 7000, state: 'UndoWindow', error: null, attempts: 0, next_ms: null, attachments: 0 },
+      { id: 902, subject: 'Invoice 2214', to: 'accounts@clientco.example',
+        send_after_ms: now - 60000, state: 'RetryQueued', error: 'connect: network unreachable',
+        attempts: 1, next_ms: now + 30000, attachments: 1 },
+      { id: 903, subject: 'Notes from Tuesday', to: 'maya@northbay.example',
+        send_after_ms: now - 120000, state: 'RetryQueued', error: 'connect: connection refused',
+        attempts: 2, next_ms: now + 120000, attachments: 0 },
+      { id: 904, subject: 'Board pack v4', to: 'directors@northbay.example',
+        send_after_ms: now - 300000, state: 'NeedsAttention', error: 'connection closed after DATA',
+        attempts: 1, next_ms: null, attachments: 2 },
+      { id: 905, subject: 'Welcome aboard!', to: 'j.smith@oldcompany.example',
+        send_after_ms: now - 400000, state: 'FailedPermanent', error: '550 — no such user here',
+        attempts: 1, next_ms: null, attachments: 0 },
+    ];
+  },
+  outboxSendNow: async () => {},
+  outboxEdit: async () => {},
+  outboxCheck: async () => 'NeedsAttention',
   openExternal: async (url: string) => {
     // The browser stand-in cannot hand a URL to the system, and opening one in
     // the harness tab would navigate away from the app under test.
@@ -382,6 +418,10 @@ const real = {
     invoke<Thread[]>('list_threads', { view, offset, limit }),
   threadById: (threadId: number) => invoke<Thread | null>('thread_by_id', { threadId }),
   openExternal: (url: string) => invoke<void>('open_external', { url }),
+  outbox: () => invoke<OutboxRow[]>('list_outbox'),
+  outboxSendNow: (id: number) => invoke<void>('outbox_send_now', { id }),
+  outboxEdit: (id: number) => invoke<void>('outbox_edit', { id }),
+  outboxCheck: (id: number) => invoke<string>('outbox_check', { id }),
   stageAttachment: (name: string, bytes: Uint8Array) =>
     invoke<{ path: string; name: string; size: number }>('stage_attachment', { name, bytes }),
   tags: () => invoke<Tag[]>('list_tags'),

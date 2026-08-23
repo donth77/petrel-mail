@@ -4,6 +4,7 @@ import {
   type Account,
   type Folder,
   type Identity,
+  type OutboxRow,
   type Status,
   type Tag,
   type Thread,
@@ -40,6 +41,7 @@ import { RowMenu } from './components/RowMenu';
 import { Toast } from './components/Toast';
 import { MessageList } from './components/MessageList';
 import { Reader } from './components/Reader';
+import { Outbox } from './components/Outbox';
 import { PaneResize } from './components/PaneResize';
 
 export function App() {
@@ -153,6 +155,11 @@ export function App() {
   // The tag awaiting confirmation. Deleting one takes it off every
   // conversation carrying it, which is not a thing to do on one click.
   const [deletingTag, setDeletingTag] = useState<{ id: number; name: string } | null>(null);
+  // The outbox message awaiting a discard confirmation. Discarding is the one
+  // outbox action with no undo: the message was never sent, so there is
+  // nothing to recall it from.
+  const [discarding, setDiscarding] = useState<OutboxRow | null>(null);
+
 
   // Resolving a tag id to what a row displays. The rail's list is already the
   // authority on names and colours, so the patch reads from it rather than
@@ -817,6 +824,25 @@ export function App() {
     // may have appeared and a re-read is worth doing.
   }, [status?.seeding]);
 
+  // A message that needs a decision raises a notification, once.
+  //
+  // The amber rail is where you find out, but only if you are looking at the
+  // rail. A message whose send could not be proved either way must not wait
+  // silently behind a window you have minimised: silence is the one outcome
+  // that loses mail. Raised on the count going *up*, so a message that has
+  // already been announced is not announced again on every poll — and not
+  // gated on the notification setting, because that setting governs mail
+  // arriving, and this is mail of yours that may not have left.
+  const announcedNeeds = useRef(0);
+  useEffect(() => {
+    const needs = counts['outbox:attention'] ?? 0;
+    if (needs > announcedNeeds.current) {
+      setToast(t('outbox-notify', { count: fmtCount(needs) }));
+      void postDesktopNotification(t('outbox-notify-title'), t('outbox-notify', { count: fmtCount(needs) }));
+    }
+    announcedNeeds.current = needs;
+  }, [counts]);
+
   // A `mailto:` in a message opens a message here rather than in whichever
   // other mail program the machine prefers. Web links go to the browser; that
   // decision lives in `useMessageLinks`.
@@ -884,6 +910,7 @@ export function App() {
         accountColor={accounts[0]?.color || 'var(--accent)'}
         unread={unread}
         counts={counts}
+        outboxNeedsAttention={counts['outbox:attention'] ?? 0}
         view={view}
         onCreateTag={(name) =>
           api
@@ -1075,7 +1102,16 @@ export function App() {
               <span className="view-count">
                 {selected.size > 0
                   ? t('list-selected', { count: fmtCount(selected.size) })
-                  : t('list-unread', { count: fmtCount(unread) })}
+                  : view === 'outbox'
+                    ? // "Unread" means nothing for mail you wrote. What the outbox
+                      // counts is what is waiting, and what is waiting on you.
+                      (counts['outbox:attention'] ?? 0) > 0
+                      ? t('outbox-count-attention', {
+                          count: fmtCount(counts['outbox'] ?? 0),
+                          needs: fmtCount(counts['outbox:attention'] ?? 0),
+                        })
+                      : t('outbox-count', { count: fmtCount(counts['outbox'] ?? 0) })
+                    : t('list-unread', { count: fmtCount(unread) })}
               </span>
             )}
           </div>
@@ -1086,6 +1122,11 @@ export function App() {
             <h2 style={{ color: 'var(--danger)' }}>Could not load this mailbox</h2>
             <p className="mono" style={{ fontSize: 11.5 }}>{error}</p>
           </div>
+        ) : view === 'outbox' && !query.trim() ? (
+          // Its own component, not conversation rows. An outbox row is a
+          // message in one of five states, and the row's job is to say which
+          // in plain words and offer only the actions that state allows.
+          <Outbox onDiscard={(row) => setDiscarding(row)} />
         ) : loading || (status?.seeding && items.length === 0) ? (
           // A sync in flight with nothing ingested yet is not an empty mailbox,
           // and saying "Inbox is clear" while mail is arriving is the most
@@ -1467,6 +1508,22 @@ export function App() {
         })()}
 
       <Confirm
+        open={discarding !== null}
+        title={t('outbox-discard-confirm', { subject: discarding?.subject || t('no-subject') })}
+        detail={t('outbox-discard-body')}
+        confirmLabel={t('outbox-discard')}
+        onClose={() => setDiscarding(null)}
+        onConfirm={() => {
+          const row = discarding;
+          setDiscarding(null);
+          if (!row) return;
+          void api
+            .deleteDraft(row.id)
+            .catch((e) => setToast(t('triage-failed', { error: String(e) })));
+        }}
+      />
+
+      <Confirm
         open={deletingTag !== null}
         title={t('tag-delete-confirm', { name: deletingTag?.name ?? '' })}
         detail={t('tag-delete-body')}
@@ -1544,7 +1601,9 @@ export function App() {
         </span>
         <span style={{ color: 'var(--hair)' }}>|</span>
         <span>
-          {t('status-counts', { count: fmtCount(items.length), unread: fmtCount(unread) })}
+          {view === 'outbox'
+            ? t('outbox-count', { count: fmtCount(counts['outbox'] ?? 0) })
+            : t('status-counts', { count: fmtCount(items.length), unread: fmtCount(unread) })}
         </span>
         <span className="spacer" />
         <span>

@@ -151,7 +151,12 @@
       var n = a.mode === 'total'
         ? live.length
         : live.filter(function (r) { return r.unread; }).length;
-      return n > 0 ? [['inbox', n]] : [];
+      var out = n > 0 ? [['inbox', n]] : [];
+      // The outbox's own numbers: how many are held, and how many of those
+      // are waiting on a person — the one that turns the rail amber.
+      out.push(['outbox', 5]);
+      out.push(['outbox:attention', 1]);
+      return out;
     },
     list_accounts: function () {
       return [
@@ -354,6 +359,30 @@
       var bytes = (args && args.bytes) || [];
       return { path: '/staged/' + name, name: name, size: bytes.length || 0 };
     },
+    // The outbox, one row per state, so all five designs can be seen at
+    // once without staging five real failures.
+    list_outbox: function () {
+      var now = Date.now();
+      return [
+        { id: 901, subject: 'Re: Q3 vendor contracts — pricing before Friday', to: 'Sam Ortiz, Dana Wu',
+          send_after_ms: now + 7000, state: 'RetryQueued', error: null, attempts: 0, next_ms: null, attachments: 0 },
+        { id: 902, subject: 'Invoice 2214', to: 'accounts@clientco.example',
+          send_after_ms: now - 60000, state: 'RetryQueued', error: 'connect: network unreachable',
+          attempts: 1, next_ms: now + 30000, attachments: 1 },
+        { id: 903, subject: 'Notes from Tuesday', to: 'maya@northbay.example',
+          send_after_ms: now - 120000, state: 'RetryQueued', error: 'connect: connection refused',
+          attempts: 2, next_ms: now + 120000, attachments: 0 },
+        { id: 904, subject: 'Board pack v4', to: 'directors@northbay.example',
+          send_after_ms: now - 300000, state: 'NeedsAttention', error: 'connection closed after DATA',
+          attempts: 1, next_ms: null, attachments: 2 },
+        { id: 905, subject: 'Welcome aboard!', to: 'j.smith@oldcompany.example',
+          send_after_ms: now - 400000, state: 'FailedPermanent', error: '550 — no such user here',
+          attempts: 1, next_ms: null, attachments: 0 },
+      ];
+    },
+    outbox_send_now: function () { return null; },
+    outbox_edit: function () { return null; },
+    outbox_check: function () { return 'NeedsAttention'; },
     quote_message: function () {
       return {
         html: '<p>Could you take a look before Friday?</p><p>Thanks,<br>Dana</p>',

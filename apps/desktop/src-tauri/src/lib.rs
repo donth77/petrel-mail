@@ -1086,7 +1086,22 @@ async fn send_message(
 /// definition of what sending means — two would drift, and the half that
 /// drifted would be the one nobody watches.
 #[allow(clippy::too_many_arguments)]
-async fn deliver(
+/// What one attempt to send came to.
+///
+/// Carries the transport's verdict rather than collapsing it to an error
+/// string, because the four verdicts call for four different responses: done,
+/// try again, stop and tell the user, or — the one that matters — *find out*.
+struct Attempt {
+    message_id: String,
+    outcome: petrel_engine::outbox::AttemptOutcome,
+    /// The server's words, for the row to show when it stopped.
+    detail: String,
+}
+
+/// Sends once and reports what happened. Never retries, never files a copy in
+/// Sent on an uncertain outcome — that is the caller's decision to make, with
+/// the state machine's help.
+async fn attempt(
     state: &Arc<AppState>,
     to: Vec<String>,
     cc: Vec<String>,
@@ -1096,7 +1111,8 @@ async fn deliver(
     in_reply_to: Option<String>,
     references: Vec<String>,
     attachments: Vec<String>,
-) -> Result<String, String> {
+) -> Result<Attempt, String> {
+    use petrel_engine::outbox::AttemptOutcome;
     use petrel_providers::smtp::{Attachment, Outgoing, SendResult, SmtpConfig, send_tls};
 
     let cfg = imap_config_from_env().ok_or("no account is configured")?;
@@ -1150,30 +1166,36 @@ async fn deliver(
     }
     let (message_id, raw) = msg.render(&domain);
 
-    let outcome = send_tls(&smtp, &msg, &raw).await;
-    match outcome {
-        SendResult::Committed { .. } => {}
+    let (outcome, detail) = match send_tls(&smtp, &msg, &raw).await {
+        SendResult::Committed { response } => (AttemptOutcome::Accepted, response),
         SendResult::RejectedPermanently { response } => {
             log_sync(&format!("send rejected: {response}"));
-            return Err(format!("The server refused the message: {response}"));
+            (AttemptOutcome::RejectedPermanently, response)
         }
         SendResult::FailedBeforeCommit { stage, detail } => {
             log_sync(&format!("send failed at {stage}: {detail}"));
-            return Err(format!("Could not send ({stage}): {detail}"));
+            (
+                AttemptOutcome::FailedBeforeCommit,
+                format!("{stage}: {detail}"),
+            )
         }
         SendResult::UnknownAfterTransmit { detail } => {
             // Spike S5's case: the body went, the acknowledgement did not. The
             // message may well have been delivered, so a retry could duplicate
-            // it. Say so plainly rather than guessing either way.
+            // it. Reported as exactly that, for the caller to resolve by
+            // looking rather than by guessing.
             log_sync(&format!(
                 "send outcome unknown: {detail} (message-id {message_id})"
             ));
-            return Err(
-                "The message may have been sent — the connection dropped before the server \
-                 confirmed. Check your Sent folder before sending it again."
-                    .into(),
-            );
+            (AttemptOutcome::UnknownAfterTransmit, detail)
         }
+    };
+    if outcome != AttemptOutcome::Accepted {
+        return Ok(Attempt {
+            message_id,
+            outcome,
+            detail,
+        });
     }
 
     // Filed second, and separately: a failure here has not lost the message.
@@ -1195,7 +1217,52 @@ async fn deliver(
         }
     }
     log_sync(&format!("sent {message_id}"));
-    Ok(message_id)
+    Ok(Attempt {
+        message_id,
+        outcome,
+        detail,
+    })
+}
+
+/// Sends now, for the composer's Send button: one attempt, reported as a plain
+/// success or a sentence the toast can show. The outbox's retry and
+/// reconciliation live in `send_due`, which drives `attempt` directly.
+async fn deliver(
+    state: &Arc<AppState>,
+    to: Vec<String>,
+    cc: Vec<String>,
+    subject: String,
+    body: String,
+    html: Option<String>,
+    in_reply_to: Option<String>,
+    references: Vec<String>,
+    attachments: Vec<String>,
+) -> Result<String, String> {
+    use petrel_engine::outbox::AttemptOutcome;
+    let a = attempt(
+        state,
+        to,
+        cc,
+        subject,
+        body,
+        html,
+        in_reply_to,
+        references,
+        attachments,
+    )
+    .await?;
+    match a.outcome {
+        AttemptOutcome::Accepted => Ok(a.message_id),
+        AttemptOutcome::RejectedPermanently => {
+            Err(format!("The server refused the message: {}", a.detail))
+        }
+        AttemptOutcome::FailedBeforeCommit => Err(format!("Could not send ({})", a.detail)),
+        AttemptOutcome::UnknownAfterTransmit => Err(
+            "The message may have been sent — the connection dropped before the server \
+             confirmed. Check your Sent folder before sending it again."
+                .into(),
+        ),
+    }
 }
 
 /// Opens a saved draft in a window of its own.
@@ -1301,7 +1368,73 @@ fn schedule_send(
 /// promptly rather than on whatever the sync cadence happens to be. Failures
 /// leave the message in the outbox: a send that did not happen is not one to
 /// forget about, and the next pass will try again.
+/// The retry ladder, in milliseconds: 30s, 2m, 8m, 30m, then hourly.
+///
+/// Exponential and capped, as the spec asks, and starting short because the
+/// common failure is a connection that comes back in seconds. Past the cap
+/// there is no giving up: a message waiting for a network that is genuinely
+/// away for a day should still go when it returns, not be abandoned because
+/// it waited too long.
+fn retry_delay_ms(attempts: i64) -> i64 {
+    const LADDER: [i64; 4] = [30_000, 120_000, 480_000, 1_800_000];
+    LADDER
+        .get(attempts.max(1) as usize - 1)
+        .copied()
+        .unwrap_or(3_600_000)
+}
+
+/// Looks in Sent for a message whose send outcome the transport could not
+/// report.
+///
+/// This is the whole of the ambiguous-outcome rule's second half. SMTP has no
+/// way to ask "did you get that?", so the answer has to come from evidence:
+/// the copy a delivering server places in Sent. Found means it went. Searched
+/// and absent means it did not, and a retry is safe. Unable to search — which
+/// is the likely case straight after a dropped connection — means nobody
+/// knows, and that is the one answer that must reach a person unchanged.
+async fn sent_folder_evidence(
+    state: &Arc<AppState>,
+    cfg: &petrel_providers::imap::ImapConfig,
+    account: i64,
+    message_id: &str,
+) -> petrel_engine::outbox::ServerEvidence {
+    use petrel_engine::outbox::ServerEvidence;
+    let sent = state
+        .store
+        .lock()
+        .ok()
+        .and_then(|s| s.folder_for_role(account, "sent").ok().flatten())
+        .and_then(|fid| {
+            state
+                .store
+                .lock()
+                .ok()
+                .and_then(|s| s.folder_path(fid).ok().flatten())
+        });
+    let Some(path) = sent else {
+        // No Sent folder known for this account: there is nowhere to look.
+        return ServerEvidence::Indeterminate;
+    };
+    match petrel_providers::imap::find_message_id(cfg, &path, message_id).await {
+        Ok(uids) if !uids.is_empty() => ServerEvidence::Found,
+        Ok(_) => ServerEvidence::Absent,
+        Err(e) => {
+            log_sync(&format!("could not check Sent for {message_id}: {e}"));
+            ServerEvidence::Indeterminate
+        }
+    }
+}
+
+/// Sends whatever is due, and records where each message ended up.
+///
+/// This is the outbox's state machine in motion. Each attempt's outcome goes
+/// through `reconcile`, which is the only place that decides what a message's
+/// state becomes — and for the uncertain case it decides by *looking*, in the
+/// Sent folder, rather than by guessing. A message the engine cannot prove
+/// either way is held for a person and is never picked up here again.
 async fn send_due(state: Arc<AppState>, account: i64) {
+    use petrel_engine::outbox::{AttemptOutcome, SendState, ServerEvidence, reconcile};
+
     let due = {
         let Ok(store) = state.store.lock() else {
             return;
@@ -1311,39 +1444,192 @@ async fn send_due(state: Arc<AppState>, account: i64) {
     if due.is_empty() {
         return;
     }
-    log_sync(&format!("{} scheduled message(s) due", due.len()));
+    log_sync(&format!("{} queued message(s) due", due.len()));
+    let Some(cfg) = imap_config_from_env() else {
+        return;
+    };
 
     for d in due {
+        let id = d.id;
+        if let Ok(store) = state.store.lock() {
+            let _ = store.set_send_state(id, SendState::Transmitting, None, None, None);
+        }
         let to: Vec<String> =
             d.to.split([',', ';'])
                 .map(|a| a.trim().to_string())
                 .filter(|a| !a.is_empty())
                 .collect();
-        match deliver(
+        let attempts = {
+            state
+                .store
+                .lock()
+                .ok()
+                .and_then(|s| s.outbox(account).ok())
+                .and_then(|rows| rows.into_iter().find(|r| r.id == id).map(|r| r.attempts))
+                .unwrap_or(0)
+        };
+
+        let result = attempt(
             &state,
             to,
             Vec::new(),
             d.subject,
             d.body,
-            // Stored alongside the text, so a message posted hours ago goes out
-            // in the form it was written rather than flattened by the wait.
+            // Stored alongside the text, so a message posted hours ago goes
+            // out in the form it was written rather than flattened by the wait.
             Some(d.html).filter(|h| !h.trim().is_empty()),
             None,
             Vec::new(),
             Vec::new(),
         )
-        .await
-        {
-            Ok(id) => {
-                log_sync(&format!("scheduled send delivered {id}"));
-                if let Ok(store) = state.store.lock() {
-                    let _ = store.delete_draft(d.id);
-                }
+        .await;
+
+        let (outcome, detail, message_id) = match result {
+            Ok(a) => (a.outcome, a.detail, Some(a.message_id)),
+            // Could not even assemble the message — a missing attachment, no
+            // account. Not a transport verdict, so it is treated as a failure
+            // before anything was committed: safe to retry once it is fixed.
+            Err(e) => (AttemptOutcome::FailedBeforeCommit, e, None),
+        };
+
+        // Evidence is consulted only when the transport could not say.
+        let evidence = if outcome == AttemptOutcome::UnknownAfterTransmit {
+            match &message_id {
+                Some(m) => sent_folder_evidence(&state, &cfg, account, m).await,
+                None => ServerEvidence::Indeterminate,
             }
-            // Left in the outbox on purpose, to be retried.
-            Err(e) => log_sync(&format!("scheduled send failed, still queued: {e}")),
+        } else {
+            ServerEvidence::Indeterminate
+        };
+        let next = reconcile(outcome, evidence);
+
+        let Ok(store) = state.store.lock() else {
+            continue;
+        };
+        match next {
+            SendState::Sent => {
+                log_sync(&format!(
+                    "queued send delivered {}",
+                    message_id.as_deref().unwrap_or("?")
+                ));
+                let _ = store.delete_draft(id);
+            }
+            SendState::RetryQueued => {
+                let n = attempts + 1;
+                let wait = retry_delay_ms(n);
+                log_sync(&format!(
+                    "queued send failed, retrying in {}s: {detail}",
+                    wait / 1000
+                ));
+                let _ = store.set_send_state(
+                    id,
+                    SendState::RetryQueued,
+                    Some(&detail),
+                    Some(now_ms() + wait),
+                    message_id.as_deref(),
+                );
+            }
+            SendState::FailedPermanent => {
+                log_sync(&format!("queued send rejected: {detail}"));
+                let _ = store.set_send_state(
+                    id,
+                    SendState::FailedPermanent,
+                    Some(&detail),
+                    None,
+                    message_id.as_deref(),
+                );
+            }
+            SendState::NeedsAttention => {
+                // The one outcome no amount of engineering resolves. Said in
+                // the row, and raised as a notification, because silence is
+                // the one response that loses mail.
+                log_sync(&format!("queued send needs attention: {detail}"));
+                let _ = store.set_send_state(
+                    id,
+                    SendState::NeedsAttention,
+                    Some(&detail),
+                    None,
+                    message_id.as_deref(),
+                );
+            }
+            SendState::UndoWindow | SendState::Transmitting => {}
         }
     }
+}
+
+/// The outbox, row by row, with each message's state.
+#[tauri::command]
+fn list_outbox(
+    state: State<Arc<AppState>>,
+) -> Result<Vec<petrel_engine::store::OutboxRow>, String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    let Some(account) = store.first_account().map_err(|e| e.to_string())? else {
+        return Ok(Vec::new());
+    };
+    store.outbox(account).map_err(|e| e.to_string())
+}
+
+/// "Send now", "Try now", "Send anyway". The person has looked and decided,
+/// which is the only thing that may move a message out of `NeedsAttention` —
+/// so this is also the one place that does.
+#[tauri::command]
+fn outbox_send_now(id: i64, state: State<Arc<AppState>>) -> Result<(), String> {
+    {
+        let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+        store.resend_now(id, now_ms()).map_err(|e| e.to_string())?;
+    }
+    // Wake the worker so "now" means now, not the next poll.
+    state.drain_signal.notify_one();
+    Ok(())
+}
+
+/// "Edit": back to Drafts with the text intact, out of the queue.
+#[tauri::command]
+fn outbox_edit(id: i64, state: State<Arc<AppState>>) -> Result<(), String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    store.unschedule_send(id).map_err(|e| e.to_string())
+}
+
+/// "Check again" for a message whose outcome is unknown: look in Sent once
+/// more and resolve it if the evidence is now there. Never sends.
+#[tauri::command]
+async fn outbox_check(id: i64, state: State<'_, Arc<AppState>>) -> Result<String, String> {
+    use petrel_engine::outbox::{AttemptOutcome, SendState, reconcile};
+    let (account, message_id) = {
+        let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+        let account = store
+            .first_account()
+            .map_err(|e| e.to_string())?
+            .ok_or("no account")?;
+        let row = store
+            .outbox(account)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|r| r.id == id)
+            .ok_or("that message is no longer in the outbox")?;
+        let mid: Option<String> = store
+            .conn_query_send_message_id(id)
+            .map_err(|e| e.to_string())?;
+        (account, mid.filter(|_| row.state == "NeedsAttention"))
+    };
+    let Some(mid) = message_id else {
+        return Ok("Indeterminate".into());
+    };
+    let cfg = imap_config_from_env().ok_or("no account is configured")?;
+    let evidence = sent_folder_evidence(&state, &cfg, account, &mid).await;
+    let next = reconcile(AttemptOutcome::UnknownAfterTransmit, evidence);
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    match next {
+        SendState::Sent => {
+            let _ = store.delete_draft(id);
+        }
+        SendState::RetryQueued => {
+            let _ = store.resend_now(id, now_ms());
+            state.drain_signal.notify_one();
+        }
+        _ => {}
+    }
+    Ok(format!("{next:?}"))
 }
 
 /// Saves the composer's contents so they survive closing it.
@@ -2155,6 +2441,10 @@ pub fn run() {
             rename_tag,
             set_tag_colour,
             delete_tag,
+            list_outbox,
+            outbox_send_now,
+            outbox_edit,
+            outbox_check,
             send_message,
             storage_report,
             export_mbox,
