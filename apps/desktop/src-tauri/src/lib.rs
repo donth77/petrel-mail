@@ -2150,6 +2150,17 @@ pub fn run() {
 
             tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::default())
                 .title("Petrel")
+                // Tauri's own drag-and-drop handler registers a native drop
+                // target over the whole webview, and on Windows that stops the
+                // page's own HTML5 drag events from ever firing. Dragging a
+                // conversation onto a mailbox is a page-level gesture, so the
+                // page has to be the one hearing it.
+                //
+                // Nothing is lost by turning it off: we accept no OS file
+                // drops today, and when compose learns to take an attachment
+                // that way it arrives as `dataTransfer.files` on the same
+                // HTML5 drop event this enables.
+                .disable_drag_drop_handler()
                 .inner_size(1440.0, 900.0)
                 .min_inner_size(900.0, 560.0)
                 .position(40.0, 40.0)

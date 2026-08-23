@@ -690,6 +690,21 @@ impl CountMode {
     }
 }
 
+/// Mail that has been thrown away or judged to be junk.
+///
+/// Every view except Trash and Spam themselves leaves these out, and so does
+/// search. Written once because it was written three times: the fourth place
+/// that needed it — search — simply did not have it, and quietly returned junk
+/// among the results.
+fn not_binned(alias: &str) -> String {
+    format!(
+        "NOT EXISTS (SELECT 1 FROM placements p
+                     JOIN folders f ON f.id = p.folder_id
+                     WHERE p.message_id = {alias}.id
+                       AND f.role IN ('trash','spam'))"
+    )
+}
+
 impl ListView {
     /// Rail keys are the wire format, so this is the only place that knows them.
     pub fn parse(key: &str) -> ListView {
@@ -729,12 +744,9 @@ impl ListView {
             // two views are the same rows split on that one column.
             ListView::Outbox => format!("{alias}.send_after_ms IS NOT NULL"),
             ListView::Starred => format!(
-                "{alias}.flags & {f} != 0
-                 AND NOT EXISTS (SELECT 1 FROM placements p
-                                 JOIN folders f ON f.id = p.folder_id
-                                 WHERE p.message_id = {alias}.id
-                                   AND f.role IN ('trash','spam'))",
+                "{alias}.flags & {f} != 0 AND {binned}",
                 f = flags::FLAGGED,
+                binned = not_binned(alias),
             ),
             ListView::Folder(role) if role == "drafts" => format!(
                 "{alias}.send_after_ms IS NULL
@@ -770,10 +782,8 @@ impl ListView {
                 "EXISTS (SELECT 1 FROM message_tags mt
                          JOIN tags tg ON tg.id = mt.tag_id
                          WHERE mt.message_id = {alias}.id AND tg.name = ?3)
-                 AND NOT EXISTS (SELECT 1 FROM placements p
-                                 JOIN folders f ON f.id = p.folder_id
-                                 WHERE p.message_id = {alias}.id
-                                   AND f.role IN ('trash','spam'))"
+                 AND {binned}",
+                binned = not_binned(alias),
             ),
         }
     }
@@ -3134,6 +3144,18 @@ impl Store {
     fn conditions(q: &crate::search_query::SearchQuery) -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
         let mut sql = String::new();
         let mut args: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+        // Junk and deleted mail stay out unless they are what was asked for.
+        //
+        // Searching a mailbox is not an invitation to reopen what was already
+        // judged and discarded, and a result that quietly comes from Spam is
+        // worse than no result at all: it puts a message the filter rejected
+        // back in front of the reader looking exactly like ordinary mail. The
+        // grammar is the way in — `in:spam` and `in:trash` search them, and
+        // nothing else does.
+        if !matches!(q.in_role.as_deref(), Some("spam") | Some("trash")) {
+            sql.push_str(&format!(" AND {}", not_binned("m")));
+        }
         if let Some(from) = &q.from {
             sql.push_str(
                 " AND (lower(coalesce(m.from_addr,'')) LIKE ?

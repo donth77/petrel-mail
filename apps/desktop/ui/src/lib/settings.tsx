@@ -66,6 +66,7 @@ export const DEFAULTS = {
   blockRemoteContent: 'on' as 'on' | 'off',
 
   railWidth: '236',
+  listWidth: '430',
   railCollapsed: 'off' as 'on' | 'off',
 };
 
@@ -73,6 +74,14 @@ export const DEFAULTS = {
 export const RAIL_COLLAPSED = 56;
 export const RAIL_MIN = 180;
 export const RAIL_MAX = 380;
+
+/* The conversation list's width. Its floor is a readable row rather than an
+   arbitrary number: below about 300px the sender, the time and the subject stop
+   fitting on the lines they are meant to share. Its ceiling leaves the reading
+   pane its own `minmax(380px, 1fr)`, so dragging can crowd the reader but never
+   squeeze it out. */
+export const LIST_MIN = 300;
+export const LIST_MAX = 720;
 
 /** Keeps a stored width usable. A rail dragged to 12px, or corrupted to NaN by
  *  a hand-edited settings row, would otherwise be unrecoverable without
@@ -85,6 +94,16 @@ export function clampRail(value: string | number): number {
   const n = typeof value === 'number' ? value : Number(value);
   if (!Number.isFinite(n)) return Number(DEFAULTS.railWidth);
   return Math.min(RAIL_MAX, Math.max(RAIL_MIN, Math.round(n)));
+}
+
+/** The conversation list's width, kept inside its bounds. Same shape as
+    `clampRail`, and separate from it because the two have different floors and
+    a shared clamp would give one of them the other's. */
+export function clampList(value: string | number): number {
+  if (typeof value === 'string' && value.trim() === '') return Number(DEFAULTS.listWidth);
+  const n = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(n)) return Number(DEFAULTS.listWidth);
+  return Math.min(LIST_MAX, Math.max(LIST_MIN, Math.round(n)));
 }
 
 export type Settings = typeof DEFAULTS;
@@ -135,6 +154,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
       '--rail-size',
       settings.railCollapsed === 'on' ? `${RAIL_COLLAPSED}px` : `${clampRail(settings.railWidth)}px`,
     );
+    root.style.setProperty('--list-size', `${clampList(settings.listWidth)}px`);
     // Depends on the whole object, not a hand-listed subset. `settings` is
     // memoised on `stored`, so this runs exactly when a preference changes —
     // and adding a line to the body can no longer silently do nothing because

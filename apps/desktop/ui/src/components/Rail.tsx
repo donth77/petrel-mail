@@ -1,3 +1,4 @@
+import type React from 'react';
 import { useEffect, useRef, useState } from 'react';
 import {
   Inbox, Star, Clock, Send, PencilLine, Upload, Archive, ShieldAlert, Trash2,
@@ -6,6 +7,7 @@ import {
 import type { Account } from '../lib/api';
 import { Icon } from './Icon';
 import { t, type StringId } from '../lib/strings';
+import { DRAG_TYPE, acceptsDrop } from '../lib/dnd';
 import { AccountMenu } from './AccountMenu';
 import { Tip } from './Tip';
 
@@ -23,6 +25,64 @@ const MAILBOXES: { id: StringId; key: string; glyph: LucideIcon }[] = [
 
 type Tag = { name: string; colour: string; thread_count: number };
 
+/**
+ * The drop handlers a rail destination needs.
+ *
+ * Returned as a bundle rather than written out at each call site because a
+ * destination that lights up but does not accept, or accepts but never lit up,
+ * is the confusing half-state this avoids by construction.
+ *
+ * `dragover` must cancel the event or the browser refuses the drop — the
+ * default action for a dragged item is "no". `dragleave` fires when the pointer
+ * crosses into a child element too, so the highlight is keyed on the row that
+ * owns it rather than toggled blindly.
+ */
+function dropProps(
+  railKey: string,
+  view: string,
+  dragActive: boolean,
+  over: string | null,
+  setOver: React.Dispatch<React.SetStateAction<string | null>>,
+  onDrop: (railKey: string, ids: number[]) => void,
+) {
+  if (!acceptsDrop(railKey, view)) return {};
+  return {
+    // Marked while anything is being dragged, not only once the pointer is
+    // here: a destination that reveals itself only on arrival is one you have
+    // to already know about to find.
+    'data-drop-ok': dragActive || undefined,
+    'data-drop-over': over === railKey || undefined,
+    onDragOver: (e: React.DragEvent) => {
+      if (!e.dataTransfer.types.includes(DRAG_TYPE)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      setOver(railKey);
+    },
+    onDragLeave: (e: React.DragEvent) => {
+      if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+      // Cleared only if this row is still the one lit. Leaving one row can
+      // arrive after entering the next, and an unconditional clear would put
+      // the highlight out on the row the pointer just moved onto.
+      setOver((cur) => (cur === railKey ? null : cur));
+    },
+    onDrop: (e: React.DragEvent) => {
+      const raw = e.dataTransfer.getData(DRAG_TYPE);
+      if (!raw) return;
+      e.preventDefault();
+      setOver(null);
+      try {
+        const ids: unknown = JSON.parse(raw);
+        if (Array.isArray(ids) && ids.every((n) => typeof n === 'number')) {
+          onDrop(railKey, ids as number[]);
+        }
+      } catch {
+        // A drag from somewhere else wearing our type. Nothing to do.
+      }
+    },
+  };
+}
+
+
 type Props = {
   account: string;
   accounts: Account[];
@@ -33,6 +93,12 @@ type Props = {
   onResize: (xOrDelta: number) => void;
   onSwitchAccount: (index: number) => void;
   onSettings: () => void;
+  /** Conversations dropped on a destination. The rail decides where; what that
+      means to the store is the caller's business. */
+  onDropThreads: (railKey: string, ids: number[]) => void;
+  /** Whether a drag is in flight, so destinations can say they will take it
+      before the pointer reaches them rather than only once it arrives. */
+  dragActive: boolean;
   accountColor: string;
   unread: number;
   /** Per-mailbox numbers, keyed by rail key. Absent means nothing to show —
@@ -63,8 +129,12 @@ export function Rail({
   onResize,
   onSwitchAccount,
   onSettings,
+  onDropThreads,
+  dragActive,
   railRef,
 }: Props) {
+  // Which destination the pointer is over mid-drag, for the highlight.
+  const [dropOver, setDropOver] = useState<string | null>(null);
   // Pointer drag, with the listeners on the window rather than the handle: a
   // fast drag outruns a 6px target, and losing the pointer mid-resize leaves
   // the rail stuck at whatever width the last event happened to land on.
@@ -131,6 +201,7 @@ export function Rail({
             className="rail-item"
             aria-current={view === m.key ? 'page' : undefined}
             onClick={() => onView(m.key)}
+            {...dropProps(m.key, view, dragActive, dropOver, setDropOver, onDropThreads)}
           >
             <Icon icon={m.glyph} />
             <span className="rail-text">{t(m.id)}</span>
@@ -200,6 +271,7 @@ export function Rail({
               className="rail-item"
               aria-current={view === `tag:${tag.name}` ? 'page' : undefined}
               onClick={() => onView(`tag:${tag.name}`)}
+              {...dropProps(`tag:${tag.name}`, view, dragActive, dropOver, setDropOver, onDropThreads)}
             >
               <span
                 className="tag-swatch"

@@ -23,19 +23,21 @@ import { snoozeOptions } from './lib/snooze';
 import { promisesMissingAttachment } from './lib/compose-checks';
 import { replyTargets } from './lib/reply';
 import { forwardBody, replyBody } from './lib/quote';
+import { dropMeaning } from './lib/dnd';
 import { startingBody, startingHtml } from './lib/signature';
 import { ATTACHMENT_LIMIT, pickAttachments } from './lib/attachments';
 import { extend, prune, targets, toggle } from './lib/selection';
 import { notifiable, postDesktopNotification } from './lib/notify';
 import { Help } from './components/Help';
 import { Settings } from './components/Settings';
-import { clampRail, useSettings } from './lib/settings';
+import { RAIL_COLLAPSED, clampList, clampRail, useSettings } from './lib/settings';
 import { useMessageLinks } from './lib/links';
 import { Confirm } from './components/Confirm';
 import { RowMenu } from './components/RowMenu';
 import { Toast } from './components/Toast';
 import { MessageList } from './components/MessageList';
 import { Reader } from './components/Reader';
+import { PaneResize } from './components/PaneResize';
 
 export function App() {
   const { settings, set } = useSettings();
@@ -53,6 +55,9 @@ export function App() {
   // Find-in-conversation. Held here because ⌘F is a global key and the bar has
   // to survive the reading pane re-rendering under it.
   const [finding, setFinding] = useState(false);
+  // Conversations currently being dragged, so the rail can show which
+  // destinations will take them.
+  const [dragging, setDragging] = useState<number[]>([]);
   const [activeId, setActiveId] = useState<number | null>(null);
   const [view, setView] = useState('inbox');
 
@@ -360,6 +365,37 @@ export function App() {
    * sequence of different questions from different people, and answering the
    * third one should quote the third one and address whoever sent it.
    */
+  /**
+   * Conversations dropped on a rail destination.
+   *
+   * Routed through the same `triage.run` the keys and menus use, so a drag can
+   * never come to mean something slightly different from the shortcut for the
+   * same thing — and so undo, the toast and the optimistic list update all come
+   * along without being reimplemented for the pointer.
+   */
+  const dropOnRail = (railKey: string, ids: number[]) => {
+    const meaning = dropMeaning(railKey);
+    if (!meaning || ids.length === 0) return;
+
+    if (meaning.kind === 'tag') {
+      const tag = tags.find((x) => x.name === meaning.tag);
+      if (!tag) return;
+      ids.forEach((id) => void triage.run('tag', id, tag.id));
+    } else if (meaning.kind === 'move') {
+      const folder = folders.find((f) => f.role === meaning.role);
+      if (!folder) return;
+      ids.forEach((id) => void triage.run('move', id, folder.id));
+    } else if (meaning.kind === 'trash' && view === 'trash') {
+      // Trash is where deletion becomes permanent, and permanent is asked
+      // about rather than dragged into.
+      askDelete(ids);
+      return;
+    } else {
+      ids.forEach((id) => void triage.run(meaning.kind, id));
+    }
+    if (selected.size > 0) setSelected(new Set());
+  };
+
   const startReply = async (id: number, all: boolean, targetId?: number) => {
     const row = items.find((m) => m.id === id);
     if (!row) return;
@@ -783,6 +819,8 @@ export function App() {
           else setToast(t('account-none-at', { n: String(n) }));
         }}
         onSettings={() => setSettingsOpen('accounts')}
+        onDropThreads={dropOnRail}
+        dragActive={dragging.length > 0}
         onView={(v) => {
           if (v === 'help') setHelpOpen(true);
           else if (v === 'settings') setSettingsOpen('appearance');
@@ -831,7 +869,7 @@ export function App() {
               the search lives and it is the one you can see. */}
           {(searching || query.trim()) && (
             <div className="chip-row" role="group" aria-label={t('search-filters')}>
-              {chips(active?.from_display || active?.from_addr || null, new Date().getFullYear())
+              {chips(active?.from_display || active?.from_addr || null, new Date().getFullYear(), view)
                 .map((c) => (
                   <button
                     key={c.id}
@@ -951,6 +989,7 @@ export function App() {
               setActiveId(threadId);
               setPicker('snooze');
             }}
+            onDragIds={setDragging}
             onContextMenu={(id, x, y) => {
               // Right-clicking inside a selection acts on all of it; on a row
               // outside one, the selection is dropped and only that row is in
@@ -984,6 +1023,26 @@ export function App() {
             </div>
           )}
       </div>
+
+      {/* Only where there are two panes side by side to divide. Stacked, the
+          boundary is horizontal and this handle would resize the wrong axis;
+          with the reader off or filling the window there is no boundary. */}
+      {settings.layout === 'right' && !readerFull && (
+        <PaneResize
+          onResize={(xOrDelta) => {
+            // A pointer gives an absolute x; the keyboard gives a delta. The
+            // list does not start at the window edge, so unlike the rail its
+            // width is the pointer's x less whatever the rail is occupying.
+            const railNow =
+              settings.railCollapsed === 'on' ? RAIL_COLLAPSED : clampRail(settings.railWidth);
+            const next =
+              Math.abs(xOrDelta) < 64 && xOrDelta !== 0
+                ? clampList(settings.listWidth) + xOrDelta
+                : xOrDelta - railNow;
+            set('listWidth', String(clampList(next)));
+          }}
+        />
+      )}
 
       {(settings.layout !== 'off' || readerOverlay) && (
         <Reader

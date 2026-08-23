@@ -6,6 +6,7 @@ import type { ActionKind, Thread } from '../lib/api';
 import { Icon } from './Icon';
 import { initials, listTime, fullTime } from '../lib/format';
 import { t } from '../lib/strings';
+import { DRAG_TYPE, draggedIds } from '../lib/dnd';
 import { Tip } from './Tip';
 import { key } from '../lib/keys';
 
@@ -26,6 +27,8 @@ type Props = {
   /** Right-click. The pointer position comes along because a context menu is
    *  anchored to where you clicked, not to the row. */
   onContextMenu: (threadId: number, x: number, y: number) => void;
+  /** What is being dragged, so the rail can show what will take it. */
+  onDragIds: (ids: number[]) => void;
 };
 
 /** Marks up the engine's match markers as search hits.
@@ -59,6 +62,7 @@ export function MessageList({
   onAction,
   onSnooze,
   onContextMenu,
+  onDragIds,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const composite = useCompositeStore({
@@ -275,6 +279,27 @@ export function MessageList({
                 composite.setActiveId(`msg-${m.id}`);
                 onContextMenu(m.id, e.clientX, e.clientY);
               }}
+              draggable
+              onDragStart={(e) => {
+                const ids = draggedIds(m.id, selected);
+                e.dataTransfer.setData(DRAG_TYPE, JSON.stringify(ids));
+                e.dataTransfer.effectAllowed = 'move';
+                onDragIds(ids);
+                // Several rows cannot all be the drag image, and the one under
+                // the pointer would misrepresent how many are moving. A count
+                // says what is actually being carried.
+                if (ids.length > 1) {
+                  const ghost = document.createElement('div');
+                  ghost.className = 'drag-ghost';
+                  ghost.textContent = t('drag-count', { count: String(ids.length) });
+                  document.body.appendChild(ghost);
+                  e.dataTransfer.setDragImage(ghost, 12, 12);
+                  // Removed on the next frame: it must survive being captured
+                  // as the drag image, and must not linger in the document.
+                  requestAnimationFrame(() => ghost.remove());
+                }
+              }}
+              onDragEnd={() => onDragIds([])}
             >
               {/* The unread dot has its own grid column, so a read row does not
                   shift its avatar and text leftward to fill the gap. With the

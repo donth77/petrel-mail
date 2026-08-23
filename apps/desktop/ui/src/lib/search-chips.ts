@@ -54,7 +54,32 @@ export function toggleToken(query: string, token: string): string {
 /** The chips on offer, in the order the mockup shows them. */
 export type Chip = { id: string; label: string; token: string };
 
-export function chips(sender: string | null, year: number): Chip[] {
+/**
+ * The mailboxes a scope chip can name.
+ *
+ * `in:` resolves against folder roles, so this is the whole of what it can
+ * express. Starred is a flag and tags are a table of their own — neither is a
+ * folder, so neither gets a scope chip rather than getting one that silently
+ * matches nothing. Starred already has a chip of its own further up, which is
+ * the same narrowing by another route.
+ */
+const SCOPES: Record<string, string> = {
+  inbox: 'Inbox',
+  archive: 'Archive',
+  sent: 'Sent',
+  drafts: 'Drafts',
+  spam: 'Spam',
+  trash: 'Trash',
+};
+
+/**
+ * @param view The mailbox on screen, which the scope chip offers to narrow to.
+ *   Search itself is never scoped: a search that quietly covered only the
+ *   mailbox you happened to be standing in would answer "no results" for mail
+ *   you do have, and nothing on screen would say why. Narrowing stays a visible
+ *   token you added and can delete.
+ */
+export function chips(sender: string | null, year: number, view: string): Chip[] {
   const list: Chip[] = [];
   // The sender of whatever is open, because "more from this person" is the
   // search people actually run — and it is tedious to type.
@@ -67,7 +92,11 @@ export function chips(sender: string | null, year: number): Chip[] {
     { id: 'unread', label: 'Unread', token: 'is:unread' },
     { id: 'starred', label: 'Starred', token: 'is:starred' },
     { id: 'year', label: 'This year', token: `after:${year}` },
-    { id: 'inbox', label: 'In Inbox', token: 'in:inbox' },
   );
+  // Last, and named for where you actually are. Spam and Trash are the useful
+  // case as much as Inbox: search leaves both out unless asked, and this is the
+  // asking.
+  const scope = SCOPES[view];
+  if (scope) list.push({ id: 'scope', label: `In ${scope}`, token: `in:${view}` });
   return list;
 }

@@ -253,3 +253,91 @@ fn best_match_and_newest_are_not_the_same_order() {
     );
     assert_ne!(best, newest, "the toggle has to change something");
 }
+
+/// Junk and deleted mail, and whether a search should hand it back.
+///
+/// A result that quietly comes from Spam is worse than no result: the filter
+/// already judged that message, and a search that returns it puts it back in
+/// front of the reader looking like ordinary mail.
+mod the_bin {
+    use super::*;
+    use petrel_engine::store::ListView;
+
+    fn subjects(store: &Store, q: &str) -> Vec<String> {
+        let mut s: Vec<String> = store
+            .search_threads(q, 50)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.subject)
+            .collect();
+        s.sort();
+        s
+    }
+
+    #[test]
+    fn spam_is_not_a_search_result() {
+        let (mut store, ids) = seeded();
+        let account = store.first_account().unwrap().unwrap();
+        let spam = store.ensure_folder(account, "spam", "spam").unwrap();
+        store.place_message(ids[0], spam).unwrap();
+
+        assert_eq!(subjects(&store, "annex"), vec!["Draft terms for review"]);
+    }
+
+    #[test]
+    fn trash_is_not_a_search_result_either() {
+        let (mut store, ids) = seeded();
+        let account = store.first_account().unwrap().unwrap();
+        let trash = store.ensure_folder(account, "trash", "trash").unwrap();
+        store.place_message(ids[1], trash).unwrap();
+
+        assert_eq!(subjects(&store, "annex"), vec!["Q3 vendor contracts"]);
+    }
+
+    #[test]
+    fn asking_for_spam_by_name_searches_it() {
+        // The grammar is the way in: nothing else reaches these messages, and
+        // a reader who types `in:spam` has said what they want.
+        let (mut store, ids) = seeded();
+        let account = store.first_account().unwrap().unwrap();
+        let spam = store.ensure_folder(account, "spam", "spam").unwrap();
+        store.place_message(ids[0], spam).unwrap();
+
+        assert_eq!(
+            subjects(&store, "annex in:spam"),
+            vec!["Q3 vendor contracts"]
+        );
+    }
+
+    #[test]
+    fn a_condition_only_search_leaves_the_bin_out_too() {
+        // `has:attachment` and friends take a different path through the store
+        // than a search with words in it, and the rule has to hold on both.
+        let (mut store, ids) = seeded();
+        let account = store.first_account().unwrap().unwrap();
+        let spam = store.ensure_folder(account, "spam", "spam").unwrap();
+        store.place_message(ids[0], spam).unwrap();
+        store
+            .set_flags(ids[0], petrel_engine::store::flags::FLAGGED, 0)
+            .unwrap();
+        store
+            .set_flags(ids[1], petrel_engine::store::flags::FLAGGED, 0)
+            .unwrap();
+
+        assert_eq!(
+            subjects(&store, "is:starred"),
+            vec!["Draft terms for review"]
+        );
+    }
+
+    #[test]
+    fn the_spam_view_itself_still_shows_it() {
+        let (mut store, ids) = seeded();
+        let account = store.first_account().unwrap().unwrap();
+        let spam = store.ensure_folder(account, "spam", "spam").unwrap();
+        store.place_message(ids[0], spam).unwrap();
+
+        let rows = store.list_threads(&ListView::parse("spam"), 0, 50).unwrap();
+        assert_eq!(rows.len(), 1, "the Spam view is where spam belongs");
+    }
+}
