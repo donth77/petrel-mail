@@ -36,6 +36,9 @@ const PANES: { id: PaneId; label: StringId; icon: LucideIcon }[] = [
 // ever become remappable, that pane belongs here; the reference does not.
 
 type Props = {
+  /** Opens the add-account steps, which the window owns so the switcher and
+      this pane share one dialog. */
+  onAddAccount: () => void;
   open: boolean;
   /** Which pane to land on. Opening Settings from "Accounts" and arriving at
    *  Appearance is the kind of small betrayal that teaches people to distrust
@@ -47,7 +50,7 @@ type Props = {
   onMessage: (text: string) => void;
 };
 
-export function Settings({ open, pane: requested, onClose, onMessage }: Props) {
+export function Settings({ open, pane: requested, onClose, onMessage, onAddAccount }: Props) {
   const [pane, setPane] = useState<PaneId>(requested ?? 'appearance');
 
   // Follow the request each time the dialog opens, not once on mount: the
@@ -88,7 +91,7 @@ export function Settings({ open, pane: requested, onClose, onMessage }: Props) {
               <Icon icon={X} size={15} />
             </DialogDismiss>
           {pane === 'appearance' && <Appearance />}
-          {pane === 'accounts' && <Accounts />}
+          {pane === 'accounts' && <Accounts onAddAccount={onAddAccount} />}
           {pane === 'notifications' && <Notifications />}
           {pane === 'composing' && <Composing />}
           {pane === 'storage' && <Storage onMessage={onMessage} />}

@@ -43,6 +43,7 @@ import { MessageList } from './components/MessageList';
 import { Reader } from './components/Reader';
 import { Outbox } from './components/Outbox';
 import { Onboarding } from './components/Onboarding';
+import { Dialog } from '@ariakit/react';
 import { PaneResize } from './components/PaneResize';
 
 export function App() {
@@ -932,6 +933,9 @@ export function App() {
   // stays up until the person chooses "Start reading", so the first sync is
   // watched rather than happening behind a mailbox that looks broken.
   const [onboarded, setOnboarded] = useState(false);
+  // Adding another account, from the switcher or from Settings. The same
+  // three steps as a first run, in a dialog over the app.
+  const [addingAccount, setAddingAccount] = useState(false);
   if (status && !status.configured && !onboarded) {
     return (
       <div className="app-frame">
@@ -1053,6 +1057,7 @@ export function App() {
           else setToast(t('account-none-at', { n: String(n) }));
         }}
         onSettings={() => setSettingsOpen('accounts')}
+        onAddAccount={() => setAddingAccount(true)}
         dropOver={drag?.over ?? null}
         // Only while conversations are in flight. A tag being carried can only
         // land on a conversation, so lighting up every mailbox would be
@@ -1323,6 +1328,38 @@ export function App() {
         />
       )}
 
+      {addingAccount && (
+        <Dialog
+          open
+          onClose={() => setAddingAccount(false)}
+          // The dimming is the dialog container's own background, not a
+          // separate backdrop element. Ariakit portals a backdrop as a sibling
+          // of the dialog, and in the stacking order that produced, the scrim
+          // either sat beneath Settings or painted over the card — there was
+          // no z-index that put it between the two. The container is one
+          // element that is certainly above Settings and certainly below its
+          // own child, which is the only ordering that can be relied on.
+          className="onboarding-dialog"
+          backdrop={false}
+        >
+          <div
+            className="onboarding-dim"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setAddingAccount(false);
+            }}
+          >
+            <Onboarding
+              onDone={() => {
+                setAddingAccount(false);
+                // The new account is synced and stored; re-read the list so
+                // the switcher offers it, and the counts so the rail knows.
+                setAccountEpoch((n) => n + 1);
+              }}
+            />
+          </div>
+        </Dialog>
+      )}
+
       <DragPreview drag={drag} />
 
       {draft && (
@@ -1513,6 +1550,7 @@ export function App() {
       />
       <Help open={helpOpen} onClose={() => setHelpOpen(false)} />
       <Settings
+        onAddAccount={() => setAddingAccount(true)}
         open={settingsOpen !== null}
         pane={settingsOpen ?? undefined}
         onClose={() => {

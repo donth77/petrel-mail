@@ -4048,14 +4048,33 @@ body.dragging * {
   }
 }
 
-/* Onboarding opened from Settings, rather than as the first run. The same
-   card, in a dialog over the app instead of alone in the window. */
+/* Onboarding opened from Settings or the switcher, rather than as the first
+   run. The same card, over the app — or over Settings, when that is what is
+   open.
+
+   The dim is the container's own background. A separate backdrop element
+   ends up a sibling in a portal, where no z-index puts it between Settings
+   and the card; this container is certainly above Settings and certainly
+   below its child, which is the one ordering that holds. Heavier than the
+   first-level scrim: Settings is a white panel, and the ordinary 34% over
+   white reads as the same surface. A second level has to visibly push the
+   first back. */
 .onboarding-dialog {
   position: fixed;
   inset: 0;
-  z-index: 50;
+  z-index: 60;
+}
+
+.onboarding-dim {
+  position: absolute;
+  inset: 0;
   display: grid;
   place-items: center;
+  background: rgba(16, 26, 31, 0.55);
+}
+
+.onboarding-dialog .onboarding {
+  background: transparent;
 }
 
 .onboarding-dialog .onboarding {

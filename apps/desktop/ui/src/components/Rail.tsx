@@ -53,6 +53,7 @@ type Props = {
   onResize: (xOrDelta: number) => void;
   onSwitchAccount: (index: number) => void;
   onSettings: () => void;
+  onAddAccount: () => void;
   /** Conversations dropped on a destination. The rail decides where; what that
       means to the store is the caller's business. */
   /** The destination under the pointer mid-drag, so it can light up. */
@@ -103,6 +104,7 @@ export function Rail({
   onResize,
   onSwitchAccount,
   onSettings,
+  onAddAccount,
   dropOver,
   dragActive,
   outboxNeedsAttention,
@@ -157,6 +159,7 @@ export function Rail({
         accountColor={accountColor}
         onSwitch={onSwitchAccount}
         onSettings={onSettings}
+        onAdd={onAddAccount}
       />
 
       {/* Writing is the one thing in this rail that is not somewhere to go, so

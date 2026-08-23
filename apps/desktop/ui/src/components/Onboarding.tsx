@@ -128,7 +128,10 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
               autoCorrect="off"
               autoCapitalize="none"
               spellCheck={false}
-              placeholder="tom@northbay.example"
+              // Generic on purpose: a placeholder that reads as a particular
+              // person's address invites typing it. `.example` is reserved and
+              // can never be real.
+              placeholder="you@example.com"
               value={address}
               onChange={(e) => setAddress(e.target.value)}
               onKeyDown={(e) => e.key !== 'Escape' && e.stopPropagation()}
