@@ -3855,6 +3855,11 @@ impl Store {
 
         let inbox = self.ensure_folder(account_id, "inbox", "INBOX")?;
         let archive = self.ensure_folder(account_id, "archive", "archive")?;
+        let tags: Vec<(String, i64)> = self
+            .tags_for_account(account_id)?
+            .into_iter()
+            .map(|t| (t.name, t.id))
+            .collect();
         let mut changed = 0usize;
 
         for (msg_id, labels) in labelled {
@@ -3892,6 +3897,29 @@ impl Store {
                 self.set_flags(id, flags::FLAGGED, 0)?;
             } else {
                 self.set_flags(id, 0, flags::FLAGGED)?;
+            }
+
+            // Labels that are Petrel tags sync their membership both ways.
+            // No label changes category here: one made as a tag stays a tag,
+            // everything else stays a folder — this only makes "tagged in
+            // Gmail's web UI" and "tagged here" the same fact. System labels
+            // arrive backslash-prefixed and are never tag material.
+            for (tag_name, tag_id) in &tags {
+                let carried = labels.iter().any(|l| {
+                    let name = l.trim_matches('"').trim_start_matches('\\');
+                    !l.trim_matches('"').starts_with('\\') && name == tag_name
+                });
+                if carried {
+                    self.conn.execute(
+                        "INSERT OR IGNORE INTO message_tags(message_id, tag_id) VALUES (?1, ?2)",
+                        params![id, tag_id],
+                    )?;
+                } else {
+                    self.conn.execute(
+                        "DELETE FROM message_tags WHERE message_id = ?1 AND tag_id = ?2",
+                        params![id, tag_id],
+                    )?;
+                }
             }
             changed += 1;
         }

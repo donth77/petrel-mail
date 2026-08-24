@@ -103,3 +103,73 @@ fn deleting_takes_it_off_the_messages_too() {
         .unwrap();
     assert!(rows.is_empty());
 }
+
+/// Inbound: a label that is a Petrel tag syncs its membership from Gmail.
+mod inbound_labels {
+    use petrel_engine::blob::BlobStore;
+    use petrel_engine::store::Store;
+
+    fn fixture(mid: &str) -> Vec<u8> {
+        format!(
+            "From: a@example.com\r\nTo: b@example.com\r\nSubject: s\r\n\
+             Message-ID: <{mid}>\r\nMIME-Version: 1.0\r\n\
+             Content-Type: text/plain\r\n\r\nbody\r\n"
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn membership_follows_the_sweep_and_categories_never_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("t.db")).unwrap();
+        let blobs = BlobStore::open(&dir.path().join("blobs")).unwrap();
+        let account = store.ensure_test_account().unwrap();
+        let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+        let urgent = store.ensure_tag(account, "Urgent", None).unwrap();
+
+        let m = store
+            .ingest_raw(&blobs, account, Some(inbox), Some(1), &fixture("m1@x"))
+            .unwrap();
+
+        // Gmail reports the message carrying the label that is our tag —
+        // plus a system label and a stranger label, which must do nothing.
+        store
+            .apply_gmail_labels(
+                account,
+                &[(
+                    "m1@x".to_string(),
+                    vec![
+                        "\\\\Inbox".to_string(),
+                        "Urgent".to_string(),
+                        "SomeFolderLabel".to_string(),
+                    ],
+                )],
+            )
+            .unwrap();
+        assert_eq!(store.tags_of(m.message_id).unwrap(), vec![urgent]);
+        // The stranger label did not become a tag.
+        assert_eq!(store.tags_for_account(account).unwrap().len(), 1);
+
+        // Untagged in Gmail's web UI: the tag goes here too.
+        store
+            .apply_gmail_labels(
+                account,
+                &[("m1@x".to_string(), vec!["\\\\Inbox".to_string()])],
+            )
+            .unwrap();
+        assert!(store.tags_of(m.message_id).unwrap().is_empty());
+
+        // A system label spelled like a tag name is never tag material.
+        let inboxtag = store.ensure_tag(account, "Inbox", None).unwrap();
+        store
+            .apply_gmail_labels(
+                account,
+                &[("m1@x".to_string(), vec!["\\\\Inbox".to_string()])],
+            )
+            .unwrap();
+        assert!(
+            !store.tags_of(m.message_id).unwrap().contains(&inboxtag),
+            "backslash-prefixed labels are Gmail's, not the user's"
+        );
+    }
+}

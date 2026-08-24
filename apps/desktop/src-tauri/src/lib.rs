@@ -878,6 +878,46 @@ fn ingest_fenced(
     }
 }
 
+/// One incremental Gmail label sweep: where every message lives, which are
+/// starred, and — for labels that are Petrel tags — who carries them. With
+/// CONDSTORE this costs one round trip when nothing changed, which is why it
+/// can run every cycle rather than once at startup: a label applied in
+/// Gmail's web UI shows up here within a poll interval.
+async fn run_label_sweep(state: &Arc<AppState>, account: i64, cfg: &ImapConfig) {
+    let since: Option<u64> = state
+        .store
+        .lock()
+        .ok()
+        .and_then(|s| s.settings().ok())
+        .and_then(|s| s.get("gmail_labels_modseq").and_then(|v| v.parse().ok()));
+    let bound: u32 = std::env::var("PETREL_LABEL_SWEEP")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5_000);
+    match petrel_providers::imap::sweep_gmail_labels(cfg, "[Gmail]/All Mail", bound, since).await {
+        Ok(sweep) => {
+            let filed = state
+                .store
+                .lock()
+                .ok()
+                .and_then(|s| s.apply_gmail_labels(account, &sweep.labels).ok())
+                .unwrap_or(0);
+            if !sweep.labels.is_empty() {
+                log_sync(&format!(
+                    "labels: {} reported, {filed} refiled",
+                    sweep.labels.len()
+                ));
+            }
+            if let (Some(m), Ok(store)) = (sweep.modseq, state.store.lock()) {
+                let _ = store.set_setting("gmail_labels_modseq", &m.to_string());
+            }
+        }
+        // Not fatal: without it, filing falls back to the folder each
+        // message arrived from, which is what it was before.
+        Err(e) => log_sync(&format!("label sweep failed: {e}")),
+    }
+}
+
 /// One sync cycle for one account: every folder, one connection.
 ///
 /// The shape of the whole optimisation. A cycle logs in once, asks one
@@ -1230,43 +1270,7 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
         // but with CONDSTORE every sweep after the first asks only for what
         // changed, which is usually nothing and costs one round trip.
         if looks_like_gmail {
-            let since: Option<u64> = state
-                .store
-                .lock()
-                .ok()
-                .and_then(|s| s.settings().ok())
-                .and_then(|s| s.get("gmail_labels_modseq").and_then(|v| v.parse().ok()));
-            // No separate progress line: `source` is the account label, not a
-            // status channel, and writing to it puts this sentence where the
-            // address belongs. The sweep runs before `seeding` is cleared, so
-            // the sync indicator already spans it — and the list reloads when
-            // that clears, which is what reveals the refiling.
-            let bound: u32 = std::env::var("PETREL_LABEL_SWEEP")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(5_000);
-            match petrel_providers::imap::sweep_gmail_labels(&cfg, "[Gmail]/All Mail", bound, since)
-                .await
-            {
-                Ok(sweep) => {
-                    let filed = state
-                        .store
-                        .lock()
-                        .ok()
-                        .and_then(|s| s.apply_gmail_labels(account, &sweep.labels).ok())
-                        .unwrap_or(0);
-                    log_sync(&format!(
-                        "labels: {} reported, {filed} refiled",
-                        sweep.labels.len()
-                    ));
-                    if let (Some(m), Ok(store)) = (sweep.modseq, state.store.lock()) {
-                        let _ = store.set_setting("gmail_labels_modseq", &m.to_string());
-                    }
-                }
-                // Not fatal: without it, filing falls back to the folder each
-                // message arrived from, which is what it was before.
-                Err(e) => log_sync(&format!("label sweep failed: {e}")),
-            }
+            run_label_sweep(&state, account, &cfg).await;
         }
 
         state.seeding.store(false, Ordering::Relaxed);
@@ -1327,6 +1331,10 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
             // One connection for the whole account, STATUS-gated per folder:
             // a quiet cycle costs a line per folder, not a login per folder.
             let (fresh, failures) = run_sync_cycle(&state, account, &cfg, false).await;
+            if state.server_is_gmail.load(Ordering::Relaxed) {
+                // One round trip when nothing changed; live labels when it did.
+                run_label_sweep(&state, account, &cfg).await;
+            }
             let trouble: Option<String> = if failures > 0 {
                 Some(format!("{failures} folder(s) failed"))
             } else {
