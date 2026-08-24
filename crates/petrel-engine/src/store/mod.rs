@@ -728,6 +728,9 @@ pub enum ListView {
     Starred,
     /// A server folder by its role: archive, sent, drafts, spam, trash.
     Folder(String),
+    /// A folder the user made, addressed by row id — user folders have no
+    /// role, and a path makes a poor wire key (it can hold any character).
+    UserFolder(i64),
     /// Put aside until a time that has not arrived yet.
     Snoozed,
     /// Written and waiting to go.
@@ -782,6 +785,12 @@ impl ListView {
             "archive" | "sent" | "drafts" | "spam" | "trash" => ListView::Folder(key.to_string()),
             "snoozed" => ListView::Snoozed,
             "outbox" => ListView::Outbox,
+            other if other.starts_with("folder:") => {
+                match other["folder:".len()..].parse::<i64>() {
+                    Ok(id) => ListView::UserFolder(id),
+                    Err(_) => ListView::Inbox,
+                }
+            }
             other => match other.strip_prefix("tag:") {
                 Some(name) if !name.is_empty() => ListView::Tag(name.to_string()),
                 // Anything unrecognised falls back to the inbox rather than
@@ -841,6 +850,13 @@ impl ListView {
                 "EXISTS (SELECT 1 FROM placements p
                          JOIN folders f ON f.id = p.folder_id
                          WHERE p.message_id = {alias}.id AND f.role = ?3)"
+            ),
+            // Exactly what is placed there — a user folder is a location,
+            // and the list is the location's contents. The id is typed i64,
+            // which is what makes writing it into the SQL safe.
+            ListView::UserFolder(id) => format!(
+                "EXISTS (SELECT 1 FROM placements p
+                         WHERE p.message_id = {alias}.id AND p.folder_id = {id})"
             ),
             // Excluding the bins, exactly as Starred does. A tag is a thing
             // you meant; the bin is where things go to stop mattering, and a
@@ -1866,7 +1882,7 @@ impl Store {
     /// folder, and a server that starts advertising SPECIAL-USE later should
     /// update the role on the row that already exists rather than shadow it.
     pub fn sync_folders(
-        &self,
+        &mut self,
         account_id: i64,
         folders: &[(String, Option<String>)],
     ) -> Result<usize> {
@@ -1896,6 +1912,27 @@ impl Store {
                 }
             }
             n += 1;
+        }
+        // Folders the server no longer lists are gone — renamed elsewhere,
+        // deleted elsewhere, or (the day this was written) a \Noselect
+        // container that stopped being reported as a mailbox. Their rows and
+        // placements go; their mail stays, as it does everywhere else here.
+        let known: std::collections::HashSet<&str> =
+            folders.iter().map(|(p, _)| p.as_str()).collect();
+        let stale: Vec<i64> = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT id, path FROM folders WHERE account_id = ?1")?;
+            let rows = stmt.query_map(params![account_id], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })?;
+            rows.filter_map(|r| r.ok())
+                .filter(|(_, path)| !known.contains(path.as_str()))
+                .map(|(id, _)| id)
+                .collect()
+        };
+        for id in stale {
+            self.remove_folder(id)?;
         }
         Ok(n)
     }
@@ -1929,6 +1966,37 @@ impl Store {
             params![account_id, name, path],
         )?;
         Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Renames a folder — the local half, after the server has agreed.
+    ///
+    /// The row id is the identity, so placements, counts and the open view
+    /// all survive the rename untouched; only the words change.
+    pub fn rename_folder(&self, folder_id: i64, new_path: &str) -> Result<()> {
+        let name = new_path.rsplit(['/', '.']).next().unwrap_or(new_path);
+        self.conn.execute(
+            "UPDATE folders SET path = ?2, name = ?3 WHERE id = ?1",
+            params![folder_id, new_path, name],
+        )?;
+        Ok(())
+    }
+
+    /// Forgets a folder — the local half, after the server has deleted it.
+    ///
+    /// Placements go because the location is gone; message rows and blobs
+    /// stay, exactly as UIDVALIDITY recovery keeps them: removing a folder is
+    /// not a licence to destroy the mail that passed through it. A message
+    /// left with no placement drops out of folder views and remains findable
+    /// in search.
+    pub fn remove_folder(&mut self, folder_id: i64) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "DELETE FROM placements WHERE folder_id = ?1",
+            params![folder_id],
+        )?;
+        tx.execute("DELETE FROM folders WHERE id = ?1", params![folder_id])?;
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn place_message(&self, message_id: i64, folder_id: i64) -> Result<()> {
@@ -2084,6 +2152,125 @@ impl Store {
         }
         tx.commit()?;
         Ok(out)
+    }
+
+    /// The UIDNEXT this folder last reported — the precise any-new-mail test.
+    pub fn folder_uidnext(&self, folder_id: i64) -> Result<Option<u32>> {
+        let json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT sync_state_json FROM folders WHERE id = ?1",
+                params![folder_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(json
+            .and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok())
+            .and_then(|v| v.get("uidnext").and_then(|m| m.as_u64()))
+            .map(|v| v as u32))
+    }
+
+    /// Records the folder's last-seen UIDNEXT beside its other sync state.
+    pub fn set_folder_uidnext(&mut self, folder_id: i64, uidnext: u32) -> Result<()> {
+        let current: String = self
+            .conn
+            .query_row(
+                "SELECT sync_state_json FROM folders WHERE id = ?1",
+                params![folder_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or_else(|| "{}".into());
+        let mut v: serde_json::Value =
+            serde_json::from_str(&current).unwrap_or_else(|_| serde_json::json!({}));
+        v["uidnext"] = serde_json::json!(uidnext);
+        self.conn.execute(
+            "UPDATE folders SET sync_state_json = ?2 WHERE id = ?1",
+            params![folder_id, v.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// The HIGHESTMODSEQ this folder's flags were last reconciled at.
+    pub fn folder_modseq(&self, folder_id: i64) -> Result<Option<u64>> {
+        let json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT sync_state_json FROM folders WHERE id = ?1",
+                params![folder_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(json
+            .and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok())
+            .and_then(|v| v.get("modseq").and_then(|m| m.as_u64())))
+    }
+
+    /// Records the flag-reconciliation watermark alongside the folder's other
+    /// sync state, without disturbing whatever else lives in that json.
+    pub fn set_folder_modseq(&mut self, folder_id: i64, modseq: u64) -> Result<()> {
+        let current: String = self
+            .conn
+            .query_row(
+                "SELECT sync_state_json FROM folders WHERE id = ?1",
+                params![folder_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or_else(|| "{}".into());
+        let mut v: serde_json::Value =
+            serde_json::from_str(&current).unwrap_or_else(|_| serde_json::json!({}));
+        v["modseq"] = serde_json::json!(modseq);
+        self.conn.execute(
+            "UPDATE folders SET sync_state_json = ?2 WHERE id = ?1",
+            params![folder_id, v.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Clears the flag watermark — a renumbered folder's modseq domain is
+    /// not comparable across the reset, so recovery starts flags over too.
+    pub fn clear_folder_modseq(&mut self, folder_id: i64) -> Result<()> {
+        let current: String = self
+            .conn
+            .query_row(
+                "SELECT sync_state_json FROM folders WHERE id = ?1",
+                params![folder_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or_else(|| "{}".into());
+        let mut v: serde_json::Value =
+            serde_json::from_str(&current).unwrap_or_else(|_| serde_json::json!({}));
+        if let Some(map) = v.as_object_mut() {
+            map.remove("modseq");
+        }
+        self.conn.execute(
+            "UPDATE folders SET sync_state_json = ?2 WHERE id = ?1",
+            params![folder_id, v.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Applies a flag state reported by the server to whichever message sits
+    /// at this UID in this folder. `false` when the UID is not one we hold —
+    /// a flag change on mail outside the synced window is news about nothing.
+    pub fn set_flags_by_uid(&mut self, folder_id: i64, uid: u32, flags: i64) -> Result<bool> {
+        let message: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT message_id FROM placements WHERE folder_id = ?1 AND uid = ?2",
+                params![folder_id, uid as i64],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match message {
+            Some(id) => {
+                self.set_message_flags(id, flags)?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
     }
 
     /// The server path of a folder, for addressing it over IMAP.

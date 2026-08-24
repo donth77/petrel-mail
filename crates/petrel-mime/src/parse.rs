@@ -136,25 +136,31 @@ fn strip_tags(html: &str) -> String {
     let mut out = String::with_capacity(html.len() / 2);
     let mut depth = 0usize;
     let mut in_script = false;
+    // Lowercased for the tag checks only; ASCII lowering never changes byte
+    // offsets, so the two strings stay index-aligned.
     let lower = html.to_ascii_lowercase();
-    let bytes = html.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if lower[i..].starts_with("<script") || lower[i..].starts_with("<style") {
+    let lbytes = lower.as_bytes();
+    // Chars with their byte offsets, never a bare byte counter. The previous
+    // version walked bytes and sliced the string at each one, which panics
+    // the moment the counter lands inside a multibyte character — and mail
+    // is full of them. One HTML-only newsletter with an emoji took down the
+    // whole ingest thread, and the store lock it held poisoned every pane.
+    // The byte-at-a-time push also mangled every non-ASCII character into
+    // mojibake in the index, so a search for a name with an accent could
+    // never match HTML-only mail; pushing the real char fixes that too.
+    for (i, ch) in html.char_indices() {
+        if lbytes[i..].starts_with(b"<script") || lbytes[i..].starts_with(b"<style") {
             in_script = true;
         }
-        if lower[i..].starts_with("</script") || lower[i..].starts_with("</style") {
+        if lbytes[i..].starts_with(b"</script") || lbytes[i..].starts_with(b"</style") {
             in_script = false;
         }
-        match bytes[i] {
-            b'<' => depth += 1,
-            b'>' => depth = depth.saturating_sub(1),
-            c if depth == 0 && !in_script => {
-                out.push(c as char);
-            }
+        match ch {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            c if depth == 0 && !in_script => out.push(c),
             _ => {}
         }
-        i += 1;
     }
     // Collapse whitespace so the index isn't full of layout padding.
     out.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -264,6 +270,28 @@ Subject: =?utf-8?B?5p2x5Lqs6KiI55S7?=\r\n\r\n\
         assert_eq!(m.subject.as_deref(), Some("東京計画"));
         assert_eq!(m.from_display.as_deref(), Some("東京"));
         assert!(m.index_text().contains("東京計画"));
+    }
+
+    #[test]
+    fn html_only_mail_full_of_multibyte_text_indexes_without_panicking() {
+        // The regression that poisoned the store: an HTML-only body (no text
+        // part) whose markup carries emoji, CJK and accented letters. The old
+        // stripper walked bytes and sliced at each one — the first multibyte
+        // character killed the ingest thread.
+        let raw = b"From: a@example.com\r\nTo: b@example.com\r\n\
+Subject: newsletter\r\nMIME-Version: 1.0\r\n\
+Content-Type: text/html; charset=utf-8\r\n\r\n\
+<html><head><style>p { color: red; }</style></head>\
+<body><p>caf\xc3\xa9 \xf0\x9f\x92\x8c \xe4\xbc\x9a\xe8\xad\xb0<script>var x = 1;</script> after</p></body></html>";
+        let parsed = parse_message(raw).expect("parses");
+        let text = parsed.index_text();
+        // The words survive as themselves — not as mojibake — and the markup,
+        // styles and scripts do not.
+        assert!(text.contains("caf\u{e9}"), "{text}");
+        assert!(text.contains("\u{4f1a}\u{8b70}"), "{text}");
+        assert!(text.contains("after"), "{text}");
+        assert!(!text.contains("color"), "{text}");
+        assert!(!text.contains("var x"), "{text}");
     }
 
     #[test]

@@ -54,6 +54,8 @@
     { id: 102, role: '', path: 'Contracts/2026' },
     { id: 103, role: '', path: 'Client contact' },
     { id: 1, role: 'archive', path: 'Archive' },
+        { id: 7, role: '', path: 'Receipts' },
+        { id: 8, role: '', path: 'Projects/Petrel' },
   ];
   var tags = [
     { id: 11, name: 'Urgent', colour: '#A8544B', thread_count: 0 },
@@ -320,6 +322,8 @@
     list_folders: function () {
       return folders;
     },
+    rename_folder: function () { return null; },
+    delete_folder: function () { return null; },
     create_folder: function (a) {
       var id = 200 + folders.length;
       folders.push({ id: id, role: '', path: a.path });

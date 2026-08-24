@@ -166,6 +166,7 @@ export function App() {
   // The tag awaiting confirmation. Deleting one takes it off every
   // conversation carrying it, which is not a thing to do on one click.
   const [deletingTag, setDeletingTag] = useState<{ id: number; name: string } | null>(null);
+  const [deletingFolder, setDeletingFolder] = useState<Folder | null>(null);
   // The outbox message awaiting a discard confirmation. Discarding is the one
   // outbox action with no undo: the message was never sent, so there is
   // nothing to recall it from.
@@ -376,8 +377,16 @@ export function App() {
   // The rail key is the view's identity; its label comes from the same string
   // table the rail uses, so the two can never disagree.
   const viewName = useMemo(
-    () => (view.startsWith('tag:') ? view.slice(4) : t(`mailbox-${view}` as StringId)),
-    [view],
+    () =>
+      view.startsWith('tag:')
+        ? view.slice(4)
+        : view.startsWith('folder:')
+          ? (() => {
+              const f = folders.find((x) => `folder:${x.id}` === view);
+              return f ? f.path.split(/[/.]/).pop() || f.path : t('rail-folders');
+            })()
+          : t(`mailbox-${view}` as StringId),
+    [view, folders],
   );
 
   // An empty list means different things in different views, and saying the
@@ -443,6 +452,8 @@ export function App() {
       const folder = folders.find((f) => f.role === meaning.role);
       if (!folder) return;
       ids.forEach((id) => void triage.run('move', id, folder.id));
+    } else if (meaning.kind === 'move-folder') {
+      ids.forEach((id) => void triage.run('move', id, meaning.folderId));
     } else if (meaning.kind === 'trash' && view === 'trash') {
       // Trash is where deletion becomes permanent, and permanent is asked
       // about rather than dragged into.
@@ -977,6 +988,21 @@ export function App() {
         counts={counts}
         outboxNeedsAttention={counts['outbox:attention'] ?? 0}
         view={view}
+        folders={folders}
+        onCreateFolder={(name) =>
+          api
+            .createFolder(name)
+            .then(() => api.folders().then(setFolders))
+            .then(() => setToast(t('folder-created', { name })))
+            .catch((e) => setToast(t('folder-failed', { error: String(e) })))
+        }
+        onRenameFolder={(folderId, newPath) =>
+          api
+            .renameFolder(folderId, newPath)
+            .then(() => api.folders().then(setFolders))
+            .catch((e) => setToast(t('folder-failed', { error: String(e) })))
+        }
+        onDeleteFolder={setDeletingFolder}
         onCreateTag={(name) =>
           api
             .createTag(name)
@@ -1679,6 +1705,25 @@ export function App() {
             .then(() => api.tags().then(setTags))
             .then(() => setToast(t('tag-deleted', { name: tag.name })))
             .catch((e) => setToast(t('tag-rename-failed', { error: String(e) })));
+        }}
+      />
+
+      <Confirm
+        open={deletingFolder !== null}
+        title={t('folder-delete-confirm', { name: deletingFolder?.path ?? '' })}
+        detail={t('folder-delete-body')}
+        confirmLabel={t('folder-delete')}
+        onClose={() => setDeletingFolder(null)}
+        onConfirm={() => {
+          const folder = deletingFolder;
+          setDeletingFolder(null);
+          if (!folder) return;
+          if (view === `folder:${folder.id}`) setView('inbox');
+          void api
+            .deleteFolder(folder.id)
+            .then(() => api.folders().then(setFolders))
+            .then(() => setToast(t('folder-deleted', { name: folder.path })))
+            .catch((e) => setToast(t('folder-failed', { error: String(e) })));
         }}
       />
 

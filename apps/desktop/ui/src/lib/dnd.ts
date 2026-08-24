@@ -41,7 +41,8 @@ export const DRAG_THRESHOLD = 5;
 export type DropMeaning =
   | { kind: Extract<ActionKind, 'archive' | 'trash' | 'spam' | 'star'> }
   | { kind: 'tag'; tag: string }
-  | { kind: 'move'; role: 'inbox' };
+  | { kind: 'move'; role: 'inbox' }
+  | { kind: 'move-folder'; folderId: number };
 
 /**
  * Reads a rail key as a destination.
@@ -57,6 +58,11 @@ export function dropMeaning(railKey: string): DropMeaning | null {
   if (railKey.startsWith('tag:')) {
     const tag = railKey.slice('tag:'.length);
     return tag ? { kind: 'tag', tag } : null;
+  }
+  // A folder the user made is a place, and dropping mail on a place files it.
+  if (railKey.startsWith('folder:')) {
+    const id = Number(railKey.slice('folder:'.length));
+    return Number.isInteger(id) && id > 0 ? { kind: 'move-folder', folderId: id } : null;
   }
   switch (railKey) {
     case 'archive':
@@ -105,7 +111,10 @@ export function acceptsDrop(railKey: string, currentView: string): boolean {
   const meaning = dropMeaning(railKey);
   if (meaning === null) return false;
   if (currentView === 'sent' || currentView === 'drafts') {
-    return meaning.kind === 'trash' || meaning.kind === 'star' || meaning.kind === 'tag';
+    // Filing sent mail into a project folder is ordinary; a draft is not
+    // filed anywhere until it is something.
+    const filing = meaning.kind === 'move-folder' && currentView === 'sent';
+    return meaning.kind === 'trash' || meaning.kind === 'star' || meaning.kind === 'tag' || filing;
   }
   return true;
 }

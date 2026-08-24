@@ -792,6 +792,237 @@ where
 /// A `{n}:*` range always returns at least one message even when nothing is
 /// new (the server clamps it to the last one), so anything at or below
 /// `since_uid` is dropped here rather than re-ingested every poll.
+/// One folder's slice of a sync cycle.
+pub struct FolderPass {
+    pub path: String,
+    /// Fetch only above this UID. Zero means the folder has never synced,
+    /// which fetches the newest `seed_window` by sequence instead of
+    /// everything since the beginning of the account.
+    pub since_uid: u32,
+    pub expected_validity: Option<u32>,
+    /// The UIDNEXT the store last saw. This, not the watermark, is the "any
+    /// new mail?" test: UIDNEXT only moves when a message arrives, while a
+    /// folder whose last messages were deleted keeps a UIDNEXT permanently
+    /// above its highest surviving UID — comparing against the watermark
+    /// would call that folder changed on every cycle forever.
+    pub since_uidnext: Option<u32>,
+    /// The HIGHESTMODSEQ the store last saw, for CONDSTORE flag diffs.
+    pub since_modseq: Option<u64>,
+    pub seed_window: u32,
+}
+
+/// What one folder's slice found.
+#[derive(Debug)]
+pub enum PassOutcome {
+    /// STATUS said nothing moved: no select, no fetch, one line on the wire.
+    Unchanged {
+        uid_validity: Option<u32>,
+        /// Reported so a folder with no baseline can adopt one while quiet.
+        highest_modseq: Option<u64>,
+        uid_next: Option<u32>,
+        total: u32,
+    },
+    Fetched {
+        fetched: usize,
+        uid_validity: Option<u32>,
+        highest_modseq: Option<u64>,
+        uid_next: Option<u32>,
+        /// Flags that changed on mail we already hold, by UID — read on the
+        /// phone, starred on the web. Empty unless the server has CONDSTORE.
+        flag_updates: Vec<(u32, i64)>,
+        total: u32,
+    },
+    /// The folder was renumbered; nothing fetched. See `FetchOutcome`.
+    ValidityChanged { now: Option<u32> },
+    /// This folder failed; the others in the pass continue.
+    Failed { detail: String },
+}
+
+/// Syncs every folder over **one** connection.
+///
+/// The per-folder cost used to be a TLS handshake, a LOGIN, a SELECT and a
+/// full fetch — over a hundred handshakes a cycle on a mailbox with a deep
+/// folder tree, almost all of it to learn that nothing had happened. Now the
+/// cycle logs in once and asks one STATUS line per folder; only folders whose
+/// UIDNEXT or HIGHESTMODSEQ actually moved get selected and fetched. Bodies
+/// are fetched with BODY.PEEK, which is also a correctness fix: RFC822 marks
+/// mail \Seen on the server as a side effect, so merely syncing was quietly
+/// reading your mail for you everywhere else.
+pub async fn sync_pass<F>(
+    cfg: &ImapConfig,
+    passes: &[FolderPass],
+    on_message: F,
+) -> Result<Vec<PassOutcome>>
+where
+    F: FnMut(usize, u32, i64, &[u8]),
+{
+    match cfg.security {
+        Security::Tls => {
+            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
+            sync_pass_session(client, cfg, passes, on_message).await
+        }
+        #[cfg(feature = "insecure-plaintext")]
+        Security::InsecurePlaintext => {
+            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
+            sync_pass_session(Client::new(tcp), cfg, passes, on_message).await
+        }
+    }
+}
+
+async fn sync_pass_session<S, F>(
+    client: Client<S>,
+    cfg: &ImapConfig,
+    passes: &[FolderPass],
+    mut on_message: F,
+) -> Result<Vec<PassOutcome>>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
+    F: FnMut(usize, u32, i64, &[u8]),
+{
+    let mut session = client
+        .login(&cfg.user, &cfg.pass)
+        .await
+        .map_err(|(e, _)| e)?;
+    let condstore = session
+        .capabilities()
+        .await
+        .map(|caps| {
+            caps.iter()
+                .any(|c| format!("{c:?}").to_ascii_uppercase().contains("CONDSTORE"))
+        })
+        .unwrap_or(false);
+
+    let mut out = Vec::with_capacity(passes.len());
+    for (index, pass) in passes.iter().enumerate() {
+        let status = match session
+            .status(&pass.path, "(MESSAGES UIDNEXT UIDVALIDITY HIGHESTMODSEQ)")
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                out.push(PassOutcome::Failed {
+                    detail: e.to_string(),
+                });
+                continue;
+            }
+        };
+
+        if let Some(expected) = pass.expected_validity
+            && status.uid_validity != Some(expected)
+        {
+            out.push(PassOutcome::ValidityChanged {
+                now: status.uid_validity,
+            });
+            continue;
+        }
+
+        let new_mail = if pass.since_uid == 0 {
+            status.exists > 0
+        } else {
+            match (pass.since_uidnext, status.uid_next) {
+                // The precise test: UIDNEXT moved, mail arrived.
+                (Some(seen), Some(now)) => now != seen,
+                // No baseline or no answer: the STATUS cannot vouch for
+                // quiet, so look properly rather than assume.
+                _ => status.uid_next.is_none_or(|n| pass.since_uid + 1 < n),
+            }
+        };
+        let flags_moved = condstore
+            && match (pass.since_modseq, status.highest_modseq) {
+                (Some(seen), Some(now)) => now > seen,
+                // No baseline yet: adopt one below without a diff.
+                _ => false,
+            };
+
+        if !new_mail && !flags_moved {
+            out.push(PassOutcome::Unchanged {
+                uid_validity: status.uid_validity,
+                highest_modseq: status.highest_modseq,
+                uid_next: status.uid_next,
+                total: status.exists,
+            });
+            continue;
+        }
+
+        // Read-only select: fetching mail must not change it.
+        let mailbox = match session.examine(&pass.path).await {
+            Ok(m) => m,
+            Err(e) => {
+                out.push(PassOutcome::Failed {
+                    detail: e.to_string(),
+                });
+                continue;
+            }
+        };
+
+        let mut fetched = 0usize;
+        if new_mail {
+            let query = "(UID FLAGS BODY.PEEK[])";
+            if pass.since_uid == 0 {
+                if mailbox.exists > 0 {
+                    let first = mailbox
+                        .exists
+                        .saturating_sub(pass.seed_window.saturating_sub(1))
+                        .max(1);
+                    let range = format!("{first}:{last}", last = mailbox.exists);
+                    let mut fetches = session.fetch(range, query).await?;
+                    while let Some(fetch) = fetches.next().await {
+                        let fetch = fetch?;
+                        let bits = flags_to_bits(fetch.flags());
+                        if let (Some(uid), Some(body)) = (fetch.uid, fetch.body()) {
+                            on_message(index, uid, bits, body);
+                            fetched += 1;
+                        }
+                    }
+                }
+            } else {
+                let range = format!("{}:*", pass.since_uid.saturating_add(1));
+                let mut fetches = session.uid_fetch(range, query).await?;
+                while let Some(fetch) = fetches.next().await {
+                    let fetch = fetch?;
+                    let bits = flags_to_bits(fetch.flags());
+                    if let (Some(uid), Some(body)) = (fetch.uid, fetch.body()) {
+                        if uid <= pass.since_uid {
+                            continue;
+                        }
+                        on_message(index, uid, bits, body);
+                        fetched += 1;
+                    }
+                }
+            }
+        }
+
+        let mut flag_updates = Vec::new();
+        if flags_moved && let Some(seen) = pass.since_modseq {
+            // A server that advertised CONDSTORE and then refuses the fetch
+            // leaves flags stale until the next full pass — the state they
+            // were in before this existed.
+            if let Ok(mut fetches) = session
+                .uid_fetch("1:*", format!("(FLAGS) (CHANGEDSINCE {seen})"))
+                .await
+            {
+                while let Some(fetch) = fetches.next().await {
+                    let Ok(fetch) = fetch else { break };
+                    if let Some(uid) = fetch.uid {
+                        flag_updates.push((uid, flags_to_bits(fetch.flags())));
+                    }
+                }
+            }
+        }
+
+        out.push(PassOutcome::Fetched {
+            fetched,
+            uid_validity: mailbox.uid_validity.or(status.uid_validity),
+            highest_modseq: mailbox.highest_modseq.or(status.highest_modseq),
+            uid_next: mailbox.uid_next.or(status.uid_next),
+            flag_updates,
+            total: mailbox.exists,
+        });
+    }
+    session.logout().await?;
+    Ok(out)
+}
+
 /// What a watermark fetch found when it looked at the folder.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FetchOutcome {
@@ -1236,6 +1467,80 @@ where
 /// servers without it. The fallback is not equivalent — an expunge affects the
 /// whole mailbox, not just this message — so the capability is checked rather
 /// than assumed, and the slow path is taken only when there is no choice.
+/// Creates a folder on the server. Already-exists is success: the folder the
+/// user asked for is there, which is what they asked for.
+pub async fn create_folder(cfg: &ImapConfig, path: &str) -> Result<()> {
+    folder_op(cfg, FolderOp::Create, path, "").await
+}
+
+/// Renames a folder on the server. On IMAP a rename *is* a move: nesting a
+/// folder somewhere else is the same RENAME with a different path.
+pub async fn rename_folder(cfg: &ImapConfig, from: &str, to: &str) -> Result<()> {
+    folder_op(cfg, FolderOp::Rename, from, to).await
+}
+
+/// Deletes a folder on the server, and whatever mail it still holds — which
+/// is why the UI confirms first and the store keeps its copies regardless.
+pub async fn delete_folder(cfg: &ImapConfig, path: &str) -> Result<()> {
+    folder_op(cfg, FolderOp::Delete, path, "").await
+}
+
+#[derive(Clone, Copy)]
+enum FolderOp {
+    Create,
+    Rename,
+    Delete,
+}
+
+async fn folder_op(cfg: &ImapConfig, op: FolderOp, a: &str, b: &str) -> Result<()> {
+    match cfg.security {
+        Security::Tls => {
+            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
+            folder_op_session(client, cfg, op, a, b).await
+        }
+        #[cfg(feature = "insecure-plaintext")]
+        Security::InsecurePlaintext => {
+            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
+            folder_op_session(Client::new(tcp), cfg, op, a, b).await
+        }
+    }
+}
+
+async fn folder_op_session<S>(
+    client: Client<S>,
+    cfg: &ImapConfig,
+    op: FolderOp,
+    a: &str,
+    b: &str,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
+{
+    let mut session = client
+        .login(&cfg.user, &cfg.pass)
+        .await
+        .map_err(|(e, _)| e)?;
+    let result = match op {
+        FolderOp::Create => session.create(a).await,
+        FolderOp::Rename => session.rename(a, b).await,
+        FolderOp::Delete => session.delete(a).await,
+    };
+    match result {
+        Ok(()) => {}
+        // "Already exists" answers a CREATE the way success does: the folder
+        // the caller wanted is there. Everything else is a real failure.
+        Err(e)
+            if matches!(op, FolderOp::Create)
+                && e.to_string().to_ascii_lowercase().contains("exist") => {}
+        Err(e) => {
+            let _ = session.logout().await;
+            return Err(e.into());
+        }
+    }
+    session.logout().await?;
+    Ok(())
+}
+
 pub async fn move_uid(
     cfg: &ImapConfig,
     from: &str,
@@ -1465,7 +1770,28 @@ pub fn special_use_role(folder: &FolderInfo) -> Option<&'static str> {
     if has("flagged") || has("starred") {
         return Some("starred");
     }
+    // Gmail's auto-classifier category (RFC 8457 \Important). A role so it is
+    // *recognised*, not so it is shown: it is not a place the user filed
+    // anything, its contents are mostly the inbox again, and Petrel's notion
+    // of priority is deliberately not a classifier's. Mapping it keeps it out
+    // of the user-folder list and out of sync.
+    if has("important") {
+        return Some("important");
+    }
     None
+}
+
+/// Whether the folder can hold mail at all.
+///
+/// `\Noselect` marks pure hierarchy — Gmail's bare `[Gmail]` container is
+/// the canonical case. It answers LIST but refuses SELECT, so treating it as
+/// a folder produces a rail entry that cannot open and a sync line that
+/// fails on every pass.
+pub fn selectable(folder: &FolderInfo) -> bool {
+    !folder
+        .attributes
+        .iter()
+        .any(|a| normalise_attr(a) == "noselect")
 }
 
 /// Lowercase alphanumerics only, so `Extension("\\Sent")`, `\Sent` and `Sent`
@@ -1545,5 +1871,23 @@ mod special_use_tests {
     fn junk_and_spam_are_the_same_role() {
         assert_eq!(special_use_role(&f("Junk", &["\\Junk"])), Some("spam"));
         assert_eq!(special_use_role(&f("Spam", &["\\Spam"])), Some("spam"));
+    }
+
+    #[test]
+    fn gmails_classifier_category_is_recognised_not_shown() {
+        // \Important gets a role so it is never mistaken for a folder the
+        // user made — which put it in the folder list and marched the sync
+        // counter past the size of the mailbox itself.
+        assert_eq!(
+            special_use_role(&f("[Gmail]/Important", &["\\Important"])),
+            Some("important")
+        );
+    }
+
+    #[test]
+    fn noselect_containers_are_not_mailboxes() {
+        assert!(!selectable(&f("[Gmail]", &["\\Noselect", "\\HasChildren"])));
+        assert!(selectable(&f("INBOX", &["\\HasNoChildren"])));
+        assert!(selectable(&f("Contracts", &[])));
     }
 }

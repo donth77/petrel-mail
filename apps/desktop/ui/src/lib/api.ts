@@ -305,6 +305,8 @@ const mock = {
     { id: 1, role: 'archive', path: 'Archive' },
   ],
   createFolder: async () => 999,
+  renameFolder: async () => {},
+  deleteFolder: async () => {},
   createTag: async () => 998,
   renameTag: async () => {},
   setTagColour: async () => {},
@@ -505,6 +507,12 @@ const real = {
   undoTriage: (actionId: number) => invoke<boolean>('undo_triage', { actionId }),
   folders: () => invoke<Folder[]>('list_folders'),
   createFolder: (path: string) => invoke<number>('create_folder', { path }),
+  /** Server first, then the store — the id survives, so the open view does. */
+  renameFolder: (folderId: number, newPath: string) =>
+    invoke<void>('rename_folder', { folderId, newPath }),
+  /** Server first. The server also deletes the mail the folder still holds,
+   *  which is why the caller confirms in those words; local copies stay. */
+  deleteFolder: (folderId: number) => invoke<void>('delete_folder', { folderId }),
   createTag: (name: string) => invoke<number>('create_tag', { name }),
   renameTag: (tagId: number, name: string) => invoke<void>('rename_tag', { tagId, name }),
   setTagColour: (tagId: number, colour: string) =>

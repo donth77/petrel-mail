@@ -458,7 +458,29 @@ async fn drain_actions(
                     });
                 match dest {
                     Some(to) if to != folder => {
-                        petrel_providers::imap::move_uid(&cfg, &folder, uid, &to, has_move).await
+                        match petrel_providers::imap::move_uid(&cfg, &folder, uid, &to, has_move)
+                            .await
+                        {
+                            // A destination the server has never heard of —
+                            // the folder was made here moments ago. Create it
+                            // and try once more; servers signal this as
+                            // TRYCREATE but not all of them say the word.
+                            Err(e) => {
+                                log_sync(&format!(
+                                    "move to {to} failed ({e}); creating and retrying"
+                                ));
+                                match petrel_providers::imap::create_folder(&cfg, &to).await {
+                                    Ok(()) => {
+                                        petrel_providers::imap::move_uid(
+                                            &cfg, &folder, uid, &to, has_move,
+                                        )
+                                        .await
+                                    }
+                                    Err(_) => Err(e),
+                                }
+                            }
+                            ok => ok,
+                        }
                     }
                     // Already where it belongs, or nowhere to send it.
                     _ => Ok(()),
@@ -580,14 +602,248 @@ fn folders_to_sync(state: &AppState, account: i64) -> Vec<(String, String, i64)>
     let Ok(all) = store.folders(account) else {
         return Vec::new();
     };
-    ROLES
+    let mut out: Vec<(String, String, i64)> = ROLES
         .iter()
         .filter_map(|role| {
             all.iter()
                 .find(|f| f.role == *role)
                 .map(|f| ((*role).to_string(), f.path.clone(), f.id))
         })
+        .collect();
+    // Folders the user made sync too — a folder whose mail never arrives is
+    // not a folder, it is a name. After the roles, so the inbox still fills
+    // first.
+    for f in all.iter().filter(|f| f.role.is_empty()) {
+        out.push((String::new(), f.path.clone(), f.id));
+    }
+    out
+}
+
+/// Drops Gmail labels that are already Petrel tags from the folder survey.
+///
+/// On Gmail one server object — the label — backs both of Petrel's ideas, a
+/// place and a tag. A tag made here becomes a label there (deliberately: tag
+/// names sync, so they survive being seen from any other client), and the
+/// next survey would bring that same label back as a *folder*, so the thing
+/// you made once appears twice pretending to be two things. A label that is
+/// a tag stays a tag. Everywhere else folders and tags are different server
+/// objects and a shared name is legitimate, so nothing is dropped.
+fn without_tag_labels(
+    rows: Vec<(String, Option<String>)>,
+    tag_names: &[String],
+    is_gmail: bool,
+) -> Vec<(String, Option<String>)> {
+    if !is_gmail {
+        return rows;
+    }
+    rows.into_iter()
+        .filter(|(path, role)| {
+            // Role-bearing folders (Sent, Trash, Important…) are never tags.
+            role.is_some() || !tag_names.iter().any(|t| t.eq_ignore_ascii_case(path))
+        })
         .collect()
+}
+
+/// Ingests one fetched message, absorbing a parser panic instead of letting
+/// it poison the store lock.
+///
+/// The sanitizer's rule is "salvage, never judge", but a bug in salvage is a
+/// panic — and this callback holds the store lock, so before this fence one
+/// hostile message did not cost one message, it cost every pane of the app
+/// until relaunch (found the hard way: an HTML-only newsletter with an emoji
+/// and a byte-walking tag stripper). The panic is still a bug and still gets
+/// fixed; it is just no longer an outage while it waits to be found.
+fn ingest_fenced(
+    store: &mut Store,
+    blobs: &petrel_engine::blob::BlobStore,
+    account: i64,
+    folder_id: i64,
+    uid: u32,
+    flags: i64,
+    raw: &[u8],
+) -> Option<bool> {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        store.ingest_raw(blobs, account, Some(folder_id), Some(uid), raw)
+    }));
+    match result {
+        Ok(Ok(ingested)) => {
+            let _ = store.set_message_flags(ingested.message_id, flags);
+            // `was_new` is false when the bytes were already here and only a
+            // placement was added — how the progress counter avoids counting
+            // one message once per folder it appears in.
+            Some(ingested.was_new)
+        }
+        Ok(Err(e)) => {
+            log_sync(&format!("ingest uid {uid} failed: {e}"));
+            None
+        }
+        Err(_) => {
+            log_sync(&format!(
+                "ingest uid {uid} PANICKED — message skipped, bytes not stored; this is a bug worth reporting"
+            ));
+            None
+        }
+    }
+}
+
+/// One sync cycle for one account: every folder, one connection.
+///
+/// The shape of the whole optimisation. A cycle logs in once, asks one
+/// STATUS line per folder, and only selects and fetches the folders where
+/// something actually moved — so a quiet cycle over a hundred folders is a
+/// hundred cheap lines on one connection, and a relaunch re-downloads
+/// nothing it already holds: a folder with a watermark is only ever asked
+/// for what is above it. Flag changes made elsewhere ride along via
+/// CONDSTORE where the server has it. Returns (new messages, failures).
+async fn run_sync_cycle(
+    state: &Arc<AppState>,
+    account: i64,
+    cfg: &ImapConfig,
+    verbose: bool,
+) -> (usize, usize) {
+    let targets = folders_to_sync(state, account);
+    if targets.is_empty() {
+        return (0, 0);
+    }
+    let window: u32 = std::env::var("PETREL_SYNC_LIMIT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(200);
+
+    let passes: Vec<petrel_providers::imap::FolderPass> = {
+        let Ok(store) = state.store.lock() else {
+            return (0, 0);
+        };
+        targets
+            .iter()
+            .map(|(_, path, fid)| petrel_providers::imap::FolderPass {
+                path: path.clone(),
+                since_uid: store.max_uid(*fid).ok().flatten().unwrap_or(0),
+                expected_validity: store.folder_validity(*fid).ok().flatten(),
+                since_uidnext: store.folder_uidnext(*fid).ok().flatten(),
+                since_modseq: store.folder_modseq(*fid).ok().flatten(),
+                seed_window: window,
+            })
+            .collect()
+    };
+
+    let mut fresh = 0usize;
+    let outcomes = {
+        let st = Arc::clone(state);
+        let ids: Vec<i64> = targets.iter().map(|(_, _, id)| *id).collect();
+        petrel_providers::imap::sync_pass(cfg, &passes, |index, uid, flags, raw| {
+            let Ok(mut store) = st.store.lock() else {
+                return;
+            };
+            if ingest_fenced(&mut store, &st.blobs, account, ids[index], uid, flags, raw)
+                == Some(true)
+            {
+                fresh += 1;
+                st.seeded.fetch_add(1, Ordering::Relaxed);
+            }
+        })
+        .await
+    };
+    let outcomes = match outcomes {
+        Ok(o) => o,
+        Err(e) => {
+            log_sync(&format!("sync cycle failed before any folder: {e}"));
+            return (fresh, targets.len());
+        }
+    };
+
+    use petrel_providers::imap::PassOutcome;
+    let mut failures = 0usize;
+    let mut server_total = 0usize;
+    for (((_, path, folder_id), pass), outcome) in targets.iter().zip(&passes).zip(&outcomes) {
+        match outcome {
+            PassOutcome::Unchanged {
+                uid_validity,
+                highest_modseq,
+                uid_next,
+                total,
+            } => {
+                server_total += *total as usize;
+                if let Ok(mut store) = state.store.lock() {
+                    if pass.expected_validity.is_none() {
+                        let _ = store.set_folder_validity(*folder_id, *uid_validity);
+                    }
+                    // A quiet folder with no baselines adopts them, so the
+                    // next change is a diff instead of a mystery.
+                    if pass.since_modseq.is_none()
+                        && let Some(m) = highest_modseq
+                    {
+                        let _ = store.set_folder_modseq(*folder_id, *m);
+                    }
+                    if pass.since_uidnext.is_none()
+                        && let Some(n) = uid_next
+                    {
+                        let _ = store.set_folder_uidnext(*folder_id, *n);
+                    }
+                }
+            }
+            PassOutcome::Fetched {
+                fetched,
+                uid_validity,
+                highest_modseq,
+                uid_next,
+                flag_updates,
+                total,
+            } => {
+                server_total += *total as usize;
+                let mut reflagged = 0usize;
+                if let Ok(mut store) = state.store.lock() {
+                    if pass.expected_validity.is_none() {
+                        let _ = store.set_folder_validity(*folder_id, *uid_validity);
+                    }
+                    if let Some(m) = highest_modseq {
+                        let _ = store.set_folder_modseq(*folder_id, *m);
+                    }
+                    if let Some(n) = uid_next {
+                        let _ = store.set_folder_uidnext(*folder_id, *n);
+                    }
+                    for (uid, flags) in flag_updates {
+                        if store
+                            .set_flags_by_uid(*folder_id, *uid, *flags)
+                            .unwrap_or(false)
+                        {
+                            reflagged += 1;
+                        }
+                    }
+                }
+                if verbose || *fetched > 0 || reflagged > 0 {
+                    log_sync(&format!(
+                        "{path}: {fetched} fetched, {reflagged} flag update(s)"
+                    ));
+                }
+            }
+            PassOutcome::ValidityChanged { now } => {
+                log_sync(&format!(
+                    "{path}: UIDVALIDITY reset ({:?} -> {now:?}); re-mapping",
+                    pass.expected_validity
+                ));
+                if let Ok(mut store) = state.store.lock() {
+                    // The modseq domain does not survive a renumbering.
+                    let _ = store.clear_folder_modseq(*folder_id);
+                }
+                match recover_folder(state, account, cfg, path, *folder_id).await {
+                    Ok(_) => {}
+                    Err(e) => {
+                        log_sync(&format!("{path}: recovery failed: {e}"));
+                        failures += 1;
+                    }
+                }
+            }
+            PassOutcome::Failed { detail } => {
+                if verbose {
+                    log_sync(&format!("{path}: FAILED: {detail}"));
+                }
+                failures += 1;
+            }
+        }
+    }
+    state.server_total.store(server_total, Ordering::Relaxed);
+    (fresh, failures)
 }
 
 /// Mends one folder after the server renumbered it (UIDVALIDITY reset).
@@ -628,11 +884,7 @@ async fn recover_folder(
                 let Ok(mut store) = st.store.lock() else {
                     return;
                 };
-                if let Ok(ingested) =
-                    store.ingest_raw(&st.blobs, account, Some(folder_id), Some(uid), raw)
-                {
-                    let _ = store.set_message_flags(ingested.message_id, flags);
-                }
+                let _ = ingest_fenced(&mut store, &st.blobs, account, folder_id, uid, flags, raw);
             },
         )
         .await
@@ -698,6 +950,9 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
                 let rows: Vec<(String, Option<String>)> = report
                     .folders
                     .iter()
+                    // \Noselect containers ([Gmail] itself) are hierarchy,
+                    // not mailboxes: nothing to list, nothing to sync.
+                    .filter(|f| petrel_providers::imap::selectable(f))
                     .map(|f| {
                         (
                             f.name.clone(),
@@ -714,7 +969,12 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
                 state
                     .server_is_gmail
                     .store(looks_like_gmail, Ordering::Relaxed);
-                if let Ok(store) = state.store.lock() {
+                if let Ok(mut store) = state.store.lock() {
+                    let tag_names: Vec<String> = store
+                        .tags_for_account(account)
+                        .map(|ts| ts.into_iter().map(|t| t.name).collect())
+                        .unwrap_or_default();
+                    let rows = without_tag_labels(rows, &tag_names, looks_like_gmail);
                     match store.sync_folders(account, &rows) {
                         Ok(n) => log_sync(&format!("{n} folder(s) stored")),
                         Err(e) => log_sync(&format!("folder sync failed: {e}")),
@@ -747,81 +1007,24 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
         // waiting for whatever next wakes the worker.
         send_due(Arc::clone(&state), account).await;
 
-        // Ingest as each message lands rather than after all of them do. The
-        // buffering version showed nothing for the whole fetch, which on a real
-        // mailbox is indistinguishable from a hang — and left the list saying
-        // the inbox was empty the entire time.
-        let limit: u32 = std::env::var("PETREL_SYNC_LIMIT")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(200);
-        let mut ok = 0usize;
-        let mut failed = 0usize;
-        // Each folder is fetched separately, and the id it is fetched into is
-        // the one placements are recorded against — which is what makes Sent
-        // land in Sent rather than everything piling into the inbox.
+        // One connection, one STATUS line per folder, fetch only what moved.
+        // A relaunch over a warm store downloads nothing it already holds.
+        let (fresh, failures) = run_sync_cycle(&state, account, &cfg, true).await;
         let targets = folders_to_sync(&state, account);
-        // How much there is to find, so search can say what it searched. One
-        // EXAMINE per folder, once per sync — read-only, and cheap enough that
-        // an honest denominator is worth it.
-        {
-            let names: Vec<String> = targets.iter().map(|(_, n, _)| n.clone()).collect();
-            if let Ok(counts) = petrel_providers::imap::folder_counts(&cfg, &names).await {
-                let total: usize = counts.iter().map(|(_, n)| *n as usize).sum();
-                state.server_total.store(total, Ordering::Relaxed);
-                log_sync(&format!(
-                    "server holds {total} message(s) across synced folders"
-                ));
-            }
+        if failures > 0 {
+            log_sync(&format!("{failures} folder(s) could not be synced"));
         }
-        for (_role, name, folder_id) in &targets {
-            let result = {
-                let state = Arc::clone(&state);
-                petrel_providers::imap::fetch_raw_each(&cfg, name, limit, |uid, flags, raw| {
-                    let Ok(mut store) = state.store.lock() else {
-                        return;
-                    };
-                    match store.ingest_raw(&state.blobs, account, Some(*folder_id), Some(uid), raw)
-                    {
-                        Ok(ingested) => {
-                            // The server's answer about read state wins. Without
-                            // this every message arrives unread, so a mailbox with
-                            // nothing unread in it shows hundreds.
-                            let _ = store.set_message_flags(ingested.message_id, flags);
-                            ok += 1;
-                            state.seeded.store(ok, Ordering::Relaxed);
-                        }
-                        Err(_) => failed += 1,
-                    }
-                })
-                .await
-            };
-            match result {
-                Ok((seen, validity)) => {
-                    log_sync(&format!("{name}: ingested {seen}"));
-                    // Adopted with the UIDs, not later: UIDs recorded without
-                    // their validity are UIDs a reset cannot be detected
-                    // against, and the gap would be exactly this window.
-                    if let Ok(mut store) = state.store.lock() {
-                        let _ = store.set_folder_validity(*folder_id, validity);
-                    }
-                }
-                // One unreadable folder must not cost the others. A mailbox the
-                // account cannot select is a bad reason to have no Sent mail.
-                Err(e) => log_sync(&format!("{name}: fetch FAILED: {e}")),
-            }
-        }
-
-        if failed > 0 {
-            log_sync(&format!("{failed} message(s) could not be ingested"));
-        }
-        if ok == 0 && !targets.is_empty() {
-            let msg = "no mail could be fetched from any folder";
+        if !targets.is_empty() && failures >= targets.len() {
+            let msg = "no folder could be synced";
             log_sync(msg);
             *state.sync_error.lock().unwrap() = Some(friendly_sync_error(msg));
             *state.source.lock().unwrap() = "sync failed".into();
         } else {
-            *state.source.lock().unwrap() = format!("{} · {ok} message(s) synced", cfg.user);
+            let held = state.seeded.load(Ordering::Relaxed);
+            log_sync(&format!(
+                "first pass done: {fresh} new, {held} held locally"
+            ));
+            *state.source.lock().unwrap() = format!("{} · {held} message(s) held", cfg.user);
         }
         // Where Gmail actually keeps each message.
         //
@@ -929,83 +1132,18 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
             .await;
             send_due(Arc::clone(&state), account).await;
 
-            // A watermark per folder, not one shared one: UIDs are only unique
-            // within a mailbox, so the inbox's highest UID says nothing about
-            // what is new in Sent, and sharing one would skip most of it.
-            let mut fresh = 0usize;
-            let mut trouble: Option<String> = None;
-            for (_role, name, folder_id) in &folders_to_sync(&state, account) {
-                let (since, expected) = {
-                    let guard = state.store.lock().ok();
-                    (
-                        guard
-                            .as_ref()
-                            .and_then(|s| s.max_uid(*folder_id).ok().flatten())
-                            .unwrap_or(0),
-                        guard
-                            .as_ref()
-                            .and_then(|s| s.folder_validity(*folder_id).ok().flatten()),
-                    )
-                };
-                let polled = {
-                    let state = Arc::clone(&state);
-                    petrel_providers::imap::fetch_since_each(
-                        &cfg,
-                        name,
-                        since,
-                        expected,
-                        |uid, flags, raw| {
-                            let Ok(mut store) = state.store.lock() else {
-                                return;
-                            };
-                            if let Ok(ingested) = store.ingest_raw(
-                                &state.blobs,
-                                account,
-                                Some(*folder_id),
-                                Some(uid),
-                                raw,
-                            ) {
-                                let _ = store.set_message_flags(ingested.message_id, flags);
-                                fresh += 1;
-                            }
-                        },
-                    )
-                    .await
-                };
-                use petrel_providers::imap::FetchOutcome;
-                match polled {
-                    Ok(FetchOutcome::Fetched { uid_validity, .. }) => {
-                        // A folder synced before validity was tracked adopts
-                        // the server's value on its first clean pass.
-                        if expected.is_none()
-                            && let Ok(mut store) = state.store.lock()
-                        {
-                            let _ = store.set_folder_validity(*folder_id, uid_validity);
-                        }
-                    }
-                    Ok(FetchOutcome::ValidityChanged { now }) => {
-                        log_sync(&format!(
-                            "{name}: UIDVALIDITY reset ({expected:?} -> {now:?}); re-mapping"
-                        ));
-                        match recover_folder(&state, account, &cfg, name, *folder_id).await {
-                            Ok(refetched) => fresh += refetched,
-                            Err(e) => {
-                                log_sync(&format!("{name}: recovery failed: {e}"));
-                                trouble = Some(e);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        log_sync(&format!("poll {name} failed: {e}"));
-                        trouble = Some(format!("{e}"));
-                    }
-                }
-            }
+            // One connection for the whole account, STATUS-gated per folder:
+            // a quiet cycle costs a line per folder, not a login per folder.
+            let (fresh, failures) = run_sync_cycle(&state, account, &cfg, false).await;
+            let trouble: Option<String> = if failures > 0 {
+                Some(format!("{failures} folder(s) failed"))
+            } else {
+                None
+            };
             if fresh > 0 {
                 log_sync(&format!("poll: {fresh} new message(s)"));
                 // The list watches this count, so bumping it is what makes
                 // new mail appear without the user doing anything.
-                state.seeded.fetch_add(fresh, Ordering::Relaxed);
             }
             // Only a pass that both found nothing and hit nothing clears the
             // banner: a poll that failed halfway is not proof that sync is well.
@@ -2396,14 +2534,87 @@ fn list_folders(state: State<Arc<AppState>>) -> Result<Vec<FolderSummary>, Strin
 /// picker offers this on the end of the same keystroke as choosing one.
 #[tauri::command]
 fn create_folder(path: String, state: State<Arc<AppState>>) -> Result<i64, String> {
+    let (account, id, cfg) = {
+        let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+        let account = store
+            .active_account()
+            .map_err(|e| e.to_string())?
+            .ok_or("no account")?;
+        let id = store
+            .ensure_named_folder(account, &path)
+            .map_err(|e| e.to_string())?;
+        (account, id, imap_config_for(&store, account))
+    };
+    let _ = account;
+    // The server's copy follows, off this thread — the picker is waiting on
+    // the id, and a move drained later re-creates on demand anyway, so the
+    // worst a failure here costs is that retry.
+    if let Some(cfg) = cfg {
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) = petrel_providers::imap::create_folder(&cfg, &path).await {
+                log_sync(&format!("server create {path} failed: {e}"));
+            }
+        });
+    }
+    Ok(id)
+}
+
+/// Renames a folder — on the server first, then locally, so the two cannot
+/// disagree with the server holding the older name.
+#[tauri::command]
+async fn rename_folder(
+    folder_id: i64,
+    new_path: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let (cfg, old_path) = {
+        let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+        let account = store
+            .active_account()
+            .map_err(|e| e.to_string())?
+            .ok_or("no account")?;
+        let path = store
+            .folder_path(folder_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("no such folder")?;
+        (imap_config_for(&store, account), path)
+    };
+    if let Some(cfg) = cfg {
+        petrel_providers::imap::rename_folder(&cfg, &old_path, &new_path)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
-    let account = store
-        .active_account()
-        .map_err(|e| e.to_string())?
-        .ok_or("no account")?;
     store
-        .ensure_named_folder(account, &path)
+        .rename_folder(folder_id, &new_path)
         .map_err(|e| e.to_string())
+}
+
+/// Deletes a folder — on the server first. The server also deletes whatever
+/// mail the folder still holds, which is why the UI confirms in those words;
+/// the store keeps its message rows and blobs regardless, so nothing already
+/// synced is destroyed.
+#[tauri::command]
+async fn delete_folder(folder_id: i64, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    let (cfg, path) = {
+        let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+        let account = store
+            .active_account()
+            .map_err(|e| e.to_string())?
+            .ok_or("no account")?;
+        let path = store
+            .folder_path(folder_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("no such folder")?;
+        (imap_config_for(&store, account), path)
+    };
+    if let Some(cfg) = cfg {
+        petrel_providers::imap::delete_folder(&cfg, &path)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    let mut store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    store.remove_folder(folder_id).map_err(|e| e.to_string())
 }
 
 /// Creates a tag, or returns the one already there — same shape as folders.
@@ -2975,6 +3186,20 @@ pub fn run() {
     } else {
         imap_config_from_env()
     };
+    // The "N so far" figure starts from what is already here, whichever branch
+    // runs. It used to start at zero and be pushed along by every fetch; once
+    // the counter learned to count only genuinely new mail, a relaunch that
+    // re-fetches stored folders moved it not at all — and an empty folder
+    // showed "Fetching your mail — 0 so far…" over a store holding thousands.
+    {
+        let existing = state
+            .store
+            .lock()
+            .ok()
+            .and_then(|s| s.message_count().ok())
+            .unwrap_or(0);
+        state.seeded.store(existing as usize, Ordering::Relaxed);
+    }
     match (started, configured) {
         (n, _) if n > 0 => {}
         (_, Some(cfg)) => {
@@ -3031,6 +3256,8 @@ pub fn run() {
             undo_triage,
             list_folders,
             create_folder,
+            rename_folder,
+            delete_folder,
             create_tag,
             rename_tag,
             set_tag_colour,
@@ -3205,4 +3432,48 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running petrel");
+}
+
+#[cfg(test)]
+mod folder_survey_tests {
+    use super::without_tag_labels;
+
+    fn rows(v: &[(&str, Option<&str>)]) -> Vec<(String, Option<String>)> {
+        v.iter()
+            .map(|(p, r)| (p.to_string(), r.map(|r| r.to_string())))
+            .collect()
+    }
+
+    #[test]
+    fn a_tag_made_here_does_not_come_back_as_a_folder() {
+        // The round trip that motivated this: tag "test" → Gmail label
+        // "test" → next survey → a folder named "test", the same thing
+        // twice pretending to be two.
+        let out = without_tag_labels(
+            rows(&[("INBOX", Some("inbox")), ("test", None), ("Unwanted", None)]),
+            &["test".to_string()],
+            true,
+        );
+        let paths: Vec<&str> = out.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(paths, vec!["INBOX", "Unwanted"]);
+    }
+
+    #[test]
+    fn role_folders_and_other_providers_keep_shared_names() {
+        // A Namecheap folder and a tag sharing a name are two real, distinct
+        // things — only on Gmail is one object behind both.
+        let out = without_tag_labels(
+            rows(&[("Receipts", None)]),
+            &["Receipts".to_string()],
+            false,
+        );
+        assert_eq!(out.len(), 1);
+        // And a role-bearing folder is never a tag, whatever it is called.
+        let out = without_tag_labels(
+            rows(&[("Starred", Some("starred"))]),
+            &["starred".to_string()],
+            true,
+        );
+        assert_eq!(out.len(), 1);
+    }
 }

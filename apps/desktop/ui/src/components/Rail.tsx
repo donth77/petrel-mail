@@ -1,13 +1,14 @@
 import type React from 'react';
 import { useEffect, useRef, useState } from 'react';
 import {
-  Inbox, Star, Clock, Send, PencilLine, Upload, Archive, ShieldAlert, Trash2,
+  FolderClosed, Inbox, Star, Clock, Send, PencilLine, Upload, Archive, ShieldAlert, Trash2,
   CircleHelp, PanelLeftClose, PanelLeftOpen, PenSquare, Plus, Settings, type LucideIcon,
 } from 'lucide-react';
-import type { Account } from '../lib/api';
+import type { Account, Folder } from '../lib/api';
 import { Icon } from './Icon';
 import { t, type StringId } from '../lib/strings';
 import { TagMenu } from './TagMenu';
+import { FolderMenu } from './FolderMenu';
 import { acceptsDrop } from '../lib/dnd';
 import { AccountMenu } from './AccountMenu';
 import { Tip } from './Tip';
@@ -72,7 +73,12 @@ type Props = {
   counts: Record<string, number>;
   view: string;
   tags: Tag[];
+  /** Every folder; the rail lists the ones the user made (no role). */
+  folders: Folder[];
   onView: (v: string) => void;
+  onCreateFolder: (name: string) => Promise<void>;
+  onRenameFolder: (folderId: number, newPath: string) => Promise<void>;
+  onDeleteFolder: (folder: Folder) => void;
   /** Make a tag that is attached to nothing yet. Returns once it exists, so the
    *  rail can put the input away only after the work succeeded. */
   onCreateTag: (name: string) => Promise<void>;
@@ -92,8 +98,12 @@ export function Rail({
   counts,
   view,
   tags,
+  folders,
   collapsed,
   onView,
+  onCreateFolder,
+  onRenameFolder,
+  onDeleteFolder,
   onCreateTag,
   onRenameTag,
   onColourTag,
@@ -117,6 +127,8 @@ export function Rail({
   // Naming a new tag. An inline field rather than a dialog: it is one short
   // string, and a modal for one word is more ceremony than the act deserves.
   const [naming, setNaming] = useState(false);
+  const [namingFolder, setNamingFolder] = useState(false);
+  const [renamingFolder, setRenamingFolder] = useState<number | null>(null);
   // The tag being renamed, edited in place on its own row rather than in a
   // dialog: it is one short string, and the row is where you are looking.
   const [renaming, setRenaming] = useState<number | null>(null);
@@ -194,6 +206,103 @@ export function Rail({
               <span className="count">{counts[m.key]}</span>
             )}
           </button>
+        </Tip>
+      ))}
+
+
+      {/* Folders the user made, between the fixed mailboxes and the tags —
+          places before labels. The header shows even with none yet, because
+          the + is how the first one gets made. */}
+      <div className="rail-label rail-label-row">
+        <span>{t('rail-folders')}</span>
+        <Tip label={t('folder-new')} placement="right">
+          <button
+            type="button"
+            className="rail-add"
+            aria-label={t('folder-new')}
+            onClick={() => setNamingFolder(true)}
+          >
+            <Icon icon={Plus} size={13} />
+          </button>
+        </Tip>
+      </div>
+      {!collapsed && namingFolder && (
+        <input
+          className="rail-new-tag"
+          placeholder={t('folder-new-placeholder')}
+          aria-label={t('folder-new')}
+          autoComplete="off"
+          autoFocus
+          onBlur={(e) => {
+            const name = e.currentTarget.value.trim();
+            setNamingFolder(false);
+            if (name) void onCreateFolder(name);
+          }}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key === 'Escape') {
+              setNamingFolder(false);
+              return;
+            }
+            if (e.key !== 'Enter') return;
+            if (!e.currentTarget.value.trim()) {
+              setNamingFolder(false);
+              return;
+            }
+            e.currentTarget.blur();
+          }}
+        />
+      )}
+      {folders.filter((f) => !f.role).map((f) => (
+        <Tip key={f.id} label={f.path} placement="right" when={collapsed}>
+          {renamingFolder === f.id ? (
+            <input
+              key={`rename-folder-${f.id}`}
+              className="rail-new-tag"
+              defaultValue={f.path}
+              aria-label={t('folder-rename')}
+              autoComplete="off"
+              autoFocus
+              onFocus={(e) => e.currentTarget.select()}
+              onBlur={(e) => {
+                const next = e.currentTarget.value.trim();
+                setRenamingFolder(null);
+                if (next && next !== f.path) void onRenameFolder(f.id, next);
+              }}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.key === 'Escape') {
+                  e.currentTarget.value = f.path;
+                  setRenamingFolder(null);
+                  return;
+                }
+                if (e.key === 'Enter') e.currentTarget.blur();
+              }}
+            />
+          ) : (
+            <button
+              type="button"
+              className="rail-item"
+              aria-current={view === `folder:${f.id}` ? 'page' : undefined}
+              onClick={() => onView(`folder:${f.id}`)}
+              {...dropTarget(`folder:${f.id}`, view, dropOver)}
+              data-drop-ok={
+                dragActive && acceptsDrop(`folder:${f.id}`, view) ? true : undefined
+              }
+            >
+              <Icon icon={FolderClosed} />
+              {/* The leaf, because the rail is narrow; the full path lives in
+                  the tooltip and the rename field. */}
+              <span className="rail-text">{f.path.split(/[/.]/).pop() || f.path}</span>
+              {!collapsed && (
+                <FolderMenu
+                  path={f.path}
+                  onRename={() => setRenamingFolder(f.id)}
+                  onDelete={() => onDeleteFolder(f)}
+                />
+              )}
+            </button>
+          )}
         </Tip>
       ))}
 
