@@ -1212,6 +1212,38 @@ where
     Ok(map)
 }
 
+/// Fetches one contiguous UID range in full — the backfill's stride.
+///
+/// A range asks for what history held; what it returns is whatever still
+/// exists there, which after years of expunges can be less, or nothing.
+/// Nothing is not failure: it means that stretch of numbers is spent.
+pub async fn fetch_uid_range_each<F>(
+    cfg: &ImapConfig,
+    folder: &str,
+    first: u32,
+    last: u32,
+    mut on_message: F,
+) -> Result<usize>
+where
+    F: FnMut(u32, i64, &[u8]),
+{
+    if first > last {
+        return Ok(0);
+    }
+    let set = format!("{first}:{last}");
+    match cfg.security {
+        Security::Tls => {
+            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
+            uid_set_session(client, cfg, folder, &set, &mut on_message).await
+        }
+        #[cfg(feature = "insecure-plaintext")]
+        Security::InsecurePlaintext => {
+            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
+            uid_set_session(Client::new(tcp), cfg, folder, &set, &mut on_message).await
+        }
+    }
+}
+
 /// Fetches an explicit set of messages in full, by UID.
 ///
 /// The second half of recovery: the UIDs the store could not re-map are
@@ -1267,7 +1299,8 @@ where
     session.select(folder).await?;
     let mut n = 0usize;
     {
-        let mut fetches = session.uid_fetch(set, "(UID FLAGS RFC822)").await?;
+        // PEEK, as everywhere: fetching mail must not mark it read.
+        let mut fetches = session.uid_fetch(set, "(UID FLAGS BODY.PEEK[])").await?;
         while let Some(fetch) = fetches.next().await {
             let fetch = fetch?;
             let bits = flags_to_bits(fetch.flags());

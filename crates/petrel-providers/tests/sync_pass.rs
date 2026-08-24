@@ -111,13 +111,22 @@ async fn server(state: Arc<Mutex<ServerState>>) -> u16 {
                             let flags_only = upper.contains("CHANGEDSINCE");
                             let spec = line.split_whitespace().nth(3).unwrap_or("1:*").to_string();
                             let wanted: Vec<&Msg> = if upper.contains("UID FETCH") {
-                                if let Some((a, _)) = spec.split_once(':') {
+                                if let Some((a, b)) = spec.split_once(':') {
                                     let a: u32 = a.parse().unwrap_or(1);
                                     let max = f.messages.iter().map(|m| m.uid).max().unwrap_or(0);
-                                    if a > max {
+                                    let b: u32 = if b == "*" {
+                                        max
+                                    } else {
+                                        b.parse().unwrap_or(max)
+                                    };
+                                    if a > max && b >= max {
+                                        // RFC: a range past the end clamps to the last message.
                                         f.messages.iter().rev().take(1).collect()
                                     } else {
-                                        f.messages.iter().filter(|m| m.uid >= a).collect()
+                                        f.messages
+                                            .iter()
+                                            .filter(|m| m.uid >= a && m.uid <= b)
+                                            .collect()
                                     }
                                 } else {
                                     f.messages.iter().collect()
@@ -348,4 +357,65 @@ async fn a_quiet_cycle_is_status_lines_on_one_connection() {
         matches!(out[0], PassOutcome::ValidityChanged { now: Some(99) }),
         "{out:?}"
     );
+}
+
+#[tokio::test]
+async fn backfill_walks_history_in_strides_and_knows_when_it_is_done() {
+    // A folder holding uids 1..=10; the "seed" already took 8..=10 locally.
+    let state = Arc::new(Mutex::new(ServerState {
+        folders: [(
+            "INBOX".to_string(),
+            Folder {
+                validity: 1,
+                modseq: 1,
+                messages: (1..=10).map(|u| msg(u, &format!("m{u}"))).collect(),
+            },
+        )]
+        .into(),
+        logins: AtomicUsize::new(0),
+        selects: AtomicUsize::new(0),
+        fetches: AtomicUsize::new(0),
+    }));
+    let port = server(Arc::clone(&state)).await;
+    let cfg = ImapConfig {
+        host: "127.0.0.1".into(),
+        port,
+        user: "u".into(),
+        pass: "p".into(),
+        security: Security::InsecurePlaintext,
+    };
+
+    // Stride one: ceiling 8, chunk 3 → asks 5:7.
+    let mut got = Vec::new();
+    let n = petrel_providers::imap::fetch_uid_range_each(&cfg, "INBOX", 5, 7, |uid, _f, _raw| {
+        got.push(uid);
+    })
+    .await
+    .expect("stride");
+    assert_eq!(n, 3);
+    assert_eq!(got, vec![5, 6, 7]);
+
+    // Stride over a stretch history has emptied: nothing, and not an error.
+    state
+        .lock()
+        .unwrap()
+        .folders
+        .get_mut("INBOX")
+        .unwrap()
+        .messages
+        .retain(|m| m.uid > 4);
+    let n = petrel_providers::imap::fetch_uid_range_each(&cfg, "INBOX", 2, 4, |_, _, _| {
+        panic!("these numbers are spent");
+    })
+    .await
+    .expect("empty stride");
+    assert_eq!(n, 0, "an expunged stretch is silence, not failure");
+
+    // An inverted range never even connects a fetch.
+    let n = petrel_providers::imap::fetch_uid_range_each(&cfg, "INBOX", 5, 4, |_, _, _| {
+        panic!("no range, no fetch")
+    })
+    .await
+    .expect("no-op");
+    assert_eq!(n, 0);
 }

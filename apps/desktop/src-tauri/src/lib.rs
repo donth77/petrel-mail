@@ -597,11 +597,16 @@ async fn drain_actions(
 ///   expose it over IMAP — there is no such mailbox in the folder list.
 /// * **Outbox likewise**: mail that has not reached a server yet is ours alone.
 fn folders_to_sync(state: &AppState, account: i64) -> Vec<(String, String, i64)> {
-    // Inbox first so the view the user is looking at fills before the rest.
-    const ROLES: [&str; 6] = ["inbox", "sent", "drafts", "spam", "trash", "starred"];
     let Ok(store) = state.store.lock() else {
         return Vec::new();
     };
+    folders_to_sync_from(&store, account)
+}
+
+/// The lock-free core, for callers already holding the store.
+fn folders_to_sync_from(store: &Store, account: i64) -> Vec<(String, String, i64)> {
+    // Inbox first so the view the user is looking at fills before the rest.
+    const ROLES: [&str; 6] = ["inbox", "sent", "drafts", "spam", "trash", "starred"];
     let Ok(all) = store.folders(account) else {
         return Vec::new();
     };
@@ -874,6 +879,84 @@ fn ingest_fenced(
                 "ingest uid {uid} PANICKED — message skipped, bytes not stored; this is a bug worth reporting"
             ));
             None
+        }
+    }
+}
+
+/// One polite stride of history: the next chunk of the first folder whose
+/// backfill is not finished.
+///
+/// The cursor is the lowest UID the folder holds; the floor is the lowest
+/// this walk has asked for, so ranges emptied by years of expunges are never
+/// asked about twice. Floor 1 is done. Chunks are small and run between
+/// cycles, so interactive work — a click, a poll, a send — never waits on
+/// history. Returns true when a stride ran, false when every folder is done.
+async fn run_backfill_tick(state: &Arc<AppState>, account: i64, cfg: &ImapConfig) -> bool {
+    let chunk: u32 = std::env::var("PETREL_BACKFILL_CHUNK")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100);
+    let target = {
+        let Ok(store) = state.store.lock() else {
+            return false;
+        };
+        let mut found: Option<(String, i64, u32)> = None;
+        for (_role, path, fid) in folders_to_sync_from(&store, account) {
+            let held = store.min_uid(fid).ok().flatten();
+            let floor = store.backfill_floor(fid).ok().flatten();
+            let ceiling = match (floor, held) {
+                // Never walked and nothing held: an empty folder is done.
+                (None, None) => continue,
+                (None, Some(min)) => min,
+                (Some(1), _) => continue, // finished
+                (Some(f), _) => f,
+            };
+            if ceiling <= 1 {
+                continue;
+            }
+            found = Some((path, fid, ceiling));
+            break;
+        }
+        match found {
+            Some(t) => t,
+            None => return false,
+        }
+    };
+    let (path, folder_id, ceiling) = target;
+    let first = ceiling.saturating_sub(chunk).max(1);
+    let last = ceiling - 1;
+
+    let st = Arc::clone(state);
+    let fetched = petrel_providers::imap::fetch_uid_range_each(cfg, &path, first, last, {
+        move |uid, flags, raw| {
+            let Ok(mut store) = st.store.lock() else {
+                return;
+            };
+            if ingest_fenced(&mut store, &st.blobs, account, folder_id, uid, flags, raw)
+                == Some(true)
+            {
+                st.seeded.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    })
+    .await;
+
+    match fetched {
+        Ok(n) => {
+            if let Ok(mut store) = state.store.lock() {
+                let _ = store.set_backfill_floor(folder_id, first);
+            }
+            if n > 0 {
+                log_sync(&format!(
+                    "backfill {path}: {n} message(s), down to uid {first}"
+                ));
+            }
+            true
+        }
+        Err(e) => {
+            log_sync(&format!("backfill {path} failed: {e}"));
+            // Failed is not finished: the same stride retries next tick.
+            true
         }
     }
 }
@@ -1334,6 +1417,18 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
             if state.server_is_gmail.load(Ordering::Relaxed) {
                 // One round trip when nothing changed; live labels when it did.
                 run_label_sweep(&state, account, &cfg).await;
+            }
+            // History fills in behind the present: a few polite strides per
+            // quiet cycle, none at all while new mail is arriving. Each
+            // stride is small, so the next IDLE wake or click never waits
+            // long behind it — and the cursor means a restart loses nothing.
+            if fresh == 0 {
+                for _ in 0..5 {
+                    if !run_backfill_tick(&state, account, &cfg).await {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
             }
             let trouble: Option<String> = if failures > 0 {
                 Some(format!("{failures} folder(s) failed"))

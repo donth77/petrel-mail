@@ -149,3 +149,42 @@ fn folders_the_server_stopped_listing_are_pruned_without_losing_mail() {
         .expect("message row survives");
     assert!(blobs.read(&hash).is_ok());
 }
+
+#[test]
+fn the_backfill_cursor_survives_and_finishes() {
+    let (_dir, mut store, blobs, account) = setup();
+    let folder = store.ensure_named_folder(account, "History").unwrap();
+    // Nothing held, nothing walked: no cursor at all.
+    assert_eq!(store.min_uid(folder).unwrap(), None);
+    assert_eq!(store.backfill_floor(folder).unwrap(), None);
+
+    // The seed took uids 90 and 100; the walk starts below 90.
+    for uid in [90, 100] {
+        store
+            .ingest_raw(
+                &blobs,
+                account,
+                Some(folder),
+                Some(uid),
+                &fixture(&format!("u{uid}@x"), "old"),
+            )
+            .unwrap();
+    }
+    assert_eq!(store.min_uid(folder).unwrap(), Some(90));
+
+    // Strides record how deep they asked, not how much they got — a stretch
+    // emptied by expunges must not be asked about twice.
+    store.set_backfill_floor(folder, 50).unwrap();
+    assert_eq!(store.backfill_floor(folder).unwrap(), Some(50));
+    store.set_backfill_floor(folder, 1).unwrap();
+    assert_eq!(
+        store.backfill_floor(folder).unwrap(),
+        Some(1),
+        "floor 1 is done"
+    );
+
+    // It shares sync_state_json with the other cursors without clobbering them.
+    store.set_folder_modseq(folder, 77).unwrap();
+    assert_eq!(store.backfill_floor(folder).unwrap(), Some(1));
+    assert_eq!(store.folder_modseq(folder).unwrap(), Some(77));
+}

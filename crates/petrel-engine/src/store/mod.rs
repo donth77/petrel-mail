@@ -2157,6 +2157,58 @@ impl Store {
         Ok(out)
     }
 
+    /// The lowest UID this folder holds — the backfill cursor, resumable by
+    /// construction: whatever is below it has not been fetched yet.
+    pub fn min_uid(&self, folder_id: i64) -> Result<Option<u32>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT min(uid) FROM placements WHERE folder_id = ?1",
+                params![folder_id],
+                |r| r.get::<_, Option<i64>>(0),
+            )?
+            .map(|u| u as u32))
+    }
+
+    /// The lowest UID backfill has *asked for* in this folder. Distinct from
+    /// `min_uid`, which is the lowest we hold: a range whose messages were
+    /// long since expunged fetches nothing, and without this floor the walk
+    /// would re-ask for the same silence forever. Floor 1 means done.
+    pub fn backfill_floor(&self, folder_id: i64) -> Result<Option<u32>> {
+        let json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT sync_state_json FROM folders WHERE id = ?1",
+                params![folder_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(json
+            .and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok())
+            .and_then(|v| v.get("backfill_floor").and_then(|m| m.as_u64()))
+            .map(|v| v as u32))
+    }
+
+    pub fn set_backfill_floor(&mut self, folder_id: i64, floor: u32) -> Result<()> {
+        let current: String = self
+            .conn
+            .query_row(
+                "SELECT sync_state_json FROM folders WHERE id = ?1",
+                params![folder_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or_else(|| "{}".into());
+        let mut v: serde_json::Value =
+            serde_json::from_str(&current).unwrap_or_else(|_| serde_json::json!({}));
+        v["backfill_floor"] = serde_json::json!(floor);
+        self.conn.execute(
+            "UPDATE folders SET sync_state_json = ?2 WHERE id = ?1",
+            params![folder_id, v.to_string()],
+        )?;
+        Ok(())
+    }
+
     /// The UIDNEXT this folder last reported — the precise any-new-mail test.
     pub fn folder_uidnext(&self, folder_id: i64) -> Result<Option<u32>> {
         let json: Option<String> = self
