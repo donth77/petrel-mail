@@ -2934,6 +2934,44 @@ fn storage_report(state: State<Arc<AppState>>) -> Result<StorageReport, String> 
         .map_err(|e| e.to_string())
 }
 
+/// Opens a message in its own window as a printable page.
+///
+/// A window rather than printing the app: the app window is chrome around a
+/// sandboxed frame, and printing it prints the chrome. The print window
+/// loads the message's printable document over the same protocol, so the
+/// same sanitizer, the same CSP and the same remote-content policy govern
+/// what lands on paper — and the page opens straight into the print dialog.
+#[tauri::command]
+fn print_message(
+    message_id: i64,
+    app: tauri::AppHandle,
+    state: State<Arc<AppState>>,
+) -> Result<(), String> {
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+    let token = {
+        let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+        store
+            .blob_hash_for(message_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("message has no stored body")?;
+        state.tokens.issue(message_id)
+    };
+    let label = format!("print-{message_id}");
+    if let Some(existing) = app.get_webview_window(&label) {
+        let _ = existing.set_focus();
+        return Ok(());
+    }
+    let url: tauri::Url = format!("petrel-msg://localhost/print/{token}")
+        .parse()
+        .map_err(|e| format!("{e}"))?;
+    WebviewWindowBuilder::new(&app, &label, WebviewUrl::External(url))
+        .title("Print")
+        .inner_size(700.0, 880.0)
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// What an import did, honestly itemised.
 #[derive(serde::Serialize)]
 struct ImportReport {
@@ -3793,6 +3831,7 @@ pub fn run() {
             storage_report,
             export_mbox,
             import_mail,
+            print_message,
             get_identity,
             set_identity,
             attachment_info,
@@ -4007,9 +4046,21 @@ mod unsubscribe_tests {
         let port = listener.local_addr().unwrap().port();
         let served = std::thread::spawn(move || {
             let (mut sock, _) = listener.accept().unwrap();
-            let mut buf = [0u8; 4096];
-            let n = sock.read(&mut buf).unwrap();
-            let req = String::from_utf8_lossy(&buf[..n]).to_string();
+            // Headers and body can arrive in separate reads; keep reading
+            // until the body has, or the peer stops.
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 1024];
+            loop {
+                let n = sock.read(&mut chunk).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                if String::from_utf8_lossy(&buf).contains("One-Click") {
+                    break;
+                }
+            }
+            let req = String::from_utf8_lossy(&buf).to_string();
             sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
                 .unwrap();
             req

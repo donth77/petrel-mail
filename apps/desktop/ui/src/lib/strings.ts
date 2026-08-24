@@ -439,6 +439,7 @@ export const en = {
   'privacy-trusted-help': 'Anyone you have written to is already included, without appearing here — they know your address, so nothing is given away.',
   'privacy-trusted-none': 'Nobody yet. “Always from this sender” on a message adds them.',
   'privacy-untrust': 'Stop loading images from { $addr }',
+  'msg-print': 'Print\u2026',
   'unsub-button': 'Unsubscribe',
   'unsub-confirm': 'Unsubscribe from { $sender }?',
   'unsub-body-oneclick':

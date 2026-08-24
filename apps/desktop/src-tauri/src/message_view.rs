@@ -301,6 +301,97 @@ const HEIGHT_REPORTER: &str = r#"
 })();
 "#;
 
+/// A civil date from epoch milliseconds, for the printed page's header.
+/// UTC, deliberately: a printed page is a record, and a record that shifts
+/// with the machine's timezone reads differently on every machine.
+fn readable_date(ms: i64) -> String {
+    let days_total = ms.div_euclid(86_400_000);
+    let secs = ms.rem_euclid(86_400_000) / 1000;
+    let (h, min) = (secs / 3600, (secs % 3600) / 60);
+    // Civil-from-days (Howard Hinnant's algorithm), which is the standard
+    // way to do this without a calendar dependency.
+    let z = days_total + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    format!("{d} {} {y}, {h:02}:{min:02} UTC", MONTHS[(m - 1) as usize])
+}
+
+/// The printable form of one message: the envelope a reader needs on paper,
+/// then the same sanitized body the screen shows.
+///
+/// Always the light palette — paper is light — and none of the screen
+/// document's machinery: no height reporter, no scaler, no find hooks. The
+/// one script is the print call itself, nonce-gated like every script here,
+/// so the window opens straight into the OS print dialog and the page behind
+/// it is the preview.
+#[allow(clippy::too_many_arguments)]
+fn print_document(
+    body: &str,
+    subject: &str,
+    from: &str,
+    to: &str,
+    cc: &str,
+    date: &str,
+    nonce: &str,
+) -> String {
+    let esc = |s: &str| {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+    };
+    let cc_line = if cc.is_empty() {
+        String::new()
+    } else {
+        format!("<div class=\"line\"><span>Cc</span>{}</div>", esc(cc))
+    };
+    format!(
+        r#"<!doctype html><html><head><meta charset="utf-8">
+<style>
+  :root {{ color-scheme: light; }}
+  @page {{ margin: 18mm; }}
+  body {{ margin: 0; background: #fff; color: #182730;
+         font: 12.5px/1.6 -apple-system, system-ui, sans-serif; }}
+  header {{ border-bottom: 1px solid #d9e1e2; padding-bottom: 10px; margin-bottom: 14px; }}
+  h1 {{ font-size: 17px; margin: 0 0 8px; }}
+  .line {{ font-size: 12px; color: #54666e; }}
+  .line span {{ display: inline-block; min-width: 44px; color: #7c8f96; }}
+  img {{ max-width: 100%; }}
+  img:not([height]) {{ height: auto; }}
+  blockquote {{ margin: 8px 0; padding-left: 12px; border-left: 2px solid #d9e1e2; color: #54666e; }}
+  .petrel-plain {{ white-space: pre-wrap; font: 11.5px/1.6 ui-monospace, monospace; }}
+  a {{ color: inherit; }}
+</style></head><body>
+<header>
+  <h1>{subject}</h1>
+  <div class="line"><span>From</span>{from}</div>
+  <div class="line"><span>To</span>{to}</div>
+  {cc_line}
+  <div class="line"><span>Date</span>{date}</div>
+</header>
+{body}
+<script nonce="{nonce}">
+  // Give images a beat to arrive before the dialog freezes the page.
+  window.addEventListener('load', function () {{
+    setTimeout(function () {{ window.print(); }}, 250);
+  }});
+</script></body></html>"#,
+        subject = esc(subject),
+        from = esc(from),
+        to = esc(to),
+        date = esc(date),
+    )
+}
+
 /// Where the reading frame may load images from.
 ///
 /// `cid:` is the message's own parts and `petrel-msg:` is us serving them, so
@@ -499,6 +590,74 @@ pub fn handle(
             .expect("attachment response");
     }
 
+    // The printable document: same token scheme, same sanitizing, plus the
+    // envelope a page needs once it leaves the app.
+    if let Some(token) = path.strip_prefix("/print/") {
+        let Some(message_id) = tokens.resolve(token) else {
+            return error_response(403, "unknown or expired message token");
+        };
+        let Some(hash) = lookup_blob(message_id) else {
+            return error_response(404, "message body not stored");
+        };
+        let Ok(raw) = blobs.read(&hash) else {
+            return error_response(410, "message body unavailable (failed verification)");
+        };
+        let Some(parsed) = petrel_mime::parse_message(&raw) else {
+            return error_response(422, "message could not be parsed");
+        };
+        let allow_remote = allow_remote(message_id);
+        let body = match parsed.body_html.as_deref() {
+            Some(html) => {
+                let s = petrel_mime::sanitize_html(html, allow_remote);
+                petrel_mime::resolve_cids(&s.html, &parsed.attachments, |part| {
+                    format!("/attachment/{token}/{part}")
+                })
+            }
+            None => petrel_mime::plain_text_to_html(&parsed.body_text),
+        };
+        let join = |list: &[(Option<String>, String)]| {
+            list.iter()
+                .map(|(name, addr)| match name {
+                    Some(n) => format!("{n} <{addr}>"),
+                    None => addr.clone(),
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let from = match (&parsed.from_display, &parsed.from_addr) {
+            (Some(n), Some(a)) => format!("{n} <{a}>"),
+            (None, Some(a)) => a.clone(),
+            _ => String::new(),
+        };
+        let date = parsed.date_ms.map(readable_date).unwrap_or_default();
+        let nonce = new_token();
+        let csp = format!(
+            "default-src 'none'; img-src {}; \
+             style-src 'unsafe-inline'; style-src-attr 'unsafe-inline'; script-src 'nonce-{nonce}'; \
+             form-action 'none'; base-uri 'none'; upgrade-insecure-requests",
+            img_src(allow_remote)
+        );
+        return Response::builder()
+            .status(200)
+            .header("Content-Type", "text/html; charset=utf-8")
+            .header("Content-Security-Policy", csp)
+            .header("X-Content-Type-Options", "nosniff")
+            .header("Referrer-Policy", "no-referrer")
+            .body(
+                print_document(
+                    &body,
+                    parsed.subject.as_deref().unwrap_or("(no subject)"),
+                    &from,
+                    &join(&parsed.to),
+                    &join(&parsed.cc),
+                    &date,
+                    &nonce,
+                )
+                .into_bytes(),
+            )
+            .expect("print response");
+    }
+
     let Some(token) = path.strip_prefix("/message/") else {
         return error_response(404, "not found");
     };
@@ -591,6 +750,47 @@ pub fn handle(
 #[cfg(test)]
 mod tests {
     use super::{FrameTheme, document, img_src};
+
+    #[test]
+    fn the_printable_page_is_the_envelope_then_the_body_then_the_dialog() {
+        let doc = super::print_document(
+            "<p>the body</p>",
+            "Q3 <contracts>",
+            "Dana Wu <dana@example.com>",
+            "me@example.com",
+            "",
+            "18 Aug 2026, 14:02 UTC",
+            "n0nce",
+        );
+        // The envelope, escaped — a subject is sender-written text.
+        assert!(doc.contains("Q3 &lt;contracts&gt;"), "{doc}");
+        assert!(doc.contains("Dana Wu &lt;dana@example.com&gt;"), "{doc}");
+        assert!(doc.contains("18 Aug 2026, 14:02 UTC"), "{doc}");
+        // No Cc line at all when there is no Cc — not an empty one.
+        assert!(!doc.contains("<span>Cc</span>"), "{doc}");
+        // The one script is the nonce-gated print call; none of the screen
+        // document's machinery comes along.
+        assert!(doc.contains(r#"nonce="n0nce""#), "{doc}");
+        assert!(doc.contains("window.print()"), "{doc}");
+        assert!(!doc.contains("petrelHeight"), "{doc}");
+        // Paper is light: the print page never carries the dark palette.
+        assert!(!doc.contains("prefers-color-scheme"), "{doc}");
+    }
+
+    #[test]
+    fn the_printed_date_is_a_civil_date() {
+        // 18 Aug 2026 14:02:00 UTC.
+        assert_eq!(
+            super::readable_date(1_787_061_720_000),
+            "18 Aug 2026, 14:02 UTC"
+        );
+        // The epoch itself, and a leap-year date, pin the arithmetic.
+        assert_eq!(super::readable_date(0), "1 Jan 1970, 00:00 UTC");
+        assert_eq!(
+            super::readable_date(951_782_400_000),
+            "29 Feb 2000, 00:00 UTC"
+        );
+    }
 
     #[test]
     fn styled_mail_without_a_declaration_keeps_its_light_canvas() {

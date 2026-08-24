@@ -310,6 +310,7 @@ const mock = {
   renameFolder: async () => {},
   pushDraft: async () => {},
   unsubscribeInfo: async () => null,
+  printMessage: async () => {},
   unsubscribeOneClick: async () => {},
   deleteFolder: async () => {},
   createTag: async () => 998,
@@ -513,6 +514,8 @@ const real = {
   undoTriage: (actionId: number) => invoke<boolean>('undo_triage', { actionId }),
   folders: () => invoke<Folder[]>('list_folders'),
   createFolder: (path: string) => invoke<number>('create_folder', { path }),
+  /** Opens the message's printable page in its own window. */
+  printMessage: (messageId: number) => invoke<void>('print_message', { messageId }),
   /** The List-Unsubscribe offer this message makes, if any. */
   unsubscribeInfo: (messageId: number) =>
     invoke<UnsubInfo | null>('unsubscribe_info', { messageId }),

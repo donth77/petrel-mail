@@ -137,6 +137,14 @@ function Expanded({
                     {t('msg-forward')}
                   </MenuItem>
                 )}
+                <MenuItem
+                  className="menu-item"
+                  onClick={() =>
+                    void api.printMessage(m.id).catch((e) => onToast(String(e)))
+                  }
+                >
+                  {t('msg-print')}
+                </MenuItem>
               </Menu>
             </MenuProvider>
           </div>
