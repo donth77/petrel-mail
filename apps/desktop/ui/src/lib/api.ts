@@ -306,6 +306,7 @@ const mock = {
   ],
   createFolder: async () => 999,
   renameFolder: async () => {},
+  pushDraft: async () => {},
   deleteFolder: async () => {},
   createTag: async () => 998,
   renameTag: async () => {},
@@ -507,6 +508,8 @@ const real = {
   undoTriage: (actionId: number) => invoke<boolean>('undo_triage', { actionId }),
   folders: () => invoke<Folder[]>('list_folders'),
   createFolder: (path: string) => invoke<number>('create_folder', { path }),
+  /** The composer closing must not wait out the 30s debounce. */
+  pushDraft: (id: number) => invoke<void>('push_draft', { id }),
   /** Server first, then the store — the id survives, so the open view does. */
   renameFolder: (folderId: number, newPath: string) =>
     invoke<void>('rename_folder', { folderId, newPath }),

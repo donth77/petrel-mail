@@ -605,8 +605,10 @@ export function App() {
       setToast(t('compose-saved'));
       // The Drafts view is a query, so it only changes when the list reloads.
       if (view === 'drafts') api.threads(view, 0, 500).then(setItems).catch(() => {});
+      return id;
     } catch (e) {
       setToast(t('compose-save-failed', { error: String(e) }));
+      return null;
     }
   };
 
@@ -1406,7 +1408,11 @@ export function App() {
             // Keeping it, not discarding it. Losing what someone wrote because
             // they hit the wrong corner is unforgivable, and a confirmation on
             // every close is worse than simply keeping the message.
-            if (draft.to || draft.subject || draft.body.trim()) void saveDraft(draft);
+            if (draft.to || draft.subject || draft.body.trim())
+              void saveDraft(draft).then((id) => {
+                // Closing must not wait out the 30-second debounce.
+                if (id != null) void api.pushDraft(id).catch(() => {});
+              });
             setDraft(null);
           }}
           onAttach={() => void attach()}

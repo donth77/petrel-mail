@@ -48,7 +48,7 @@ async fn mail_on_a_server_becomes_searchable_locally() {
     let token = format!("kestrelmark{}", std::process::id());
 
     for n in 1..=3 {
-        append_message(&cfg, "INBOX", &message(n, &token))
+        append_message(&cfg, "INBOX", None, &message(n, &token))
             .await
             .expect("seed server");
     }

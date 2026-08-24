@@ -49,6 +49,9 @@ struct AppState {
     /// One drain at a time. Two overlapping passes would both read the same
     /// queued rows and deliver each change twice.
     draining: AtomicBool,
+    /// Drafts edited since their last push to the server, for the 30-second
+    /// debounce. A draft in here has exactly one push task sleeping on it.
+    draft_dirty: Mutex<std::collections::HashSet<i64>>,
     /// Whether the server supports UID MOVE, learned from the probe.
     server_has_move: AtomicBool,
     /// RFC 4315. Without it a message can be marked deleted but not expunged,
@@ -642,6 +645,195 @@ fn without_tag_labels(
             role.is_some() || !tag_names.iter().any(|t| t.eq_ignore_ascii_case(path))
         })
         .collect()
+}
+
+/// Splits a recipient field the way the composer's chip field does —
+/// commas and semicolons — for rendering a draft whose addresses are still
+/// one string. A draft may legitimately have none at all.
+fn addresses_of(field: &str) -> Vec<String> {
+    field
+        .split([',', ';'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Pushes one draft to the server's Drafts folder, replacing its previous
+/// copy there.
+///
+/// The draft travels under a Message-ID minted on its first push and kept for
+/// life: every later push carries the same one, so the server copy is an edit
+/// rather than a sibling — and when ordinary folder sync fetches it back, the
+/// dedupe key lands it on the local draft row instead of beside it. The old
+/// server copy is deleted only when it is exactly the UID this store
+/// recorded; a copy some other client replaced meanwhile is left standing, so
+/// a conflicting revision is never silently discarded.
+async fn push_draft_to_server(state: &Arc<AppState>, draft_id: i64) -> Result<(), String> {
+    let (record, msgid, old_uid, cfg, drafts_path, identity, domain) = {
+        let mut store = state.store.lock().map_err(|_| "store lock poisoned")?;
+        let Some(account) = store.active_account().map_err(|e| e.to_string())? else {
+            return Ok(());
+        };
+        let record = store.load_draft(draft_id).map_err(|e| e.to_string())?;
+        let (msgid, old_uid) = store
+            .draft_sync_state(draft_id)
+            .map_err(|e| e.to_string())?;
+        let Some(cfg) = imap_config_for(&store, account) else {
+            // No server to push to is not a failure of the draft.
+            return Ok(());
+        };
+        let drafts_path = store
+            .folder_for_role(account, "drafts")
+            .ok()
+            .flatten()
+            .and_then(|fid| store.folder_path(fid).ok().flatten());
+        let identity = store.identity(account).ok();
+        let domain = cfg
+            .user
+            .split('@')
+            .nth(1)
+            .unwrap_or("localhost")
+            .to_string();
+        let msgid = match msgid {
+            Some(m) => m,
+            None => {
+                let minted = format!(
+                    "draft-{:x}.{}@{domain}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_nanos())
+                        .unwrap_or(0),
+                    std::process::id(),
+                );
+                store
+                    .set_draft_msgid(draft_id, &minted)
+                    .map_err(|e| e.to_string())?;
+                minted
+            }
+        };
+        (record, msgid, old_uid, cfg, drafts_path, identity, domain)
+    };
+    let Some(drafts_path) = drafts_path else {
+        return Ok(());
+    };
+    let _ = domain;
+
+    let msg = petrel_providers::smtp::Outgoing {
+        from_addr: cfg.user.clone(),
+        from_name: identity.map(|i| i.display_name).unwrap_or_default(),
+        to: addresses_of(&record.to),
+        cc: addresses_of(&record.cc),
+        subject: record.subject.clone(),
+        body_text: record.body.clone(),
+        body_html: Some(record.html.clone()).filter(|h| !h.trim().is_empty()),
+        in_reply_to: record.envelope.in_reply_to.clone(),
+        references: record.envelope.references.clone(),
+        // Attachment files stay local until send: a draft's paths may not
+        // even exist by the time it is reopened, and pushing megabytes on
+        // every autosave is the wrong trade. The text notes nothing; other
+        // clients see the words, which is what a draft is.
+        attachments: Vec::new(),
+    };
+    let raw = msg.render_with_id(&msgid);
+
+    petrel_providers::imap::append_message(&cfg, &drafts_path, Some("(\\Draft \\Seen)"), &raw)
+        .await
+        .map_err(|e| format!("append: {e}"))?;
+    let new_uid = petrel_providers::imap::uids_for_message_id(&cfg, &drafts_path, &msgid)
+        .await
+        .ok()
+        .and_then(|hits| hits.last().copied());
+
+    if let Some(old) = old_uid
+        && new_uid != Some(old)
+    {
+        // Only the exact copy this store recorded. Anything else standing at
+        // another UID is somebody's revision, and it stays.
+        if let Err(e) = petrel_providers::imap::expunge_uid(
+            &cfg,
+            &drafts_path,
+            old,
+            state.server_has_uidplus.load(Ordering::Relaxed),
+        )
+        .await
+        {
+            log_sync(&format!("old draft copy (uid {old}) not removed: {e}"));
+        }
+    }
+    // Absent (search failed), the next push simply leaves a copy behind
+    // rather than deleting blind.
+    if let Ok(mut store) = state.store.lock() {
+        let _ = store.set_draft_server_uid(draft_id, new_uid);
+    }
+    log_sync(&format!("draft {draft_id} pushed to {drafts_path}"));
+    Ok(())
+}
+
+/// Marks the draft dirty and, if it was clean, starts the 30-second clock.
+///
+/// Saves inside the window coalesce: the sleeping task pushes whatever the
+/// draft says when the clock runs out, which is the newest save. Closing the
+/// composer pushes immediately through the `push_draft` command instead.
+fn schedule_draft_push(state: Arc<AppState>, draft_id: i64) {
+    {
+        let Ok(mut dirty) = state.draft_dirty.lock() else {
+            return;
+        };
+        if !dirty.insert(draft_id) {
+            return; // a task is already sleeping on it
+        }
+    }
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        let still_dirty = state
+            .draft_dirty
+            .lock()
+            .map(|mut d| d.remove(&draft_id))
+            .unwrap_or(false);
+        if still_dirty && let Err(e) = push_draft_to_server(&state, draft_id).await {
+            log_sync(&format!("draft {draft_id} push failed: {e}"));
+        }
+    });
+}
+
+/// Deletes the draft's server copy, if one was recorded — for a draft being
+/// discarded, or one that just became a sent message. Reads through the
+/// caller's guard, because two of the three callers already hold the lock.
+fn drop_server_draft_using(store: &Store, draft_id: i64, uidplus: bool) {
+    let Ok((_, Some(uid))) = store.draft_sync_state(draft_id) else {
+        return;
+    };
+    let Some(account) = store.active_account().ok().flatten() else {
+        return;
+    };
+    let Some(cfg) = imap_config_for(store, account) else {
+        return;
+    };
+    let Some(path) = store
+        .folder_for_role(account, "drafts")
+        .ok()
+        .flatten()
+        .and_then(|fid| store.folder_path(fid).ok().flatten())
+    else {
+        return;
+    };
+    tauri::async_runtime::spawn(async move {
+        // UIDPLUS makes the expunge surgical; without it the fallback path
+        // inside expunge_uid does the careful dance. Read fresh per call.
+        if let Err(e) = petrel_providers::imap::expunge_uid(&cfg, &path, uid, uidplus).await {
+            log_sync(&format!("server draft copy (uid {uid}) not removed: {e}"));
+        }
+    });
+}
+
+/// The lock-acquiring face of `drop_server_draft_using`.
+fn spawn_drop_server_draft(state: &Arc<AppState>, draft_id: i64) {
+    let uidplus = state.server_has_uidplus.load(Ordering::Relaxed);
+    let Ok(store) = state.store.lock() else {
+        return;
+    };
+    drop_server_draft_using(&store, draft_id, uidplus);
 }
 
 /// Ingests one fetched message, absorbing a parser panic instead of letting
@@ -1579,7 +1771,9 @@ async fn attempt(
             .and_then(|fid| store.folder_path(fid).ok().flatten())
     };
     if let Some(path) = sent_path {
-        if let Err(e) = petrel_providers::imap::append_message(&cfg, &path, &raw).await {
+        if let Err(e) =
+            petrel_providers::imap::append_message(&cfg, &path, Some("(\\Seen)"), &raw).await
+        {
             log_sync(&format!("sent, but could not file a copy in {path}: {e}"));
         }
     }
@@ -1887,6 +2081,11 @@ async fn send_due(state: Arc<AppState>, account: i64) {
                     "queued send delivered {}",
                     message_id.as_deref().unwrap_or("?")
                 ));
+                drop_server_draft_using(
+                    &store,
+                    id,
+                    state.server_has_uidplus.load(Ordering::Relaxed),
+                );
                 let _ = store.delete_draft(id);
             }
             SendState::RetryQueued => {
@@ -2287,6 +2486,7 @@ async fn outbox_check(id: i64, state: State<'_, Arc<AppState>>) -> Result<String
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
     match next {
         SendState::Sent => {
+            drop_server_draft_using(&store, id, state.server_has_uidplus.load(Ordering::Relaxed));
             let _ = store.delete_draft(id);
         }
         SendState::RetryQueued => {
@@ -2323,7 +2523,7 @@ fn save_draft(
         references: references.unwrap_or_default(),
         attachments: attachments.unwrap_or_default(),
     };
-    store
+    let id = store
         .save_draft_full(
             account,
             draft_id,
@@ -2334,17 +2534,73 @@ fn save_draft(
             &html,
             &envelope,
         )
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    drop(store);
+    // The server copy follows on the 30-second clock; closing the composer
+    // pushes at once through `push_draft` instead of waiting it out.
+    schedule_draft_push(Arc::clone(state.inner()), id);
+    Ok(id)
+}
+
+/// Pushes the draft's current text to the server now — the composer closing
+/// is the one moment the debounce must not be allowed to lose.
+#[tauri::command]
+async fn push_draft(id: i64, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    if let Ok(mut dirty) = state.draft_dirty.lock() {
+        dirty.remove(&id);
+    }
+    push_draft_to_server(state.inner(), id).await
 }
 
 #[tauri::command]
 fn load_draft(id: i64, state: State<Arc<AppState>>) -> Result<DraftRecord, String> {
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
-    store.load_draft(id).map_err(|e| e.to_string())
+    let record = store.load_draft(id).map_err(|e| e.to_string())?;
+    if !record.body.is_empty() || !record.html.is_empty() {
+        return Ok(record);
+    }
+    // A draft written in another client: it arrived through folder sync as a
+    // message, so its words live in the raw blob rather than in the draft
+    // columns. Reconstruct the composer's view from the message itself.
+    // (Attachments stay with the server copy for now — the words are what a
+    // draft is; reattaching is a save away.)
+    let Some(hash) = store.blob_hash_for(id).ok().flatten() else {
+        return Ok(record);
+    };
+    let Ok(raw) = state.blobs.read(&hash) else {
+        return Ok(record);
+    };
+    let Some(parsed) = petrel_mime::parse_message(&raw) else {
+        return Ok(record);
+    };
+    let join = |list: &[(Option<String>, String)]| {
+        list.iter()
+            .map(|(_, addr)| addr.clone())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    Ok(DraftRecord {
+        id,
+        to: join(&parsed.to),
+        cc: join(&parsed.cc),
+        subject: parsed.subject.clone().unwrap_or_default(),
+        body: parsed.body_text.clone(),
+        html: parsed
+            .body_html
+            .clone()
+            .unwrap_or_else(|| petrel_mime::plain_text_to_html(&parsed.body_text)),
+        envelope: petrel_engine::store::DraftEnvelope {
+            in_reply_to: parsed.references.last().cloned().map(|r| format!("<{r}>")),
+            references: parsed.references.iter().map(|r| format!("<{r}>")).collect(),
+            attachments: Vec::new(),
+        },
+    })
 }
 
 #[tauri::command]
 fn delete_draft(id: i64, state: State<Arc<AppState>>) -> Result<(), String> {
+    // The server's copy goes with it. Read before the local row disappears.
+    spawn_drop_server_draft(state.inner(), id);
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
     store.delete_draft(id).map_err(|e| e.to_string())
 }
@@ -3124,6 +3380,7 @@ pub fn run() {
         sync_error: Mutex::new(None),
         drain_signal: Arc::new(tokio::sync::Notify::new()),
         draining: AtomicBool::new(false),
+        draft_dirty: Mutex::new(std::collections::HashSet::new()),
         server_has_move: AtomicBool::new(false),
         server_has_uidplus: AtomicBool::new(false),
         server_is_gmail: AtomicBool::new(false),
@@ -3288,6 +3545,7 @@ pub fn run() {
             complete_addresses,
             quote_message,
             save_draft,
+            push_draft,
             load_draft,
             delete_draft,
             list_accounts,

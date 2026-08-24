@@ -323,6 +323,7 @@
       return folders;
     },
     rename_folder: function () { return null; },
+    push_draft: function () { return null; },
     delete_folder: function () { return null; },
     create_folder: function (a) {
       var id = 200 + folders.length;

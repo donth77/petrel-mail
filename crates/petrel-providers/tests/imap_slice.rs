@@ -149,7 +149,7 @@ mod local {
         let cfg = cfg();
 
         for n in 1..=3 {
-            append_message(&cfg, "INBOX", &synthetic_message(n))
+            append_message(&cfg, "INBOX", None, &synthetic_message(n))
                 .await
                 .expect("append synthetic message");
         }

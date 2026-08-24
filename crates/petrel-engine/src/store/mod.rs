@@ -11,7 +11,7 @@ use rusqlite::functions::FunctionFlags;
 use rusqlite::{Connection, params};
 use std::path::Path;
 
-pub const SCHEMA_VERSION: i64 = 12;
+pub const SCHEMA_VERSION: i64 = 13;
 /// Bumped whenever text extraction changes; a mismatch forces reindexing.
 pub const EXTRACTOR_VERSION: i64 = 1;
 
@@ -948,6 +948,9 @@ impl Store {
         }
         if ver < 12 {
             conn.execute_batch(include_str!("migrations/0012-draft-envelope.sql"))?;
+        }
+        if ver < 13 {
+            conn.execute_batch(include_str!("migrations/0013-draft-sync.sql"))?;
         }
         if ver < SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -2377,6 +2380,47 @@ impl Store {
             html,
             &DraftEnvelope::default(),
         )
+    }
+
+    /// The draft's server identity: its stable Message-ID and the UID of the
+    /// copy currently in the server's Drafts folder.
+    pub fn draft_sync_state(&self, draft_id: i64) -> Result<(Option<String>, Option<u32>)> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT draft_msgid, draft_server_uid FROM messages WHERE id = ?1",
+                params![draft_id],
+                |r| {
+                    Ok((
+                        r.get::<_, Option<String>>(0)?,
+                        r.get::<_, Option<i64>>(1)?.map(|u| u as u32),
+                    ))
+                },
+            )
+            .optional()?
+            .unwrap_or((None, None)))
+    }
+
+    /// Gives a draft its travelling name, once, for life.
+    ///
+    /// Also written as the dedupe key: the server copy comes back through
+    /// ordinary folder sync, and carrying the same Message-ID is what makes
+    /// it land on this row — an edit of the draft, not a sibling beside it.
+    pub fn set_draft_msgid(&mut self, draft_id: i64, msgid: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE messages SET draft_msgid = ?2, message_id_hdr = ?2 WHERE id = ?1",
+            params![draft_id, msgid],
+        )?;
+        Ok(())
+    }
+
+    /// Records (or clears) which server UID currently holds this draft.
+    pub fn set_draft_server_uid(&mut self, draft_id: i64, uid: Option<u32>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE messages SET draft_server_uid = ?2 WHERE id = ?1",
+            params![draft_id, uid.map(|u| u as i64)],
+        )?;
+        Ok(())
     }
 
     /// Saves a draft with everything it needs to go out, not only its text.

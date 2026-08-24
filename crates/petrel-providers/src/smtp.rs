@@ -177,8 +177,6 @@ impl Outgoing {
     /// connection dies after the body, this is what a later search asks the
     /// server about (spike S5).
     pub fn render(&self, domain: &str) -> (String, Vec<u8>) {
-        use mail_builder::MessageBuilder;
-
         let message_id = format!(
             "{:x}.{}@{}",
             std::time::SystemTime::now()
@@ -188,18 +186,30 @@ impl Outgoing {
             std::process::id(),
             domain
         );
+        let bytes = self.render_with_id(&message_id);
+        (message_id, bytes)
+    }
+
+    /// Renders under a caller-chosen Message-ID.
+    ///
+    /// A draft travels under one name for life: every autosave pushed to the
+    /// server carries the same id, which is what makes the copy an edit of
+    /// the previous one — and what makes it, fetched back by folder sync,
+    /// dedupe onto the local draft instead of appearing beside it.
+    pub fn render_with_id(&self, message_id: &str) -> Vec<u8> {
+        use mail_builder::MessageBuilder;
 
         let mut b = MessageBuilder::new()
             .from((self.from_name.as_str(), self.from_addr.as_str()))
             .subject(self.subject.as_str())
-            .message_id(message_id.as_str());
+            .message_id(message_id);
 
         // Pasted images ride the draft as data: URIs; the wire gets them as
         // parts of their own, referenced by cid. Seeded from the Message-ID so
         // the ids are as unique as the message they belong to.
         let (html, inline) = match &self.body_html {
             Some(html) => {
-                let (rewritten, inline) = extract_inline_images(html, &message_id);
+                let (rewritten, inline) = extract_inline_images(html, message_id);
                 (Some(rewritten), inline)
             }
             None => (None, Vec::new()),
@@ -283,8 +293,7 @@ impl Outgoing {
             );
         }
 
-        let bytes = b.write_to_vec().unwrap_or_default();
-        (message_id, bytes)
+        b.write_to_vec().unwrap_or_default()
     }
 
     /// Every address the envelope has to name.

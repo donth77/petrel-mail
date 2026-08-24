@@ -86,7 +86,11 @@ export function ComposeWindow({ draftId }: { draftId: number }) {
         account={account}
         onChange={setDraft}
         // Closing keeps the message, exactly as the docked composer does.
-        onClose={() => void save(draft).then(close)}
+        onClose={() =>
+          void save(draft)
+            .then((id) => (id != null ? api.pushDraft(id).catch(() => {}) : undefined))
+            .then(close)
+        }
         onSaveDraft={() => void save(draft).then(() => setToast(t('compose-saved')))}
         onNotice={setToast}
         onAttach={() => {

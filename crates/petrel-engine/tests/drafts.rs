@@ -303,3 +303,50 @@ mod the_whole_message {
         assert_eq!(back.cc, "");
     }
 }
+
+/// The continuity that makes a pushed draft an edit, not a sibling.
+mod server_sync {
+    use petrel_engine::blob::BlobStore;
+    use petrel_engine::store::{DraftEnvelope, Store};
+
+    #[test]
+    fn the_pushed_copy_comes_home_to_the_same_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("t.db")).unwrap();
+        let blobs = BlobStore::open(&dir.path().join("blobs")).unwrap();
+        let account = store.ensure_test_account().unwrap();
+        let drafts = store.ensure_folder(account, "drafts", "Drafts").unwrap();
+
+        let id = store
+            .save_draft_full(
+                account,
+                None,
+                "dana@example.com",
+                "",
+                "Quarterly",
+                "words",
+                "<p>words</p>",
+                &DraftEnvelope::default(),
+            )
+            .unwrap();
+        // First push mints the travelling name.
+        assert_eq!(store.draft_sync_state(id).unwrap(), (None, None));
+        store.set_draft_msgid(id, "draft-abc@petrel.test").unwrap();
+        store.set_draft_server_uid(id, Some(41)).unwrap();
+        assert_eq!(
+            store.draft_sync_state(id).unwrap(),
+            (Some("draft-abc@petrel.test".into()), Some(41))
+        );
+
+        // The server copy, fetched back by ordinary folder sync, carries the
+        // same Message-ID — and lands on the same row instead of beside it.
+        let raw = "From: me@example.com\r\nTo: dana@example.com\r\nSubject: Quarterly\r\n\
+             Message-ID: <draft-abc@petrel.test>\r\nMIME-Version: 1.0\r\n\
+             Content-Type: text/plain\r\n\r\nwords\r\n";
+        let ingested = store
+            .ingest_raw(&blobs, account, Some(drafts), Some(41), raw.as_bytes())
+            .unwrap();
+        assert!(!ingested.was_new, "an edit, not a sibling");
+        assert_eq!(ingested.message_id, id);
+    }
+}
