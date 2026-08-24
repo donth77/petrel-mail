@@ -120,6 +120,10 @@ pub struct ParsedMessage {
     pub body_text: String,
     pub body_html: Option<String>,
     pub attachments: Vec<Attachment>,
+    /// `List-Id`, for filter rules and the future Newsletters split. The
+    /// angle-bracketed id without its display name: `<news.example.com>`
+    /// becomes `news.example.com`.
+    pub list_id: Option<String>,
     /// Threading parents, oldest first (References, then In-Reply-To).
     pub references: Vec<String>,
 }
@@ -295,6 +299,13 @@ pub fn parse_message(raw: &[u8]) -> Option<ParsedMessage> {
         body_text: msg.body_text(0).map(|c| c.to_string()).unwrap_or_default(),
         body_html: msg.body_html(0).map(|c| c.to_string()),
         attachments,
+        list_id: msg.header_raw("List-Id").map(|v| {
+            let v = v.trim();
+            match (v.rfind('<'), v.rfind('>')) {
+                (Some(open), Some(close)) if close > open => v[open + 1..close].to_string(),
+                _ => v.to_string(),
+            }
+        }),
         references,
     })
 }

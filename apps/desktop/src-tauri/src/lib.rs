@@ -1047,9 +1047,25 @@ async fn run_sync_cycle(
     };
 
     let mut fresh = 0usize;
+    // Messages that genuinely *arrived* — a watermark fetch into the inbox,
+    // not a seed window and not backfill. These are what filter rules run on:
+    // "on arrival" must never mean "on downloading five years of archive".
+    let mut arrivals: Vec<i64> = Vec::new();
+    let inbox_folder: Option<i64> = {
+        let Ok(store) = state.store.lock() else {
+            return (0, 0);
+        };
+        store.folder_for_role(account, "inbox").ok().flatten()
+    };
     let outcomes = {
         let st = Arc::clone(state);
         let ids: Vec<i64> = targets.iter().map(|(_, _, id)| *id).collect();
+        let arriving: Vec<bool> = passes
+            .iter()
+            .zip(&ids)
+            .map(|(p, fid)| p.since_uid > 0 && Some(*fid) == inbox_folder)
+            .collect();
+        let arrivals = &mut arrivals;
         petrel_providers::imap::sync_pass(cfg, &passes, |index, uid, flags, raw| {
             let Ok(mut store) = st.store.lock() else {
                 return;
@@ -1059,6 +1075,12 @@ async fn run_sync_cycle(
             {
                 fresh += 1;
                 st.seeded.fetch_add(1, Ordering::Relaxed);
+                if arriving[index] {
+                    // The id of what just landed, by its placement.
+                    if let Ok(Some(mid)) = store.message_id_at(ids[index], uid) {
+                        arrivals.push(mid);
+                    }
+                }
             }
         })
         .await
@@ -1162,7 +1184,92 @@ async fn run_sync_cycle(
         }
     }
     state.server_total.store(server_total, Ordering::Relaxed);
+    if !arrivals.is_empty() {
+        apply_rules_to(state, account, &arrivals);
+    }
     (fresh, failures)
+}
+
+/// Runs the account's filter rules over newly-arrived messages.
+///
+/// Every enabled rule that matches contributes, in the user's order, and
+/// each action goes through the ordinary triage path — locally at once,
+/// queued to the server like a hand-made change, drained promptly.
+fn apply_rules_to(state: &Arc<AppState>, account: i64, arrivals: &[i64]) {
+    use petrel_engine::actions::ActionKind;
+    let Ok(store) = state.store.lock() else {
+        return;
+    };
+    let Ok(rules) = store.rules_for_account(account) else {
+        return;
+    };
+    if rules.iter().all(|r| !r.enabled || r.conditions.is_empty()) {
+        return;
+    }
+    let Ok(policy) = store.placement_policy(account) else {
+        return;
+    };
+    let mut applied = 0usize;
+    for &message_id in arrivals {
+        let Ok(Some(hash)) = store.blob_hash_for(message_id) else {
+            continue;
+        };
+        let Ok(raw) = state.blobs.read(&hash) else {
+            continue;
+        };
+        let Some(parsed) = petrel_mime::parse_message(&raw) else {
+            continue;
+        };
+        let to = parsed
+            .to
+            .iter()
+            .map(|(_, a)| a.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let envelope = petrel_engine::rules::Envelope::new(
+            &format!(
+                "{} {}",
+                parsed.from_display.as_deref().unwrap_or(""),
+                parsed.from_addr.as_deref().unwrap_or("")
+            ),
+            &to,
+            parsed.subject.as_deref().unwrap_or(""),
+            parsed.list_id.as_deref().unwrap_or(""),
+        );
+        let Ok(Some(thread)) = store.thread_of(message_id) else {
+            continue;
+        };
+        for rule in &rules {
+            if !petrel_engine::rules::matches(rule, &envelope) {
+                continue;
+            }
+            let a = &rule.actions;
+            let mut acts: Vec<(ActionKind, Option<i64>)> = Vec::new();
+            if let Some(folder) = a.move_to {
+                acts.push((ActionKind::Move, Some(folder)));
+            }
+            if a.skip_inbox {
+                acts.push((ActionKind::Archive, None));
+            }
+            if let Some(tag) = a.tag {
+                acts.push((ActionKind::Tag, Some(tag)));
+            }
+            if a.mark_read {
+                acts.push((ActionKind::MarkRead, None));
+            }
+            for (kind, target) in acts {
+                if let Err(e) = store.apply_thread_action(account, thread, kind, target, policy) {
+                    log_sync(&format!("rule \"{}\": {e}", rule.name));
+                } else {
+                    applied += 1;
+                }
+            }
+        }
+    }
+    if applied > 0 {
+        log_sync(&format!("rules: {applied} action(s) applied on arrival"));
+        state.drain_signal.notify_one();
+    }
 }
 
 /// Mends one folder after the server renumbered it (UIDVALIDITY reset).
@@ -2934,6 +3041,47 @@ fn storage_report(state: State<Arc<AppState>>) -> Result<StorageReport, String> 
         .map_err(|e| e.to_string())
 }
 
+/// The active account's filter rules, in run order.
+#[tauri::command]
+fn list_rules(state: State<Arc<AppState>>) -> Result<Vec<petrel_engine::rules::Rule>, String> {
+    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    let Some(account) = store.active_account().map_err(|e| e.to_string())? else {
+        return Ok(Vec::new());
+    };
+    store.rules_for_account(account).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn save_rule(
+    rule_id: Option<i64>,
+    name: String,
+    enabled: bool,
+    conditions: Vec<petrel_engine::rules::Condition>,
+    actions: petrel_engine::rules::Actions,
+    state: State<Arc<AppState>>,
+) -> Result<i64, String> {
+    let mut store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    let account = store
+        .active_account()
+        .map_err(|e| e.to_string())?
+        .ok_or("no account")?;
+    store
+        .save_rule(account, rule_id, &name, enabled, &conditions, &actions)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_rule(rule_id: i64, state: State<Arc<AppState>>) -> Result<(), String> {
+    let mut store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    store.delete_rule(rule_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn move_rule(rule_id: i64, up: bool, state: State<Arc<AppState>>) -> Result<(), String> {
+    let mut store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    store.move_rule(rule_id, up).map_err(|e| e.to_string())
+}
+
 /// Opens a message in its own window as a printable page.
 ///
 /// A window rather than printing the app: the app window is chrome around a
@@ -3832,6 +3980,10 @@ pub fn run() {
             export_mbox,
             import_mail,
             print_message,
+            list_rules,
+            save_rule,
+            delete_rule,
+            move_rule,
             get_identity,
             set_identity,
             attachment_info,

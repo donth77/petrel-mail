@@ -12,6 +12,11 @@
  */
 (function () {
   window.__PETREL_IPC__ = [];
+  var rules = [
+    { id: 701, position: 0, enabled: true, name: 'Newsletters aside',
+      conditions: [{ field: 'list_id', contains: 'news' }],
+      actions: { move_to: 7, tag: null, mark_read: false, skip_inbox: true } },
+  ];
 
   var now = Date.now();
   var rows = Array.from({ length: 40 }, function (_, i) {
@@ -326,6 +331,25 @@
     push_draft: function () { return null; },
     import_mail: function () { return { imported: 3, duplicates: 1, failed: 0 }; },
     print_message: function () { return null; },
+    list_rules: function () { return rules.slice(); },
+    save_rule: function (a) {
+      if (a.ruleId) {
+        for (var i = 0; i < rules.length; i++) {
+          if (rules[i].id === a.ruleId) {
+            rules[i] = { id: a.ruleId, position: rules[i].position, enabled: a.enabled, name: a.name, conditions: a.conditions, actions: a.actions };
+          }
+        }
+        return a.ruleId;
+      }
+      var id = 700 + rules.length;
+      rules.push({ id: id, position: rules.length, enabled: a.enabled, name: a.name, conditions: a.conditions, actions: a.actions });
+      return id;
+    },
+    delete_rule: function (a) {
+      rules = rules.filter(function (r) { return r.id !== a.ruleId; });
+      return null;
+    },
+    move_rule: function () { return null; },
     unsubscribe_info: function (a) {
       // The newsletter stand-in offers one-click; everything else offers none.
       return a.messageId === 1

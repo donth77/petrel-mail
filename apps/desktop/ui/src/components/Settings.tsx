@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
 import { Dialog, DialogDismiss } from '@ariakit/react';
-import {
+import { Filter,
   Bell, Database, Mail, PencilLine, Shield, SunMoon, User, X,
   type LucideIcon,
 } from 'lucide-react';
 import { Accounts } from './settings/Accounts';
 import { Appearance } from './settings/Appearance';
+import { Rules } from './settings/Rules';
 import { Composing } from './settings/Composing';
 import { Notifications } from './settings/Notifications';
 import { Identities } from './settings/Identities';
@@ -17,7 +18,7 @@ import { t, type StringId } from '../lib/strings';
 
 type PaneId =
   | 'accounts' | 'identities' | 'composing' | 'notifications'
-  | 'appearance' | 'privacy' | 'storage';
+  | 'appearance' | 'privacy' | 'storage' | 'rules';
 
 const PANES: { id: PaneId; label: StringId; icon: LucideIcon }[] = [
   { id: 'accounts', label: 'settings-accounts', icon: Mail },
@@ -25,6 +26,7 @@ const PANES: { id: PaneId; label: StringId; icon: LucideIcon }[] = [
   { id: 'composing', label: 'settings-composing', icon: PencilLine },
   { id: 'notifications', label: 'settings-notifications', icon: Bell },
   { id: 'appearance', label: 'settings-appearance', icon: SunMoon },
+  { id: 'rules', label: 'settings-rules', icon: Filter },
   { id: 'privacy', label: 'settings-privacy', icon: Shield },
   { id: 'storage', label: 'settings-storage', icon: Database },
 ];
@@ -95,6 +97,7 @@ export function Settings({ open, pane: requested, onClose, onMessage, onAddAccou
           {pane === 'notifications' && <Notifications />}
           {pane === 'composing' && <Composing />}
           {pane === 'storage' && <Storage onMessage={onMessage} />}
+          {pane === 'rules' && <Rules onMessage={onMessage} />}
           {pane === 'privacy' && <Privacy />}
           {pane === 'identities' && <Identities onMessage={onMessage} />}
           {pane !== 'appearance' && pane !== 'accounts' && pane !== 'notifications' && pane !== 'composing' && pane !== 'storage' && pane !== 'privacy' && pane !== 'identities' && (

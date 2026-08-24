@@ -11,7 +11,7 @@ use rusqlite::functions::FunctionFlags;
 use rusqlite::{Connection, params};
 use std::path::Path;
 
-pub const SCHEMA_VERSION: i64 = 13;
+pub const SCHEMA_VERSION: i64 = 14;
 /// Bumped whenever text extraction changes; a mismatch forces reindexing.
 pub const EXTRACTOR_VERSION: i64 = 1;
 
@@ -951,6 +951,9 @@ impl Store {
         }
         if ver < 13 {
             conn.execute_batch(include_str!("migrations/0013-draft-sync.sql"))?;
+        }
+        if ver < 14 {
+            conn.execute_batch(include_str!("migrations/0014-rules.sql"))?;
         }
         if ver < SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -2161,6 +2164,119 @@ impl Store {
         Ok(out)
     }
 
+    /// The account's rules, in run order.
+    pub fn rules_for_account(&self, account_id: i64) -> Result<Vec<crate::rules::Rule>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, position, enabled, name, conditions_json, actions_json
+             FROM rules WHERE account_id = ?1 ORDER BY position, id",
+        )?;
+        let rows = stmt.query_map(params![account_id], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)? != 0,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, position, enabled, name, conds, acts) = row?;
+            out.push(crate::rules::Rule {
+                id,
+                position,
+                enabled,
+                name,
+                conditions: serde_json::from_str(&conds).unwrap_or_default(),
+                actions: serde_json::from_str(&acts).unwrap_or_default(),
+            });
+        }
+        Ok(out)
+    }
+
+    /// Creates or updates a rule. New rules land at the end of the order.
+    pub fn save_rule(
+        &mut self,
+        account_id: i64,
+        rule_id: Option<i64>,
+        name: &str,
+        enabled: bool,
+        conditions: &[crate::rules::Condition],
+        actions: &crate::rules::Actions,
+    ) -> Result<i64> {
+        let conds = serde_json::to_string(conditions).unwrap_or_else(|_| "[]".into());
+        let acts = serde_json::to_string(actions).unwrap_or_else(|_| "{}".into());
+        match rule_id {
+            Some(id) => {
+                self.conn.execute(
+                    "UPDATE rules SET name = ?2, enabled = ?3, conditions_json = ?4,
+                            actions_json = ?5
+                     WHERE id = ?1",
+                    params![id, name, enabled as i64, conds, acts],
+                )?;
+                Ok(id)
+            }
+            None => {
+                let position: i64 = self.conn.query_row(
+                    "SELECT coalesce(max(position), -1) + 1 FROM rules WHERE account_id = ?1",
+                    params![account_id],
+                    |r| r.get(0),
+                )?;
+                self.conn.execute(
+                    "INSERT INTO rules(account_id, position, enabled, name, conditions_json, actions_json)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![account_id, position, enabled as i64, name, conds, acts],
+                )?;
+                Ok(self.conn.last_insert_rowid())
+            }
+        }
+    }
+
+    pub fn delete_rule(&mut self, rule_id: i64) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM rules WHERE id = ?1", params![rule_id])?;
+        Ok(())
+    }
+
+    /// Swaps a rule one step up or down its account's order — the whole of
+    /// reordering, because run order is the one thing about a rule that is
+    /// not visible in the rule itself.
+    pub fn move_rule(&mut self, rule_id: i64, up: bool) -> Result<()> {
+        let (account, position): (i64, i64) = self.conn.query_row(
+            "SELECT account_id, position FROM rules WHERE id = ?1",
+            params![rule_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let neighbour: Option<(i64, i64)> = self
+            .conn
+            .query_row(
+                &format!(
+                    "SELECT id, position FROM rules
+                     WHERE account_id = ?1 AND position {} ?2
+                     ORDER BY position {} LIMIT 1",
+                    if up { "<" } else { ">" },
+                    if up { "DESC" } else { "ASC" },
+                ),
+                params![account, position],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        if let Some((other_id, other_pos)) = neighbour {
+            let tx = self.conn.transaction()?;
+            tx.execute(
+                "UPDATE rules SET position = ?2 WHERE id = ?1",
+                params![rule_id, other_pos],
+            )?;
+            tx.execute(
+                "UPDATE rules SET position = ?2 WHERE id = ?1",
+                params![other_id, position],
+            )?;
+            tx.commit()?;
+        }
+        Ok(())
+    }
+
     /// Marks a folder as local-only: it exists in this store and nowhere
     /// else. The sync survey never prunes it (the server not listing it is
     /// the point) and the sync loop never asks the server about it.
@@ -2347,6 +2463,19 @@ impl Store {
             params![folder_id, v.to_string()],
         )?;
         Ok(())
+    }
+
+    /// The message standing at this UID in this folder — the inverse of a
+    /// placement, for code that has just fetched something and wants its row.
+    pub fn message_id_at(&self, folder_id: i64, uid: u32) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT message_id FROM placements WHERE folder_id = ?1 AND uid = ?2",
+                params![folder_id, uid as i64],
+                |r| r.get(0),
+            )
+            .optional()?)
     }
 
     /// Applies a flag state reported by the server to whichever message sits

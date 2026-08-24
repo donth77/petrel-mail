@@ -160,6 +160,22 @@ export type Folder = { id: number; role: string; path: string };
 
 export type UnsubInfo = { one_click: boolean; url: string | null; mailto: string | null };
 
+export type RuleCondition = { field: 'from' | 'to' | 'subject' | 'list_id'; contains: string };
+export type RuleActions = {
+  move_to: number | null;
+  tag: number | null;
+  mark_read: boolean;
+  skip_inbox: boolean;
+};
+export type Rule = {
+  id: number;
+  position: number;
+  enabled: boolean;
+  name: string;
+  conditions: RuleCondition[];
+  actions: RuleActions;
+};
+
 export type ActionKind =
   | 'archive' | 'trash' | 'spam' | 'star' | 'unstar' | 'mark_read' | 'mark_unread'
   // These three carry a target id alongside — a folder for move, a tag for the
@@ -311,6 +327,10 @@ const mock = {
   pushDraft: async () => {},
   unsubscribeInfo: async () => null,
   printMessage: async () => {},
+  listRules: async () => [],
+  saveRule: async () => 1,
+  deleteRule: async () => {},
+  moveRule: async () => {},
   unsubscribeOneClick: async () => {},
   deleteFolder: async () => {},
   createTag: async () => 998,
@@ -514,6 +534,16 @@ const real = {
   undoTriage: (actionId: number) => invoke<boolean>('undo_triage', { actionId }),
   folders: () => invoke<Folder[]>('list_folders'),
   createFolder: (path: string) => invoke<number>('create_folder', { path }),
+  listRules: () => invoke<Rule[]>('list_rules'),
+  saveRule: (
+    ruleId: number | null,
+    name: string,
+    enabled: boolean,
+    conditions: RuleCondition[],
+    actions: RuleActions,
+  ) => invoke<number>('save_rule', { ruleId, name, enabled, conditions, actions }),
+  deleteRule: (ruleId: number) => invoke<void>('delete_rule', { ruleId }),
+  moveRule: (ruleId: number, up: boolean) => invoke<void>('move_rule', { ruleId, up }),
   /** Opens the message's printable page in its own window. */
   printMessage: (messageId: number) => invoke<void>('print_message', { messageId }),
   /** The List-Unsubscribe offer this message makes, if any. */

@@ -9,6 +9,7 @@ pub mod blob;
 pub mod mbox;
 pub mod outbox;
 pub mod retention;
+pub mod rules;
 pub mod search_query;
 pub mod store;
 pub mod threading;

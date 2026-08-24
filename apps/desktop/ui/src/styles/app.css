@@ -4096,6 +4096,65 @@ body.dragging * {
   background: transparent;
 }
 
+/* Filter rules: a list that is the run order, and a small editor. */
+.rule-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--hair2);
+}
+.rule-name {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  border: none;
+  background: none;
+  color: var(--ink);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+.rule-sum {
+  font-size: 11.5px;
+  color: var(--ink3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.rule-editor .text-input {
+  margin-bottom: 8px;
+  width: 100%;
+  box-sizing: border-box;
+}
+.rule-cond {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 6px;
+  align-items: center;
+}
+.rule-cond .text-input {
+  flex: 1;
+  margin-bottom: 0;
+}
+.rule-acts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0 12px;
+  font-size: 12.5px;
+  color: var(--ink2);
+}
+.rule-acts label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 /* The way out of a mailing list: quiet text, not a control that competes
    with Reply — present when the message offers it, invisible otherwise. */
 .unsub {
