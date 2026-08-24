@@ -21,6 +21,7 @@ import { Tip } from './Tip';
 import { key } from '../lib/keys';
 import { useHoveredLink } from '../lib/links';
 import { t } from '../lib/strings';
+import { Unsubscribe } from './Unsubscribe';
 
 /** A message that is not the one you came here to read: one line, expandable. */
 function Collapsed({ m, onExpand }: { m: ThreadMessage; onExpand: () => void }) {
@@ -47,6 +48,7 @@ function Expanded({
   onReply,
   onForward,
   onToast,
+  onComposeMailto,
 }: {
   m: ThreadMessage;
   focused: boolean;
@@ -54,6 +56,7 @@ function Expanded({
   onReply?: (messageId: number, all: boolean) => void;
   onForward?: (messageId: number) => void;
   onToast: (text: string) => void;
+  onComposeMailto?: (to: string, subject: string) => void;
 }) {
   return (
     <article className="msg" id={`msg-body-${m.id}`} data-focused={focused || undefined}>
@@ -99,6 +102,12 @@ function Expanded({
             Absent in the popped-out window, which has no composer to open. */}
         {(onReply || onForward) && (
           <div className="msg-acts">
+            <Unsubscribe
+              messageId={m.id}
+              sender={m.from_display || m.from_addr}
+              onToast={onToast}
+              onComposeMailto={onComposeMailto}
+            />
             {onReply && (
               <Tip label={t('msg-reply')}>
                 <button
@@ -158,6 +167,7 @@ export function Reader({
   onReplyTo,
   onForwardFrom,
   onToast,
+  onComposeMailto,
 }: {
   thread: Thread | null;
   /** Reply to one message of the thread rather than to its newest. Absent in
@@ -166,6 +176,7 @@ export function Reader({
   onForwardFrom?: (messageId: number) => void;
   /** Where outcomes are reported — "Saved contract.pdf", or why not. */
   onToast: (text: string) => void;
+  onComposeMailto?: (to: string, subject: string) => void;
   /** Which view is open, so the destructive action can mean the right thing. */
   view: string;
   /** Reading pane has the window to itself. */
@@ -452,6 +463,8 @@ export function Reader({
               onReply={onReplyTo}
               onForward={onForwardFrom}
               onToast={onToast}
+              onComposeMailto={onComposeMailto}
+              
               onCollapse={() =>
                 setExpanded((prev) => {
                   const next = new Set(prev);

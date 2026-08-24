@@ -3025,6 +3025,7 @@ dependencies = [
  "tauri-plugin-notification",
  "tempfile",
  "tokio",
+ "ureq",
 ]
 
 [[package]]

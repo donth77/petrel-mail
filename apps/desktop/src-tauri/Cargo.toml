@@ -44,6 +44,8 @@ rustls = "0.23"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 # Turning an address into server settings.
 petrel-autoconfig = { path = "../../../crates/petrel-autoconfig" }
+# The RFC 8058 one-click unsubscribe POST. Same build as autoconfig's.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
 petrel-engine = { path = "../../../crates/petrel-engine" }
 petrel-providers = { path = "../../../crates/petrel-providers" }
 petrel-mime = { path = "../../../crates/petrel-mime" }

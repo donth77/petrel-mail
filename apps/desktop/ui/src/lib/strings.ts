@@ -431,6 +431,16 @@ export const en = {
   'privacy-trusted-help': 'Anyone you have written to is already included, without appearing here — they know your address, so nothing is given away.',
   'privacy-trusted-none': 'Nobody yet. “Always from this sender” on a message adds them.',
   'privacy-untrust': 'Stop loading images from { $addr }',
+  'unsub-button': 'Unsubscribe',
+  'unsub-confirm': 'Unsubscribe from { $sender }?',
+  'unsub-body-oneclick':
+    'Petrel asks the sender to stop, directly \u2014 nothing opens, nothing is clicked, and the tracked links in the message stay untouched.',
+  'unsub-body-url':
+    'Opens the sender\u2019s unsubscribe page in your browser. This is their official link from the message headers, not a link in the message body.',
+  'unsub-body-mailto':
+    'This sender takes unsubscribe requests by mail. A message will be prepared for you to send.',
+  'unsub-done': 'Asked { $sender } to stop',
+  'unsub-failed': 'Unsubscribe failed: { $error }',
   'rail-folders': 'Folders',
   'folder-new': 'New folder',
   'folder-new-placeholder': 'Folder name\u2026',

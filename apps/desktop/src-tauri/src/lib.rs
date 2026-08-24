@@ -2319,6 +2319,79 @@ fn attachment_bytes(
         .ok_or_else(|| "that attachment is not in the message".into())
 }
 
+/// What the message offers for leaving its list, shaped for the UI.
+#[derive(serde::Serialize)]
+struct UnsubInfo {
+    /// True when RFC 8058 one-click is available — leaving without opening
+    /// anything, which is the safest of the three.
+    one_click: bool,
+    url: Option<String>,
+    mailto: Option<String>,
+}
+
+fn raw_message_of(state: &AppState, message_id: i64) -> Result<Vec<u8>, String> {
+    let hash = {
+        let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+        store
+            .blob_hash_for(message_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("message body not stored")?
+    };
+    state
+        .blobs
+        .read(&hash)
+        .map_err(|_| "message body unavailable (failed verification)".into())
+}
+
+/// Reads the List-Unsubscribe offer for one message, if it makes one.
+#[tauri::command]
+fn unsubscribe_info(
+    message_id: i64,
+    state: State<Arc<AppState>>,
+) -> Result<Option<UnsubInfo>, String> {
+    let raw = raw_message_of(&state, message_id)?;
+    Ok(petrel_mime::unsubscribe_info(&raw).map(|u| UnsubInfo {
+        one_click: u.one_click.is_some(),
+        url: u.url,
+        mailto: u.mailto,
+    }))
+}
+
+/// Sends the RFC 8058 one-click POST for this message.
+///
+/// The URL is re-derived from the message's own bytes rather than accepted
+/// from the caller: the message is the authority on where its list lives,
+/// and a bridge that POSTs to whatever URL it is handed is a resource any
+/// page in the webview would love to have.
+#[tauri::command]
+async fn unsubscribe_one_click(
+    message_id: i64,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let raw = raw_message_of(&state, message_id)?;
+    let url = petrel_mime::unsubscribe_info(&raw)
+        .and_then(|u| u.one_click)
+        .ok_or("this message does not offer one-click unsubscribe")?;
+    tauri::async_runtime::spawn_blocking(move || post_one_click(&url))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// The POST itself: the fixed form body RFC 8058 specifies, over https only.
+fn post_one_click(url: &str) -> Result<(), String> {
+    if !url.to_ascii_lowercase().starts_with("https://") && !cfg!(test) {
+        return Err("one-click unsubscribe must be https".into());
+    }
+    ureq::post(url)
+        .config()
+        .timeout_global(Some(std::time::Duration::from_secs(15)))
+        .build()
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .send("List-Unsubscribe=One-Click")
+        .map(|_| ())
+        .map_err(|e| format!("the sender's unsubscribe endpoint refused: {e}"))
+}
+
 /// File types that run when opened. Opening one is a real decision — the
 /// spec asks for a warning, and the UI asks before calling `open_attachment`
 /// on any of these — so the list lives here, next to the thing it guards.
@@ -3546,6 +3619,8 @@ pub fn run() {
             quote_message,
             save_draft,
             push_draft,
+            unsubscribe_info,
+            unsubscribe_one_click,
             load_draft,
             delete_draft,
             list_accounts,
@@ -3733,5 +3808,36 @@ mod folder_survey_tests {
             true,
         );
         assert_eq!(out.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod unsubscribe_tests {
+    use super::post_one_click;
+    use std::io::{Read, Write};
+
+    /// The exact bytes RFC 8058 asks for, proven against a listening socket.
+    #[test]
+    fn the_one_click_post_has_the_shape_the_rfc_specifies() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let served = std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let n = sock.read(&mut buf).unwrap();
+            let req = String::from_utf8_lossy(&buf[..n]).to_string();
+            sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .unwrap();
+            req
+        });
+        post_one_click(&format!("http://127.0.0.1:{port}/unsub?u=42")).expect("post");
+        let req = served.join().unwrap();
+        assert!(req.starts_with("POST /unsub?u=42 HTTP/1.1"), "{req}");
+        assert!(
+            req.to_ascii_lowercase()
+                .contains("content-type: application/x-www-form-urlencoded"),
+            "{req}"
+        );
+        assert!(req.ends_with("List-Unsubscribe=One-Click"), "{req}");
     }
 }

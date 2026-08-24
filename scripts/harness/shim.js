@@ -324,6 +324,13 @@
     },
     rename_folder: function () { return null; },
     push_draft: function () { return null; },
+    unsubscribe_info: function (a) {
+      // The newsletter stand-in offers one-click; everything else offers none.
+      return a.messageId === 1
+        ? { one_click: true, url: 'https://news.example/u/1', mailto: null }
+        : null;
+    },
+    unsubscribe_one_click: function () { return null; },
     delete_folder: function () { return null; },
     create_folder: function (a) {
       var id = 200 + folders.length;

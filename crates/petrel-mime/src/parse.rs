@@ -41,6 +41,72 @@ pub fn attachment_bytes(raw: &[u8], index: usize) -> Option<(Attachment, Vec<u8>
     Some((meta, part.contents().to_vec()))
 }
 
+/// The way out of a mailing list, as the message itself declares it.
+///
+/// Read from `List-Unsubscribe` (RFC 2369) and `List-Unsubscribe-Post`
+/// (RFC 8058). Offering this in the chrome is the safe path: the header was
+/// put there for exactly this, while the "unsubscribe" link at the bottom of
+/// the body is a tracked link like every other one in the message.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Unsubscribe {
+    /// An https URL that accepts the RFC 8058 one-click POST — leaving the
+    /// list without opening anything.
+    pub one_click: Option<String>,
+    /// A web page to open when one-click is not offered.
+    pub url: Option<String>,
+    /// An address to write to when that is all the sender offers.
+    pub mailto: Option<String>,
+}
+
+impl Unsubscribe {
+    pub fn is_empty(&self) -> bool {
+        self.one_click.is_none() && self.url.is_none() && self.mailto.is_none()
+    }
+}
+
+/// Reads the unsubscribe declaration out of a raw message, if any.
+pub fn unsubscribe_info(raw: &[u8]) -> Option<Unsubscribe> {
+    let msg = MessageParser::default().parse(raw)?;
+    let header = msg
+        .header_raw("List-Unsubscribe")
+        .map(|v| v.trim().to_string())?;
+
+    let mut out = Unsubscribe::default();
+    // The value is `<uri>, <uri>` — commas may also appear inside a URI, so
+    // split on the angle brackets, not the commas.
+    let mut rest = header.as_str();
+    while let Some(open) = rest.find('<') {
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('>') else { break };
+        let uri = after[..close].trim();
+        let lower = uri.to_ascii_lowercase();
+        if lower.starts_with("mailto:") && out.mailto.is_none() {
+            out.mailto = Some(uri.to_string());
+        } else if (lower.starts_with("https:") || lower.starts_with("http:")) && out.url.is_none() {
+            out.url = Some(uri.to_string());
+        }
+        rest = &after[close + 1..];
+    }
+
+    // RFC 8058: the POST target must be https, and the companion header must
+    // say the magic words. Anything else is a browser link, not a one-click.
+    let one_click_declared = msg
+        .header_raw("List-Unsubscribe-Post")
+        .map(|v| {
+            v.to_ascii_lowercase()
+                .contains("list-unsubscribe=one-click")
+        })
+        .unwrap_or(false);
+    if one_click_declared
+        && let Some(url) = &out.url
+        && url.to_ascii_lowercase().starts_with("https:")
+    {
+        out.one_click = Some(url.clone());
+    }
+
+    if out.is_empty() { None } else { Some(out) }
+}
+
 /// A parsed view of a message. Never authoritative — the raw bytes are.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ParsedMessage {
@@ -270,6 +336,52 @@ Subject: =?utf-8?B?5p2x5Lqs6KiI55S7?=\r\n\r\n\
         assert_eq!(m.subject.as_deref(), Some("東京計画"));
         assert_eq!(m.from_display.as_deref(), Some("東京"));
         assert!(m.index_text().contains("東京計画"));
+    }
+
+    #[test]
+    fn the_unsubscribe_header_is_read_in_all_its_forms() {
+        let raw = |headers: &str| {
+            format!(
+                "From: news@sender.example\r\nTo: me@example.com\r\nSubject: weekly\r\n{headers}MIME-Version: 1.0\r\nContent-Type: text/plain\r\n\r\nbody\r\n"
+            )
+            .into_bytes()
+        };
+
+        // Both forms offered, with the RFC 8058 companion: one-click stands.
+        let u = unsubscribe_info(&raw(
+            "List-Unsubscribe: <mailto:leave@sender.example>, <https://sender.example/u?id=1&x=2>\r\n\
+             List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n",
+        ))
+        .expect("parsed");
+        assert_eq!(
+            u.one_click.as_deref(),
+            Some("https://sender.example/u?id=1&x=2")
+        );
+        assert_eq!(u.mailto.as_deref(), Some("mailto:leave@sender.example"));
+
+        // No companion header: the URL is a page to open, not a POST target.
+        let u = unsubscribe_info(&raw("List-Unsubscribe: <https://sender.example/unsub>\r\n"))
+            .expect("parsed");
+        assert!(u.one_click.is_none());
+        assert_eq!(u.url.as_deref(), Some("https://sender.example/unsub"));
+
+        // One-click declared over plain http: refused — RFC 8058 says https,
+        // and POSTing credentialless over cleartext is not the safe path.
+        let u = unsubscribe_info(&raw("List-Unsubscribe: <http://sender.example/unsub>\r\n\
+             List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n"))
+        .expect("parsed");
+        assert!(u.one_click.is_none());
+
+        // Mailto only — all some senders offer.
+        let u = unsubscribe_info(&raw(
+            "List-Unsubscribe: <mailto:leave@sender.example?subject=unsubscribe>\r\n",
+        ))
+        .expect("parsed");
+        assert!(u.url.is_none());
+        assert!(u.mailto.is_some());
+
+        // No header at all: no affordance, rather than an empty one.
+        assert!(unsubscribe_info(&raw("")).is_none());
     }
 
     #[test]

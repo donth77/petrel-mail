@@ -158,6 +158,8 @@ export type StorageReport = {
 
 export type Folder = { id: number; role: string; path: string };
 
+export type UnsubInfo = { one_click: boolean; url: string | null; mailto: string | null };
+
 export type ActionKind =
   | 'archive' | 'trash' | 'spam' | 'star' | 'unstar' | 'mark_read' | 'mark_unread'
   // These three carry a target id alongside — a folder for move, a tag for the
@@ -307,6 +309,8 @@ const mock = {
   createFolder: async () => 999,
   renameFolder: async () => {},
   pushDraft: async () => {},
+  unsubscribeInfo: async () => null,
+  unsubscribeOneClick: async () => {},
   deleteFolder: async () => {},
   createTag: async () => 998,
   renameTag: async () => {},
@@ -508,6 +512,12 @@ const real = {
   undoTriage: (actionId: number) => invoke<boolean>('undo_triage', { actionId }),
   folders: () => invoke<Folder[]>('list_folders'),
   createFolder: (path: string) => invoke<number>('create_folder', { path }),
+  /** The List-Unsubscribe offer this message makes, if any. */
+  unsubscribeInfo: (messageId: number) =>
+    invoke<UnsubInfo | null>('unsubscribe_info', { messageId }),
+  /** RFC 8058: leave the list without opening anything. */
+  unsubscribeOneClick: (messageId: number) =>
+    invoke<void>('unsubscribe_one_click', { messageId }),
   /** The composer closing must not wait out the 30s debounce. */
   pushDraft: (id: number) => invoke<void>('push_draft', { id }),
   /** Server first, then the store — the id survives, so the open view does. */

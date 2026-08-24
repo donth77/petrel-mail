@@ -1340,6 +1340,16 @@ export function App() {
           thread={active}
           view={view}
           onToast={setToast}
+          onComposeMailto={(to, subject) => {
+            attachmentWarned.current = false;
+            setDraft({
+              to,
+              cc: '',
+              subject,
+              body: startingBody(identity, false),
+              html: startingHtml(identity, false),
+            });
+          }}
           onReplyTo={(messageId, all) => {
             if (active) void startReply(active.id, all, messageId);
           }}
