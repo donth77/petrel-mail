@@ -1932,6 +1932,10 @@ impl Store {
             rows.filter_map(|r| r.ok())
                 .filter(|(_, path)| !known.contains(path.as_str()))
                 .map(|(id, _)| id)
+                // A local folder is absent from every survey by definition —
+                // imported mail lives in one, and pruning it would delete the
+                // only placements that mail has.
+                .filter(|id| !self.folder_is_local(*id).unwrap_or(false))
                 .collect()
         };
         for id in stale {
@@ -2155,6 +2159,44 @@ impl Store {
         }
         tx.commit()?;
         Ok(out)
+    }
+
+    /// Marks a folder as local-only: it exists in this store and nowhere
+    /// else. The sync survey never prunes it (the server not listing it is
+    /// the point) and the sync loop never asks the server about it.
+    pub fn mark_folder_local(&mut self, folder_id: i64) -> Result<()> {
+        let current: String = self
+            .conn
+            .query_row(
+                "SELECT sync_state_json FROM folders WHERE id = ?1",
+                params![folder_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or_else(|| "{}".into());
+        let mut v: serde_json::Value =
+            serde_json::from_str(&current).unwrap_or_else(|_| serde_json::json!({}));
+        v["local"] = serde_json::json!(true);
+        self.conn.execute(
+            "UPDATE folders SET sync_state_json = ?2 WHERE id = ?1",
+            params![folder_id, v.to_string()],
+        )?;
+        Ok(())
+    }
+
+    pub fn folder_is_local(&self, folder_id: i64) -> Result<bool> {
+        let json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT sync_state_json FROM folders WHERE id = ?1",
+                params![folder_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(json
+            .and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok())
+            .and_then(|v| v.get("local").and_then(|m| m.as_bool()))
+            .unwrap_or(false))
     }
 
     /// The lowest UID this folder holds — the backfill cursor, resumable by

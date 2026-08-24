@@ -108,3 +108,108 @@ fn a_missing_blob_is_skipped_rather_than_losing_the_whole_export() {
     assert_eq!(skipped, 3, "a partial archive beats an error and nothing");
     assert!(out.exists());
 }
+
+/// The full circle: what export writes, import reads back whole.
+mod round_trip {
+    use petrel_engine::blob::BlobStore;
+    use petrel_engine::store::{ListView, Store};
+
+    fn fixture(mid: &str, subject: &str, body: &str) -> Vec<u8> {
+        format!(
+            "From: Dana Wu <dana@example.com>\r\nTo: me@example.com\r\n\
+             Subject: {subject}\r\nDate: Tue, 18 Aug 2026 14:02:00 +0000\r\n\
+             Message-ID: <{mid}>\r\nMIME-Version: 1.0\r\n\
+             Content-Type: text/plain; charset=utf-8\r\n\r\n{body}\r\n"
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn an_exported_mailbox_imports_whole_and_twice_imports_once() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Store A: three messages, one with a body line the mbox dialect must
+        // escape and un-escape.
+        let mut a = Store::open(&dir.path().join("a.db")).unwrap();
+        let blobs_a = BlobStore::open(&dir.path().join("blobs-a")).unwrap();
+        let account_a = a.ensure_test_account().unwrap();
+        let inbox_a = a.ensure_folder(account_a, "inbox", "INBOX").unwrap();
+        for (i, (mid, subject, body)) in [
+            ("r1@x", "first", "plain words"),
+            (
+                "r2@x",
+                "second",
+                "quoting a forward:\r\nFrom the desk of Dana Wu",
+            ),
+            ("r3@x", "third", "closing words"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            a.ingest_raw(
+                &blobs_a,
+                account_a,
+                Some(inbox_a),
+                Some(i as u32 + 1),
+                &fixture(mid, subject, body),
+            )
+            .unwrap();
+        }
+        let mbox = dir.path().join("take.mbox");
+        let (written, skipped) = a.export_mbox(&blobs_a, &ListView::Inbox, &mbox).unwrap();
+        assert_eq!((written, skipped), (3, 0));
+
+        // Store B: a different machine, importing the archive.
+        let mut b = Store::open(&dir.path().join("b.db")).unwrap();
+        let blobs_b = BlobStore::open(&dir.path().join("blobs-b")).unwrap();
+        let account_b = b.ensure_test_account().unwrap();
+        let imported = b.ensure_named_folder(account_b, "Imported").unwrap();
+        b.mark_folder_local(imported).unwrap();
+
+        let messages = petrel_engine::mbox::split(&std::fs::read(&mbox).unwrap());
+        assert_eq!(messages.len(), 3);
+        let mut new = 0;
+        for raw in &messages {
+            if b.ingest_raw(&blobs_b, account_b, Some(imported), None, raw)
+                .unwrap()
+                .was_new
+            {
+                new += 1;
+            }
+        }
+        assert_eq!(new, 3);
+
+        // Everything arrived as itself — including the escaped line.
+        let rows = b
+            .list_threads(&ListView::parse(&format!("folder:{imported}")), 0, 50)
+            .unwrap();
+        assert_eq!(rows.len(), 3, "{rows:?}");
+        let hits = b.search_threads("desk of Dana", 10).unwrap();
+        assert_eq!(hits.len(), 1, "the escaped body line survived: {hits:?}");
+
+        // Importing the same archive again adds nothing.
+        let mut dup = 0;
+        for raw in &messages {
+            if !b
+                .ingest_raw(&blobs_b, account_b, Some(imported), None, raw)
+                .unwrap()
+                .was_new
+            {
+                dup += 1;
+            }
+        }
+        assert_eq!(dup, 3);
+
+        // And the local folder outlives a sync survey that has never heard
+        // of it — the prune must leave it alone.
+        b.sync_folders(account_b, &[("INBOX".into(), Some("inbox".into()))])
+            .unwrap();
+        assert!(
+            b.folders(account_b)
+                .unwrap()
+                .iter()
+                .any(|f| f.id == imported),
+            "a local folder is not the survey's to prune"
+        );
+    }
+}

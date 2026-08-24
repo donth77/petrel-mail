@@ -311,6 +311,14 @@ export const en = {
   'storage-mail': 'Mail',
   'storage-database': 'Database',
   'storage-index': 'Search index',
+  'storage-import': 'Bring mail in',
+  'storage-import-help':
+    'mbox archives and .eml files land in a local \u201cImported\u201d folder on this Mac \u2014 readable and searchable here, never uploaded anywhere. Importing the same archive twice adds nothing.',
+  'storage-import-button': 'Import mbox or .eml\u2026',
+  'storage-imported': 'Imported { $count } messages',
+  'storage-imported-mixed':
+    'Imported { $count } \u2014 { $duplicates } already here, { $failed } unreadable',
+  'storage-import-failed': 'Import failed: { $error }',
   'storage-export': 'Take your mail with you',
   'storage-export-help':
     'Writes to mbox, which every other mail client can read. Your mail stays yours whatever happens to Petrel — an export only Petrel could open would not be much of a promise.',

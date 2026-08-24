@@ -620,8 +620,12 @@ fn folders_to_sync_from(store: &Store, account: i64) -> Vec<(String, String, i64
         .collect();
     // Folders the user made sync too — a folder whose mail never arrives is
     // not a folder, it is a name. After the roles, so the inbox still fills
-    // first.
+    // first. Local folders are the exception both ways: the server has never
+    // heard of them, so asking it about one is a guaranteed error per cycle.
     for f in all.iter().filter(|f| f.role.is_empty()) {
+        if store.folder_is_local(f.id).unwrap_or(false) {
+            continue;
+        }
         out.push((String::new(), f.path.clone(), f.id));
     }
     out
@@ -2930,6 +2934,82 @@ fn storage_report(state: State<Arc<AppState>>) -> Result<StorageReport, String> 
         .map_err(|e| e.to_string())
 }
 
+/// What an import did, honestly itemised.
+#[derive(serde::Serialize)]
+struct ImportReport {
+    imported: usize,
+    /// Already here — same Message-ID. Importing twice is a no-op, not a copy.
+    duplicates: usize,
+    failed: usize,
+}
+
+/// Imports mbox files and .eml messages into a local "Imported" folder.
+///
+/// Local, marked so: the server has never heard of this folder, so the sync
+/// survey must not prune it and the sync loop must not ask about it. The
+/// messages carry no UID for the same reason — NULL is already how "not
+/// addressable on a server" is spelled here. Dedupe is the ordinary one, by
+/// Message-ID, which is what makes a re-import of the same archive report
+/// duplicates instead of doubling the mailbox.
+#[tauri::command]
+fn import_mail(paths: Vec<String>, state: State<Arc<AppState>>) -> Result<ImportReport, String> {
+    let mut report = ImportReport {
+        imported: 0,
+        duplicates: 0,
+        failed: 0,
+    };
+    let mut store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    let account = store
+        .active_account()
+        .map_err(|e| e.to_string())?
+        .ok_or("no account")?;
+    let folder = store
+        .ensure_named_folder(account, "Imported")
+        .map_err(|e| e.to_string())?;
+    store.mark_folder_local(folder).map_err(|e| e.to_string())?;
+
+    for path in &paths {
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) => {
+                log_sync(&format!("import: could not read {path}: {e}"));
+                report.failed += 1;
+                continue;
+            }
+        };
+        let messages: Vec<Vec<u8>> = if path.to_ascii_lowercase().ends_with(".eml") {
+            vec![bytes]
+        } else {
+            petrel_engine::mbox::split(&bytes)
+        };
+        for raw in &messages {
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                store.ingest_raw(&state.blobs, account, Some(folder), None, raw)
+            }));
+            match outcome {
+                Ok(Ok(ingested)) if ingested.was_new => {
+                    report.imported += 1;
+                    state.seeded.fetch_add(1, Ordering::Relaxed);
+                }
+                Ok(Ok(_)) => report.duplicates += 1,
+                Ok(Err(e)) => {
+                    log_sync(&format!("import: one message failed: {e}"));
+                    report.failed += 1;
+                }
+                Err(_) => {
+                    log_sync("import: one message PANICKED the parser — skipped");
+                    report.failed += 1;
+                }
+            }
+        }
+    }
+    log_sync(&format!(
+        "import: {} new, {} duplicate(s), {} failed",
+        report.imported, report.duplicates, report.failed
+    ));
+    Ok(report)
+}
+
 /// Writes a view's mail to an mbox file the user chose.
 ///
 /// The path comes from the OS save panel rather than a location Petrel picks:
@@ -3712,6 +3792,7 @@ pub fn run() {
             send_message,
             storage_report,
             export_mbox,
+            import_mail,
             get_identity,
             set_identity,
             attachment_info,

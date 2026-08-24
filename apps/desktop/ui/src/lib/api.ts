@@ -321,6 +321,7 @@ const mock = {
     database_bytes: 12_582_912, blob_bytes: 41_943_040, index_bytes: 3_145_728,
   }),
   exportMbox: async () => '40/0',
+  importMail: async () => ({ imported: 0, duplicates: 0, failed: 0 }),
   identity: async (): Promise<Identity> => ({
     address: 'you@example.com', display_name: 'You', signature: '', signature_on_reply: false,
   }),
@@ -537,6 +538,8 @@ const real = {
   // A binding that sent straight to the wire would be a way around all three.
   storage: () => invoke<StorageReport>('storage_report'),
   exportMbox: (view: string, path: string) => invoke<string>('export_mbox', { view, path }),
+  importMail: (paths: string[]) =>
+    invoke<{ imported: number; duplicates: number; failed: number }>('import_mail', { paths }),
   identity: () => invoke<Identity>('get_identity'),
   setIdentity: (displayName: string, signature: string, signatureOnReply: boolean) =>
     invoke<void>('set_identity', { displayName, signature, signatureOnReply }),

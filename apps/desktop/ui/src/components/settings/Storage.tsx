@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Download } from 'lucide-react';
+import { Download, Upload } from 'lucide-react';
 import { api, type StorageReport } from '../../lib/api';
 import { fileSize } from '../../lib/format';
 import { Icon } from '../Icon';
@@ -60,6 +60,34 @@ export function Storage({ onMessage }: { onMessage: (text: string) => void }) {
     }
   };
 
+  /** Imports mbox or .eml files into a local "Imported" folder. */
+  const importFrom = async () => {
+    setBusy(true);
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const picked = await open({
+        multiple: true,
+        filters: [{ name: 'Mail archives', extensions: ['mbox', 'mbx', 'eml'] }],
+      });
+      if (!picked) return;
+      const paths = Array.isArray(picked) ? picked : [picked];
+      const r = await api.importMail(paths);
+      onMessage(
+        r.failed > 0 || r.duplicates > 0
+          ? t('storage-imported-mixed', {
+              count: String(r.imported),
+              duplicates: String(r.duplicates),
+              failed: String(r.failed),
+            })
+          : t('storage-imported', { count: String(r.imported) }),
+      );
+    } catch (e) {
+      onMessage(t('storage-import-failed', { error: String(e) }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="pane-body">
       <h1 className="pane-title">{t('settings-storage')}</h1>
@@ -113,6 +141,17 @@ export function Storage({ onMessage }: { onMessage: (text: string) => void }) {
               {t(s.label as 'mailbox-inbox')}
             </button>
           ))}
+        </div>
+      </section>
+
+      <section className="field">
+        <div className="flabel">{t('storage-import')}</div>
+        <p className="fhelp">{t('storage-import-help')}</p>
+        <div className="storage-actions">
+          <button type="button" className="fbtn" disabled={busy} onClick={() => void importFrom()}>
+            <Icon icon={Upload} size={13} />
+            {t('storage-import-button')}
+          </button>
         </div>
       </section>
     </div>

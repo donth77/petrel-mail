@@ -324,6 +324,7 @@
     },
     rename_folder: function () { return null; },
     push_draft: function () { return null; },
+    import_mail: function () { return { imported: 3, duplicates: 1, failed: 0 }; },
     unsubscribe_info: function (a) {
       // The newsletter stand-in offers one-click; everything else offers none.
       return a.messageId === 1

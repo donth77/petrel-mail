@@ -6,6 +6,7 @@
 
 pub mod actions;
 pub mod blob;
+pub mod mbox;
 pub mod outbox;
 pub mod retention;
 pub mod search_query;
