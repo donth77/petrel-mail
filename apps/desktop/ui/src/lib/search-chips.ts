@@ -71,6 +71,19 @@ const SCOPES: Record<string, string> = {
   trash: 'Trash',
 };
 
+/** The leaf name of the open folder view — what a search scope calls it.
+ *  Null when the view is not a folder, or the folder is not (yet) known:
+ *  reference data loads a beat after the view can change, and a scope that
+ *  cannot name its folder is better absent than wrong. */
+export function folderLeaf(
+  view: string,
+  folders: ReadonlyArray<{ id: number; path: string }>,
+): string | null {
+  if (!view.startsWith('folder:')) return null;
+  const f = folders.find((x) => `folder:${x.id}` === view);
+  return f?.path.split(/[/.]/).pop() ?? null;
+}
+
 /** What the open view is called in the search grammar, or null when the
  *  grammar cannot say it (a tag view, the outbox). For a user folder the
  *  caller supplies the folder's leaf name, because folders live with it. */

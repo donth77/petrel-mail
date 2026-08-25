@@ -9,7 +9,7 @@ import {
   type Tag,
   type Thread,
 } from './lib/api';
-import { chips, hasToken, scopeFor, toggleToken } from './lib/search-chips';
+import { chips, hasToken, scopeFor, toggleToken, folderLeaf } from './lib/search-chips';
 import { count as fmtCount, fileSize } from './lib/format';
 import { t, type StringId } from './lib/strings';
 import { Search } from 'lucide-react';
@@ -1195,10 +1195,7 @@ export function App() {
               onFocus={() => {
                 setSearching(true);
                 if (query.trim()) return;
-                const leaf = view.startsWith('folder:')
-                  ? (folders.find((f) => `folder:${f.id}` === view)?.path.split(/[/.]/).pop() ??
-                    null)
-                  : null;
+                const leaf = folderLeaf(view, folders);
                 const scope = scopeFor(view, leaf);
                 if (scope) setQuery(`${scope.token} `);
               }}
@@ -1217,10 +1214,7 @@ export function App() {
               onBlur={() => {
                 // Leaving with only the pre-applied token means no search was
                 // meant; the field empties rather than staying half-armed.
-                const leaf = view.startsWith('folder:')
-                  ? (folders.find((f) => `folder:${f.id}` === view)?.path.split(/[/.]/).pop() ??
-                    null)
-                  : null;
+                const leaf = folderLeaf(view, folders);
                 if (query.trim() === scopeFor(view, leaf)?.token) setQuery('');
                 window.setTimeout(() => setSearching(false), 150);
               }}
@@ -1239,9 +1233,7 @@ export function App() {
                 active?.from_display || active?.from_addr || null,
                 new Date().getFullYear(),
                 view,
-                view.startsWith('folder:')
-                  ? (folders.find((f) => `folder:${f.id}` === view)?.path.split(/[/.]/).pop() ?? null)
-                  : null,
+                folderLeaf(view, folders),
               )
                 .map((c) => (
                   <button
