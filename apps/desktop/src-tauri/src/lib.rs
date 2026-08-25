@@ -98,22 +98,33 @@ pub fn run() {
         data_dir: dir.display().to_string(),
     });
 
+    // Maintenance never stands between launch and the window. This ran
+    // inline here once, and the day the store crossed twenty-eight thousand
+    // messages the orphan sweep took minutes — on the main thread, before
+    // the window existed, while the sync workers below ran happily and made
+    // the process look alive. The window comes up first; the sweep runs a
+    // little later, off-thread, and (indexed, migration 0016) holds the
+    // store lock for milliseconds.
     {
-        let now = now_ms();
-        if let Ok(mut store) = state.store.lock() {
-            match store.gc(
-                &state.blobs,
-                now,
-                petrel_engine::retention::DEFAULT_GRACE_DAYS,
-            ) {
-                Ok(r) if r.messages_purged > 0 || r.blobs_removed > 0 => eprintln!(
-                    "[store] gc purged {} message(s), reclaimed {} blob(s)",
-                    r.messages_purged, r.blobs_removed
-                ),
-                Ok(_) => {}
-                Err(e) => eprintln!("[store] gc failed: {e}"),
+        let state = Arc::clone(&state);
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(20));
+            let now = now_ms();
+            if let Ok(mut store) = state.store.lock() {
+                match store.gc(
+                    &state.blobs,
+                    now,
+                    petrel_engine::retention::DEFAULT_GRACE_DAYS,
+                ) {
+                    Ok(r) if r.messages_purged > 0 || r.blobs_removed > 0 => eprintln!(
+                        "[store] gc purged {} message(s), reclaimed {} blob(s)",
+                        r.messages_purged, r.blobs_removed
+                    ),
+                    Ok(_) => {}
+                    Err(e) => eprintln!("[store] gc failed: {e}"),
+                }
             }
-        }
+        });
     }
 
     // The account set up in the app first; the environment as the developer

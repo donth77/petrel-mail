@@ -18,7 +18,7 @@ mod listing;
 mod maintenance;
 mod search;
 
-pub const SCHEMA_VERSION: i64 = 15;
+pub const SCHEMA_VERSION: i64 = 16;
 /// Bumped whenever text extraction changes; a mismatch forces reindexing.
 pub const EXTRACTOR_VERSION: i64 = 1;
 
@@ -1007,6 +1007,9 @@ impl Store {
         }
         if ver < 15 {
             conn.execute_batch(include_str!("migrations/0015-thread-key-index.sql"))?;
+        }
+        if ver < 16 {
+            conn.execute_batch(include_str!("migrations/0016-blob-hash-index.sql"))?;
         }
         if ver < SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
