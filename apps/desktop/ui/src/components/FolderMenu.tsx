@@ -18,8 +18,6 @@ export function FolderMenu({
   onRename,
   onNewChild,
   onMove,
-  onArchiveInto,
-  onUnarchive,
   onDelete,
 }: {
   path: string;
@@ -32,9 +30,7 @@ export function FolderMenu({
   /** Opens a destination picker — the menu's answer to the drag. */
   onMove?: () => void;
   /** Re-nests under Archive — present on folders standing outside it. */
-  onArchiveInto?: () => void;
   /** Pulls back to the top level — present on folders inside Archive. */
-  onUnarchive?: () => void;
   onDelete?: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -62,16 +58,6 @@ export function FolderMenu({
         {onMove && (
           <MenuItem className="menu-item" onClick={onMove}>
             {t('folder-move')}
-          </MenuItem>
-        )}
-        {onArchiveInto && (
-          <MenuItem className="menu-item" onClick={onArchiveInto}>
-            {t('folder-archive-into')}
-          </MenuItem>
-        )}
-        {onUnarchive && (
-          <MenuItem className="menu-item" onClick={onUnarchive}>
-            {t('folder-unarchive')}
           </MenuItem>
         )}
         {onDelete && (

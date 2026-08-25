@@ -501,8 +501,6 @@ export const en = {
   'folder-subfolder': 'New subfolder\u2026',
   'folder-move': 'Move\u2026',
   'folder-move-top': 'Top level',
-  'folder-archive-into': 'Move to Archive',
-  'folder-unarchive': 'Move out of Archive',
   'folder-moved': 'Moved \u201c{ $name }\u201d into { $to }',
   'folder-into-itself': 'A folder cannot move into itself.',
   'folder-trashed':

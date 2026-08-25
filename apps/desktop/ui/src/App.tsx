@@ -22,6 +22,7 @@ import { promisesMissingAttachment } from './lib/compose-checks';
 import { replyTargets } from './lib/reply';
 import { forwardBody, replyBody } from './lib/quote';
 import { dropMeaning } from './lib/dnd';
+import { nestableRolePath, underAnchor } from './lib/folders';
 import { useDrag } from './lib/useDrag';
 import { useReferenceData } from './lib/useReferenceData';
 import { useDropGuard } from './lib/useFileDrop';
@@ -664,10 +665,10 @@ export function App() {
       // confirm, because a mis-aimed drag must never be the gesture that
       // destroys mail on the server.
       if (targetPath === '::trash') {
-        const trash = folders.find((x) => x.role === 'trash');
+        const trash = nestableRolePath(folders, 'trash');
         if (!trash) return;
         void api
-          .renameFolder(folderId, `${trash.path}/${leaf}`)
+          .renameFolder(folderId, `${trash}/${leaf}`)
           .then(() => api.folders().then(setFolders))
           .then(() => setToast(t('folder-trashed', { name: leaf })))
           .catch((e) => setToast(t('folder-failed', { error: String(e) })));
@@ -886,8 +887,22 @@ export function App() {
     // their own (Archive, Trash, Spam, Move to Inbox), and offering their
     // raw server paths — [Gmail]/All Mail, INBOX — put rows in this list
     // that exist nowhere else in the app.
+    // The Gmail anchor labels (a plain Archive or Trash the first nested
+    // folder created) stay out: mail already has Archive and Trash as verbs,
+    // and a folder row with the same name is the same place twice.
+    const archiveAnchor = nestableRolePath(folders, 'archive');
+    const trashAnchor = nestableRolePath(folders, 'trash');
     return folders
-      .filter((f) => !f.role && `folder:${f.id}` !== view)
+      .filter(
+        (f) =>
+          !f.role &&
+          `folder:${f.id}` !== view &&
+          f.path !== archiveAnchor &&
+          f.path !== trashAnchor &&
+          // Nothing files into a binned folder; fifty deleted alias folders
+          // made the list unreadable before this.
+          !underAnchor(f.path, trashAnchor),
+      )
       .map((f) => ({ id: f.id, label: f.path }));
   }, [picker, folders, tags, active, view]);
   useEffect(() => {
@@ -947,16 +962,32 @@ export function App() {
   // Recounted after every triage as well as every sync, because archiving the
   // last unread message and watching the badge keep its old number is the kind
   // of small lie that makes the whole rail untrustworthy.
+  // Debounced, because the triggers arrive in bursts: an account switch
+  // changes the epoch, the status, and the items within a few hundred
+  // milliseconds, and each firing held the store lock for a third of a
+  // second counting nine views — queued *ahead* of the thread list the
+  // switch was actually for. One recount after the burst settles, and the
+  // list's own queries take the lock first.
   useEffect(() => {
     let live = true;
-    api
-      .viewCounts(settings.badges)
-      .then((rows) => live && setCounts(Object.fromEntries(rows)))
-      .catch(() => {});
+    const t = window.setTimeout(() => {
+      api
+        .viewCounts(settings.badges)
+        .then((rows) => live && setCounts(Object.fromEntries(rows)))
+        .catch(() => {});
+      // The switcher's per-account unread rides the same tick: it was read
+      // only at sync boundaries, so it sat stale beside a mid-pane count
+      // that moved with every triage.
+      api
+        .accounts()
+        .then((a) => live && setAccounts(a))
+        .catch(() => {});
+    }, 300);
     return () => {
       live = false;
+      window.clearTimeout(t);
     };
-  }, [status?.count, status?.seeding, settings.badges, items, accountEpoch]);
+  }, [status?.count, status?.seeding, settings.badges, items, accountEpoch, setAccounts]);
 
   // First run: no account can sign in, so there is nothing to show but the
   // way to add one. Decided from the status the app reports, not from an

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Check, Clock, FolderClosed, Plus, Tag as TagIcon, X } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import {
   Combobox, ComboboxItem, ComboboxList, ComboboxProvider, Dialog, DialogDismiss,
 } from '@ariakit/react';
@@ -20,6 +21,9 @@ export type PickerOption = {
   /** The resolved time, shown beside a snooze preset: "Tomorrow" means nothing
    *  without "Thu 8:00 AM" next to it. */
   detail?: string;
+  /** Folder mode only: a glyph that says what kind of place this is — the
+   *  pinned Archive and Trash rows wear their own rather than a folder's. */
+  icon?: LucideIcon;
 };
 
 type Props = {
@@ -147,7 +151,7 @@ export function Picker({ open, mode, options, subject, onClose, onChoose, onCrea
                   {o.on && <Icon icon={Check} size={10} />}
                 </span>
               ) : (
-                <Icon icon={FolderClosed} size={13} />
+                <Icon icon={o.icon ?? FolderClosed} size={13} />
               )}
               {o.colour && (
                 <span className="picker-dot" aria-hidden="true" style={{ background: o.colour }} />

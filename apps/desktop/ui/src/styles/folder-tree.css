@@ -13,3 +13,10 @@
 .tree-container {
   color: var(--ink2);
 }
+
+/* The chevron's width, held by rows that have none, so siblings' icons sit
+   in one column and depth is the only thing indentation says. */
+.tree-toggle-gap {
+  display: inline-block;
+  visibility: hidden;
+}

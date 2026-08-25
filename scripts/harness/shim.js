@@ -68,6 +68,39 @@
         { id: 9, role: '', path: 'Archive/Old letters' },
         { id: 10, role: '', path: 'Archive/Old letters/2019' },
   ];
+  // ?gmailFolders=1: the same rail over a Gmail-shaped account — roles wear
+  // the reserved [Gmail] names, and user folders sit at the top level plus
+  // one already archived under the plain `Archive` label the anchor uses.
+  if (location.search.indexOf('gmailFolders=1') !== -1) {
+    folders = [
+      { id: 2, role: 'inbox', path: 'INBOX' },
+      { id: 4, role: 'archive', path: '[Gmail]/All Mail' },
+      { id: 10, role: 'trash', path: '[Gmail]/Trash' },
+      { id: 8, role: 'spam', path: '[Gmail]/Spam' },
+      { id: 120, role: '', path: 'Test-Folder' },
+      { id: 121, role: '', path: 'Test-Folder/sub1' },
+      { id: 122, role: '', path: 'Test-Folder/sub1/sub2' },
+      { id: 130, role: '', path: 'Archive/Old letters' },
+    ];
+  }
+  // ?ncFolders=1: a Namecheap-shaped account — no archive role at all, a
+  // plain folder named Archive doing the job by convention, deleted folders
+  // living under the Trash role, and a lowercase sibling that once looked
+  // like the Archive tree's parent.
+  if (location.search.indexOf('ncFolders=1') !== -1) {
+    folders = [
+      { id: 119, role: 'inbox', path: 'INBOX' },
+      { id: 26, role: 'trash', path: 'Trash' },
+      { id: 24, role: 'sent', path: 'Sent' },
+      { id: 23, role: 'spam', path: 'Spam' },
+      { id: 82, role: '', path: 'Archive' },
+      { id: 84, role: '', path: 'Archive/Old letters' },
+      { id: 21, role: '', path: 'apply' },
+      { id: 120, role: '', path: 'Test-Folder' },
+      { id: 121, role: '', path: 'Test-Folder/sub1' },
+      { id: 47, role: '', path: 'Trash/binned' },
+    ];
+  }
   var tags = [
     { id: 11, name: 'Urgent', colour: '#A8544B', thread_count: 0 },
     { id: 12, name: 'Waiting on', colour: '#3B6EA5', thread_count: 0 },

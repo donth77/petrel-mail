@@ -2,14 +2,15 @@ import type React from 'react';
 import { useEffect, useRef, useState } from 'react';
 import {
   ChevronDown, ChevronRight, FolderClosed, Inbox, Star, Clock, Send, PencilLine, Upload, Archive, ShieldAlert, Trash2,
-  CircleHelp, PanelLeftClose, PanelLeftOpen, PenSquare, Plus, Settings, type LucideIcon,
-} from 'lucide-react';
+  CircleHelp, PanelLeftClose, PanelLeftOpen, PenSquare, Plus, Settings, type LucideIcon, FolderPlus, TagPlus } from 'lucide-react';
 import type { Account, Folder } from '../lib/api';
 import { Icon } from './Icon';
 import { t, type StringId } from '../lib/strings';
 import { TagMenu } from './TagMenu';
 import { FolderMenu } from './FolderMenu';
+import { NameDialog } from './NameDialog';
 import { acceptsDrop } from '../lib/dnd';
+import { nestableRolePath, underAnchor } from '../lib/folders';
 import { AccountMenu } from './AccountMenu';
 import { Tip } from './Tip';
 
@@ -143,11 +144,14 @@ export function Rail({
   /** Paths whose children are folded away. */
   const [closedNodes, setClosedNodes] = useState<Set<string>>(new Set());
   const [renamingFolder, setRenamingFolder] = useState<number | null>(null);
+  // Which naming dialog is up — the collapsed rail's way of asking for a
+  // name without forcing itself open.
+  const [namingDialog, setNamingDialog] = useState<'folder' | 'tag' | null>(null);
   // The tag being renamed, edited in place on its own row rather than in a
   // dialog: it is one short string, and the row is where you are looking.
   const [renaming, setRenaming] = useState<number | null>(null);
   /** Where the archive tree roots, for the mailbox row's folder-drop. */
-  const archiveRolePath = folders.find((f) => f.role === 'archive')?.path;
+  const archiveRolePath = nestableRolePath(folders, 'archive');
   const nameInput = useRef<HTMLInputElement>(null);
   useEffect(() => {
     if (naming) nameInput.current?.focus();
@@ -166,6 +170,193 @@ export function Rail({
     window.addEventListener('pointerup', up);
   };
 
+  /* The hierarchy the paths already spell, drawn as one. A mailbox tree
+     like Archive/Yearly/2023 is how people actually file, and a flat list
+     of leaf names turned forty filed years into anonymous siblings.
+     Containers that are not themselves folders still get a row, for the
+     chevron. Archived folders are kept apart: they render under the
+     Archive mailbox row, not as a second Archive in the Folders section. */
+  type FNode = {
+    label: string;
+    path: string;
+    folder?: (typeof folders)[number];
+    children: FNode[];
+  };
+  const archivePath = archiveRolePath;
+  const trashPath = nestableRolePath(folders, 'trash');
+  const roots: FNode[] = [];
+  const archiveChildren: FNode[] = [];
+  const trashChildren: FNode[] = [];
+  const attach = (path: string, level: FNode[], consumed: number): FNode => {
+    let prefix = consumed > 0 ? path.slice(0, consumed) : '';
+    const segs = path.slice(consumed > 0 ? consumed + 1 : 0).split(/[/.]/);
+    let node: FNode | undefined;
+    for (const seg of segs) {
+      prefix = prefix ? `${prefix}${path[prefix.length]}${seg}` : seg;
+      node = level.find((n) => n.path === prefix);
+      if (!node) {
+        node = { label: seg, path: prefix, children: [] };
+        level.push(node);
+        level.sort((a, b) => a.label.localeCompare(b.label));
+      }
+      level = node.children;
+    }
+    return node!;
+  };
+  for (const f of folders.filter((x) => !x.role)) {
+    // The rows wearing the anchors' own names are the mailbox rows' business
+    // — a second row saying Archive or Trash is the duplicate this avoids.
+    if (underAnchor(f.path, archivePath)) {
+      if (f.path !== archivePath) {
+        attach(f.path, archiveChildren, archivePath!.length).folder = f;
+      }
+    } else if (underAnchor(f.path, trashPath)) {
+      if (f.path !== trashPath) {
+        attach(f.path, trashChildren, trashPath!.length).folder = f;
+      }
+    } else {
+      attach(f.path, roots, 0).folder = f;
+    }
+  }
+  const prune = (ns: FNode[]): FNode[] =>
+    ns
+      .map((n) => ({ ...n, children: prune(n.children) }))
+      .filter((n) => n.folder || n.children.length > 0);
+  const tree = prune(roots);
+  const archiveTree = prune(archiveChildren);
+  const trashTree = prune(trashChildren);
+  const archiveOpen = archivePath !== undefined && !closedNodes.has(archivePath);
+  const trashOpen = trashPath !== undefined && !closedNodes.has(trashPath);
+
+  const toggle = (path: string) =>
+    setClosedNodes((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+
+  const renderNode = (n: FNode, depth: number): React.ReactNode => {
+    const open = !closedNodes.has(n.path);
+    // Rows without children still reserve the chevron's width: without the
+    // gap, a sibling wearing a chevron sat visibly further right and read as
+    // that sibling's child — "Archive is inside apply".
+    const chevron =
+      n.children.length > 0 && !collapsed ? (
+        <button
+          type="button"
+          className="tree-toggle"
+          aria-label={open ? t('folder-fold') : t('folder-unfold')}
+          aria-expanded={open}
+          onClick={(e) => {
+            e.stopPropagation();
+            toggle(n.path);
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <Icon icon={open ? ChevronDown : ChevronRight} size={12} />
+        </button>
+      ) : (
+        !collapsed && <span className="tree-toggle tree-toggle-gap" aria-hidden="true" />
+      );
+    // Depth is meaningless in a collapsed rail: an indented icon leaves the
+    // one column everything else lines up in, so the padding only applies
+    // when there is text to indent.
+    const indent = collapsed ? undefined : ({ paddingLeft: 10 + depth * 14 } as const);
+    const f = n.folder;
+    const row = f ? (
+      <Tip key={f.id} label={f.path} placement="right" when={collapsed}>
+        {renamingFolder === f.id ? (
+          <input
+            key={`rename-folder-${f.id}`}
+            className="rail-new-tag"
+            defaultValue={f.path}
+            aria-label={t('folder-rename')}
+            autoComplete="off"
+            autoFocus
+            onFocus={(e) => e.currentTarget.select()}
+            onBlur={(e) => {
+              const next = e.currentTarget.value.trim();
+              setRenamingFolder(null);
+              if (next && next !== f.path) void onRenameFolder(f.id, next);
+            }}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === 'Escape') {
+                e.currentTarget.value = f.path;
+                setRenamingFolder(null);
+                return;
+              }
+              if (e.key === 'Enter') e.currentTarget.blur();
+            }}
+          />
+        ) : (
+          <button
+            type="button"
+            className="rail-item"
+            style={indent}
+            aria-current={view === `folder:${f.id}` ? 'page' : undefined}
+            onClick={() => onView(`folder:${f.id}`)}
+            onPointerDown={(e) => onDragFolder(e, f.id, n.label)}
+            {...dropTarget(`folder:${f.id}`, view, dropOver)}
+            data-folder-drop={f.path}
+            // One merged answer, written after the spread: dropTarget only
+            // knows mail drags, and its undefined used to land last and wipe
+            // the folder-drag highlight off every folder row.
+            data-drop-over={
+              dropOver === `fdrop:${f.path}` || dropOver === `folder:${f.id}` || undefined
+            }
+            data-drop-ok={
+              (dragActive && acceptsDrop(`folder:${f.id}`, view)) ||
+              (folderDragPath !== null &&
+                f.path !== folderDragPath &&
+                !f.path.startsWith(`${folderDragPath}/`))
+                ? true
+                : undefined
+            }
+          >
+            {chevron}
+            <Icon icon={FolderClosed} />
+            <span className="rail-text">{n.label}</span>
+            {!collapsed && counts[`folder:${f.id}`] > 0 && (
+              <span className="count">{counts[`folder:${f.id}`]}</span>
+            )}
+            {!collapsed && (
+              <FolderMenu
+                path={f.path}
+                onRename={() => setRenamingFolder(f.id)}
+                onNewChild={() => {
+                  setFolderPrefill(`${f.path}/`);
+                  setNamingFolder(true);
+                }}
+                onMove={() => onMoveFolder(f)}
+                onDelete={() => onDeleteFolder(f)}
+              />
+            )}
+          </button>
+        )}
+      </Tip>
+    ) : (
+      <button
+        key={n.path}
+        type="button"
+        className="rail-item tree-container"
+        style={indent}
+        onClick={() => toggle(n.path)}
+      >
+        {chevron}
+        <Icon icon={FolderClosed} />
+        <span className="rail-text">{n.label}</span>
+      </button>
+    );
+    return (
+      <div key={n.path}>
+        {row}
+        {open && n.children.map((c) => renderNode(c, depth + 1))}
+      </div>
+    );
+  };
+
   return (
     <nav
       className="rail"
@@ -178,12 +369,12 @@ export function Rail({
       <AccountMenu
         accounts={accounts}
         current={account}
-        // The account's own unread, not the loaded page's. Deriving it from the
-        // rows in view made the header report Trash's unread count while
-        // sitting in Trash, which is not a fact about the account at all. This
-        // number also ignores the badge setting: that governs the numbers
-        // beside the mailboxes, not whether the account can say how it is.
-        unread={accounts.find((a) => a.email === account)?.unread_count ?? unread}
+        // The same number the footer shows for the view on screen. This once
+        // preferred the account's stored inbox count, and the two disagreed —
+        // a header saying 7 over a pane saying 0 reads as broken, whichever
+        // is technically defensible. One view, one number, everywhere it
+        // appears; the per-account rows in the menu keep their own counts.
+        unread={unread}
         accountColor={accountColor}
         onSwitch={onSwitchAccount}
         onSettings={onSettings}
@@ -202,7 +393,8 @@ export function Rail({
       </Tip>
 
       <div className="rail-label">{t('rail-mailboxes')}</div>
-      {MAILBOXES.map((m) => (
+      {MAILBOXES.map((m) => {
+        const row = (
         <Tip key={m.key} label={t(m.id)} placement="right" when={collapsed}>
           <button
             type="button"
@@ -221,7 +413,11 @@ export function Rail({
                   ? '::trash'
                   : undefined
             }
+            // One merged answer, written after the spread: dropTarget's own
+            // value would otherwise be overwritten with undefined during a
+            // mail drag, and the row a conversation hovers over never lit.
             data-drop-over={
+              dropOver === m.key ||
               (folderDragPath !== null &&
                 ((m.key === 'archive' && dropOver === `fdrop:${archiveRolePath}`) ||
                   (m.key === 'trash' && dropOver === 'fdrop:::trash'))) ||
@@ -235,6 +431,28 @@ export function Rail({
                 : undefined
             }
           >
+            {((m.key === 'archive' && archiveTree.length > 0) ||
+              (m.key === 'trash' && trashTree.length > 0)) &&
+              !collapsed &&
+              (() => {
+                const open = m.key === 'archive' ? archiveOpen : trashOpen;
+                const anchor = m.key === 'archive' ? archivePath! : trashPath!;
+                return (
+                  <button
+                    type="button"
+                    className="tree-toggle"
+                    aria-label={open ? t('folder-fold') : t('folder-unfold')}
+                    aria-expanded={open}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggle(anchor);
+                    }}
+                    onPointerDown={(e) => e.stopPropagation()}
+                  >
+                    <Icon icon={open ? ChevronDown : ChevronRight} size={12} />
+                  </button>
+                );
+              })()}
             <Icon icon={m.glyph} />
             <span className="rail-text">{t(m.id)}</span>
             {/* Collapsed, there is no room for a number beside a 16px icon,
@@ -243,9 +461,38 @@ export function Rail({
             {!collapsed && counts[m.key] > 0 && (
               <span className="count">{counts[m.key]}</span>
             )}
+            {/* Archived folders hang off this row, so this row also carries
+                their chevron and the way to make the first one. */}
+            {m.key === 'archive' && !collapsed && archiveTree.length > 0 && archivePath && (
+              <FolderMenu
+                path={archivePath}
+                onNewChild={() => {
+                  setFolderPrefill(`${archivePath}/`);
+                  setNamingFolder(true);
+                }}
+              />
+            )}
           </button>
         </Tip>
-      ))}
+        );
+        if (m.key === 'archive' && archiveTree.length > 0) {
+          return (
+            <div key={m.key}>
+              {row}
+              {archiveOpen && archiveTree.map((c) => renderNode(c, 1))}
+            </div>
+          );
+        }
+        if (m.key === 'trash' && trashTree.length > 0) {
+          return (
+            <div key={m.key}>
+              {row}
+              {trashOpen && trashTree.map((c) => renderNode(c, 1))}
+            </div>
+          );
+        }
+        return row;
+      })}
 
 
       {/* Folders the user made, between the fixed mailboxes and the tags —
@@ -263,9 +510,12 @@ export function Rail({
             type="button"
             className="rail-add"
             aria-label={t('folder-new')}
-            onClick={() => setNamingFolder(true)}
+            // Collapsed there is no row to type into, so the + asks in a
+            // dialog and the rail stays as it was. The icon says which +
+            // this is, since the header text it sits beside has faded out.
+            onClick={() => (collapsed ? setNamingDialog('folder') : setNamingFolder(true))}
           >
-            <Icon icon={Plus} size={13} />
+            <Icon icon={collapsed ? FolderPlus : Plus} size={13} />
           </button>
         </Tip>
       </div>
@@ -299,192 +549,7 @@ export function Rail({
           }}
         />
       )}
-      {(() => {
-        /* The hierarchy the paths already spell, drawn as one. A mailbox
-           tree like Archive/Yearly/2023 is how people actually file, and a
-           flat list of leaf names turned forty filed years into anonymous
-           siblings. Containers that are not themselves folders (and the
-           Archive root, which is the archive mailbox wearing its tree) still
-           get a row, for the chevron. */
-        type FNode = {
-          label: string;
-          path: string;
-          folder?: (typeof folders)[number];
-          archiveRoot?: boolean;
-          children: FNode[];
-        };
-        const archivePath = folders.find((f) => f.role === 'archive')?.path;
-        const roots: FNode[] = [];
-        const attach = (path: string): FNode => {
-          const segs = path.split(/[/.]/);
-          let level = roots;
-          let prefix = '';
-          let node: FNode | undefined;
-          for (const [si, seg] of segs.entries()) {
-            prefix = si === 0 ? seg : `${prefix}${path[prefix.length]}${seg}`;
-            node = level.find((n) => n.path === prefix);
-            if (!node) {
-              node = { label: seg, path: prefix, children: [] };
-              if (archivePath && prefix === archivePath) node.archiveRoot = true;
-              level.push(node);
-              level.sort((a, b) => a.label.localeCompare(b.label));
-            }
-            level = node.children;
-          }
-          return node!;
-        };
-        for (const f of folders.filter((x) => !x.role)) {
-          attach(f.path).folder = f;
-        }
-        // Roots that exist only because the archive tree hangs off them stay;
-        // any other childless container is noise from a stale path.
-        const prune = (ns: FNode[]): FNode[] =>
-          ns
-            .map((n) => ({ ...n, children: prune(n.children) }))
-            .filter((n) => n.folder || n.archiveRoot || n.children.length > 0);
-        const tree = prune(roots);
-
-        const toggle = (path: string) =>
-          setClosedNodes((prev) => {
-            const next = new Set(prev);
-            if (next.has(path)) next.delete(path);
-            else next.add(path);
-            return next;
-          });
-
-        const renderNode = (n: FNode, depth: number): React.ReactNode => {
-          const open = !closedNodes.has(n.path);
-          const chevron = n.children.length > 0 && !collapsed && (
-            <button
-              type="button"
-              className="tree-toggle"
-              aria-label={open ? t('folder-fold') : t('folder-unfold')}
-              aria-expanded={open}
-              onClick={(e) => {
-                e.stopPropagation();
-                toggle(n.path);
-              }}
-              onPointerDown={(e) => e.stopPropagation()}
-            >
-              <Icon icon={open ? ChevronDown : ChevronRight} size={12} />
-            </button>
-          );
-          const indent = { paddingLeft: 10 + depth * 14 } as const;
-          const f = n.folder;
-          const row = f ? (
-            <Tip key={f.id} label={f.path} placement="right" when={collapsed}>
-              {renamingFolder === f.id ? (
-                <input
-                  key={`rename-folder-${f.id}`}
-                  className="rail-new-tag"
-                  defaultValue={f.path}
-                  aria-label={t('folder-rename')}
-                  autoComplete="off"
-                  autoFocus
-                  onFocus={(e) => e.currentTarget.select()}
-                  onBlur={(e) => {
-                    const next = e.currentTarget.value.trim();
-                    setRenamingFolder(null);
-                    if (next && next !== f.path) void onRenameFolder(f.id, next);
-                  }}
-                  onKeyDown={(e) => {
-                    e.stopPropagation();
-                    if (e.key === 'Escape') {
-                      e.currentTarget.value = f.path;
-                      setRenamingFolder(null);
-                      return;
-                    }
-                    if (e.key === 'Enter') e.currentTarget.blur();
-                  }}
-                />
-              ) : (
-                <button
-                  type="button"
-                  className="rail-item"
-                  style={indent}
-                  aria-current={view === `folder:${f.id}` ? 'page' : undefined}
-                  onClick={() => onView(`folder:${f.id}`)}
-                  onPointerDown={(e) => onDragFolder(e, f.id, n.label)}
-                  data-folder-drop={f.path}
-                  data-drop-over={dropOver === `fdrop:${f.path}` || undefined}
-                  {...dropTarget(`folder:${f.id}`, view, dropOver)}
-                  data-drop-ok={
-                    (dragActive && acceptsDrop(`folder:${f.id}`, view)) ||
-                    (folderDragPath !== null &&
-                      f.path !== folderDragPath &&
-                      !f.path.startsWith(`${folderDragPath}/`))
-                      ? true
-                      : undefined
-                  }
-                >
-                  {chevron}
-                  <Icon icon={FolderClosed} />
-                  <span className="rail-text">{n.label}</span>
-                  {!collapsed && counts[`folder:${f.id}`] > 0 && (
-                    <span className="count">{counts[`folder:${f.id}`]}</span>
-                  )}
-                  {!collapsed && (
-                    <FolderMenu
-                      path={f.path}
-                      onRename={() => setRenamingFolder(f.id)}
-                      onNewChild={() => {
-                        setFolderPrefill(`${f.path}/`);
-                        setNamingFolder(true);
-                      }}
-                      onMove={() => onMoveFolder(f)}
-                      onArchiveInto={
-                        archivePath && !f.path.startsWith(`${archivePath}/`)
-                          ? () => void onRenameFolder(f.id, `${archivePath}/${n.label}`)
-                          : undefined
-                      }
-                      onUnarchive={
-                        archivePath && f.path.startsWith(`${archivePath}/`)
-                          ? () => void onRenameFolder(f.id, n.label)
-                          : undefined
-                      }
-                      onDelete={() => onDeleteFolder(f)}
-                    />
-                  )}
-                </button>
-              )}
-            </Tip>
-          ) : (
-            <button
-              key={n.path}
-              type="button"
-              className="rail-item tree-container"
-              style={indent}
-              aria-current={n.archiveRoot && view === 'archive' ? 'page' : undefined}
-              onClick={() => (n.archiveRoot ? onView('archive') : toggle(n.path))}
-              data-folder-drop={n.archiveRoot ? n.path : undefined}
-              data-drop-over={
-                (n.archiveRoot && dropOver === `fdrop:${n.path}`) || undefined
-              }
-              data-drop-ok={(n.archiveRoot && folderDragPath !== null) || undefined}
-            >
-              {chevron}
-              <Icon icon={n.archiveRoot ? Archive : FolderClosed} />
-              <span className="rail-text">{n.label}</span>
-              {!collapsed && n.archiveRoot && (
-                <FolderMenu
-                  path={n.path}
-                  onNewChild={() => {
-                    setFolderPrefill(`${n.path}/`);
-                    setNamingFolder(true);
-                  }}
-                />
-              )}
-            </button>
-          );
-          return (
-            <div key={n.path}>
-              {row}
-              {open && n.children.map((c) => renderNode(c, depth + 1))}
-            </div>
-          );
-        };
-        return tree.map((n) => renderNode(n, 0));
-      })()}
+      {tree.map((n) => renderNode(n, 0))}
       {/* The header shows even with no tags yet, because the + is how the first
           one gets made — a section that only appears once you already have one
           is a feature you cannot find.
@@ -500,9 +565,9 @@ export function Rail({
                 type="button"
                 className="rail-add"
                 aria-label={t('tag-new')}
-                onClick={() => setNaming(true)}
+                onClick={() => (collapsed ? setNamingDialog('tag') : setNaming(true))}
               >
-                <Icon icon={Plus} size={13} />
+                <Icon icon={collapsed ? TagPlus : Plus} size={13} />
               </button>
             </Tip>
           </div>
@@ -660,6 +725,23 @@ export function Rail({
           }}
         />
       )}
+
+      <NameDialog
+        open={namingDialog === 'folder'}
+        title={t('folder-new')}
+        placeholder={t('folder-new-placeholder')}
+        icon={FolderPlus}
+        onClose={() => setNamingDialog(null)}
+        onSubmit={(name) => void onCreateFolder(name)}
+      />
+      <NameDialog
+        open={namingDialog === 'tag'}
+        title={t('tag-new')}
+        placeholder={t('tag-new-placeholder')}
+        icon={TagPlus}
+        onClose={() => setNamingDialog(null)}
+        onSubmit={(name) => void onCreateTag(name)}
+      />
     </nav>
   );
 }

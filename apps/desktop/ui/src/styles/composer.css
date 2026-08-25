@@ -276,6 +276,27 @@ body.resizing {
   block-size: 10px;
 }
 
+/* The section headers keep their + when the rail collapses: creating a
+   folder or a tag is still on offer, icon-only, centred in the narrow
+   column. The heading text still fades — only the button stays, and the
+   glyph (folder-plus, tag-plus) says which one it is. */
+.rail[data-collapsed] .rail-label.rail-label-row {
+  opacity: 1;
+  pointer-events: auto;
+  justify-content: center;
+}
+
+.rail[data-collapsed] .rail-label-row > span {
+  opacity: 0;
+  inline-size: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.rail[data-collapsed] .rail-label-row .rail-add {
+  margin-inline-end: 0;
+}
+
 @media (prefers-reduced-motion: no-preference) {
   /* grid-template-columns interpolates, so the whole three-pane layout moves
      together and the list pane is never briefly overlapped or short. */

@@ -2,8 +2,10 @@ import type { Dispatch, SetStateAction } from 'react';
 import { api, type ActionKind, type Folder, type OutboxRow, type Thread } from '../lib/api';
 import { count as fmtCount } from '../lib/format';
 import { t } from '../lib/strings';
+import { nestableRolePath } from '../lib/folders';
+import { Archive as ArchiveIcon, Trash2 } from 'lucide-react';
 import { Confirm } from './Confirm';
-import { Picker } from './Picker';
+import { Picker, type PickerOption } from './Picker';
 
 /**
  * The app's confirmation stack: every dialog that stands between a click
@@ -104,17 +106,45 @@ export function AppDialogs({
         subject={movingFolder ? (movingFolder.path.split(/[/.]/).pop() ?? movingFolder.path) : null}
         options={(() => {
           if (!movingFolder) return [];
-          const out = [{ id: -1, label: t('folder-move-top') }];
-          const archive = folders.find((f) => f.role === 'archive');
-          if (archive && movingFolder.path !== archive.path) {
-            out.push({ id: archive.id, label: 'Archive' });
-          }
+          const archiveAnchor = nestableRolePath(folders, 'archive');
+          const trashAnchor = nestableRolePath(folders, 'trash');
+          const within = (p: string, root: string | undefined) =>
+            root !== undefined && (p === root || p.startsWith(`${root}/`) || p.startsWith(`${root}.`));
+          // Where the folder already stands is not a move: a top-level folder
+          // is not offered Top level, and a child is not offered its own
+          // parent.
+          const parent = movingFolder.path.includes('/')
+            ? movingFolder.path.slice(0, movingFolder.path.lastIndexOf('/'))
+            : null;
+          const out: PickerOption[] = parent === null ? [] : [{ id: -1, label: t('folder-move-top') }];
           for (const f of folders) {
             if (f.role) continue;
             if (f.id === movingFolder.id) continue;
             if (f.path === movingFolder.path || f.path.startsWith(`${movingFolder.path}/`))
               continue;
+            if (f.path === parent) continue;
+            // The labels wearing the anchors' own names are the pinned rows'
+            // business, and nothing nests into a binned folder — restoring
+            // one is its own Move.
+            if (f.path === archiveAnchor || f.path === trashAnchor) continue;
+            if (within(f.path, trashAnchor)) continue;
             out.push({ id: f.id, label: f.path });
+          }
+          // Archive and Trash close the list, each wearing its own glyph —
+          // and never offered to a folder already standing in it. The row
+          // behind the option is whichever folder holds the anchor: the role
+          // folder where one exists, or the plain folder doing the job by
+          // name — Namecheap marks no \Archive at all.
+          const anchorRow = (anchor: string | undefined, role: string) =>
+            folders.find((f) => f.role === role) ??
+            folders.find((f) => !f.role && f.path === anchor);
+          const archive = anchorRow(archiveAnchor, 'archive');
+          if (archive && archiveAnchor && !within(movingFolder.path, archiveAnchor)) {
+            out.push({ id: archive.id, label: t('mailbox-archive'), icon: ArchiveIcon });
+          }
+          const trash = anchorRow(trashAnchor, 'trash');
+          if (trash && trashAnchor && !within(movingFolder.path, trashAnchor)) {
+            out.push({ id: trash.id, label: t('mailbox-trash'), icon: Trash2 });
           }
           return out;
         })()}
@@ -124,14 +154,27 @@ export function AppDialogs({
           setMovingFolder(null);
           if (!f) return;
           const leaf = f.path.split(/[/.]/).pop() ?? f.path;
-          const targetPath = id === -1 ? '' : (folders.find((x) => x.id === id)?.path ?? '');
+          // The pinned rows carry the role folders' ids, but the rename goes
+          // to the nestable anchor — on Gmail an ordinary Archive or Trash
+          // label, never the reserved [Gmail] names.
+          const chosen = folders.find((x) => x.id === id);
+          const targetPath =
+            id === -1
+              ? ''
+              : chosen?.role === 'archive' || chosen?.role === 'trash'
+                ? (nestableRolePath(folders, chosen.role) ?? '')
+                : (chosen?.path ?? '');
           const next = targetPath ? `${targetPath}/${leaf}` : leaf;
           if (next === f.path) return;
           void api
             .renameFolder(f.id, next)
             .then(() => api.folders().then(setFolders))
             .then(() =>
-              setToast(t('folder-moved', { name: leaf, to: targetPath || t('rail-folders') })),
+              setToast(
+                chosen?.role === 'trash'
+                  ? t('folder-trashed', { name: leaf })
+                  : t('folder-moved', { name: leaf, to: targetPath || t('rail-folders') }),
+              ),
             )
             .catch((e) => setToast(t('folder-failed', { error: String(e) })));
         }}
