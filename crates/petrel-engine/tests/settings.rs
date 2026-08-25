@@ -104,6 +104,15 @@ fn account_summary_carries_counts_and_folder_mapping() {
     for id in ids.iter().take(3) {
         store.set_flags(*id, flags::SEEN, 0).unwrap();
     }
+    // The header's unread is the inbox's unread — the number every other
+    // surface shows. Four of five live there; the fifth, unread but filed
+    // away, is true but not this number's business.
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+    for (i, id) in ids.iter().enumerate() {
+        if i < 4 {
+            store.place_message_at(*id, inbox, (i as u32) + 1).unwrap();
+        }
+    }
 
     let accounts = store.accounts().unwrap();
     let a = accounts
@@ -112,7 +121,10 @@ fn account_summary_carries_counts_and_folder_mapping() {
         .expect("the account");
 
     assert_eq!(a.message_count, 5);
-    assert_eq!(a.unread_count, 2, "three were marked read");
+    assert_eq!(
+        a.unread_count, 1,
+        "three read, one unread in the inbox, one unread filed away"
+    );
     assert_eq!(a.color, "#9A6B1F");
     assert_eq!(
         a.newest_ms,

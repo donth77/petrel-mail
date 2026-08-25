@@ -37,6 +37,7 @@ impl Store {
             limit,
             offset,
             view.bound().map(str::to_string),
+            matches!(view, ListView::Folder(r) if r == "drafts"),
         )
     }
 
@@ -59,6 +60,7 @@ impl Store {
             1,
             0,
             Some(thread_id.to_string()),
+            false,
         )?;
         Ok(rows.into_iter().next())
     }
@@ -72,7 +74,22 @@ impl Store {
         limit: u32,
         offset: u32,
         bound: Option<String>,
+        // Drafts list one by one: a draft is a thing you finish, not a
+        // conversation, and two drafts that happen to share a subject — or
+        // even a Message-ID, edited apart on the server — are still two
+        // drafts. Every other view groups into conversations.
+        per_message: bool,
     ) -> Result<Vec<ThreadListing>> {
+        let key = if per_message {
+            "-id"
+        } else {
+            "coalesce(thread_id, -id)"
+        };
+        let mkey = if per_message {
+            "-m.id"
+        } else {
+            "coalesce(m.thread_id, -m.id)"
+        };
         let sql = format!(
             "SELECT coalesce(m.thread_id, -m.id), m.id, coalesce(m.from_display,''), coalesce(m.from_addr,''),
                     coalesce(m.subject,''), coalesce(m.snippet,''), m.date_ms, t.n,
@@ -90,21 +107,23 @@ impl Store {
                      ORDER BY a.id LIMIT 1) AS attach_name
              FROM messages m
              JOIN (
-               SELECT coalesce(thread_id, -id) AS thread_id, max(date_ms) AS md, count(*) AS n,
+               SELECT {key} AS thread_id, max(date_ms) AS md, count(*) AS n,
                       group_concat(DISTINCT coalesce(nullif(from_display,''), from_addr))
                         AS participants,
                       max(CASE WHEN flags & 1 = 0 THEN 1 ELSE 0 END) AS unread,
                       max(CASE WHEN flags & 4 != 0 THEN 1 ELSE 0 END) AS starred,
                       max(has_attachments) AS attach
                FROM messages WHERE deleted_at_ms IS NULL AND account_id = {account} AND {inner}
-               GROUP BY coalesce(thread_id, -id)
-             ) t ON coalesce(m.thread_id, -m.id) = t.thread_id AND m.date_ms = t.md
+               GROUP BY {key}
+             ) t ON {mkey} = t.thread_id AND m.date_ms = t.md
              WHERE m.deleted_at_ms IS NULL AND m.account_id = {account} AND {outer}
-             GROUP BY coalesce(m.thread_id, -m.id)
+             GROUP BY {mkey}
              ORDER BY m.date_ms DESC LIMIT ?1 OFFSET ?2",
             inner = inner,
             outer = outer,
             account = account,
+            key = key,
+            mkey = mkey,
         );
         let mut stmt = self.conn.prepare_cached(&sql)?;
         // Two params, or three when the view binds a folder role or tag name.
@@ -246,12 +265,17 @@ impl Store {
                 seen = flags::SEEN
             )
         };
+        let ckey = if matches!(view, ListView::Folder(r) if r == "drafts") {
+            "-id"
+        } else {
+            "coalesce(thread_id, -id)"
+        };
         let sql = format!(
             "SELECT count(*) FROM (
-               SELECT coalesce(thread_id, -id) AS tid
+               SELECT {ckey} AS tid
                FROM messages
                WHERE deleted_at_ms IS NULL AND account_id = {account} AND {pred}
-               GROUP BY coalesce(thread_id, -id)
+               GROUP BY {ckey}
                {having}
              )",
             account = self.active_account()?.unwrap_or(-1),

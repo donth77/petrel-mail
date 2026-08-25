@@ -350,3 +350,47 @@ mod server_sync {
         assert_eq!(ingested.message_id, id);
     }
 }
+
+#[test]
+fn two_drafts_list_as_two_even_when_threaded_together() {
+    // A draft is a thing you finish, not a conversation: the drafts view
+    // lists per message, so two drafts sharing a subject — even a thread —
+    // are two rows, the way the server's Drafts folder shows them.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut store = petrel_engine::store::Store::open(&dir.path().join("p.db")).expect("store");
+    let blobs = petrel_engine::blob::BlobStore::open(&dir.path().join("blobs")).expect("blobs");
+    let account = store.ensure_test_account().expect("account");
+    let drafts = store
+        .ensure_folder(account, "drafts", "Drafts")
+        .expect("folder");
+    let raw = |mid: &str, body: &str| {
+        format!(
+            "From: Me <me@example.com>\r\nTo: you@example.com\r\n\
+             Subject: the same subject\r\nDate: Tue, 18 Aug 2026 14:02:00 +0000\r\n\
+             Message-ID: <{mid}>\r\nMIME-Version: 1.0\r\n\
+             Content-Type: text/plain; charset=utf-8\r\n\r\n{body}\r\n"
+        )
+        .into_bytes()
+    };
+    store
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(drafts),
+            Some(1),
+            &raw("d1@x", "first words"),
+        )
+        .expect("ingest");
+    store
+        .ingest_raw_second_copy(
+            &blobs,
+            account,
+            Some(drafts),
+            2,
+            &raw("d1@x", "second thoughts"),
+        )
+        .expect("second");
+    let view = petrel_engine::store::ListView::parse("drafts");
+    let rows = store.list_threads(&view, 0, 50).expect("list");
+    assert_eq!(rows.len(), 2, "two drafts are two rows");
+}

@@ -1156,6 +1156,23 @@ impl Store {
     /// Idempotent per (account, Message-ID): re-ingesting the same message —
     /// which happens constantly, since a resync re-fetches — updates rather
     /// than duplicating.
+    /// Ingests a message the server holds as a *second copy* of one already
+    /// stored — same Message-ID, different UID, both live. Dedupe would fold
+    /// it into the first and throw its content away; a draft edited into two
+    /// drafts, or a double-delivered message, is two rows on the server and
+    /// stays two rows here. The dedupe key is suffixed with the UID so later
+    /// refetches of the same copy still land on this row.
+    pub fn ingest_raw_second_copy(
+        &mut self,
+        blobs: &crate::blob::BlobStore,
+        account_id: i64,
+        folder_id: Option<i64>,
+        uid: u32,
+        raw: &[u8],
+    ) -> Result<Ingested> {
+        self.ingest_raw_keyed(blobs, account_id, folder_id, Some(uid), raw, Some(uid))
+    }
+
     pub fn ingest_raw(
         &mut self,
         blobs: &crate::blob::BlobStore,
@@ -1163,6 +1180,18 @@ impl Store {
         folder_id: Option<i64>,
         uid: Option<u32>,
         raw: &[u8],
+    ) -> Result<Ingested> {
+        self.ingest_raw_keyed(blobs, account_id, folder_id, uid, raw, None)
+    }
+
+    fn ingest_raw_keyed(
+        &mut self,
+        blobs: &crate::blob::BlobStore,
+        account_id: i64,
+        folder_id: Option<i64>,
+        uid: Option<u32>,
+        raw: &[u8],
+        copy_suffix: Option<u32>,
     ) -> Result<Ingested> {
         let (hash, blob_size) = blobs
             .write(raw)
@@ -1197,10 +1226,13 @@ impl Store {
 
         // Message-ID is the dedupe key; without one, fall back to the blob hash
         // so a broken message still can't multiply on every resync.
-        let dedupe_key = parsed
+        let mut dedupe_key = parsed
             .message_id
             .clone()
             .unwrap_or_else(|| format!("blake3:{hash}"));
+        if let Some(n) = copy_suffix {
+            dedupe_key = format!("{dedupe_key}::copy-{n}");
+        }
 
         let existing: Option<i64> = tx
             .query_row(
@@ -1431,13 +1463,17 @@ impl Store {
                     coalesce(a.color,''), a.local_archive,
                     (SELECT count(*) FROM messages m
                       WHERE m.account_id = a.id AND m.deleted_at_ms IS NULL),
-                    -- Unread that a person would claim as theirs. Spam and
-                    -- the bin are excluded: now that both are synced, counting
-                    -- them would have the account header announce unread mail
-                    -- whose whole point is that it was already dealt with.
+                    -- The inbox's unread, because that is the number every
+                    -- other surface shows. Counting unread *anywhere* had the
+                    -- switcher announce seven for an account whose inbox said
+                    -- zero — old newsletters filed unread into the archive,
+                    -- true but useless, and disagreeing with the pane below.
                     (SELECT count(*) FROM messages m
                       WHERE m.account_id = a.id AND m.deleted_at_ms IS NULL
                         AND m.flags & 1 = 0
+                        AND EXISTS (SELECT 1 FROM placements p
+                                    JOIN folders f ON f.id = p.folder_id
+                                    WHERE p.message_id = m.id AND f.role = 'inbox')
                         AND NOT EXISTS (SELECT 1 FROM placements p
                                         JOIN folders f ON f.id = p.folder_id
                                         WHERE p.message_id = m.id

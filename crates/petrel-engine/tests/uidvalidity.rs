@@ -295,3 +295,102 @@ fn healing_fills_only_the_number_that_was_lost() {
             .expect("no-op heal")
     );
 }
+
+#[test]
+fn the_sweep_removes_only_what_the_server_no_longer_holds() {
+    let (_dir, mut store, blobs, account, folder) = setup();
+    for (uid, mid) in [(11, "a@x"), (12, "b@x"), (13, "c@x")] {
+        store
+            .ingest_raw(&blobs, account, Some(folder), Some(uid), &fixture(mid, mid))
+            .expect("ingest");
+    }
+    // One placement quarantined: its number is NULL, and no server answer
+    // about live UIDs says anything about it.
+    let held = store
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(folder),
+            Some(14),
+            &fixture("d@x", "d"),
+        )
+        .expect("ingest");
+    store
+        .remap_folder_after_reset(
+            folder,
+            &[
+                (11, Some("a@x".into())),
+                (12, Some("b@x".into())),
+                (13, Some("c@x".into())),
+            ],
+            // Incomplete, so the unlisted fourth message is held, not evicted.
+            false,
+        )
+        .expect("remap");
+    assert_eq!(store.uid_placement_count(folder).unwrap(), 3);
+
+    // The server now holds only 11 and 13: 12 was moved elsewhere.
+    let present: std::collections::HashSet<u32> = [11, 13].into_iter().collect();
+    let removed = store
+        .remove_placements_absent(folder, &present)
+        .expect("sweep");
+    assert_eq!(removed, 1);
+    assert_eq!(store.uid_placement_count(folder).unwrap(), 2);
+    // The quarantined message keeps its placement.
+    assert_eq!(store.folders_of(held.message_id).unwrap(), vec![folder]);
+}
+
+#[test]
+fn a_delivered_move_takes_the_source_placement_with_it() {
+    let (_dir, mut store, blobs, account, folder) = setup();
+    let a = store
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(folder),
+            Some(21),
+            &fixture("m@x", "m"),
+        )
+        .expect("ingest");
+    assert!(
+        store
+            .remove_placement(a.message_id, account, "INBOX")
+            .expect("remove")
+    );
+    assert!(store.folders_of(a.message_id).unwrap().is_empty());
+    // Absent placement: nothing to remove, and saying so is not an error.
+    assert!(
+        !store
+            .remove_placement(a.message_id, account, "INBOX")
+            .expect("no-op")
+    );
+}
+
+#[test]
+fn a_second_live_copy_is_its_own_message() {
+    let (_dir, mut store, blobs, account, folder) = setup();
+    let first = store
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(folder),
+            Some(70),
+            &fixture("twice@x", "draft one"),
+        )
+        .expect("ingest");
+    // Same Message-ID, different content, both live on the server: the
+    // second copy keeps its own row and placement rather than overwriting
+    // the first.
+    let raw2 = fixture("twice@x", "draft two");
+    let second = store
+        .ingest_raw_second_copy(&blobs, account, Some(folder), 71, &raw2)
+        .expect("second copy");
+    assert_ne!(first.message_id, second.message_id);
+    assert_eq!(store.uid_placement_count(folder).unwrap(), 2);
+    // A refetch of the same copy lands on the same row, not a third.
+    let again = store
+        .ingest_raw_second_copy(&blobs, account, Some(folder), 71, &raw2)
+        .expect("refetch");
+    assert_eq!(again.message_id, second.message_id);
+    assert_eq!(store.uid_placement_count(folder).unwrap(), 2);
+}

@@ -206,8 +206,10 @@ pub(crate) async fn drain_actions(
                     });
                 match dest {
                     Some(to) if to != folder => {
-                        match petrel_providers::imap::move_uid(&cfg, &folder, uid, &to, has_move)
-                            .await
+                        let moved = match petrel_providers::imap::move_uid(
+                            &cfg, &folder, uid, &to, has_move,
+                        )
+                        .await
                         {
                             // A destination the server has never heard of —
                             // the folder was made here moments ago. Create it
@@ -228,7 +230,19 @@ pub(crate) async fn drain_actions(
                                 }
                             }
                             ok => ok,
+                        };
+                        // The server confirmed the move: the source placement
+                        // goes now, from here, not from whatever sync pass
+                        // next looks. A fetch that raced the delivery may
+                        // have re-added it, and a placement the server no
+                        // longer backs is how a conversation ends up haunting
+                        // both its folder and the inbox.
+                        if moved.is_ok()
+                            && let Ok(store) = state.store.lock()
+                        {
+                            let _ = store.remove_placement(item.message_id, account, &folder);
                         }
+                        moved
                     }
                     // Already where it belongs, or nowhere to send it.
                     _ => Ok(()),

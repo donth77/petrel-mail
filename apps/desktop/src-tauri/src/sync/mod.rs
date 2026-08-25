@@ -157,6 +157,12 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
 
         state.seeding.store(false, Ordering::Relaxed);
 
+        // The first pass may have re-listed messages whose move the drain has
+        // since delivered; sweep once now rather than waiting out the first
+        // IDLE, so a conversation never spends the first half hour standing
+        // in both its folder and the inbox.
+        reconcile_ghost_placements(&state, account, &cfg).await;
+
         // History fills in behind the present, on its own clock — see
         // spawn_backfill for why it is not part of the poll loop.
         spawn_backfill(Arc::clone(&state), account, cfg.clone());
@@ -213,6 +219,7 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
             )
             .await;
             send_due(Arc::clone(&state), account).await;
+            reconcile_ghost_placements(&state, account, &cfg).await;
 
             // One connection for the whole account, STATUS-gated per folder:
             // a quiet cycle costs a line per folder, not a login per folder.
@@ -783,5 +790,148 @@ mod folder_survey_tests {
             true,
         );
         assert_eq!(out.len(), 1);
+    }
+}
+
+/// Drops placements the server no longer backs.
+///
+/// The windowed sync only ever adds and updates: a message moved out of a
+/// folder on the server — by our own drain, a rule, or another client — left
+/// its old placement behind forever, so the conversation stood in both its
+/// folder and the inbox. STATUS is the cheap tell: when a folder's server
+/// count falls below the store's UID-bearing placement count, something we
+/// hold is gone, and one SEARCH names the survivors. Server counts at or
+/// above ours are the fetch's business, not this sweep's — new mail is not a
+/// ghost. Equal counts can mask one ghost plus one unfetched arrival; the
+/// next arrival or move tips the balance and the sweep catches it then.
+async fn reconcile_ghost_placements(
+    state: &Arc<AppState>,
+    account: i64,
+    cfg: &petrel_providers::imap::ImapConfig,
+) {
+    let candidates: Vec<(i64, String, i64)> = {
+        let Ok(store) = state.store.lock() else {
+            return;
+        };
+        let Ok(folders) = store.folders(account) else {
+            return;
+        };
+        folders
+            .into_iter()
+            .filter_map(|f| {
+                let n = store.uid_placement_count(f.id).ok()?;
+                (n > 0).then_some((f.id, f.path, n))
+            })
+            .collect()
+    };
+    if candidates.is_empty() {
+        return;
+    }
+    let paths: Vec<String> = candidates.iter().map(|c| c.1.clone()).collect();
+    let Ok(counts) = petrel_providers::imap::folder_counts(cfg, &paths).await else {
+        return;
+    };
+    for (folder_id, path, local) in candidates {
+        let Some((_, server)) = counts.iter().find(|(p, _)| *p == path) else {
+            continue;
+        };
+        if i64::from(*server) == local {
+            continue;
+        }
+        let present: std::collections::HashSet<u32> =
+            match petrel_providers::imap::uids_in_folder(cfg, &path).await {
+                Ok(uids) => uids.into_iter().collect(),
+                Err(e) => {
+                    log_sync(&format!("{path}: reconcile sweep failed: {e}"));
+                    continue;
+                }
+            };
+        // Outward: placements the server no longer backs go.
+        let removed = state
+            .store
+            .lock()
+            .ok()
+            .and_then(|s| s.remove_placements_absent(folder_id, &present).ok())
+            .unwrap_or(0);
+        if removed > 0 {
+            log_sync(&format!(
+                "{path}: {removed} placement(s) the server no longer holds removed"
+            ));
+        }
+        // Inward: server UIDs the store never placed. The windowed sync can
+        // close a watermark over a gap — a draft revision saved by webmail
+        // landed between a backfill's endpoint and the forward window and
+        // was skipped forever, watermark shut behind it. Only once the
+        // backfill has finished its walk: before that, "missing" is most of
+        // the folder and belongs to the backfill, not to this sweep.
+        let (stored, backfilled) = {
+            let Ok(store) = state.store.lock() else {
+                continue;
+            };
+            let stored: std::collections::HashSet<u32> = store
+                .placement_uids(folder_id)
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+            (
+                stored,
+                store.backfill_floor(folder_id).ok().flatten() == Some(1),
+            )
+        };
+        if !backfilled {
+            continue;
+        }
+        let mut missing: Vec<u32> = present.difference(&stored).copied().collect();
+        missing.sort_unstable();
+        if missing.is_empty() {
+            continue;
+        }
+        // Bounded: a legitimate gap is a handful; thousands means something
+        // larger is wrong and one cycle should not fetch a mailbox.
+        let overflow = missing.len().saturating_sub(200);
+        missing.truncate(200);
+        let fetched = petrel_providers::imap::fetch_uids_each(
+            cfg,
+            &path,
+            &missing,
+            |uid, flags, raw| {
+                let Ok(mut store) = state.store.lock() else { return };
+                // Two copies of one Message-ID, both live on the server right
+                // now — this sweep only fetches UIDs the server just named.
+                // Dedupe would fold this one into the copy already held and
+                // throw its content away; a draft edited apart on the server,
+                // or a double-delivered message, is two rows there and stays
+                // two rows here.
+                if let Some(parsed) = petrel_mime::parse_message(raw)
+                    && let Some(mid) = parsed.message_id.as_deref()
+                    && let Ok(Some(existing)) = store.message_by_msgid(account, mid)
+                    && matches!(store.placement_uid(existing, folder_id), Ok(Some(Some(held))) if held != i64::from(uid))
+                {
+                    match store.ingest_raw_second_copy(&state.blobs, account, Some(folder_id), uid, raw) {
+                        Ok(ingested) => {
+                            let _ = store.set_message_flags(ingested.message_id, flags);
+                            log_sync(&format!(
+                                "{path}: uid {uid} is a second live copy of a stored message; kept as its own"
+                            ));
+                        }
+                        Err(e) => log_sync(&format!("{path}: second copy uid {uid} failed: {e}")),
+                    }
+                    return;
+                }
+                let _ = ingest_fenced(&mut store, &state.blobs, account, folder_id, uid, flags, raw);
+            },
+        )
+        .await
+        .unwrap_or(0);
+        if fetched > 0 || overflow > 0 {
+            log_sync(&format!(
+                "{path}: {fetched} message(s) the store was missing fetched{}",
+                if overflow > 0 {
+                    format!(" ({overflow} more next cycle)")
+                } else {
+                    String::new()
+                }
+            ));
+        }
     }
 }

@@ -375,6 +375,102 @@ impl Store {
         Ok(n > 0)
     }
 
+    /// How many placements in this folder claim a server UID — the number a
+    /// folder's STATUS should agree with, ghosts aside.
+    pub fn uid_placement_count(&self, folder_id: i64) -> Result<i64> {
+        Ok(self.conn.query_row(
+            "SELECT count(*) FROM placements WHERE folder_id = ?1 AND uid IS NOT NULL",
+            params![folder_id],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Drops the placements whose UIDs the server no longer answers for.
+    ///
+    /// The windowed sync only ever adds: a message moved out on the server —
+    /// by our own drain, another client, or a rule — left its old placement
+    /// behind forever, and a conversation haunted both its folder and the
+    /// inbox. Given the folder's actual UID set, everything stored but absent
+    /// goes. NULL-UID placements stay: they are local or quarantined, and the
+    /// server not naming them is exactly what is already known about them.
+    pub fn remove_placements_absent(
+        &self,
+        folder_id: i64,
+        present: &std::collections::HashSet<u32>,
+    ) -> Result<usize> {
+        let stored: Vec<i64> = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT uid FROM placements WHERE folder_id = ?1 AND uid IS NOT NULL")?;
+            let rows = stmt.query_map(params![folder_id], |r| r.get::<_, i64>(0))?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        let gone: Vec<i64> = stored
+            .into_iter()
+            .filter(|u| !present.contains(&(*u as u32)))
+            .collect();
+        for chunk in gone.chunks(500) {
+            let marks = vec!["?"; chunk.len()].join(",");
+            let mut params: Vec<&dyn rusqlite::ToSql> = vec![&folder_id];
+            for u in chunk {
+                params.push(u);
+            }
+            self.conn.execute(
+                &format!("DELETE FROM placements WHERE folder_id = ?1 AND uid IN ({marks})"),
+                rusqlite::params_from_iter(params),
+            )?;
+        }
+        Ok(gone.len())
+    }
+
+    /// Every UID this folder's placements carry — the store's side of the
+    /// reconciliation diff.
+    pub fn placement_uids(&self, folder_id: i64) -> Result<Vec<u32>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT uid FROM placements WHERE folder_id = ?1 AND uid IS NOT NULL")?;
+        let rows = stmt.query_map(params![folder_id], |r| r.get::<_, i64>(0))?;
+        Ok(rows
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|u| u as u32)
+            .collect())
+    }
+
+    /// The UID a message's placement in one folder carries, if it is placed
+    /// there at all. `None`: not placed. `Some(None)`: placed without a
+    /// number — local or quarantined.
+    pub fn placement_uid(&self, message_id: i64, folder_id: i64) -> Result<Option<Option<i64>>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT uid FROM placements WHERE message_id = ?1 AND folder_id = ?2",
+                params![message_id, folder_id],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .optional()?)
+    }
+
+    /// Removes one message's placement in one folder — what a delivered move
+    /// means locally. The drain calls this the moment the server confirms,
+    /// so a fetch that raced the delivery cannot leave the old placement
+    /// haunting the folder it came from.
+    pub fn remove_placement(
+        &self,
+        message_id: i64,
+        account_id: i64,
+        folder_path: &str,
+    ) -> Result<bool> {
+        let n = self.conn.execute(
+            "DELETE FROM placements
+             WHERE message_id = ?1
+               AND folder_id = (SELECT id FROM folders
+                                 WHERE account_id = ?2 AND path = ?3)",
+            params![message_id, account_id, folder_path],
+        )?;
+        Ok(n > 0)
+    }
+
     pub fn message_by_msgid(&self, account_id: i64, msgid: &str) -> Result<Option<i64>> {
         Ok(self
             .conn
