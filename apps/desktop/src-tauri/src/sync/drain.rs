@@ -21,7 +21,12 @@ pub(crate) fn spawn_drain_worker(state: Arc<AppState>, account: i64, cfg: ImapCo
             tokio::time::sleep(std::time::Duration::from_millis(900)).await;
             let has_move = state.server_has_move.load(Ordering::Relaxed);
             let has_uidplus = state.server_has_uidplus.load(Ordering::Relaxed);
-            drain_actions(
+            // The overlap guard is one flag across every account, and losing
+            // to it must not lose the wake-up: a notification arriving while
+            // another account drains used to be consumed and dropped, leaving
+            // this account's queue waiting for the next unrelated signal.
+            // The loser retries until the guard is free.
+            while !drain_actions(
                 Arc::clone(&state),
                 account,
                 cfg.clone(),
@@ -29,7 +34,10 @@ pub(crate) fn spawn_drain_worker(state: Arc<AppState>, account: i64, cfg: ImapCo
                 has_uidplus,
                 state.server_is_gmail.load(Ordering::Relaxed),
             )
-            .await;
+            .await
+            {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
             send_due(Arc::clone(&state), account).await;
         }
     });
@@ -67,7 +75,10 @@ pub(crate) async fn drain_actions(
     // capabilities rather than sniffed here: the probe already worked it out,
     // and two places deciding what a server is would eventually disagree.
     looks_like_gmail: bool,
-) {
+    // Whether this call held the floor: false only when another drain was
+    // already running, so the caller knows to come back rather than treat
+    // the queue as attended to.
+) -> bool {
     use petrel_engine::actions::ActionKind;
 
     // Refuse to overlap. compare_exchange rather than a load-then-store: two
@@ -77,34 +88,90 @@ pub(crate) async fn drain_actions(
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
     {
-        return;
+        return false;
     }
     let _guard = DrainGuard(Arc::clone(&state));
 
     let pending = match state.store.lock().map(|s| s.pending_actions(account)) {
         Ok(Ok(p)) => p,
-        _ => return,
+        _ => return true,
     };
     if pending.is_empty() {
-        return;
+        return true;
     }
     log_sync(&format!("draining {} queued change(s)", pending.len()));
 
     let mut delivered = 0usize;
     let mut stuck = 0usize;
+    let mut undeliverable = 0usize;
     for item in pending {
         let Ok(kind) = serde_json::from_str::<ActionKind>(&item.kind_json) else {
             continue;
         };
-        let Some(uid) = item.uid else {
-            // Never placed anywhere, so there is no server-side message to act
-            // on. Nothing to deliver and nothing to retry.
+        // No UID survived locally — a move destroyed the placement that held
+        // it, or a UIDVALIDITY reset declared the number a lie. Before giving
+        // up, ask the server the question recovery asks, scoped to this one
+        // message: which of your numbers carries this Message-ID? The
+        // candidates are the folders the store last saw the message in, and
+        // a hit heals the placement that lost its number.
+        let mut resolved = item.uid.map(|u| (u, item.folder_path.clone()));
+        let mut search_failed = false;
+        if resolved.is_none()
+            && let Some(msgid) = item.msgid.as_deref().filter(|m| !m.is_empty())
+        {
+            for path in &item.candidate_paths {
+                match petrel_providers::imap::uids_for_message_id(&cfg, path, msgid).await {
+                    Ok(uids) => {
+                        if let Some(u) = uids.last().copied() {
+                            log_sync(&format!(
+                                "action {}: {path} answers to the Message-ID with UID {u}",
+                                item.action_id
+                            ));
+                            if let Ok(store) = state.store.lock() {
+                                let _ = store.heal_placement_uid(item.message_id, account, path, u);
+                            }
+                            resolved = Some((u, path.clone()));
+                            break;
+                        }
+                    }
+                    // A failed search says nothing about the message — the
+                    // network did not answer, so the action stays queued and
+                    // the next drain asks again.
+                    Err(e) => {
+                        search_failed = true;
+                        log_sync(&format!(
+                            "action {}: search of {path} failed: {e}",
+                            item.action_id
+                        ));
+                    }
+                }
+            }
+        }
+        let Some((uid, folder_path)) = resolved else {
+            if search_failed {
+                stuck += 1;
+                continue;
+            }
+            // Every folder we know of answered, and none holds it — or it has
+            // no Message-ID to ask about. There is no server copy for this
+            // action to change, and retrying cannot learn more. Out of the
+            // queue it goes, by name, in the log. The state is per action and
+            // an action can carry several messages: the last writer wins, but
+            // every terminal path leaves 'queued', which is what matters.
+            undeliverable += 1;
+            if let Ok(store) = state.store.lock() {
+                let _ = store.mark_action_state(item.action_id, "undeliverable");
+            }
+            log_sync(&format!(
+                "action {}: no server copy answers to it; marked undeliverable",
+                item.action_id
+            ));
             continue;
         };
-        let folder = if item.folder_path.is_empty() {
+        let folder = if folder_path.is_empty() {
             "INBOX".to_string()
         } else {
-            item.folder_path.clone()
+            folder_path
         };
 
         let result = match kind {
@@ -250,7 +317,13 @@ pub(crate) async fn drain_actions(
             }
         }
     }
+    let tail = if undeliverable > 0 {
+        format!(", {undeliverable} undeliverable")
+    } else {
+        String::new()
+    };
     log_sync(&format!(
-        "drained {delivered} change(s), {stuck} still queued"
+        "drained {delivered} change(s), {stuck} still queued{tail}"
     ));
+    true
 }

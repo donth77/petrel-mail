@@ -105,7 +105,10 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
         // already includes what the user did, so the fetch below confirms local
         // state instead of contradicting it — and anything still queued is
         // protected from being overwritten by the pending checks in the store.
-        drain_actions(
+        // If another drain holds the floor the fetch proceeds without it —
+        // the store's pending checks protect what is queued, and the drain
+        // worker retries until the floor frees.
+        let _ = drain_actions(
             Arc::clone(&state),
             account,
             cfg.clone(),
@@ -200,7 +203,7 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
 
             // Deliver first, so the fetch that follows confirms local state
             // rather than contradicting it — the same ordering as startup.
-            drain_actions(
+            let _ = drain_actions(
                 Arc::clone(&state),
                 account,
                 cfg.clone(),

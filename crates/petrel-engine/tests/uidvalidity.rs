@@ -189,3 +189,109 @@ fn recovery_never_deletes_a_blob_or_a_message() {
         "the raw bytes must still be readable"
     );
 }
+
+#[test]
+fn a_quarantined_action_still_names_its_message_and_where_to_ask() {
+    // Quarantine nulls the UID, and that must hold — but the action is not
+    // thereby lost. The pending row carries the Message-ID and the folder a
+    // drain can search, so delivery can ask the server for the new number
+    // instead of holding the change forever.
+    let (_dir, mut store, blobs, account, folder) = setup();
+    let ingested = store
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(folder),
+            Some(77),
+            &fixture("held@x", "held"),
+        )
+        .expect("ingest");
+    let thread = store
+        .thread_of(ingested.message_id)
+        .expect("thread lookup")
+        .expect("threaded");
+    store
+        .apply_thread_action(
+            account,
+            thread,
+            petrel_engine::actions::ActionKind::MarkRead,
+            None,
+            store.placement_policy(account).expect("policy"),
+        )
+        .expect("queue");
+    store
+        .remap_folder_after_reset(folder, &[], false)
+        .expect("remap");
+
+    let after = store.pending_actions(account).expect("pending");
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0].uid, None, "quarantine still holds the number");
+    assert_eq!(after[0].msgid.as_deref(), Some("held@x"));
+    assert_eq!(after[0].candidate_paths, vec!["INBOX".to_string()]);
+
+    // A deliverable action asks nothing: known UID, no candidates.
+    let fresh = store
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(folder),
+            Some(90),
+            &fixture("fresh@x", "fresh"),
+        )
+        .expect("ingest");
+    let t2 = store.thread_of(fresh.message_id).unwrap().unwrap();
+    store
+        .apply_thread_action(
+            account,
+            t2,
+            petrel_engine::actions::ActionKind::Star,
+            None,
+            store.placement_policy(account).expect("policy"),
+        )
+        .expect("queue");
+    let again = store.pending_actions(account).expect("pending");
+    let starred = again.iter().find(|a| a.uid == Some(90)).expect("fresh row");
+    assert!(starred.candidate_paths.is_empty());
+}
+
+#[test]
+fn healing_fills_only_the_number_that_was_lost() {
+    let (_dir, mut store, blobs, account, folder) = setup();
+    let a = store
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(folder),
+            Some(41),
+            &fixture("a@x", "a"),
+        )
+        .expect("ingest");
+    store
+        .remap_folder_after_reset(folder, &[], false)
+        .expect("remap");
+
+    // The server, asked by Message-ID, says the message is now UID 900.
+    assert!(
+        store
+            .heal_placement_uid(a.message_id, account, "INBOX", 900)
+            .expect("heal")
+    );
+    assert_eq!(store.max_uid(folder).unwrap(), Some(900));
+
+    // A placement already holding a UID is the sync's business: healing it
+    // is refused rather than applied.
+    let b = store
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(folder),
+            Some(50),
+            &fixture("b@x", "b"),
+        )
+        .expect("ingest");
+    assert!(
+        !store
+            .heal_placement_uid(b.message_id, account, "INBOX", 999)
+            .expect("no-op heal")
+    );
+}

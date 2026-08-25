@@ -355,6 +355,26 @@ impl Store {
     }
 
     /// The message this account holds under a wire Message-ID, if any.
+    /// Writes a UID the server has just confirmed onto the one placement that
+    /// lost its number — and only onto one that lost it. A placement already
+    /// holding a UID belongs to the sync; the drain never overrules it.
+    pub fn heal_placement_uid(
+        &self,
+        message_id: i64,
+        account_id: i64,
+        folder_path: &str,
+        uid: u32,
+    ) -> Result<bool> {
+        let n = self.conn.execute(
+            "UPDATE placements SET uid = ?1
+             WHERE message_id = ?2 AND uid IS NULL
+               AND folder_id = (SELECT id FROM folders
+                                 WHERE account_id = ?3 AND path = ?4)",
+            params![uid as i64, message_id, account_id, folder_path],
+        )?;
+        Ok(n > 0)
+    }
+
     pub fn message_by_msgid(&self, account_id: i64, msgid: &str) -> Result<Option<i64>> {
         Ok(self
             .conn

@@ -206,6 +206,15 @@ pub struct PendingAction {
     /// address on the server, so nothing that can be delivered.
     pub uid: Option<u32>,
     pub folder_path: String,
+    /// The message's Message-ID header, when it has one: the address of last
+    /// resort. With no UID, a drain can still ask a server which of its
+    /// numbers carries this header — the question UIDVALIDITY recovery asks,
+    /// scoped to one message.
+    pub msgid: Option<String>,
+    /// The folders worth asking, best guess first: where the message stood
+    /// when the action was queued, then wherever a placement still holds it.
+    /// Empty whenever a UID is already known — nothing needs asking.
+    pub candidate_paths: Vec<String>,
 }
 
 /// `Thu Jan  1 00:00:00 1970` — the shape mbox readers expect on a From line.

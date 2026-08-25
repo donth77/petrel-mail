@@ -12,9 +12,11 @@ impl Store {
     /// order the user performed them, or the later one loses.
     pub fn pending_actions(&self, account_id: i64) -> Result<Vec<PendingAction>> {
         let mut stmt = self.conn.prepare(
-            "SELECT a.id, a.kind, a.payload_json, am.message_id, p.uid, f.path
+            "SELECT a.id, a.kind, a.payload_json, am.message_id, p.uid, f.path,
+                    m.message_id_hdr
              FROM actions a
              JOIN action_messages am ON am.action_id = a.id
+             JOIN messages m ON m.id = am.message_id
              LEFT JOIN placements p ON p.message_id = am.message_id
              LEFT JOIN folders f ON f.id = p.folder_id
              WHERE a.account_id = ?1 AND a.state = 'queued'
@@ -28,6 +30,8 @@ impl Store {
                 message_id: r.get(3)?,
                 uid: r.get::<_, Option<i64>>(4)?.map(|u| u as u32),
                 folder_path: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                msgid: r.get::<_, Option<String>>(6)?,
+                candidate_paths: Vec::new(),
             })
         })?;
         let mut out: Vec<PendingAction> = rows.collect::<std::result::Result<Vec<_>, _>>()?;
@@ -43,10 +47,11 @@ impl Store {
             else {
                 continue;
             };
-            if let Some(prior) = payload
+            let prior = payload
                 .prior
                 .iter()
-                .find(|p| p.message_id == row.message_id)
+                .find(|p| p.message_id == row.message_id);
+            if let Some(prior) = prior
                 && let (Some(path), Some(uid)) = (&prior.source_path, prior.source_uid)
             {
                 // Only when the source placement is *gone* — a move deleted
@@ -69,6 +74,27 @@ impl Store {
                     row.uid = Some(uid);
                     row.folder_path = path.clone();
                 }
+            }
+            // Still no address. Gather the folders a Message-ID search could
+            // ask — the queue-time folders first, because for a move that is
+            // where the server copy still sits, then wherever a placement
+            // still holds the message, which for a quarantined number is the
+            // folder whose renumbering took the address away.
+            if row.uid.is_none() {
+                let mut paths: Vec<String> = Vec::new();
+                if let Some(prior) = prior {
+                    for fid in &prior.folder_ids {
+                        if let Some(p) = self.folder_path(*fid)?
+                            && !paths.contains(&p)
+                        {
+                            paths.push(p);
+                        }
+                    }
+                }
+                if !row.folder_path.is_empty() && !paths.contains(&row.folder_path) {
+                    paths.push(row.folder_path.clone());
+                }
+                row.candidate_paths = paths;
             }
         }
         Ok(out)
