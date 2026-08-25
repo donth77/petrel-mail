@@ -1,0 +1,55 @@
+/* ---------------------------------------------------------------- status */
+
+.status {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  block-size: 30px;
+  padding-inline: 14px;
+  border-block-start: 1px solid var(--hair);
+  background: var(--raised);
+  font-size: 11px;
+  color: var(--ink3);
+}
+
+.status .spacer {
+  flex-grow: 1;
+}
+
+/* ---------------------------------------------------------------- empty */
+
+.empty {
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 6px;
+  padding: 40px 24px;
+  text-align: center;
+  color: var(--ink2);
+  block-size: 100%;
+  align-content: center;
+}
+
+.empty h2 {
+  font-family: var(--display);
+  font-size: 15px;
+  font-weight: 650;
+  margin: 0;
+  color: var(--ink);
+}
+
+.empty p {
+  margin: 0;
+  font-size: 12.5px;
+  max-inline-size: 34ch;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

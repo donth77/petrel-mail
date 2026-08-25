@@ -1,0 +1,643 @@
+/* Docked composer. Bottom-right rather than a window:
+   a reply answers something you are reading, and taking over the screen to
+   write two lines loses the thing being replied to. */
+.compose {
+  position: fixed;
+  inset-block-end: 0;
+  inset-inline-end: 18px;
+  inline-size: min(560px, calc(100vw - 36px));
+  max-block-size: 74vh;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--hair);
+  border-block-end: 0;
+  border-start-start-radius: 12px;
+  border-start-end-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 -8px 40px rgba(24, 39, 48, 0.18);
+  z-index: 45;
+}
+
+/* Header rows in the composer: From, To, Cc, Subject.
+   Ported from the Compose mockup's own stylesheet rather than reinvented —
+   these class names came from there and their rules did not follow, so every
+   row rendered with no padding, no separator and no label column. */
+.hdrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  border-block-end: 1px solid var(--hair2);
+  font-size: 13px;
+}
+
+.hdrow .lab {
+  /* Fixed, so From/To/Cc/Subject line up into a column the eye can run down
+     instead of four labels each starting somewhere different. */
+  inline-size: 42px;
+  flex: none;
+  color: var(--ink3);
+  font-size: 12px;
+}
+
+/* The close button in the palette and help sheets, which have no header row to
+   sit in. Same placement as the settings one. */
+.palette-esc {
+  position: absolute;
+  inset-block-start: 12px;
+  inset-inline-end: 14px;
+  z-index: 1;
+}
+
+.compose-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px 9px 16px;
+  border-block-end: 1px solid var(--hair2);
+}
+
+.compose-title {
+  flex-grow: 1;
+  font-family: var(--display);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.compose-input {
+  flex-grow: 1;
+  min-inline-size: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  outline: none;
+}
+
+.compose-cc-toggle {
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink3);
+  cursor: pointer;
+}
+
+.compose-cc-toggle:hover {
+  color: var(--accent-ink);
+}
+
+.compose-body {
+  flex-grow: 1;
+  min-block-size: 180px;
+  padding: 14px 16px;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--ink);
+  resize: none;
+  outline: none;
+}
+
+.compose-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px 12px;
+  border-block-start: 1px solid var(--hair2);
+}
+
+/* The undo-send window. A control with a deadline, so it gets its own bar
+   rather than sharing the toast channel with "Archived". */
+.sending {
+  position: fixed;
+  inset-block-end: 22px;
+  inset-inline-start: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-inline-size: min(620px, calc(100vw - 32px));
+  padding: 9px 12px 9px 14px;
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+  background: var(--raised);
+  box-shadow: 0 12px 34px rgba(24, 39, 48, 0.2);
+  font-size: 13px;
+  z-index: 60;
+}
+
+.sending-count {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  color: var(--accent-ink);
+  flex: none;
+}
+
+.sending-now {
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--ink2);
+  cursor: pointer;
+  flex: none;
+}
+
+.sending-now:hover {
+  color: var(--ink);
+}
+
+/* The resolved time beside a snooze preset. "Tomorrow" is not a time. */
+.picker-when {
+  margin-inline-start: auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink3);
+  flex: none;
+}
+
+.picker-opt[data-active-item] .picker-when {
+  color: var(--accent-ink);
+}
+
+/* Resizable, collapsible rail.
+   Width lives in --rail-size, which the three-pane grid already consumes, so
+   the layout needs to know nothing about dragging. */
+.rail {
+  position: relative;
+}
+
+.rail-resize {
+  position: absolute;
+  inset-block: 0;
+  /* Fully inside the rail. Straddling the border reads nicer but overflows the
+     scroll box, which both widened scrollWidth past clientWidth and meant the
+     outer half of the handle was clipped by overflow-x: hidden — unclickable. */
+  inset-inline-end: 0;
+  inline-size: 6px;
+  cursor: col-resize;
+  /* Above the rail's own content so a drag near a button still grabs the
+     handle rather than the button. */
+  z-index: 5;
+}
+
+.rail-resize:hover,
+.rail-resize:focus-visible {
+  background: var(--accent);
+  opacity: 0.5;
+  outline: none;
+}
+
+/* While dragging, stop the pointer selecting text or turning into an I-beam
+   over whatever it happens to cross. */
+body.resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* Collapsed: icons only.
+   Labels stay in the flow and are clipped by the rail rather than removed, so
+   the panel narrowing *is* the animation — they slide out of view instead of
+   vanishing a frame before the width moves. Nothing can wrap on the way,
+   because everything here is nowrap. */
+.rail {
+  overflow-x: hidden;
+}
+
+.rail-text,
+.rail-label,
+.account .clip,
+.account .mono {
+  white-space: nowrap;
+}
+
+/* Icons never shrink. The labels stay in the flow so they can slide out with
+   the panel, which makes each row's content much wider than a collapsed rail —
+   and flex-shrink happily crushed every icon to zero width to make it fit. */
+.rail-item > svg,
+.account > .dot,
+.rail-item > .tag-swatch {
+  flex: none;
+}
+
+/* Labels may shrink to nothing; they are the thing being clipped. */
+.rail-text {
+  min-inline-size: 0;
+}
+
+.rail[data-collapsed] .rail-text,
+.rail[data-collapsed] .rail-label,
+.rail[data-collapsed] .account span:not(.dot),
+.rail[data-collapsed] .count {
+  opacity: 0;
+  /* Not just invisible: a clipped label must not still be a click target or a
+     thing a screen reader reads out of a collapsed rail. */
+  pointer-events: none;
+}
+
+/* Icons hold the exact x they have when expanded. Nudging them toward the
+   centre of the narrow rail meant every icon travelled while the panel moved,
+   so two things animated at once and neither read cleanly. Fixed, the only
+   motion is the panel narrowing and the labels sliding out with it — and the
+   icons appear to stay still, which is what makes it feel like one movement. */
+/* The account button keeps its height. Shrinking it to a single row pulled
+   every icon below it upward, so collapsing moved things in two directions at
+   once — the panel narrowing and the whole list jumping. The dot centres itself
+   in the height it already had.
+ *
+ * Centring needs the row emptied as well as justified: the text and chevron are
+ * invisible but still flex items, so the gaps *between* them stayed in the
+ * layout and shoved the dot nine pixels left of the icon column beneath it,
+ * leaving the gap on the right that gave it away. */
+.rail[data-collapsed] .account {
+  justify-content: center;
+  gap: 0;
+}
+
+.account-text {
+  min-inline-size: 0;
+  flex-grow: 1;
+}
+
+.rail[data-collapsed] .account-text,
+.rail[data-collapsed] .account > svg {
+  inline-size: 0;
+  flex: 0 0 0;
+  overflow: hidden;
+}
+
+.rail[data-collapsed] .tag-swatch {
+  inline-size: 10px;
+  block-size: 10px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* grid-template-columns interpolates, so the whole three-pane layout moves
+     together and the list pane is never briefly overlapped or short. */
+  .shell {
+    transition: grid-template-columns 220ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  }
+
+  /* Labels fade faster than the panel moves, so they are gone before the space
+     for them is. Fading in is slower and delayed, so text does not appear over
+     a rail still too narrow to hold it. */
+  .rail-text,
+  .rail-label,
+  .account span:not(.dot),
+  .count {
+    transition: opacity 200ms ease 120ms;
+  }
+
+  .rail[data-collapsed] .rail-text,
+  .rail[data-collapsed] .rail-label,
+  .rail[data-collapsed] .account span:not(.dot),
+  .rail[data-collapsed] .count {
+    transition: opacity 90ms ease;
+  }
+
+  /* A drag must not be animated — the rail would lag the pointer by the length
+     of the transition, which reads as the handle being stuck. */
+  body.resizing .shell {
+    transition: none;
+  }
+}
+
+/* Tooltip for a collapsed rail item. Small, immediate, and out of the way:
+   its whole job is naming an icon you are already pointing at. */
+.tip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  z-index: 70;
+  padding: 5px 9px;
+  border: 1px solid var(--hair);
+  border-radius: 6px;
+  background: var(--raised);
+  box-shadow: 0 6px 18px rgba(24, 39, 48, 0.18);
+  font-size: 12px;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+/* Segmented control with a value and a note under it (undo-send windows). */
+.seg-wide button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 9px 17px 8px;
+}
+
+.seg-value {
+  font-family: var(--mono);
+  font-size: 14px;
+}
+
+.tiny {
+  font-size: 10px;
+  color: var(--ink3);
+  min-block-size: 12px;
+}
+
+.seg-wide button.on .tiny {
+  color: var(--accent-ink);
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+/* Storage figures. A table because they are figures — aligned digits are
+   readable at a glance in a way a list of sentences is not. */
+.storage-table {
+  inline-size: 100%;
+  max-inline-size: 420px;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin-block-start: 8px;
+}
+
+.storage-table td {
+  padding: 6px 0;
+  border-block-end: 1px solid var(--hair2);
+}
+
+.storage-table td:last-child {
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink2);
+}
+
+/* Per-account rows: the account, then two figures. */
+.storage-table .num {
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink2);
+  padding-inline-start: 14px;
+  white-space: nowrap;
+}
+
+.storage-account {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-inline-size: 100%;
+}
+
+/* One row of export buttons per account, when there is more than one. */
+.storage-export-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  margin-block-start: 10px;
+}
+
+.storage-export-row .storage-account {
+  font-size: 12.5px;
+  min-inline-size: 18ch;
+}
+
+.storage-export-row .storage-actions {
+  margin-block-start: 0;
+}
+
+/* A figure that has not arrived yet. The same height as the text it stands in
+   for, so the table does not shift when the numbers land. */
+.skel {
+  display: inline-block;
+  inline-size: 5ch;
+  block-size: 0.85em;
+  vertical-align: -0.05em;
+  border-radius: 3px;
+  background: var(--hair2);
+}
+
+.storage-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-block-start: 10px;
+}
+
+.storage-actions .fbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-block-start: 0;
+}
+
+.fbtn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Statements of fact about the sandbox, not switches. */
+.privacy-facts {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.privacy-facts li {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12.5px;
+  color: var(--ink2);
+}
+
+.privacy-facts svg {
+  color: var(--good);
+  flex: none;
+}
+
+.fhelp.warn {
+  color: var(--amber);
+  margin-block-start: 9px;
+}
+
+/* Text inputs in settings panes. */
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-block-start: 8px;
+  max-inline-size: 420px;
+}
+
+.tiny-label {
+  font-size: 11px;
+  color: var(--ink3);
+}
+
+.text-input {
+  inline-size: 100%;
+  max-inline-size: 420px;
+  padding: 7px 9px;
+  border: 1px solid var(--hair);
+  border-radius: 7px;
+  background: var(--surface);
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.text-input:focus-visible {
+  outline: var(--focus-ring) solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+
+.signature-input {
+  min-block-size: 96px;
+  resize: vertical;
+  margin-block: 8px 10px;
+  line-height: 1.5;
+}
+
+.identity-preview {
+  margin-block-start: 9px;
+  font-size: 11.5px;
+  color: var(--ink3);
+}
+
+/* Attached files, above the send row so they are visible while writing rather
+   than something you have to remember you did. */
+.compose-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 16px 0;
+}
+
+.att-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-inline-size: 240px;
+  padding: 3px 4px 3px 8px;
+  border: 1px solid var(--hair);
+  border-radius: 999px;
+  background: var(--bg);
+  font-size: 12px;
+}
+
+.att-chip .att-size {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink3);
+  flex: none;
+}
+
+.att-remove {
+  display: grid;
+  place-items: center;
+  inline-size: 18px;
+  block-size: 18px;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--ink3);
+  cursor: pointer;
+  flex: none;
+}
+
+.att-remove:hover {
+  background: var(--hair2);
+  color: var(--ink);
+}
+
+/* The message [ and ] last landed on. A quiet marker, not a selection: it
+   says where the keys will move from, which is only useful while you are
+   using them. */
+.msg[data-focused] {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* A selected row. Marked on the row rather than only on the avatar: the
+   action applies to the whole conversation, so the whole row should say so. */
+.row[data-selected] {
+  background: var(--accent-wash);
+}
+
+.row[data-selected] .avatar {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* The avatar is the selection target, so it has to look like one on hover. */
+.avatar.selectable {
+  cursor: pointer;
+}
+
+.row:hover .avatar.selectable {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* A popped-out composer owns its window: no corner to dock to, and the
+   rounded top and shadow of the docked one would be pretending otherwise. */
+.compose-window {
+  block-size: 100%;
+}
+
+.compose-window .compose {
+  position: static;
+  inline-size: 100%;
+  max-block-size: none;
+  block-size: 100%;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* The one filled button in the rail. Everything else there is a place to go;
+   this is a thing to do, and it should not have to be found among them. */
+.compose-new {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  inline-size: 100%;
+  margin-block-end: 8px;
+  padding: 8px 11px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: start;
+  cursor: pointer;
+  flex: none;
+}
+
+.compose-new .rail-text:first-of-type {
+  flex-grow: 1;
+}
+
+.compose-new:hover {
+  background: var(--accent-ink);
+}
+
+.compose-new > svg {
+  flex: none;
+}
+
+/* Collapsed, it is an icon like everything else — but still the filled one. */
+.rail[data-collapsed] .compose-new {
+  padding-inline: 9px;
+}

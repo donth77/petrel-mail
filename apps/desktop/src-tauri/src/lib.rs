@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex};
 use petrel_engine::actions::{ActionKind, ActionReceipt};
 use petrel_engine::blob::BlobStore;
 use petrel_engine::store::{
-    AccountSummary, DraftRecord, FolderSummary, Identity, ListView, Listing, NewMessage,
-    StorageReport, Store, TagSummary, ThreadListing, ThreadMessage,
+    AccountSummary, DraftRecord, FolderSummary, Identity, ListView, NewMessage, StorageReport,
+    Store, TagSummary, ThreadListing, ThreadMessage,
 };
 use petrel_providers::imap::{ImapConfig, Security};
 use petrel_testkit::DemoMailbox;
@@ -471,11 +471,7 @@ async fn drain_actions(
     }
     let _guard = DrainGuard(Arc::clone(&state));
 
-    let pending = match state
-        .store
-        .lock()
-        .and_then(|s| Ok(s.pending_actions(account)))
-    {
+    let pending = match state.store.lock().map(|s| s.pending_actions(account)) {
         Ok(Ok(p)) => p,
         _ => return,
     };
@@ -1827,22 +1823,6 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
     });
 }
 
-#[tauri::command]
-fn list_messages(
-    offset: u32,
-    limit: u32,
-    state: State<Arc<AppState>>,
-) -> Result<Vec<Listing>, String> {
-    let _t = Timed::new("list_messages");
-    note_ui_touch(&state);
-    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
-    store
-        // A virtualized list wants a real window, not 100 rows. The proper fix is
-        // fetching windows as the user scrolls; this cap is the interim.
-        .list_recent(offset, limit.min(2000))
-        .map_err(|e| e.to_string())
-}
-
 /// The list shows conversations, not messages — the count chip is the thread
 /// size (docs 06). Flags are rolled up across the thread by the engine.
 #[tauri::command]
@@ -2076,48 +2056,11 @@ fn triage(
     Ok(receipt)
 }
 
-/// Sends a message, then files a copy in Sent.
-///
-/// Called only after the undo window has lapsed: nothing reaches the server
-/// while the countdown is running, which is what makes undo a cancel rather
-/// than a recall. By the time this runs, the user has committed.
-///
-/// The two halves are reported separately on purpose. A send that succeeded and
-/// an append that failed is a delivered message with no local record of it —
-/// annoying, but not a failure to send, and telling someone their mail did not
-/// go when it did is worse than telling them it did not get filed.
-#[tauri::command]
-async fn send_message(
-    to: Vec<String>,
-    cc: Vec<String>,
-    subject: String,
-    body: String,
-    html: Option<String>,
-    in_reply_to: Option<String>,
-    references: Vec<String>,
-    attachments: Vec<String>,
-    state: State<'_, Arc<AppState>>,
-) -> Result<String, String> {
-    deliver(
-        state.inner(),
-        to,
-        cc,
-        subject,
-        body,
-        html,
-        in_reply_to,
-        references,
-        attachments,
-    )
-    .await
-}
-
 /// Builds and sends one message, then files a copy in Sent.
 ///
 /// Shared by the composer and the scheduled-send worker so there is one
 /// definition of what sending means — two would drift, and the half that
 /// drifted would be the one nobody watches.
-#[allow(clippy::too_many_arguments)]
 /// What one attempt to send came to.
 ///
 /// Carries the transport's verdict rather than collapsing it to an error
@@ -2133,6 +2076,7 @@ struct Attempt {
 /// Sends once and reports what happened. Never retries, never files a copy in
 /// Sent on an uncertain outcome — that is the caller's decision to make, with
 /// the state machine's help.
+#[allow(clippy::too_many_arguments)]
 async fn attempt(
     state: &Arc<AppState>,
     to: Vec<String>,
@@ -2259,12 +2203,11 @@ async fn attempt(
             .flatten()
             .and_then(|fid| store.folder_path(fid).ok().flatten())
     };
-    if let Some(path) = sent_path {
-        if let Err(e) =
+    if let Some(path) = sent_path
+        && let Err(e) =
             petrel_providers::imap::append_message(&cfg, &path, Some("(\\Seen)"), &raw).await
-        {
-            log_sync(&format!("sent, but could not file a copy in {path}: {e}"));
-        }
+    {
+        log_sync(&format!("sent, but could not file a copy in {path}: {e}"));
     }
     log_sync(&format!("sent {message_id}"));
     Ok(Attempt {
@@ -2272,47 +2215,6 @@ async fn attempt(
         outcome,
         detail,
     })
-}
-
-/// Sends now, for the composer's Send button: one attempt, reported as a plain
-/// success or a sentence the toast can show. The outbox's retry and
-/// reconciliation live in `send_due`, which drives `attempt` directly.
-async fn deliver(
-    state: &Arc<AppState>,
-    to: Vec<String>,
-    cc: Vec<String>,
-    subject: String,
-    body: String,
-    html: Option<String>,
-    in_reply_to: Option<String>,
-    references: Vec<String>,
-    attachments: Vec<String>,
-) -> Result<String, String> {
-    use petrel_engine::outbox::AttemptOutcome;
-    let a = attempt(
-        state,
-        to,
-        cc,
-        subject,
-        body,
-        html,
-        in_reply_to,
-        references,
-        attachments,
-    )
-    .await?;
-    match a.outcome {
-        AttemptOutcome::Accepted => Ok(a.message_id),
-        AttemptOutcome::RejectedPermanently => {
-            Err(format!("The server refused the message: {}", a.detail))
-        }
-        AttemptOutcome::FailedBeforeCommit => Err(format!("Could not send ({})", a.detail)),
-        AttemptOutcome::UnknownAfterTransmit => Err(
-            "The message may have been sent — the connection dropped before the server \
-             confirmed. Check your Sent folder before sending it again."
-                .into(),
-        ),
-    }
 }
 
 /// Opens a saved draft in a window of its own.
@@ -2721,12 +2623,11 @@ fn add_account(setup: AccountSetup, state: State<Arc<AppState>>) -> Result<i64, 
         let store = state.store.lock().map_err(|_| "store lock poisoned")?;
         // The row the environment made, if that is what is here, gives way:
         // an account set up in the app is the account.
-        if let Ok(Some(first)) = store.first_account() {
-            if store.account_servers(first).ok().flatten().is_none()
-                && imap_config_from_env().is_none()
-            {
-                let _ = store.remove_account(first);
-            }
+        if let Ok(Some(first)) = store.first_account()
+            && store.account_servers(first).ok().flatten().is_none()
+            && imap_config_from_env().is_none()
+        {
+            let _ = store.remove_account(first);
         }
         store
             .add_account(kind, &setup.email, "", &servers)
@@ -3169,13 +3070,6 @@ fn delete_draft(id: i64, state: State<Arc<AppState>>) -> Result<(), String> {
     store.delete_draft(id).map_err(|e| e.to_string())
 }
 
-/// Name and size for files the user picked, so the composer can refuse an
-/// oversized one before the message is written.
-///
-/// Statted here rather than in the window: the file picker hands back paths,
-/// and asking the OS for a size is something the backend can already do
-/// without a second plugin and a second capability to review.
-
 /// Writes a dropped file to disk and reports where it landed.
 ///
 /// A file picked from the dialog arrives as a path, because the dialog is the
@@ -3222,6 +3116,12 @@ fn stage_attachment(name: String, bytes: Vec<u8>) -> Result<AttachmentInfo, Stri
     })
 }
 
+/// Name and size for files the user picked, so the composer can refuse an
+/// oversized one before the message is written.
+///
+/// Statted here rather than in the window: the file picker hands back paths,
+/// and asking the OS for a size is something the backend can already do
+/// without a second plugin and a second capability to review.
 #[tauri::command]
 fn attachment_info(paths: Vec<String>) -> Vec<AttachmentInfo> {
     paths
@@ -3573,7 +3473,7 @@ async fn rename_folder(
     state: State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
     let (cfg, old_path) = {
-        let mut store = state.store.lock().map_err(|_| "store lock poisoned")?;
+        let store = state.store.lock().map_err(|_| "store lock poisoned")?;
         let account = store
             .active_account()
             .map_err(|e| e.to_string())?
@@ -4116,10 +4016,10 @@ pub fn run() {
     // Name it after the account actually configured, before any sync runs — the
     // address is known from the environment, so there is no reason for the
     // switcher to say test@example.com while real mail is arriving.
-    if let Some(cfg) = imap_config_from_env() {
-        if let Err(e) = store.set_account_email(account, &cfg.user) {
-            eprintln!("[store] could not name the account: {e}");
-        }
+    if let Some(cfg) = imap_config_from_env()
+        && let Err(e) = store.set_account_email(account, &cfg.user)
+    {
+        eprintln!("[store] could not name the account: {e}");
     }
     // Accounts made before colours were assigned at creation wear none, and
     // show as grey dots nobody can tell apart. Each gets the next free one.
@@ -4307,7 +4207,6 @@ pub fn run() {
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             status,
-            list_messages,
             list_threads,
             thread_by_id,
             open_external,
@@ -4344,7 +4243,6 @@ pub fn run() {
             outbox_send_now,
             outbox_edit,
             outbox_check,
-            send_message,
             storage_report,
             export_mbox,
             import_mail,

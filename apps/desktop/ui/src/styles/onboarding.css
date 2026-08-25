@@ -1,0 +1,199 @@
+/* Onboarding.
+
+   One card in the middle of an otherwise empty window. Nothing else of the
+   application is drawn, because nothing else of it works yet — a rail with
+   mailboxes that cannot fill is a promise the screen cannot keep. */
+.onboarding {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--bg);
+  overflow-y: auto;
+}
+
+.onb-card {
+  inline-size: min(520px, 100%);
+  padding: 28px 30px 24px;
+  border: 1px solid var(--hair);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 12px 40px rgba(24, 39, 48, 0.1);
+}
+
+.onb-step {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink3);
+  margin-block-end: 10px;
+}
+
+.onb-title {
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  margin: 0 0 6px;
+  text-wrap: balance;
+}
+
+.onb-help {
+  margin: 0 0 16px;
+  color: var(--ink2);
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+.onb-body {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ink2);
+}
+
+.onb-label {
+  display: block;
+  margin: 14px 0 5px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink2);
+}
+
+.onb-field {
+  inline-size: 100%;
+  padding: 9px 11px;
+  border: 1px solid var(--hair);
+  border-radius: 7px;
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+}
+
+.onb-field:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  border-color: transparent;
+}
+
+.onb-quiet {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--ink3);
+  line-height: 1.5;
+}
+
+.onb-error {
+  margin: 10px 0 0;
+  font-size: 12.5px;
+  color: var(--bad, #b0524a);
+}
+
+/* The connection test's verdict. Said in its own line, in its own colour,
+   because it is the moment the form turns from a guess into a configuration. */
+.onb-test {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 12px 0 0;
+  font-size: 12.5px;
+  color: var(--ink2);
+}
+
+.onb-test.ok {
+  color: var(--good);
+}
+
+.onb-test.bad {
+  color: var(--bad, #b0524a);
+}
+
+.onb-acts {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-block-start: 20px;
+}
+
+.onb-acts .spacer {
+  flex: 1;
+}
+
+.onb-servers {
+  display: grid;
+  gap: 6px;
+  margin-block-start: 6px;
+}
+
+.onb-server-row {
+  display: grid;
+  grid-template-columns: 1fr 72px auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.onb-port {
+  text-align: center;
+}
+
+.onb-tls {
+  font-size: 11px;
+  color: var(--good);
+  padding: 0 4px;
+}
+
+.onb-count {
+  margin: 14px 0 4px;
+  font-size: 15px;
+  color: var(--ink);
+}
+
+.spin {
+  animation: onb-spin 0.9s linear infinite;
+}
+
+@keyframes onb-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spin {
+    animation: none;
+  }
+}
+
+/* Onboarding opened from Settings or the switcher, rather than as the first
+   run. The same card, over the app — or over Settings, when that is what is
+   open.
+
+   The dim is the container's own background. A separate backdrop element
+   ends up a sibling in a portal, where no z-index puts it between Settings
+   and the card; this container is certainly above Settings and certainly
+   below its child, which is the one ordering that holds. Heavier than the
+   first-level scrim: Settings is a white panel, and the ordinary 34% over
+   white reads as the same surface. A second level has to visibly push the
+   first back. */
+.onboarding-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+}
+
+.onboarding-dim {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(16, 26, 31, 0.55);
+}
+
+.onboarding-dialog .onboarding {
+  background: transparent;
+}
+
+.onboarding-dialog .onboarding {
+  background: transparent;
+}

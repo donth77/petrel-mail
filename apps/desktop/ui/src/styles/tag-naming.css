@@ -1,0 +1,50 @@
+/* ------------------------------------------------------- new tag, in place */
+
+/* The TAGS header becomes a row so the + can sit at its end. Same padding as
+   the plain label, so the two kinds of section heading line up. */
+.rail-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.rail-add {
+  display: grid;
+  place-items: center;
+  inline-size: 18px;
+  block-size: 18px;
+  margin-inline-end: -2px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink3);
+  cursor: pointer;
+  padding: 0;
+  /* Quiet until wanted: a + that shouts sits above the mailboxes it is not
+     part of. It brightens on hover and is always reachable by keyboard. */
+  opacity: 0.75;
+}
+
+.rail-add:hover,
+.rail-add:focus-visible {
+  opacity: 1;
+  background: var(--hair2);
+  color: var(--ink);
+}
+
+.rail-new-tag {
+  inline-size: calc(100% - 18px);
+  margin: 2px 9px 4px;
+  padding: 5px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+}
+
+.rail-new-tag::placeholder {
+  color: var(--ink3);
+}

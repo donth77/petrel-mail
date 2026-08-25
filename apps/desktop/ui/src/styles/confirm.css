@@ -1,0 +1,53 @@
+/* --------------------------------------------------------------- confirm */
+
+.confirm-backdrop {
+  position: fixed;
+  inset-block-start: 22vh;
+  inset-inline: 0;
+  display: grid;
+  justify-items: center;
+  z-index: 50;
+}
+
+.confirm {
+  inline-size: 420px;
+  max-inline-size: calc(100vw - 48px);
+  padding: 20px 22px 18px;
+  border: 1px solid var(--hair);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 18px 48px rgba(24, 39, 48, 0.16);
+}
+
+.confirm-title {
+  font-family: var(--display);
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.confirm-detail {
+  margin-block: 8px 0;
+  color: var(--ink2);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.confirm-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-block-start: 18px;
+}
+
+/* Destructive, and coloured as such — but still a button, not an alarm. The
+   dialog has already said what this does; the colour is a reminder, not the
+   message. */
+.reply.danger {
+  border-color: color-mix(in oklab, var(--danger) 40%, var(--hair));
+  color: var(--danger);
+}
+
+.reply.danger:hover {
+  background: color-mix(in oklab, var(--danger) 8%, var(--surface));
+  border-color: var(--danger);
+}

@@ -1,0 +1,15 @@
+/* The way out of a mailing list: quiet text, not a control that competes
+   with Reply — present when the message offers it, invisible otherwise. */
+.unsub {
+  border: none;
+  background: none;
+  color: var(--ink3);
+  font-size: 11.5px;
+  padding: 4px 6px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.unsub:hover {
+  color: var(--accent-ink);
+}

@@ -1,0 +1,173 @@
+/* ---------------------------------------------------------------- palette */
+
+.palette-scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(16, 26, 31, 0.34);
+}
+
+.palette-backdrop {
+  position: fixed;
+  inset-block-start: 12vh;
+  inset-inline: 0;
+  display: grid;
+  justify-items: center;
+  z-index: 40;
+}
+
+.palette {
+  inline-size: 620px;
+  max-inline-size: calc(100vw - 48px);
+  border: 1px solid var(--hair);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow:
+    0 18px 48px rgba(24, 39, 48, 0.16),
+    0 2px 6px rgba(24, 39, 48, 0.06);
+  overflow: hidden;
+}
+
+.palette-input {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 14px 16px;
+  border-block-end: 1px solid var(--hair);
+}
+
+.palette-field {
+  flex-grow: 1;
+  min-inline-size: 0;
+  border: 0;
+  background: none;
+  outline: none;
+  font: inherit;
+  font-size: 15px;
+  color: var(--ink);
+}
+
+.palette-field::placeholder {
+  color: var(--ink3);
+}
+
+/* A close control, not a keycap. Escape still closes — the hint moved into the
+   tooltip so the corner reads as a button rather than a legend. */
+.close-btn {
+  display: grid;
+  place-items: center;
+  inline-size: 26px;
+  block-size: 26px;
+  border: 1px solid var(--hair);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink2);
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.close-btn:hover {
+  border-color: var(--ink3);
+  color: var(--ink);
+}
+
+.close-btn:active {
+  background: var(--hair2);
+}
+
+.palette-list {
+  max-block-size: 46vh;
+  overflow-y: auto;
+  padding-block-end: 4px;
+}
+
+.grouplabel {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink3);
+  padding: 10px 16px 4px;
+}
+
+.grouplabel-target {
+  font-family: var(--body);
+  font-size: 11px;
+  letter-spacing: 0;
+  text-transform: none;
+  min-inline-size: 0;
+}
+
+.cmd {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 16px;
+  font-size: 13.5px;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.cmd[data-active-item] {
+  background: var(--accent-wash);
+}
+
+.cmd .ico {
+  display: grid;
+  place-items: center;
+  inline-size: 22px;
+  block-size: 22px;
+  color: var(--ink2);
+  flex-shrink: 0;
+}
+
+.cmd[data-active-item] .ico,
+.cmd[data-active-item] .name {
+  color: var(--accent-ink);
+}
+
+.cmd[data-active-item] .name {
+  font-weight: 600;
+}
+
+/* The type hint or alias stays muted and unweighted, so the command's own name
+   is what the eye lands on. */
+.cmd .alias {
+  color: var(--ink3);
+  font-weight: 400;
+}
+
+.cmd .name {
+  flex-grow: 1;
+  min-inline-size: 0;
+}
+
+/* The matched characters, so ranking never looks arbitrary. */
+.cmd .hit {
+  color: var(--accent-ink);
+  font-weight: 700;
+}
+
+.palette-none {
+  padding: 22px 16px;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--ink2);
+}
+
+.palette-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 16px;
+  border-block-start: 1px solid var(--hair);
+  font-size: 11px;
+  color: var(--ink3);
+}
+
+.palette-foot-spacer {
+  flex-grow: 1;
+}

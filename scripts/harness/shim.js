@@ -144,9 +144,6 @@
       }
       return rows.filter(function (r) { return r.filed === view; });
     },
-    list_messages: function () {
-      return rows;
-    },
     search_messages: function (a) {
       // Modelled, not stubbed: results have to carry why they matched, and the
       // ordering has to change when the sort does — a shim that returned the
@@ -376,12 +373,6 @@
       var id = 200 + folders.length;
       folders.push({ id: id, role: '', path: a.path });
       return id;
-    },
-    send_message: function (a) {
-      // Records what the UI actually asked to send, so a test can assert on the
-      // request rather than on what the composer rendered.
-      if (!a.to || a.to.length === 0) throw 'no recipient';
-      return 'test-' + Date.now() + '@example.com';
     },
     // The dialog plugin's commands, so the attach and export flows can be
     // driven without a real file panel. Set window.__PETREL_PICK__ to the

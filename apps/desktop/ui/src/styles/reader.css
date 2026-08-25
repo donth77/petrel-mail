@@ -1,0 +1,337 @@
+/* ---------------------------------------------------------------- reader */
+
+.reader {
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+  min-block-size: 0;
+  background: var(--surface);
+  /* Anchors the hovered-link readout to the pane rather than to the window. */
+  position: relative;
+}
+
+.reader-head {
+  padding: 15px 22px 13px;
+  border-block-end: 1px solid var(--hair);
+  flex-shrink: 0;
+}
+
+.reader-headrow {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.reader-title {
+  min-inline-size: 0;
+  flex-grow: 1;
+}
+
+.reader-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.act-icon {
+  display: grid;
+  place-items: center;
+  inline-size: 28px;
+  block-size: 28px;
+  border-radius: 6px;
+  border: 1px solid var(--hair);
+  background: var(--surface);
+  color: var(--ink2);
+  cursor: pointer;
+  padding: 0;
+}
+
+.act-icon:hover {
+  border-color: var(--ink3);
+  color: var(--ink);
+}
+
+.act-icon:active {
+  background: var(--hair2);
+}
+
+.act-icon.on {
+  color: var(--amber);
+  border-color: var(--amber-line);
+}
+
+.act-icon.on svg {
+  fill: var(--amber);
+}
+
+.reader-subject {
+  font-family: var(--display);
+  font-size: 19px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+  margin: 0;
+}
+
+.reader-meta {
+  margin-block-start: 4px;
+  font-size: 12.5px;
+  color: var(--ink2);
+}
+
+.act {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border: 1px solid var(--hair);
+  border-radius: 6px;
+  background: var(--surface);
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--ink2);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.act:hover {
+  border-color: var(--ink3);
+  color: var(--ink);
+}
+
+.act:active {
+  background: var(--hair2);
+}
+
+.account:active {
+  background: var(--bg);
+}
+
+.kbd {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  background: var(--kbd);
+  border: 1px solid var(--hair);
+  border-block-end-width: 2px;
+  border-radius: 4px;
+  padding-inline: 4px;
+  color: var(--ink2);
+}
+
+/* The conversation scrolls as one column. Each message frame is sized to its own
+   content, so there is no scroll region inside a scroll
+   region. */
+.reader-body {
+  flex-grow: 1;
+  min-block-size: 0;
+  overflow-y: auto;
+  padding: 16px 22px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.msg-frame {
+  inline-size: 100%;
+  border: 0;
+  display: block;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.body-loading {
+  block-size: 120px;
+}
+
+/* --- collapsed messages --- */
+
+.collapsed {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 16px;
+  border: 1px solid var(--hair);
+  border-radius: 8px;
+  background: var(--raised);
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--ink2);
+  text-align: start;
+  cursor: pointer;
+  inline-size: 100%;
+}
+
+.collapsed:hover {
+  border-color: var(--ink3);
+}
+
+.collapsed.fold {
+  justify-content: space-between;
+  color: var(--ink3);
+}
+
+.avatar.sm {
+  inline-size: 22px;
+  block-size: 22px;
+  font-size: 9px;
+  margin-block-start: 0;
+}
+
+.collapsed-from {
+  font-weight: 600;
+  color: var(--ink);
+  flex-shrink: 0;
+}
+
+.collapsed-snip {
+  flex-grow: 1;
+  min-inline-size: 0;
+}
+
+.collapsed-time {
+  color: var(--ink3);
+  font-size: 11.5px;
+  flex-shrink: 0;
+}
+
+/* --- expanded message --- */
+
+.msg {
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+  background: var(--raised);
+  overflow: hidden;
+  /* The reading pane is a column flex container, so without this a message
+     taller than the pane is *compressed* to fit rather than making the pane
+     scroll — and since this box also clips, the bottom of every long email
+     became unreachable. The frame inside sizes itself to its content; this is
+     what lets it. */
+  flex-shrink: 0;
+}
+
+.msg-head {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 13px 16px;
+  border-block-end: 1px solid var(--hair2);
+}
+
+/* The header's clickable area, now that the actions sit beside it rather than
+   inside it. It takes the row's spare width so the whole empty stretch still
+   collapses the message, which is the target people actually aim at. */
+.msg-toggle {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  flex-grow: 1;
+  min-inline-size: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.msg-acts {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.msg-who {
+  min-inline-size: 0;
+  flex-grow: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.msg-name {
+  font-size: 13.5px;
+  font-weight: 650;
+}
+
+.msg-to {
+  font-size: 11.5px;
+  color: var(--ink2);
+}
+
+.msg-time {
+  font-size: 11.5px;
+  color: var(--ink3);
+  flex-shrink: 0;
+}
+
+.msg-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  padding: 0 16px 15px;
+}
+
+.att {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  border: 1px solid var(--hair);
+  border-radius: 5px;
+  background: var(--surface);
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--ink2);
+  cursor: pointer;
+}
+
+.att:hover {
+  border-color: var(--ink3);
+  color: var(--ink);
+}
+
+.att-size {
+  color: var(--ink3);
+}
+
+/* --- reply row --- */
+
+.reply-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding-block-start: 2px;
+}
+
+.reply {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 13px;
+  border-radius: 7px;
+  border: 1px solid var(--hair);
+  background: var(--surface);
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.reply:hover {
+  border-color: var(--ink3);
+}
+
+.reply.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+.kbd.on-accent {
+  background: rgba(255, 255, 255, 0.2);
+  border-color: rgba(255, 255, 255, 0.3);
+  color: #fff;
+}

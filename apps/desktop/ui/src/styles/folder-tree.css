@@ -1,0 +1,15 @@
+/* The folder tree's disclosure. A container row is quiet — it is a place
+   in the hierarchy, not a mailbox — and the chevron is small enough that the
+   row's click stays the navigation. */
+.tree-toggle {
+  border: none;
+  background: none;
+  color: var(--ink3);
+  padding: 0 2px;
+  margin-left: -4px;
+  cursor: pointer;
+  display: inline-flex;
+}
+.tree-container {
+  color: var(--ink2);
+}

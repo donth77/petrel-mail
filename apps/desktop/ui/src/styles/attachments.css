@@ -1,0 +1,24 @@
+/* An attachment with its save button beside it, and the preview beneath. */
+.att-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.att-save {
+  inline-size: 24px;
+  block-size: 24px;
+}
+
+/* The preview: the message's own width, its own height, one at a time.
+   An iframe with an empty sandbox — the route only ever serves images and
+   PDFs, and the frame cannot script, fetch or navigate regardless. */
+.att-preview {
+  display: block;
+  inline-size: 100%;
+  block-size: 480px;
+  margin-block-start: 8px;
+  border: 1px solid var(--hair);
+  border-radius: 8px;
+  background: var(--bg);
+}

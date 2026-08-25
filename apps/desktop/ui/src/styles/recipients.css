@@ -1,0 +1,194 @@
+/* ------------------------------------------------------------- recipients */
+
+/* Chips and the live input share one line and wrap together, so a field with
+   six recipients grows downward instead of scrolling sideways past the ones
+   you cannot see. */
+.recipients {
+  flex-grow: 1;
+  min-inline-size: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.rcpt-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-inline-size: 100%;
+  padding: 2px 4px 2px 8px;
+  border: 1px solid var(--hair);
+  border-radius: 11px;
+  background: var(--hair2);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+/* Not an error — a doubt. The address may be perfectly good and merely
+   unusual, so this is a raised eyebrow rather than a red flag, and nothing
+   about it blocks sending. */
+.rcpt-chip.suspect {
+  border-color: color-mix(in oklab, var(--danger) 45%, var(--hair));
+  border-style: dashed;
+  background: transparent;
+}
+
+.rcpt-x {
+  display: grid;
+  place-items: center;
+  inline-size: 15px;
+  block-size: 15px;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--ink3);
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.rcpt-x:hover {
+  background: var(--hair);
+  color: var(--ink);
+}
+
+/* The entry is positioned so the completion list can hang off it. It keeps a
+   minimum width so the caret never ends up in a one-character slot at the end
+   of a full row of chips. */
+.recipient-entry {
+  position: relative;
+  flex-grow: 1;
+  min-inline-size: 8ch;
+}
+
+.completions {
+  position: absolute;
+  inset-block-start: calc(100% + 4px);
+  inset-inline-start: 0;
+  z-index: 30;
+  min-inline-size: 260px;
+  max-inline-size: 380px;
+  max-block-size: 240px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  border: 1px solid var(--hair);
+  border-radius: 9px;
+  background: var(--surface);
+  box-shadow: 0 10px 28px rgba(24, 39, 48, 0.14);
+}
+
+.completions button {
+  inline-size: 100%;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.completions button.on {
+  background: var(--hair2);
+}
+
+.completion-name {
+  font-size: 13px;
+  min-inline-size: 0;
+}
+
+.completion-addr {
+  font-size: 11.5px;
+  color: var(--ink3);
+  min-inline-size: 0;
+}
+
+.completion-note {
+  margin-inline-start: auto;
+  flex-shrink: 0;
+  font-size: 10.5px;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+/* A note at the head of the row menu, when a right-click landed inside a
+   selection and the next click will hit all of it. Not an item — it does
+   nothing, takes no focus, and must not look like something to click. */
+.menu-note {
+  padding: 5px 10px 7px;
+  color: var(--ink3);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  font-family: var(--mono);
+}
+
+/* The optional selection column.
+   The row's grid gains a track when it is on; without this the checkbox takes
+   the avatar's cell, the avatar takes the text's, and the text wraps into a
+   second line of single characters. */
+.rows[data-checkboxes] .row {
+  /* The dot keeps its column. Only the checkbox's own margins change — see
+     .row-check below, where the arithmetic is. */
+  grid-template-columns: 7px 25px 30px 1fr;
+}
+
+/* Compact is one line with its own template, and the class lives on an
+   ancestor rather than the row. Its cells align on the baseline, so the
+   relaxed row's nudge would push this one out of line rather than into it. */
+.density-compact .rows[data-checkboxes] .row {
+  grid-template-columns: 7px 25px 1fr;
+}
+
+.density-compact .row-check {
+  margin-block-start: 0;
+  /* Centred in its cell rather than sat on the row's baseline: a bordered box
+     has no useful baseline of its own, so baseline alignment leaves it riding
+     a few pixels above the text it belongs to. */
+  align-self: center;
+}
+
+/* Centred between the dot and the avatar, which its own track already
+   expresses: the checkbox sits in a 25px column with an equal 10px gap on
+   either side, so the midpoint of the track and the midpoint of the space
+   between its two neighbours are the same point. Centring in the track is
+   therefore the whole rule, and no offset has to be worked out or maintained.
+
+   It replaces a hand-computed nudge that measured from the row's edge instead
+   of from the dot, which left the box drifting toward the dot and reading as
+   attached to it.
+
+   The dot keeps its column throughout. An unread marker that dropped out of
+   the flow would shift every row's text sideways as it was read. */
+.row-check {
+  justify-self: center;
+  display: grid;
+  place-items: center;
+  inline-size: 16px;
+  block-size: 16px;
+  flex-shrink: 0;
+  /* The row top-aligns its cells, and this box is 16px against the avatar's
+     30px — so without the nudge their centres sit 7px apart and the column
+     reads as slightly floating. */
+  margin-block-start: 7px;
+  border: 1.5px solid var(--ink3);
+  border-radius: 4px;
+  color: var(--on-accent, #fff);
+  cursor: pointer;
+}
+
+.row-check:hover {
+  border-color: var(--ink2);
+}
+
+.row[data-selected] .row-check {
+  background: var(--accent);
+  border-color: var(--accent);
+}

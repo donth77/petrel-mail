@@ -1,0 +1,108 @@
+/* Dragging conversations onto the rail.
+
+   Two states, because they answer different questions. `drop-ok` is on every
+   destination while anything is in flight and answers "where can this go?" —
+   quietly, since it is on several rows at once and must not turn the rail into
+   a light display. `drop-over` is the one under the pointer and answers "what
+   happens if I let go?", so it is unmistakable. */
+.rail-item[data-drop-ok] {
+  outline: 1px dashed var(--hair);
+  outline-offset: -2px;
+}
+
+.rail-item[data-drop-over] {
+  outline: 1.5px solid var(--accent);
+  outline-offset: -2px;
+  background: var(--accent-weak, var(--bg));
+}
+
+/* What the pointer is carrying. Follows it directly rather than being a still
+   the engine took of the row, so it can say how many are moving and look the
+   same in every webview. `translate3d` keeps it on the compositor, so it tracks
+   the pointer instead of lagging a frame behind it. */
+.drag-preview {
+  position: fixed;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  z-index: 100;
+  max-inline-size: 280px;
+  padding: 5px 10px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--on-accent, #fff);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 0.22);
+  /* It sits under the cursor, so it must never be what the cursor is over. */
+  pointer-events: none;
+}
+
+/* Over somewhere that will take it. Without this the only difference between
+   "carrying" and "about to drop" is on the rail, which is where the pointer
+   is not looking. */
+.drag-preview[data-over] {
+  background: var(--good, var(--accent));
+}
+
+/* The grabbing hand, for the whole window while a drag is under way. Set on the
+   body because the pointer spends the drag over the rail, the reader, the
+   status bar — anywhere but the row it started on, and each of those has a
+   cursor of its own that would otherwise win. */
+body.dragging,
+body.dragging * {
+  cursor: grabbing !important;
+}
+
+/* The divider between the conversation list and the reading pane.
+
+   A grid item of its own rather than a strip overlaid on a pane: it belongs to
+   neither, and the grid is what actually owns the widths it changes. Six pixels
+   wide like the rail's handle, and quiet until pointed at — a permanent line
+   between two panes that already have a border would just be a thicker border. */
+.pane-resize {
+  align-self: stretch;
+  inline-size: 6px;
+  margin-inline: -3px;
+  cursor: col-resize;
+  /* Above both panes, so a drag beside a conversation row grabs the handle
+     rather than starting to drag the row. */
+  z-index: 5;
+}
+
+.pane-resize:hover,
+.pane-resize:focus-visible {
+  background: var(--accent);
+  opacity: 0.5;
+  outline: none;
+}
+
+/* A file being dragged onto the composer.
+
+   Over the composer, not in it: an overlay that took part in layout would
+   shift the fields the moment the pointer arrived, which is exactly when
+   someone is aiming at them. Transparent to the pointer, so the drop lands on
+   the composer underneath rather than on the sign describing it. */
+.compose-drop {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: grid;
+  place-items: center;
+  border: 2px dashed var(--accent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+/* No positioning rule for the dropping state, deliberately. `.compose` is
+   `position: fixed`, which already establishes the containing block the overlay
+   needs — and overriding it to `relative` dropped the composer into normal flow
+   the moment a file crossed it, moving it out from under the pointer. That
+   ended the drag-over, which restored it, which put it back under the pointer:
+   the composer flickered across the screen and never settled. */

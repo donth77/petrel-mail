@@ -70,3 +70,29 @@ jobs:
       # Fast benchmark sanity at reduced scale; the full 100k run is manual.
       - run: PETREL_BENCH_N=10000 cargo test --release -p petrel-engine --test store_spike -- --ignored --nocapture
         if: matrix.os == 'ubuntu-latest'
+  shell:
+    # The desktop crate is not a default workspace member (its dependency tree
+    # is heavy), so `cargo test` above never compiles it — a change that broke
+    # the shell used to sail through green. This job builds it the way
+    # scripts/rebuild.sh does: UI assets first, then the crate with the
+    # production feature, under clippy's -D warnings.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --dir apps/desktop/ui build
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.96.1
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy -p petrel-desktop --all-targets --features custom-protocol -- -D warnings
+      - run: cargo test -p petrel-desktop --features custom-protocol

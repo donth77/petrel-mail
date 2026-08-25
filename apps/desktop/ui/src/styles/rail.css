@@ -1,0 +1,119 @@
+/* ---------------------------------------------------------------- rail */
+
+.rail {
+  display: flex;
+  flex-direction: column;
+  min-block-size: 0;
+  gap: 2px;
+  padding: 10px;
+  background: var(--bg);
+  border-inline-end: 1px solid var(--hair);
+  overflow-y: auto;
+}
+
+.account {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 9px;
+  margin-block-end: 4px;
+  border: 1px solid var(--hair);
+  border-radius: 8px;
+  background: var(--surface);
+  inline-size: 100%;
+  text-align: start;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.account:hover {
+  border-color: var(--ink3);
+}
+
+.dot {
+  inline-size: 9px;
+  block-size: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.rail-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink3);
+  padding: 12px 9px 5px;
+}
+
+.rail-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 5px 9px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--ink);
+  border: 0;
+  /* A 2px leading rail that turns accent when active — the marker reads at a
+     glance from the edge, where the eye already is when scanning a sidebar. */
+  border-inline-start: 2px solid transparent;
+  background: none;
+  inline-size: 100%;
+  text-align: start;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.rail-item:hover {
+  background: var(--hair2);
+}
+
+.rail-item:active {
+  background: var(--hair);
+}
+
+.rail-item[aria-current='page'] {
+  background: var(--accent-wash);
+  color: var(--accent-ink);
+  border-inline-start-color: var(--accent);
+  font-weight: 600;
+}
+
+.rail-foot {
+  margin-block-start: auto;
+  padding-block-start: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* A tag's colour, occupying exactly as much room as a mailbox icon.
+   The dot is 8px but an icon is 15px, so without the margins a tag's name sat
+   seven pixels left of every mailbox name — and collapsing the rail centred the
+   two differently, so the dots visibly jumped while the icons stayed put. */
+.tag-swatch {
+  inline-size: 9px;
+  block-size: 9px;
+  /* Whole pixels either side: 3.5 left the dot's centre landing half a pixel
+     off the icons', which the rail rounded into a visible one-pixel hop as it
+     collapsed. 9 + 3 + 3 is the icon's 15 exactly. */
+  margin-inline: 3px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.rail-item .count {
+  margin-inline-start: auto;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 11.5px;
+  color: var(--ink3);
+}
+
+/* On the active item the count belongs to the accent, not to the muted ink it
+   would otherwise inherit. */
+.rail-item[aria-current='page'] .count {
+  color: var(--accent-ink);
+}
