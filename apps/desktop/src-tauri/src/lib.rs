@@ -136,7 +136,6 @@ pub fn run() {
     // is one, appears over a running app.
     {
         let state = Arc::clone(&state);
-        let account = account;
         std::thread::spawn(move || {
             // The account set up in the app first; the environment as the developer
             // override when there is none. Before this every launch without the

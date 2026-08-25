@@ -32,12 +32,14 @@ impl Store {
     ) -> Result<Vec<ThreadListing>> {
         self.listing_rows(
             account,
-            &view.predicate("messages"),
-            &view.predicate("m"),
-            limit,
-            offset,
-            view.bound().map(str::to_string),
-            matches!(view, ListView::Folder(r) if r == "drafts"),
+            ListingQuery {
+                inner: &view.predicate("messages"),
+                outer: &view.predicate("m"),
+                limit,
+                offset,
+                bound: view.bound().map(str::to_string),
+                per_message: matches!(view, ListView::Folder(r) if r == "drafts"),
+            },
         )
     }
 
@@ -55,31 +57,44 @@ impl Store {
         let account = self.active_account()?.unwrap_or(-1);
         let rows = self.listing_rows(
             account,
-            "coalesce(thread_id, -id) = cast(?3 AS INTEGER)",
-            "coalesce(m.thread_id, -m.id) = cast(?3 AS INTEGER)",
-            1,
-            0,
-            Some(thread_id.to_string()),
-            false,
+            ListingQuery {
+                inner: "coalesce(thread_id, -id) = cast(?3 AS INTEGER)",
+                outer: "coalesce(m.thread_id, -m.id) = cast(?3 AS INTEGER)",
+                limit: 1,
+                offset: 0,
+                bound: Some(thread_id.to_string()),
+                per_message: false,
+            },
         )?;
         Ok(rows.into_iter().next())
     }
+}
 
+/// One listing's shape: the predicates, the page, and how rows group.
+struct ListingQuery<'a> {
+    inner: &'a str,
+    outer: &'a str,
+    limit: u32,
+    offset: u32,
+    bound: Option<String>,
+    /// Drafts list one by one: a draft is a thing you finish, not a
+    /// conversation, and two drafts that happen to share a subject — or even
+    /// a Message-ID, edited apart on the server — are still two drafts.
+    /// Every other view groups into conversations.
+    per_message: bool,
+}
+
+impl Store {
     /// The conversation-list query, shared by the views and by a lookup of one.
-    fn listing_rows(
-        &self,
-        account: i64,
-        inner: &str,
-        outer: &str,
-        limit: u32,
-        offset: u32,
-        bound: Option<String>,
-        // Drafts list one by one: a draft is a thing you finish, not a
-        // conversation, and two drafts that happen to share a subject — or
-        // even a Message-ID, edited apart on the server — are still two
-        // drafts. Every other view groups into conversations.
-        per_message: bool,
-    ) -> Result<Vec<ThreadListing>> {
+    fn listing_rows(&self, account: i64, q: ListingQuery<'_>) -> Result<Vec<ThreadListing>> {
+        let ListingQuery {
+            inner,
+            outer,
+            limit,
+            offset,
+            bound,
+            per_message,
+        } = q;
         let key = if per_message {
             "-id"
         } else {

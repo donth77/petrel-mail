@@ -749,50 +749,6 @@ async fn run_label_sweep(state: &Arc<AppState>, account: i64, cfg: &ImapConfig) 
     }
 }
 
-#[cfg(test)]
-mod folder_survey_tests {
-    use super::without_tag_labels;
-
-    fn rows(v: &[(&str, Option<&str>)]) -> Vec<(String, Option<String>)> {
-        v.iter()
-            .map(|(p, r)| (p.to_string(), r.map(|r| r.to_string())))
-            .collect()
-    }
-
-    #[test]
-    fn a_tag_made_here_does_not_come_back_as_a_folder() {
-        // The round trip that motivated this: tag "test" → Gmail label
-        // "test" → next survey → a folder named "test", the same thing
-        // twice pretending to be two.
-        let out = without_tag_labels(
-            rows(&[("INBOX", Some("inbox")), ("test", None), ("Unwanted", None)]),
-            &["test".to_string()],
-            true,
-        );
-        let paths: Vec<&str> = out.iter().map(|(p, _)| p.as_str()).collect();
-        assert_eq!(paths, vec!["INBOX", "Unwanted"]);
-    }
-
-    #[test]
-    fn role_folders_and_other_providers_keep_shared_names() {
-        // A Namecheap folder and a tag sharing a name are two real, distinct
-        // things — only on Gmail is one object behind both.
-        let out = without_tag_labels(
-            rows(&[("Receipts", None)]),
-            &["Receipts".to_string()],
-            false,
-        );
-        assert_eq!(out.len(), 1);
-        // And a role-bearing folder is never a tag, whatever it is called.
-        let out = without_tag_labels(
-            rows(&[("Starred", Some("starred"))]),
-            &["starred".to_string()],
-            true,
-        );
-        assert_eq!(out.len(), 1);
-    }
-}
-
 /// Drops placements the server no longer backs.
 ///
 /// The windowed sync only ever adds and updates: a message moved out of a
@@ -933,5 +889,49 @@ async fn reconcile_ghost_placements(
                 }
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod folder_survey_tests {
+    use super::without_tag_labels;
+
+    fn rows(v: &[(&str, Option<&str>)]) -> Vec<(String, Option<String>)> {
+        v.iter()
+            .map(|(p, r)| (p.to_string(), r.map(|r| r.to_string())))
+            .collect()
+    }
+
+    #[test]
+    fn a_tag_made_here_does_not_come_back_as_a_folder() {
+        // The round trip that motivated this: tag "test" → Gmail label
+        // "test" → next survey → a folder named "test", the same thing
+        // twice pretending to be two.
+        let out = without_tag_labels(
+            rows(&[("INBOX", Some("inbox")), ("test", None), ("Unwanted", None)]),
+            &["test".to_string()],
+            true,
+        );
+        let paths: Vec<&str> = out.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(paths, vec!["INBOX", "Unwanted"]);
+    }
+
+    #[test]
+    fn role_folders_and_other_providers_keep_shared_names() {
+        // A Namecheap folder and a tag sharing a name are two real, distinct
+        // things — only on Gmail is one object behind both.
+        let out = without_tag_labels(
+            rows(&[("Receipts", None)]),
+            &["Receipts".to_string()],
+            false,
+        );
+        assert_eq!(out.len(), 1);
+        // And a role-bearing folder is never a tag, whatever it is called.
+        let out = without_tag_labels(
+            rows(&[("Starred", Some("starred"))]),
+            &["starred".to_string()],
+            true,
+        );
+        assert_eq!(out.len(), 1);
     }
 }
