@@ -39,6 +39,17 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-# Ad-hoc signature: unsigned bundles are quarantined and refused on launch.
-codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
+# Signing decides whether the keychain trusts the app across rebuilds.
+# Keychain ACLs bind to the code signature; an ad-hoc signature is unique
+# per build, so every rebuild is "a different app" and macOS re-asks for the
+# account passwords. A stable local identity — a self-signed code-signing
+# certificate named "Petrel Dev" (Keychain Access → Certificate Assistant →
+# Create a Certificate → type: Code Signing) — keeps the identity constant,
+# and one "Always Allow" then holds through every rebuild. Used when present;
+# ad-hoc otherwise, which at least clears quarantine.
+if security find-identity -v -p codesigning 2>/dev/null | grep -q "Petrel Dev"; then
+  codesign --force --deep --sign "Petrel Dev" "$APP" >/dev/null 2>&1     && echo "signed as Petrel Dev (keychain consent will persist)"     || codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
+else
+  codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
+fi
 echo "$APP"

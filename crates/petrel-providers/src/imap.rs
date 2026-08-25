@@ -1212,6 +1212,90 @@ where
     Ok(map)
 }
 
+/// Lists one UID range as (uid, Message-ID) pairs — the cheap half of the
+/// All Mail walk: identity costs a line per message where a body costs the
+/// message itself, and All Mail is mostly mail already held.
+pub async fn fetch_id_map_range(
+    cfg: &ImapConfig,
+    folder: &str,
+    first: u32,
+    last: u32,
+) -> Result<Vec<(u32, Option<String>)>> {
+    if first > last {
+        return Ok(Vec::new());
+    }
+    let set = format!("{first}:{last}");
+    match cfg.security {
+        Security::Tls => {
+            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
+            id_range_session(client, cfg, folder, &set).await
+        }
+        #[cfg(feature = "insecure-plaintext")]
+        Security::InsecurePlaintext => {
+            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
+            id_range_session(Client::new(tcp), cfg, folder, &set).await
+        }
+    }
+}
+
+async fn id_range_session<S>(
+    client: Client<S>,
+    cfg: &ImapConfig,
+    folder: &str,
+    set: &str,
+) -> Result<Vec<(u32, Option<String>)>>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
+{
+    let mut session = client
+        .login(&cfg.user, &cfg.pass)
+        .await
+        .map_err(|(e, _)| e)?;
+    session.select(folder).await?;
+    let mut out = Vec::new();
+    {
+        let mut fetches = session
+            .uid_fetch(set, "(UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
+            .await?;
+        while let Some(fetch) = fetches.next().await {
+            let fetch = fetch?;
+            if let Some(uid) = fetch.uid {
+                out.push((uid, fetch.header().and_then(message_id_of)));
+            }
+        }
+    }
+    session.logout().await?;
+    Ok(out)
+}
+
+/// One folder's UIDNEXT, by STATUS — where a fresh All Mail walk starts.
+pub async fn folder_uidnext(cfg: &ImapConfig, folder: &str) -> Result<Option<u32>> {
+    match cfg.security {
+        Security::Tls => {
+            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
+            let mut session = client
+                .login(&cfg.user, &cfg.pass)
+                .await
+                .map_err(|(e, _)| e)?;
+            let s = session.status(folder, "(UIDNEXT)").await?;
+            session.logout().await?;
+            Ok(s.uid_next)
+        }
+        #[cfg(feature = "insecure-plaintext")]
+        Security::InsecurePlaintext => {
+            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
+            let client = Client::new(tcp);
+            let mut session = client
+                .login(&cfg.user, &cfg.pass)
+                .await
+                .map_err(|(e, _)| e)?;
+            let s = session.status(folder, "(UIDNEXT)").await?;
+            session.logout().await?;
+            Ok(s.uid_next)
+        }
+    }
+}
+
 /// Fetches one contiguous UID range in full — the backfill's stride.
 ///
 /// A range asks for what history held; what it returns is whatever still

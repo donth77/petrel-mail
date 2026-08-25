@@ -2517,6 +2517,51 @@ body.resizing {
   color: var(--ink2);
 }
 
+/* Per-account rows: the account, then two figures. */
+.storage-table .num {
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink2);
+  padding-inline-start: 14px;
+  white-space: nowrap;
+}
+
+.storage-account {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-inline-size: 100%;
+}
+
+/* One row of export buttons per account, when there is more than one. */
+.storage-export-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  margin-block-start: 10px;
+}
+
+.storage-export-row .storage-account {
+  font-size: 12.5px;
+  min-inline-size: 18ch;
+}
+
+.storage-export-row .storage-actions {
+  margin-block-start: 0;
+}
+
+/* A figure that has not arrived yet. The same height as the text it stands in
+   for, so the table does not shift when the numbers land. */
+.skel {
+  display: inline-block;
+  inline-size: 5ch;
+  block-size: 0.85em;
+  vertical-align: -0.05em;
+  border-radius: 3px;
+  background: var(--hair2);
+}
+
 .storage-actions {
   display: flex;
   flex-wrap: wrap;
@@ -4094,6 +4139,22 @@ body.dragging * {
 
 .onboarding-dialog .onboarding {
   background: transparent;
+}
+
+/* The folder tree's disclosure. A container row is quiet — it is a place
+   in the hierarchy, not a mailbox — and the chevron is small enough that the
+   row's click stays the navigation. */
+.tree-toggle {
+  border: none;
+  background: none;
+  color: var(--ink3);
+  padding: 0 2px;
+  margin-left: -4px;
+  cursor: pointer;
+  display: inline-flex;
+}
+.tree-container {
+  color: var(--ink2);
 }
 
 /* Filter rules: a list that is the run order, and a small editor. */

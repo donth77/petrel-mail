@@ -199,16 +199,21 @@ fn archived_conversations_leave_the_listing_and_come_back_on_undo() {
     assert!(restored.iter().any(|t| t.thread_id == tid));
 }
 
-/// Mail that was never filed anywhere is still mail. An inbox filter written as
-/// "placed in the inbox folder" would hide every message the sync had not yet
-/// placed, which is the same class of bug as joining on a NULL thread_id.
+/// The reversal of an older guard, deliberately. The inbox used to mean
+/// "not filed anywhere else", and a test here defended unplaced mail's right
+/// to appear — sync could once ingest without placing. Both facts changed:
+/// every ingest path now places atomically, and on Gmail every message is
+/// in All Mail (the archive role), so the moment All Mail synced, "not
+/// filed elsewhere" was false of the entire mailbox and the inbox emptied
+/// itself. The inbox now means membership — and mail placed nowhere (a
+/// draft, a bulk-inserted fixture) is in nobody's inbox.
 #[test]
-fn unplaced_messages_stay_in_the_listing() {
+fn unplaced_messages_do_not_haunt_the_inbox() {
     let (store, _account, _ids) = seeded();
     assert_eq!(
         store.list_threads(&ListView::Inbox, 0, 50).unwrap().len(),
-        3,
-        "messages with no placement at all must still be listed"
+        0,
+        "no placement, no inbox: membership is the meaning now"
     );
 }
 
@@ -593,4 +598,43 @@ fn deleting_forever_leaves_the_list_and_cannot_be_undone() {
         .map(|t| t.id)
         .collect();
     assert!(!after.contains(&ids[0]));
+}
+
+/// The move that could never be delivered.
+mod move_delivery {
+    use petrel_engine::actions::ActionKind;
+    use petrel_engine::blob::BlobStore;
+    use petrel_engine::store::Store;
+
+    #[test]
+    fn a_move_keeps_its_server_address_after_destroying_its_placement() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("t.db")).unwrap();
+        let blobs = BlobStore::open(&dir.path().join("blobs")).unwrap();
+        let account = store.ensure_test_account().unwrap();
+        let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+        let dest = store.ensure_named_folder(account, "Projects").unwrap();
+        let raw = b"From: a@example.com\r\nTo: b@example.com\r\nSubject: s\r\n\
+Message-ID: <m1@x>\r\nMIME-Version: 1.0\r\nContent-Type: text/plain\r\n\r\nbody\r\n";
+        let m = store
+            .ingest_raw(&blobs, account, Some(inbox), Some(77), raw)
+            .unwrap();
+        let thread = store.thread_of(m.message_id).unwrap().unwrap();
+        let policy = store.placement_policy(account).unwrap();
+
+        store
+            .apply_thread_action(account, thread, ActionKind::Move, Some(dest), policy)
+            .unwrap();
+
+        // The local move destroyed the inbox placement — the row that held
+        // the UID. Delivery must still know where the server keeps it.
+        assert_eq!(store.folders_of(m.message_id).unwrap(), vec![dest]);
+        let pending = store.pending_actions(account).unwrap();
+        let mv = pending
+            .iter()
+            .find(|p| p.kind_json.contains("move"))
+            .expect("queued");
+        assert_eq!(mv.uid, Some(77), "address captured at queue time");
+        assert_eq!(mv.folder_path, "INBOX");
+    }
 }

@@ -9,7 +9,7 @@ import {
   type Tag,
   type Thread,
 } from './lib/api';
-import { chips, hasToken, scopedQuery, toggleToken } from './lib/search-chips';
+import { chips, hasToken, scopeFor, toggleToken } from './lib/search-chips';
 import { count as fmtCount, fileSize } from './lib/format';
 import { t, type StringId } from './lib/strings';
 import { Search } from 'lucide-react';
@@ -100,6 +100,8 @@ export function App() {
   const outgoingRef = useRef(outgoing);
   outgoingRef.current = outgoing;
   const [folders, setFolders] = useState<Folder[]>([]);
+  // The view's true size; items.length is only the loaded window.
+  const [viewTotal, setViewTotal] = useState<number | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -167,6 +169,7 @@ export function App() {
   // conversation carrying it, which is not a thing to do on one click.
   const [deletingTag, setDeletingTag] = useState<{ id: number; name: string } | null>(null);
   const [deletingFolder, setDeletingFolder] = useState<Folder | null>(null);
+  const [movingFolder, setMovingFolder] = useState<Folder | null>(null);
   // The outbox message awaiting a discard confirmation. Discarding is the one
   // outbox action with no undo: the message was never sent, so there is
   // nothing to recall it from.
@@ -644,12 +647,38 @@ export function App() {
   // whole application with that file.
   useDropGuard();
 
-  const { drag, start: startDrag, startTag } = useDrag(
+  const { drag, start: startDrag, startTag, startFolder } = useDrag(
     view,
     dropOnRail,
     // A tag dropped onto a conversation. The same call the picker makes, so a
     // drag cannot come to mean something slightly different from the menu.
     (tagId, threadId) => void triage.run('tag', threadId, tagId),
+    // A folder dropped onto a new parent: re-nesting is a rename, which on
+    // IMAP is the move, and the store cascades it through the subtree.
+    (folderId, targetPath) => {
+      const f = folders.find((x) => x.id === folderId);
+      if (!f) return;
+      // Dropping a folder on Trash is asking to delete it — through the same
+      // confirm the menu uses, because the server deletes its mail too.
+      if (targetPath === '::trash') {
+        setDeletingFolder(f);
+        return;
+      }
+      const leaf = f.path.split(/[/.]/).pop() ?? f.path;
+      const next = targetPath ? `${targetPath}/${leaf}` : leaf;
+      if (next === f.path) return; // already there
+      // A folder cannot become its own descendant — the rename would eat
+      // its target mid-cascade and the tree would swallow itself.
+      if (targetPath === f.path || targetPath.startsWith(`${f.path}/`)) {
+        setToast(t('folder-into-itself'));
+        return;
+      }
+      void api
+        .renameFolder(folderId, next)
+        .then(() => api.folders().then(setFolders))
+        .then(() => setToast(t('folder-moved', { name: leaf, to: targetPath || t('rail-folders') })))
+        .catch((e) => setToast(t('folder-failed', { error: String(e) })));
+    },
   );
 
   /** Files dragged onto the composer from the desktop. */
@@ -851,8 +880,17 @@ export function App() {
         on: on.has(tg.name),
       }));
     }
-    return folders.map((f) => ({ id: f.id, label: f.path }));
-  }, [picker, folders, tags, active]);
+    // The place the conversation already is offers no move at all, so the
+    // current view's folder leaves the list: in a folder view that folder,
+    // in a role view the folder wearing that role.
+    // Only folders the user made. The role mailboxes all have verbs of
+    // their own (Archive, Trash, Spam, Move to Inbox), and offering their
+    // raw server paths — [Gmail]/All Mail, INBOX — put rows in this list
+    // that exist nowhere else in the app.
+    return folders
+      .filter((f) => !f.role && `folder:${f.id}` !== view)
+      .map((f) => ({ id: f.id, label: f.path }));
+  }, [picker, folders, tags, active, view]);
   useEffect(() => {
     let live = true;
     // Reported, not swallowed. A tag list that failed to load and an account
@@ -883,6 +921,18 @@ export function App() {
     // when it finishes — twice, not sixty times — which is exactly when folders
     // may have appeared and a re-read is worth doing.
   }, [status?.seeding, accountEpoch]);
+
+  useEffect(() => {
+    let live = true;
+    setViewTotal(null);
+    api
+      .viewCount(view)
+      .then((n) => live && setViewTotal(n))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [view, accountEpoch, status?.count]);
 
   // A message that needs a decision raises a notification, once.
   //
@@ -1005,6 +1055,15 @@ export function App() {
             .catch((e) => setToast(t('folder-failed', { error: String(e) })))
         }
         onDeleteFolder={setDeletingFolder}
+        onMoveFolder={setMovingFolder}
+        onDragFolder={startFolder}
+        folderDragPath={
+          drag?.payload.kind === 'folder'
+            ? (folders.find(
+                (f) => drag.payload.kind === 'folder' && f.id === drag.payload.folderId,
+              )?.path ?? null)
+            : null
+        }
         onCreateTag={(name) =>
           api
             .createTag(name)
@@ -1119,8 +1178,21 @@ export function App() {
               spellCheck={false}
               value={query}
               placeholder={t('search-placeholder')}
-              onChange={(e) => setQuery(scopedQuery(e.target.value, query, view))}
-              onFocus={() => setSearching(true)}
+              onChange={(e) => setQuery(e.target.value)}
+              // The context is applied the moment the field is entered — the
+              // pills are already showing, and the token they mirror should
+              // be too. Typed after that, never re-applied: deleting the
+              // token is how a search goes global.
+              onFocus={() => {
+                setSearching(true);
+                if (query.trim()) return;
+                const leaf = view.startsWith('folder:')
+                  ? (folders.find((f) => `folder:${f.id}` === view)?.path.split(/[/.]/).pop() ??
+                    null)
+                  : null;
+                const scope = scopeFor(view, leaf);
+                if (scope) setQuery(`${scope.token} `);
+              }}
               onKeyDown={(e) => {
                 // Escape leaves search rather than merely leaving the field:
                 // a blurred box still holding a query is still a search, with
@@ -1133,7 +1205,16 @@ export function App() {
               }}
               // Kept up while a chip is being clicked: blur fires first, and
               // hiding the row on the way to it would move the target away.
-              onBlur={() => window.setTimeout(() => setSearching(false), 150)}
+              onBlur={() => {
+                // Leaving with only the pre-applied token means no search was
+                // meant; the field empties rather than staying half-armed.
+                const leaf = view.startsWith('folder:')
+                  ? (folders.find((f) => `folder:${f.id}` === view)?.path.split(/[/.]/).pop() ??
+                    null)
+                  : null;
+                if (query.trim() === scopeFor(view, leaf)?.token) setQuery('');
+                window.setTimeout(() => setSearching(false), 150);
+              }}
               aria-label={t('search-placeholder')}
             />
             <span className="kbd">{t('search-hint-key')}</span>
@@ -1145,7 +1226,14 @@ export function App() {
               the search lives and it is the one you can see. */}
           {(searching || query.trim()) && (
             <div className="chip-row" role="group" aria-label={t('search-filters')}>
-              {chips(active?.from_display || active?.from_addr || null, new Date().getFullYear(), view)
+              {chips(
+                active?.from_display || active?.from_addr || null,
+                new Date().getFullYear(),
+                view,
+                view.startsWith('folder:')
+                  ? (folders.find((f) => `folder:${f.id}` === view)?.path.split(/[/.]/).pop() ?? null)
+                  : null,
+              )
                 .map((c) => (
                   <button
                     key={c.id}
@@ -1368,6 +1456,10 @@ export function App() {
           }}
           onAction={(kind) => (kind === 'delete_forever' ? askDelete() : void triage.run(kind))}
           onMove={() => setPicker('folder')}
+          onMoveInbox={() => {
+            const inbox = folders.find((f) => f.role === 'inbox');
+            if (inbox) void triage.run('move', undefined, inbox.id);
+          }}
           onTag={() => setPicker('tag')}
           onSnooze={() => setPicker('snooze')}
         />
@@ -1665,6 +1757,13 @@ export function App() {
                 targets.forEach((id) => void triage.run(kind, id));
                 if (selected.size > 0) setSelected(new Set());
               }}
+              onMoveInbox={() => {
+                close();
+                const inbox = folders.find((f) => f.role === 'inbox');
+                if (!inbox) return;
+                targets.forEach((id) => void triage.run('move', id, inbox.id));
+                if (selected.size > 0) setSelected(new Set());
+              }}
               onMove={() => {
                 close();
                 setPicker('folder');
@@ -1722,6 +1821,46 @@ export function App() {
             .then(() => setToast(t('tag-deleted', { name: tag.name })))
             .catch((e) => setToast(t('tag-rename-failed', { error: String(e) })));
         }}
+      />
+
+      <Picker
+        open={movingFolder !== null}
+        mode="folder"
+        subject={movingFolder ? (movingFolder.path.split(/[/.]/).pop() ?? movingFolder.path) : null}
+        options={(() => {
+          if (!movingFolder) return [];
+          const out = [{ id: -1, label: t('folder-move-top') }];
+          const archive = folders.find((f) => f.role === 'archive');
+          if (archive && movingFolder.path !== archive.path) {
+            out.push({ id: archive.id, label: 'Archive' });
+          }
+          for (const f of folders) {
+            if (f.role) continue;
+            if (f.id === movingFolder.id) continue;
+            if (f.path === movingFolder.path || f.path.startsWith(`${movingFolder.path}/`))
+              continue;
+            out.push({ id: f.id, label: f.path });
+          }
+          return out;
+        })()}
+        onClose={() => setMovingFolder(null)}
+        onChoose={(id) => {
+          const f = movingFolder;
+          setMovingFolder(null);
+          if (!f) return;
+          const leaf = f.path.split(/[/.]/).pop() ?? f.path;
+          const targetPath = id === -1 ? '' : (folders.find((x) => x.id === id)?.path ?? '');
+          const next = targetPath ? `${targetPath}/${leaf}` : leaf;
+          if (next === f.path) return;
+          void api
+            .renameFolder(f.id, next)
+            .then(() => api.folders().then(setFolders))
+            .then(() =>
+              setToast(t('folder-moved', { name: leaf, to: targetPath || t('rail-folders') })),
+            )
+            .catch((e) => setToast(t('folder-failed', { error: String(e) })));
+        }}
+        onCreate={() => {}}
       />
 
       <Confirm
@@ -1796,13 +1935,24 @@ export function App() {
       <footer className="status">
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
           <span className="dot" style={{ background: 'var(--good)', inlineSize: 6, blockSize: 6 }} />
-          {status?.seeding ? t('status-seeding') : t('status-synced')}
+          {status?.seeding
+            ? t('status-seeding')
+            : (() => {
+                // Aged from a real timestamp; the old label was a constant
+                // and therefore eternally "just now".
+                const at = status?.last_sync_ms ?? 0;
+                if (!at) return t('status-sync-waiting');
+                const min = Math.floor((Date.now() - at) / 60000);
+                if (min < 2) return t('status-synced');
+                if (min < 120) return t('status-synced-min', { min: String(min) });
+                return t('status-synced-hr', { hr: String(Math.floor(min / 60)) });
+              })()}
         </span>
         <span style={{ color: 'var(--hair)' }}>|</span>
         <span>
           {view === 'outbox'
             ? t('outbox-count', { count: fmtCount(counts['outbox'] ?? 0) })
-            : t('status-counts', { count: fmtCount(items.length), unread: fmtCount(unread) })}
+            : t('status-counts', { count: fmtCount(viewTotal ?? items.length), unread: fmtCount(unread) })}
         </span>
         <span className="spacer" />
         <span>

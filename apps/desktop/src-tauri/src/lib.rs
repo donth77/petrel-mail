@@ -52,6 +52,14 @@ struct AppState {
     /// Drafts edited since their last push to the server, for the 30-second
     /// debounce. A draft in here has exactly one push task sleeping on it.
     draft_dirty: Mutex<std::collections::HashSet<i64>>,
+    /// When a sync cycle last completed clean, in ms. Zero until one has.
+    /// The status bar ages this into words; a static "just now" was the
+    /// previous implementation, and it was stuck by construction.
+    last_sync_ms: std::sync::atomic::AtomicI64,
+    /// When the user last asked the store for something, in ms. Backfill
+    /// yields to this: history is the least urgent work in the program, and
+    /// a stride that makes a click wait has its priorities inverted.
+    ui_touch_ms: std::sync::atomic::AtomicI64,
     /// Whether the server supports UID MOVE, learned from the probe.
     server_has_move: AtomicBool,
     /// RFC 4315. Without it a message can be marked deleted but not expunged,
@@ -91,6 +99,7 @@ struct Status {
     retention: String,
     data_dir: String,
     sync_error: Option<String>,
+    last_sync_ms: i64,
 }
 
 /// Turns a protocol error into something a person can act on.
@@ -157,23 +166,48 @@ fn now_ms() -> i64 {
 
 #[tauri::command]
 fn status(state: State<Arc<AppState>>) -> Status {
+    let _t = Timed::new("status");
     let configured = state
         .store
         .lock()
         .ok()
         .and_then(|s| {
-            s.active_account()
-                .ok()
-                .flatten()
-                .map(|a| imap_config_for(&s, a).is_some())
+            s.active_account().ok().flatten().and_then(|a| {
+                // Presence of stored servers, deliberately not a password
+                // read: this runs on every status poll, and a keychain read
+                // here meant a consent dialog every few seconds on unsigned
+                // dev builds.
+                s.account_servers(a)
+                    .ok()
+                    .flatten()
+                    .map(|v| !v.imap_host.is_empty())
+            })
         })
         .unwrap_or(false)
         || imap_config_from_env().is_some();
     Status {
         configured,
         seeding: state.seeding.load(Ordering::Relaxed),
-        count: state.seeded.load(Ordering::Relaxed),
+        // The active account's held mail, not the store's total: while one
+        // account backfills a deep archive, the other's empty folders were
+        // announcing thousands of messages that belonged next door. The
+        // global `seeded` counter stays what it is — an internal
+        // change-signal — and stops being shown as if it were a fact about
+        // whatever account is on screen.
+        count: state
+            .store
+            .lock()
+            .ok()
+            .and_then(|s| {
+                s.active_account()
+                    .ok()
+                    .flatten()
+                    .and_then(|a| s.message_count_for(a).ok())
+            })
+            .map(|n| n as usize)
+            .unwrap_or_else(|| state.seeded.load(Ordering::Relaxed)),
         server_total: state.server_total.load(Ordering::Relaxed),
+        last_sync_ms: state.last_sync_ms.load(Ordering::Relaxed),
         source: state
             .source
             .lock()
@@ -204,6 +238,44 @@ fn keychain_entry(account_id: i64) -> Result<keyring::Entry, String> {
         .map_err(|e| format!("keychain: {e}"))
 }
 
+/// Passwords read from the keychain, once per account per launch.
+///
+/// Dev builds are unsigned, so to macOS every rebuild is a different app and
+/// every keychain read may raise a consent dialog. Before this cache the
+/// status poll read the password every few seconds — a dialog storm that
+/// also blocked every sync task behind the first unanswered prompt. Now the
+/// keychain is touched at most once per account per process; the dialog (at
+/// most one per account) appears at launch and is done. Proper signing —
+/// the packaging phase — is what retires the dialog altogether.
+static PASS_CACHE: std::sync::OnceLock<Mutex<std::collections::HashMap<i64, String>>> =
+    std::sync::OnceLock::new();
+
+/// Seeds the cache at the moment a password is written, so the write is not
+/// immediately followed by a consenting read of the same value.
+fn remember_password(account_id: i64, pass: &str) {
+    let cache = PASS_CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+    if let Ok(mut map) = cache.lock() {
+        map.insert(account_id, pass.to_string());
+    }
+}
+
+fn account_password(account_id: i64) -> Option<String> {
+    let cache = PASS_CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+    if let Ok(map) = cache.lock()
+        && let Some(hit) = map.get(&account_id)
+    {
+        return Some(hit.clone());
+    }
+    // The one true keychain read in the program. (A blanket rewrite once
+    // pointed this line back at this function; the recursion overflowed the
+    // stack on every launch — hence a test that now calls this twice.)
+    let pass = keychain_entry(account_id).ok()?.get_password().ok()?;
+    if let Ok(mut map) = cache.lock() {
+        map.insert(account_id, pass.clone());
+    }
+    Some(pass)
+}
+
 /// The IMAP configuration for an account that was set up in the app.
 ///
 /// The store has the servers; the keychain has the password. Either missing
@@ -214,7 +286,7 @@ fn imap_config_for(store: &Store, account_id: i64) -> Option<ImapConfig> {
     if servers.imap_host.is_empty() {
         return None;
     }
-    let pass = keychain_entry(account_id).ok()?.get_password().ok()?;
+    let pass = account_password(account_id)?;
     Some(ImapConfig {
         host: servers.imap_host,
         port: servers.imap_port,
@@ -232,7 +304,7 @@ fn smtp_config_for(store: &Store, account_id: i64) -> Option<petrel_providers::s
     if servers.smtp_host.is_empty() {
         return None;
     }
-    let pass = keychain_entry(account_id).ok()?.get_password().ok()?;
+    let pass = account_password(account_id)?;
     Some(petrel_providers::smtp::SmtpConfig {
         host: servers.smtp_host,
         port: servers.smtp_port,
@@ -887,6 +959,191 @@ fn ingest_fenced(
     }
 }
 
+/// One stride of the Gmail All Mail walk — the account's full history,
+/// claimed cheaply.
+///
+/// All Mail holds a copy of everything, so most of it is mail already here.
+/// A stride lists (UID, Message-ID) pairs — a line per message — claims the
+/// known ones by writing their All Mail placement (which is what the Archive
+/// view reads), and downloads bodies only for strangers: the archived-and-
+/// unlabeled mail no other folder will ever surface. The floor records how
+/// deep the walk has asked, exactly like ordinary backfill; floor 1 is done.
+async fn run_allmail_tick(state: &Arc<AppState>, account: i64, cfg: &ImapConfig) -> bool {
+    let chunk: u32 = std::env::var("PETREL_ALLMAIL_CHUNK")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(500);
+    let target = {
+        let Ok(store) = state.store.lock() else {
+            return false;
+        };
+        // Only where folders are labels: elsewhere Archive is an ordinary
+        // folder that ordinary backfill already walks.
+        let is_gmail = store
+            .accounts()
+            .ok()
+            .and_then(|accs| accs.into_iter().find(|a| a.id == account))
+            .map(|a| a.kind == "gmail")
+            .unwrap_or(false);
+        if !is_gmail {
+            return false;
+        }
+        let Some(folder_id) = store.folder_for_role(account, "archive").ok().flatten() else {
+            return false;
+        };
+        let Some(path) = store.folder_path(folder_id).ok().flatten() else {
+            return false;
+        };
+        match store.backfill_floor(folder_id).ok().flatten() {
+            Some(1) => return false, // done
+            floor => (folder_id, path, floor),
+        }
+    };
+    let (folder_id, path, floor) = target;
+
+    let ceiling = match floor {
+        Some(f) => f,
+        // A fresh walk starts at the top of the mailbox as it is today. New
+        // arrivals above this land through inbox sync and the label sweep.
+        None => match petrel_providers::imap::folder_uidnext(cfg, &path).await {
+            Ok(Some(next)) => next,
+            Ok(None) => return false,
+            Err(e) => {
+                log_sync(&format!("all-mail walk could not start: {e}"));
+                return false;
+            }
+        },
+    };
+    if ceiling <= 1 {
+        if let Ok(mut store) = state.store.lock() {
+            let _ = store.set_backfill_floor(folder_id, 1);
+        }
+        return false;
+    }
+    let first = ceiling.saturating_sub(chunk).max(1);
+    let last = ceiling - 1;
+
+    let listed = match petrel_providers::imap::fetch_id_map_range(cfg, &path, first, last).await {
+        Ok(l) => l,
+        Err(e) => {
+            log_sync(&format!("all-mail stride failed: {e}"));
+            return true; // failed is not finished; retry next tick
+        }
+    };
+    let mut claimed = 0usize;
+    let mut strangers: Vec<u32> = Vec::new();
+    {
+        let Ok(store) = state.store.lock() else {
+            return false;
+        };
+        for (uid, mid) in &listed {
+            match mid
+                .as_deref()
+                .and_then(|m| store.message_by_msgid(account, m).ok().flatten())
+            {
+                Some(existing) => {
+                    if store.place_message_at(existing, folder_id, *uid).is_ok() {
+                        claimed += 1;
+                    }
+                }
+                None => strangers.push(*uid),
+            }
+        }
+    }
+    let mut fetched = 0usize;
+    if !strangers.is_empty() {
+        let st = Arc::clone(state);
+        fetched =
+            petrel_providers::imap::fetch_uids_each(cfg, &path, &strangers, |uid, flags, raw| {
+                let _ = st.blobs.write(raw);
+                let Ok(mut store) = st.store.lock() else {
+                    return;
+                };
+                if ingest_fenced(&mut store, &st.blobs, account, folder_id, uid, flags, raw)
+                    == Some(true)
+                {
+                    st.seeded.fetch_add(1, Ordering::Relaxed);
+                }
+            })
+            .await
+            .unwrap_or(0);
+    }
+    if let Ok(mut store) = state.store.lock() {
+        let _ = store.set_backfill_floor(folder_id, first);
+    }
+    if claimed > 0 || fetched > 0 {
+        log_sync(&format!(
+            "all-mail {path}: {claimed} claimed, {fetched} downloaded, down to uid {first}"
+        ));
+    }
+    true
+}
+
+/// Logs any instrumented command that took longer than feels instant.
+///
+/// The performance claim is not allowed to be a feeling: every hot command
+/// carries one of these, and the log holds the distribution — slow calls
+/// name themselves, silence means everything ran under the threshold.
+struct Timed(&'static str, std::time::Instant);
+impl Timed {
+    fn new(name: &'static str) -> Self {
+        Timed(name, std::time::Instant::now())
+    }
+}
+impl Drop for Timed {
+    fn drop(&mut self) {
+        let ms = self.1.elapsed().as_millis();
+        if ms > 50 {
+            log_sync(&format!("SLOW {}: {ms}ms", self.0));
+        }
+    }
+}
+
+/// Marks "the user is here, working" — called by the interactive commands.
+fn note_ui_touch(state: &AppState) {
+    state
+        .ui_touch_ms
+        .store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether the user asked for something in the last `within_ms`.
+fn ui_recently_active(state: &AppState, within_ms: i64) -> bool {
+    now_ms() - state.ui_touch_ms.load(std::sync::atomic::Ordering::Relaxed) < within_ms
+}
+
+/// Parks a background task while the user is working. Returns when the UI
+/// has been quiet for a beat — the spec's "interactive preempts backfill",
+/// implemented as politeness rather than a queue.
+async fn yield_to_user(state: &Arc<AppState>) {
+    while ui_recently_active(state, 1500) {
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    }
+}
+
+/// History's own clock. Backfill used to tick only after a poll cycle,
+/// which with IDLE meant "when new mail happens to arrive, or every twenty
+/// minutes" — a quiet mailbox's history arrived at a crawl. This task walks
+/// strides on its own connection at its own pace: briskly while there is
+/// work, dormant once every folder's floor reaches 1. Strides stay small,
+/// so a click or a poll never waits long behind one.
+fn spawn_backfill(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            yield_to_user(&state).await;
+            // Recent history first; the deep archive once that is quiet.
+            let worked = run_backfill_tick(&state, account, &cfg).await
+                || run_allmail_tick(&state, account, &cfg).await;
+            if worked {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            } else {
+                // Done, or a folder list that may change later: look again
+                // rarely rather than never.
+                tokio::time::sleep(std::time::Duration::from_secs(15 * 60)).await;
+            }
+        }
+    });
+}
+
 /// One polite stride of history: the next chunk of the first folder whose
 /// backfill is not finished.
 ///
@@ -933,6 +1190,7 @@ async fn run_backfill_tick(state: &Arc<AppState>, account: i64, cfg: &ImapConfig
     let st = Arc::clone(state);
     let fetched = petrel_providers::imap::fetch_uid_range_each(cfg, &path, first, last, {
         move |uid, flags, raw| {
+            let _ = st.blobs.write(raw);
             let Ok(mut store) = st.store.lock() else {
                 return;
             };
@@ -1037,7 +1295,15 @@ async fn run_sync_cycle(
             .iter()
             .map(|(_, path, fid)| petrel_providers::imap::FolderPass {
                 path: path.clone(),
-                since_uid: store.max_uid(*fid).ok().flatten().unwrap_or(0),
+                // Floored by the last-seen UIDNEXT: moving the newest message
+                // out of a folder drops max_uid, and a watermark that falls
+                // re-fetches mail the server still holds there — the moved
+                // conversation walking straight back into the inbox.
+                since_uid: {
+                    let held = store.max_uid(*fid).ok().flatten().unwrap_or(0);
+                    let next = store.folder_uidnext(*fid).ok().flatten().unwrap_or(0);
+                    held.max(next.saturating_sub(1))
+                },
                 expected_validity: store.folder_validity(*fid).ok().flatten(),
                 since_uidnext: store.folder_uidnext(*fid).ok().flatten(),
                 since_modseq: store.folder_modseq(*fid).ok().flatten(),
@@ -1067,6 +1333,10 @@ async fn run_sync_cycle(
             .collect();
         let arrivals = &mut arrivals;
         petrel_providers::imap::sync_pass(cfg, &passes, |index, uid, flags, raw| {
+            // Compression happens out here, before the lock: one 20MB
+            // attachment message compressed inside it stalled every click
+            // and count in the app for the duration (measured at 11s).
+            let _ = st.blobs.write(raw);
             let Ok(mut store) = st.store.lock() else {
                 return;
             };
@@ -1184,6 +1454,9 @@ async fn run_sync_cycle(
         }
     }
     state.server_total.store(server_total, Ordering::Relaxed);
+    if failures == 0 {
+        state.last_sync_ms.store(now_ms(), Ordering::Relaxed);
+    }
     if !arrivals.is_empty() {
         apply_rules_to(state, account, &arrivals);
     }
@@ -1307,6 +1580,7 @@ async fn recover_folder(
             name,
             &outcome.to_fetch,
             |uid, flags, raw| {
+                let _ = st.blobs.write(raw);
                 let Ok(mut store) = st.store.lock() else {
                     return;
                 };
@@ -1469,6 +1743,10 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
 
         state.seeding.store(false, Ordering::Relaxed);
 
+        // History fills in behind the present, on its own clock — see
+        // spawn_backfill for why it is not part of the poll loop.
+        spawn_backfill(Arc::clone(&state), account, cfg.clone());
+
         // From here on, poll. The first pass took a window of recent mail;
         // every pass after it asks only for UIDs above the highest we hold, so
         // a poll costs one round trip when nothing has arrived.
@@ -1529,18 +1807,7 @@ fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
                 // One round trip when nothing changed; live labels when it did.
                 run_label_sweep(&state, account, &cfg).await;
             }
-            // History fills in behind the present: a few polite strides per
-            // quiet cycle, none at all while new mail is arriving. Each
-            // stride is small, so the next IDLE wake or click never waits
-            // long behind it — and the cursor means a restart loses nothing.
-            if fresh == 0 {
-                for _ in 0..5 {
-                    if !run_backfill_tick(&state, account, &cfg).await {
-                        break;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                }
-            }
+
             let trouble: Option<String> = if failures > 0 {
                 Some(format!("{failures} folder(s) failed"))
             } else {
@@ -1566,6 +1833,8 @@ fn list_messages(
     limit: u32,
     state: State<Arc<AppState>>,
 ) -> Result<Vec<Listing>, String> {
+    let _t = Timed::new("list_messages");
+    note_ui_touch(&state);
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
     store
         // A virtualized list wants a real window, not 100 rows. The proper fix is
@@ -1583,6 +1852,8 @@ fn list_threads(
     limit: u32,
     state: State<Arc<AppState>>,
 ) -> Result<Vec<ThreadListing>, String> {
+    let _t = Timed::new("list_threads");
+    note_ui_touch(&state);
     // The rail key is parsed by the engine, which owns the mapping from a view
     // to a query. An absent view means the inbox.
     let view = ListView::parse(view.as_deref().unwrap_or("inbox"));
@@ -1664,6 +1935,8 @@ fn list_tags(state: State<Arc<AppState>>) -> Result<Vec<TagSummary>, String> {
 /// the engine is a second thing to keep in step.
 #[tauri::command]
 fn view_counts(mode: String, state: State<Arc<AppState>>) -> Result<Vec<(String, i64)>, String> {
+    let _t = Timed::new("view_counts");
+    note_ui_touch(&state);
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
     store
         .view_counts(petrel_engine::store::CountMode::parse(&mode))
@@ -1770,6 +2043,8 @@ fn thread_detail(
     thread_id: i64,
     state: State<Arc<AppState>>,
 ) -> Result<Vec<ThreadMessage>, String> {
+    let _t = Timed::new("thread_detail");
+    note_ui_touch(&state);
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
     store.thread_detail(thread_id).map_err(|e| e.to_string())
 }
@@ -2473,6 +2748,7 @@ fn add_account(setup: AccountSetup, state: State<Arc<AppState>>) -> Result<i64, 
         }
         return Err(e);
     }
+    remember_password(id, &setup.password);
     // Syncing starts now, not at the next launch: step 3 of onboarding is
     // "Getting your mail", and it is watching.
     if let Some(cfg) = imap_config(&state, id) {
@@ -2485,6 +2761,7 @@ fn add_account(setup: AccountSetup, state: State<Arc<AppState>>) -> Result<i64, 
 /// every account is already being kept up to date; this is which one is read.
 #[tauri::command]
 fn set_active_account(account_id: i64, state: State<Arc<AppState>>) -> Result<(), String> {
+    note_ui_touch(&state);
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
     if !store
         .account_ids()
@@ -3029,16 +3306,35 @@ fn set_identity(
 }
 
 /// What the Storage pane shows.
+///
+/// Async so the work runs off the main thread: a plain command executes on
+/// the thread the window paints from, and this one reads the search index's
+/// page count out of `dbstat`, which walks every FTS page. On a large mailbox
+/// that held the whole window still for the better part of a second — the
+/// pane did not so much load slowly as refuse to appear until the numbers
+/// were ready.
 #[tauri::command]
-fn storage_report(state: State<Arc<AppState>>) -> Result<StorageReport, String> {
-    let blob_bytes = state.blobs.total_bytes().unwrap_or(0);
+async fn storage_report(state: State<'_, Arc<AppState>>) -> Result<StorageReport, String> {
+    let state = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || {
+        let _t = Timed::new("storage_report");
+        let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+        store
+            .storage_report(&std::path::Path::new(&state.data_dir).join("petrel.db"))
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Every conversation in a view, counted — not the loaded window's length.
+#[tauri::command]
+fn view_count(view: Option<String>, state: State<Arc<AppState>>) -> Result<i64, String> {
+    let _t = Timed::new("view_count");
+    note_ui_touch(&state);
+    let view = ListView::parse(view.as_deref().unwrap_or("inbox"));
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
-    store
-        .storage_report(
-            &std::path::Path::new(&state.data_dir).join("petrel.db"),
-            blob_bytes,
-        )
-        .map_err(|e| e.to_string())
+    store.conversations_in(&view).map_err(|e| e.to_string())
 }
 
 /// The active account's filter rules, in run order.
@@ -3201,26 +3497,37 @@ fn import_mail(paths: Vec<String>, state: State<Arc<AppState>>) -> Result<Import
 /// The path comes from the OS save panel rather than a location Petrel picks:
 /// an export is something you take somewhere, and guessing where would make the
 /// durability promise depend on knowing where Petrel hides things.
+///
+/// Async for the same reason as `storage_report`: a whole mailbox is read blob
+/// by blob and written out, which is seconds of work on a large account, and
+/// a plain command would spend those seconds holding the window still.
 #[tauri::command]
-fn export_mbox(
+async fn export_mbox(
+    account_id: i64,
     view: Option<String>,
     path: String,
-    state: State<Arc<AppState>>,
+    state: State<'_, Arc<AppState>>,
 ) -> Result<String, String> {
-    let view = ListView::parse(view.as_deref().unwrap_or("inbox"));
-    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
-    let (written, skipped) = store
-        .export_mbox(&state.blobs, &view, std::path::Path::new(&path))
-        .map_err(|e| e.to_string())?;
-    log_sync(&format!(
-        "exported {written} message(s) to mbox, {skipped} skipped"
-    ));
-    Ok(format!("{written}/{skipped}"))
+    let state = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || {
+        let view = ListView::parse(view.as_deref().unwrap_or("inbox"));
+        let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+        let (written, skipped) = store
+            .export_mbox(&state.blobs, account_id, &view, std::path::Path::new(&path))
+            .map_err(|e| e.to_string())?;
+        log_sync(&format!(
+            "exported {written} message(s) from account {account_id} to mbox, {skipped} skipped"
+        ));
+        Ok(format!("{written}/{skipped}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Folders for the move picker (V).
 #[tauri::command]
 fn list_folders(state: State<Arc<AppState>>) -> Result<Vec<FolderSummary>, String> {
+    note_ui_touch(&state);
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
     let Some(account) = store.active_account().map_err(|e| e.to_string())? else {
         return Ok(Vec::new());
@@ -3266,7 +3573,7 @@ async fn rename_folder(
     state: State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
     let (cfg, old_path) = {
-        let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+        let mut store = state.store.lock().map_err(|_| "store lock poisoned")?;
         let account = store
             .active_account()
             .map_err(|e| e.to_string())?
@@ -3282,7 +3589,7 @@ async fn rename_folder(
             .await
             .map_err(|e| e.to_string())?;
     }
-    let store = state.store.lock().map_err(|_| "store lock poisoned")?;
+    let mut store = state.store.lock().map_err(|_| "store lock poisoned")?;
     store
         .rename_folder(folder_id, &new_path)
         .map_err(|e| e.to_string())
@@ -3415,6 +3722,8 @@ fn search_messages(
     newest: bool,
     state: State<Arc<AppState>>,
 ) -> Result<Vec<ThreadListing>, String> {
+    let _t = Timed::new("search");
+    note_ui_touch(&state);
     let store = state.store.lock().map_err(|_| "store lock poisoned")?;
     store
         .search_threads_sorted(&query, 200, newest)
@@ -3767,13 +4076,22 @@ fn frontend_log(entry: String) {
 /// Where mail lives on disk. Shown in the UI so "your mail is yours" is a
 /// path the user can open, not a slogan.
 fn data_dir() -> std::path::PathBuf {
-    std::env::var("PETREL_DATA_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            dirs::data_dir()
-                .unwrap_or_else(std::env::temp_dir)
-                .join("Petrel")
-        })
+    if let Ok(dir) = std::env::var("PETREL_DATA_DIR") {
+        return std::path::PathBuf::from(dir);
+    }
+    let base = dirs::data_dir().unwrap_or_else(std::env::temp_dir);
+    // The era of a separate "live" store is over, but the store itself is
+    // not: real accounts and their mail live in Petrel-live because the
+    // launch script kept them apart from demo data. A plain Dock launch
+    // used to open the demo directory instead — same window, different
+    // world, nothing on screen saying so — and the first thing it offered
+    // was onboarding into the wrong store. Prefer the live directory when
+    // it exists, so every way of launching opens the same mail.
+    let live = base.join("Petrel-live");
+    if live.join("petrel.db").exists() {
+        return live;
+    }
+    base.join("Petrel")
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -3823,6 +4141,8 @@ pub fn run() {
         drain_signal: Arc::new(tokio::sync::Notify::new()),
         draining: AtomicBool::new(false),
         draft_dirty: Mutex::new(std::collections::HashSet::new()),
+        last_sync_ms: std::sync::atomic::AtomicI64::new(0),
+        ui_touch_ms: std::sync::atomic::AtomicI64::new(0),
         server_has_move: AtomicBool::new(false),
         server_has_uidplus: AtomicBool::new(false),
         server_is_gmail: AtomicBool::new(false),
@@ -3860,6 +4180,55 @@ pub fn run() {
     // the other should be there, read or not, the moment you switch to it.
     // The environment-driven row is the fallback for the developer case only.
     let mut started = 0;
+    // Adoption: an account row created from environment variables before
+    // onboarding existed has no stored servers and no keychain entry — and
+    // once a second account *is* properly configured, the env fallback below
+    // never fires again, so that first account silently stops syncing
+    // (found exactly that way: Gmail dead for days behind a working
+    // Namecheap). If the environment names such an account's own address,
+    // its credentials move into the keychain now, once, and it becomes an
+    // ordinary configured account.
+    if let (Some(env), Ok(store)) = (imap_config_from_env(), state.store.lock()) {
+        for summary in store.accounts().unwrap_or_default() {
+            let stored = imap_config_for(&store, summary.id).is_some()
+                || store
+                    .account_servers(summary.id)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|s| !s.imap_host.is_empty());
+            if stored || !summary.email.eq_ignore_ascii_case(&env.user) {
+                continue;
+            }
+            let smtp =
+                petrel_providers::smtp::SmtpConfig::for_imap_host(&env.host, &env.user, &env.pass);
+            let servers = petrel_engine::store::AccountServers {
+                imap_host: env.host.clone(),
+                imap_port: env.port,
+                smtp_host: smtp.host,
+                smtp_port: smtp.port,
+                username: env.user.clone(),
+                provider: String::new(),
+            };
+            if let Err(e) = store.set_account_servers(summary.id, &servers) {
+                eprintln!("[sync] could not adopt env servers for {}: {e}", env.user);
+                continue;
+            }
+            if let Ok(entry) = keychain_entry(summary.id) {
+                // set_password refuses to overwrite on macOS; clear first.
+                let _ = entry.delete_credential();
+                match entry.set_password(&env.pass) {
+                    Ok(()) => {
+                        remember_password(summary.id, &env.pass);
+                        log_sync(&format!(
+                            "adopted environment credentials for {} into the keychain",
+                            env.user
+                        ));
+                    }
+                    Err(e) => eprintln!("[sync] keychain adopt failed: {e}"),
+                }
+            }
+        }
+    }
     let configs: Vec<(i64, ImapConfig)> = state
         .store
         .lock()
@@ -3980,6 +4349,7 @@ pub fn run() {
             export_mbox,
             import_mail,
             print_message,
+            view_count,
             list_rules,
             save_rule,
             delete_rule,
@@ -4183,6 +4553,23 @@ mod folder_survey_tests {
             true,
         );
         assert_eq!(out.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod password_cache_tests {
+    use super::account_password;
+
+    /// The regression fence for a launch-killing bug: a blanket rewrite once
+    /// pointed the cache's miss path back at itself, and every launch died
+    /// of stack overflow on the first password read. The property that
+    /// matters is simply that a miss *terminates* — twice, so both the
+    /// uncached and cached paths run. An id no store will ever issue keeps
+    /// this off any real keychain item (absent items fail without a dialog).
+    #[test]
+    fn a_cache_miss_terminates() {
+        assert_eq!(account_password(i64::MAX), None);
+        assert_eq!(account_password(i64::MAX), None);
     }
 }
 

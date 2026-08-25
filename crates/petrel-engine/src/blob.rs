@@ -132,23 +132,6 @@ impl BlobStore {
     /// Walked rather than tracked in a counter: a counter drifts the first time
     /// a crash lands between writing a blob and recording it, and the number
     /// people check disk usage for is the one the filesystem actually reports.
-    pub fn total_bytes(&self) -> Result<u64> {
-        fn walk(dir: &std::path::Path) -> std::io::Result<u64> {
-            let mut total = 0;
-            for entry in std::fs::read_dir(dir)? {
-                let entry = entry?;
-                let meta = entry.metadata()?;
-                if meta.is_dir() {
-                    total += walk(&entry.path())?;
-                } else {
-                    total += meta.len();
-                }
-            }
-            Ok(total)
-        }
-        Ok(walk(&self.root).unwrap_or(0))
-    }
-
     pub fn pending_temp_files(&self) -> Result<usize> {
         Ok(fs::read_dir(self.root.join("tmp"))?.count())
     }

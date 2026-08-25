@@ -64,6 +64,11 @@ fn httpdate(ms: i64) -> String {
     )
 }
 
+/// Every threading fixture lives in the inbox: the view reads membership.
+fn inboxed(store: &Store, account: i64) -> i64 {
+    store.ensure_folder(account, "inbox", "INBOX").unwrap()
+}
+
 fn setup() -> (tempfile::TempDir, Store, BlobStore, i64) {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = Store::open(&dir.path().join("petrel.db")).expect("store");
@@ -95,7 +100,7 @@ fn a_reply_chain_becomes_one_conversation() {
         .iter()
         .map(|m| {
             store
-                .ingest_raw(&blobs, account, None, None, m)
+                .ingest_raw(&blobs, account, Some(inboxed(&store, account)), None, m)
                 .expect("ingest")
                 .message_id
         })
@@ -134,7 +139,7 @@ fn a_late_middle_message_merges_two_threads() {
         .ingest_raw(
             &blobs,
             account,
-            None,
+            Some(inboxed(&store, account)),
             None,
             &mail("m1@x", "Hi", &[], T0, "start"),
         )
@@ -144,7 +149,7 @@ fn a_late_middle_message_merges_two_threads() {
         .ingest_raw(
             &blobs,
             account,
-            None,
+            Some(inboxed(&store, account)),
             None,
             &mail("m3@x", "Re: Hi", &["m2@x"], T0 + 2 * DAY, "third"),
         )
@@ -161,7 +166,7 @@ fn a_late_middle_message_merges_two_threads() {
         .ingest_raw(
             &blobs,
             account,
-            None,
+            Some(inboxed(&store, account)),
             None,
             &mail("m2@x", "Re: Hi", &["m1@x"], T0 + DAY, "second"),
         )
@@ -186,7 +191,7 @@ fn stripped_references_fall_back_to_a_distinctive_subject() {
         .ingest_raw(
             &blobs,
             account,
-            None,
+            Some(inboxed(&store, account)),
             None,
             &mail("s1@x", "Quarterly logistics review", &[], T0, "one"),
         )
@@ -195,7 +200,7 @@ fn stripped_references_fall_back_to_a_distinctive_subject() {
         .ingest_raw(
             &blobs,
             account,
-            None,
+            Some(inboxed(&store, account)),
             None,
             &mail(
                 "s2@x",
@@ -223,7 +228,7 @@ fn generic_subjects_do_not_merge_strangers() {
         .ingest_raw(
             &blobs,
             account,
-            None,
+            Some(inboxed(&store, account)),
             None,
             &mail("g1@x", "Hi", &[], T0, "from alice"),
         )
@@ -232,7 +237,7 @@ fn generic_subjects_do_not_merge_strangers() {
         .ingest_raw(
             &blobs,
             account,
-            None,
+            Some(inboxed(&store, account)),
             None,
             &mail("g2@x", "Hi", &[], T0 + DAY, "from bob"),
         )
@@ -259,7 +264,7 @@ fn the_subject_window_stops_distant_mail_from_joining() {
         .ingest_raw(
             &blobs,
             account,
-            None,
+            Some(inboxed(&store, account)),
             None,
             &mail("w1@x", "Annual budget planning", &[], T0, "this year"),
         )
@@ -269,7 +274,7 @@ fn the_subject_window_stops_distant_mail_from_joining() {
         .ingest_raw(
             &blobs,
             account,
-            None,
+            Some(inboxed(&store, account)),
             None,
             &mail(
                 "w2@x",
@@ -301,10 +306,10 @@ fn threads_never_span_accounts() {
     );
 
     let a = store
-        .ingest_raw(&blobs, account, None, None, &raw)
+        .ingest_raw(&blobs, account, Some(inboxed(&store, account)), None, &raw)
         .expect("a");
     let b = store
-        .ingest_raw(&blobs, other, None, None, &raw)
+        .ingest_raw(&blobs, other, Some(inboxed(&store, other)), None, &raw)
         .expect("b");
 
     assert_ne!(
@@ -339,7 +344,7 @@ fn deleted_messages_leave_the_conversation() {
         .ingest_raw(
             &blobs,
             account,
-            None,
+            Some(inboxed(&store, account)),
             None,
             &mail("d1@x", "Vendor contract terms", &[], T0, "one"),
         )
@@ -348,7 +353,7 @@ fn deleted_messages_leave_the_conversation() {
         .ingest_raw(
             &blobs,
             account,
-            None,
+            Some(inboxed(&store, account)),
             None,
             &mail(
                 "d2@x",
@@ -387,7 +392,7 @@ fn resyncing_a_thread_does_not_inflate_its_count() {
     for _ in 0..3 {
         for m in &msgs {
             store
-                .ingest_raw(&blobs, account, None, None, m)
+                .ingest_raw(&blobs, account, Some(inboxed(&store, account)), None, m)
                 .expect("ingest");
         }
     }
@@ -416,8 +421,12 @@ fn thread_rows_roll_up_flags_from_their_messages() {
         "reply",
     );
 
-    let ia = store.ingest_raw(&blobs, account, None, None, &a).unwrap();
-    let ib = store.ingest_raw(&blobs, account, None, None, &b).unwrap();
+    let ia = store
+        .ingest_raw(&blobs, account, Some(inboxed(&store, account)), None, &a)
+        .unwrap();
+    let ib = store
+        .ingest_raw(&blobs, account, Some(inboxed(&store, account)), None, &b)
+        .unwrap();
     // Older message read; the reply unread, starred, and carrying a file.
     store.set_flags(ia.message_id, flags::SEEN, 0).unwrap();
     store
@@ -471,7 +480,9 @@ fn search_collapses_hits_to_one_row_per_conversation() {
             T0 + i as i64 * DAY,
             "the annex needs a signature",
         );
-        store.ingest_raw(&blobs, account, None, None, &m).unwrap();
+        store
+            .ingest_raw(&blobs, account, Some(inboxed(&store, account)), None, &m)
+            .unwrap();
     }
     // A separate conversation that also matches.
     let other = mail(
@@ -482,7 +493,13 @@ fn search_collapses_hits_to_one_row_per_conversation() {
         "annex",
     );
     store
-        .ingest_raw(&blobs, account, None, None, &other)
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(inboxed(&store, account)),
+            None,
+            &other,
+        )
         .unwrap();
 
     let msg_hits = store.search_listing("annex", 50).unwrap();
@@ -519,6 +536,9 @@ fn messages_without_a_thread_still_appear_as_single_conversations() {
         })
         .collect();
     let ids = store.insert_messages(&msgs).unwrap();
+    for id in &ids {
+        store.place_message(*id, inboxed(&store, account)).unwrap();
+    }
     assert_eq!(ids.len(), 3);
 
     let rows = store.list_threads(&ListView::Inbox, 0, 50).unwrap();
@@ -549,7 +569,13 @@ fn thread_detail_returns_recipients_and_files() {
         httpdate(T0)
     );
     let ing = store
-        .ingest_raw(&blobs, account, None, None, raw.as_bytes())
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(inboxed(&store, account)),
+            None,
+            raw.as_bytes(),
+        )
         .unwrap();
     let tid = store
         .thread_of(ing.message_id)

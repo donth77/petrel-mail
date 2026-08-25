@@ -170,6 +170,7 @@ export function Reader({
   onPopOut,
   onAction,
   onMove,
+  onMoveInbox,
   onTag,
   onSnooze,
   onReplyTo,
@@ -201,6 +202,7 @@ export function Reader({
   onPopOut?: () => void;
   onAction: (kind: ActionKind) => void;
   onMove: () => void;
+  onMoveInbox?: () => void;
   onTag: () => void;
   onSnooze: () => void;
 }) {
@@ -433,6 +435,7 @@ export function Reader({
               onToggleFull={onToggleFull}
               onAction={onAction}
               onMove={onMove}
+              onMoveInbox={onMoveInbox}
               onTag={onTag}
               onSnooze={onSnooze}
             />

@@ -188,3 +188,38 @@ fn the_backfill_cursor_survives_and_finishes() {
     assert_eq!(store.backfill_floor(folder).unwrap(), Some(1));
     assert_eq!(store.folder_modseq(folder).unwrap(), Some(77));
 }
+
+#[test]
+fn renaming_a_parent_carries_its_subtree() {
+    let (_dir, mut store, blobs, account) = setup();
+    let parent = store.ensure_named_folder(account, "Projects").unwrap();
+    let child = store
+        .ensure_named_folder(account, "Projects/Petrel")
+        .unwrap();
+    let grand = store
+        .ensure_named_folder(account, "Projects/Petrel/Specs")
+        .unwrap();
+    let stranger = store.ensure_named_folder(account, "Projectsong").unwrap();
+    store
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(grand),
+            Some(1),
+            &fixture("g@x", "kept"),
+        )
+        .unwrap();
+
+    // Nesting-by-rename: the whole point of rename being IMAP's move.
+    store.rename_folder(parent, "Archive/Projects").unwrap();
+
+    let all = store.folders(account).unwrap();
+    let path = |id| all.iter().find(|f| f.id == id).unwrap().path.clone();
+    assert_eq!(path(parent), "Archive/Projects");
+    assert_eq!(path(child), "Archive/Projects/Petrel");
+    assert_eq!(path(grand), "Archive/Projects/Petrel/Specs");
+    // A name that merely starts the same is not a descendant.
+    assert_eq!(path(stranger), "Projectsong");
+    // Ids never changed, so the grandchild's mail is untouched.
+    assert_eq!(store.max_uid(grand).unwrap(), Some(1));
+}

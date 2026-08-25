@@ -57,11 +57,10 @@ export type Chip = { id: string; label: string; token: string };
 /**
  * The mailboxes a scope chip can name.
  *
- * `in:` resolves against folder roles, so this is the whole of what it can
- * express. Starred is a flag and tags are a table of their own — neither is a
- * folder, so neither gets a scope chip rather than getting one that silently
- * matches nothing. Starred already has a chip of its own further up, which is
- * the same narrowing by another route.
+ * `in:` resolves against folder roles and — since folders the user made
+ * became searchable — against a folder's own name. Starred is a flag and
+ * tags are a table of their own; neither gets a scope chip rather than
+ * getting one that silently matches nothing.
  */
 const SCOPES: Record<string, string> = {
   inbox: 'Inbox',
@@ -72,15 +71,42 @@ const SCOPES: Record<string, string> = {
   trash: 'Trash',
 };
 
+/** What the open view is called in the search grammar, or null when the
+ *  grammar cannot say it (a tag view, the outbox). For a user folder the
+ *  caller supplies the folder's leaf name, because folders live with it. */
+export function scopeFor(
+  view: string,
+  folderLeaf?: string | null,
+): { token: string; label: string } | null {
+  const role = SCOPES[view];
+  if (role) return { token: `in:${view}`, label: `In ${role}` };
+  // Starred and Snoozed are states, not places — their scope speaks `is:`.
+  if (view === 'starred') return { token: 'is:starred', label: 'Starred' };
+  if (view === 'snoozed') return { token: 'is:snoozed', label: 'Snoozed' };
+  if (view.startsWith('folder:') && folderLeaf) {
+    const value = /\s/.test(folderLeaf) ? `"${folderLeaf}"` : folderLeaf;
+    return { token: `in:${value}`, label: `In ${folderLeaf}` };
+  }
+  return null;
+}
+
 /**
- * @param view The mailbox on screen, which the scope chip offers to narrow to.
- *   Search itself is never scoped: a search that quietly covered only the
- *   mailbox you happened to be standing in would answer "no results" for mail
- *   you do have, and nothing on screen would say why. Narrowing stays a visible
- *   token you added and can delete.
+ * @param view The mailbox on screen. Its scope chip comes *first*: a search
+ *   typed here starts scoped to where you are standing (the token is written
+ *   into the field, visible and deletable), so the chip that mirrors that
+ *   context leads the row. Deleting the token widens to everything — and the
+ *   command palette searches globally from the start.
  */
-export function chips(sender: string | null, year: number, view: string): Chip[] {
+export function chips(
+  sender: string | null,
+  year: number,
+  view: string,
+  folderLeaf?: string | null,
+): Chip[] {
   const list: Chip[] = [];
+  // First, and named for where you actually are — the pre-applied context.
+  const scope = scopeFor(view, folderLeaf);
+  if (scope) list.push({ id: 'scope', label: scope.label, token: scope.token });
   // The sender of whatever is open, because "more from this person" is the
   // search people actually run — and it is tedious to type.
   if (sender) {
@@ -90,33 +116,30 @@ export function chips(sender: string | null, year: number, view: string): Chip[]
   list.push(
     { id: 'attachment', label: 'Has attachment', token: 'has:attachment' },
     { id: 'unread', label: 'Unread', token: 'is:unread' },
-    { id: 'starred', label: 'Starred', token: 'is:starred' },
-    { id: 'year', label: 'This year', token: `after:${year}` },
   );
-  // Last, and named for where you actually are. Spam and Trash are the useful
-  // case as much as Inbox: search leaves both out unless asked, and this is the
-  // asking.
-  const scope = SCOPES[view];
-  if (scope) list.push({ id: 'scope', label: `In ${scope}`, token: `in:${view}` });
+  // Not doubled when the scope already is it.
+  if (scope?.token !== 'is:starred') {
+    list.push({ id: 'starred', label: 'Starred', token: 'is:starred' });
+  }
+  list.push({ id: 'year', label: 'This year', token: `after:${year}` });
   return list;
 }
 
 /**
- * The one place a search has to be narrowed for you.
+ * A search starts where you are standing.
  *
- * Search leaves Spam and Trash out of every result, which is right everywhere
- * except standing inside them: there, an unscoped search returns nothing at all
- * and the mailbox is simply not searchable. Being in Spam is asking for spam,
- * so the token is written for you.
- *
- * Written into the field rather than applied behind it, so it reads as part of
- * the query, lights the chip that matches it, and can be deleted to widen —
- * the same rule every other filter here follows. Applied only as a search
- * begins, never on each keystroke, so deleting the token does not fight you.
+ * As the first character lands, the open view's scope is written into the
+ * field — `in:inbox`, `in:sent`, `in:Receipts` — so the top bar answers for
+ * the context on screen, the way a person expects a search box above a list
+ * to behave. Written into the field rather than applied behind it, so it
+ * reads as part of the query, lights the leading chip, and can be deleted to
+ * widen to everything; the command palette searches globally from the start.
+ * Applied only as a search begins, never on each keystroke, so deleting the
+ * token does not fight you. Spam and Trash still ride this rule — standing
+ * in them is the asking that lets a search see them at all.
  */
-export function scopedQuery(next: string, previous: string, view: string): string {
+export function scopedQuery(next: string, previous: string, scopeToken: string | null): string {
   const starting = !previous.trim() && next.trim().length > 0;
-  const binned = view === 'spam' || view === 'trash';
-  if (!starting || !binned) return next;
-  return `in:${view} ${next}`;
+  if (!starting || !scopeToken) return next;
+  return `${scopeToken} ${next}`;
 }

@@ -32,15 +32,25 @@ fn insert_without_blobs(store: &mut Store, account: i64, n: i64) {
             body_text: "body".into(),
         })
         .collect();
-    store.insert_messages(&msgs).unwrap();
+    let ids = store.insert_messages(&msgs).unwrap();
+    // Membership, not absence-of-filing, is what the Inbox view reads now.
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+    for id in ids {
+        store.place_message(id, inbox).unwrap();
+    }
 }
 
 /// Ingests a raw message so the export has real bytes to write.
+///
+/// Placed in the inbox, because the Inbox view now means membership: a
+/// message placed nowhere is not in anyone's inbox, which these fixtures
+/// silently relied on when the view meant "not filed elsewhere".
 fn ingest(store: &mut Store, blobs: &BlobStore, account: i64, body: &str) {
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
     let raw =
         format!("From: Sam <sam@example.com>\r\nTo: me@example.com\r\nSubject: Test\r\n\r\n{body}");
     store
-        .ingest_raw(blobs, account, None, None, raw.as_bytes())
+        .ingest_raw(blobs, account, Some(inbox), None, raw.as_bytes())
         .unwrap();
 }
 
@@ -57,7 +67,9 @@ fn a_body_line_starting_from_is_escaped_so_it_does_not_split_the_message() {
     );
 
     let out = dir.path().join("out.mbox");
-    let (written, _) = store.export_mbox(&blobs, &ListView::Inbox, &out).unwrap();
+    let (written, _) = store
+        .export_mbox(&blobs, account, &ListView::Inbox, &out)
+        .unwrap();
     assert_eq!(written, 1);
 
     let text = std::fs::read_to_string(&out).unwrap();
@@ -82,7 +94,9 @@ fn every_message_gets_a_separator_readers_can_find() {
     }
 
     let out = dir.path().join("out.mbox");
-    let (written, skipped) = store.export_mbox(&blobs, &ListView::Inbox, &out).unwrap();
+    let (written, skipped) = store
+        .export_mbox(&blobs, account, &ListView::Inbox, &out)
+        .unwrap();
     assert_eq!(written, 3);
     assert_eq!(skipped, 0);
 
@@ -103,7 +117,9 @@ fn a_missing_blob_is_skipped_rather_than_losing_the_whole_export() {
     let (mut store, blobs, account) = seeded(dir.path());
     insert_without_blobs(&mut store, account, 3);
     let out = dir.path().join("out.mbox");
-    let (written, skipped) = store.export_mbox(&blobs, &ListView::Inbox, &out).unwrap();
+    let (written, skipped) = store
+        .export_mbox(&blobs, account, &ListView::Inbox, &out)
+        .unwrap();
     assert_eq!(written, 0);
     assert_eq!(skipped, 3, "a partial archive beats an error and nothing");
     assert!(out.exists());
@@ -156,7 +172,9 @@ mod round_trip {
             .unwrap();
         }
         let mbox = dir.path().join("take.mbox");
-        let (written, skipped) = a.export_mbox(&blobs_a, &ListView::Inbox, &mbox).unwrap();
+        let (written, skipped) = a
+            .export_mbox(&blobs_a, account_a, &ListView::Inbox, &mbox)
+            .unwrap();
         assert_eq!((written, skipped), (3, 0));
 
         // Store B: a different machine, importing the archive.
@@ -212,4 +230,65 @@ mod round_trip {
             "a local folder is not the survey's to prune"
         );
     }
+}
+
+/// A second account, so the export can be asked for one that is not active.
+fn second_account(store: &Store) -> i64 {
+    store
+        .add_account(
+            "imap",
+            "other@example.net",
+            "Other",
+            &petrel_engine::store::AccountServers {
+                imap_host: "imap.example.net".into(),
+                imap_port: 993,
+                smtp_host: "smtp.example.net".into(),
+                smtp_port: 465,
+                username: "other@example.net".into(),
+                provider: String::new(),
+            },
+        )
+        .unwrap()
+}
+
+#[test]
+fn export_is_of_the_account_asked_for_not_the_one_on_screen() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut store, blobs, a) = seeded(dir.path());
+    let b = second_account(&store);
+    ingest(&mut store, &blobs, a, "mine");
+    ingest(&mut store, &blobs, a, "also mine");
+    let inbox_b = store.ensure_folder(b, "inbox", "INBOX").unwrap();
+    store
+        .ingest_raw(
+            &blobs,
+            b,
+            Some(inbox_b),
+            None,
+            b"From: Other <other@example.net>\r\nTo: me@example.com\r\nSubject: theirs\r\n\r\nother\r\n",
+        )
+        .unwrap();
+
+    // Account A is the one on screen; the export asks for B.
+    store.set_active_account(a).unwrap();
+    let out = dir.path().join("b.mbox");
+    let (written, skipped) = store
+        .export_mbox(&blobs, b, &ListView::Inbox, &out)
+        .unwrap();
+    assert_eq!((written, skipped), (1, 0));
+    let text = std::fs::read_to_string(&out).unwrap();
+    assert!(
+        text.contains("Subject: theirs"),
+        "B's mail missing:\n{text}"
+    );
+    assert!(
+        !text.contains("also mine"),
+        "A's mail leaked into B's export:\n{text}"
+    );
+
+    let out = dir.path().join("a.mbox");
+    let (written, _) = store
+        .export_mbox(&blobs, a, &ListView::Inbox, &out)
+        .unwrap();
+    assert_eq!(written, 2);
 }

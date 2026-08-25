@@ -77,32 +77,41 @@ describe('the scope chip', () => {
     expect(scope('trash')?.token).toBe('in:trash');
   });
 
-  it('offers nothing where `in:` could not express it', () => {
-    // A chip writing `in:starred` or `in:Urgent` would match nothing at all,
-    // which is worse than no chip: it looks like a filter that found nothing.
-    for (const view of ['starred', 'snoozed', 'outbox', 'tag:Urgent', 'settings']) {
-      expect(scope(view), view).toBeUndefined();
-    }
+  it('speaks is: for the state views and stays silent only where it must', () => {
+    expect(scope('starred')?.token).toBe('is:starred');
+    expect(scope('snoozed')?.token).toBe('is:snoozed');
+    expect(scope('outbox')).toBeUndefined();
+    expect(scope('tag:Urgent')).toBeUndefined();
   });
 
-  it('comes last, after the conditions', () => {
-    const ids = chips(null, 2026, 'inbox').map((c) => c.id);
-    expect(ids[ids.length - 1]).toBe('scope');
+  it('does not double the starred chip when the scope already is it', () => {
+    const ids = chips(null, 2026, 'starred').map((c) => c.id);
+    expect(ids.filter((i) => i === 'starred' || i === 'scope')).toEqual(['scope']);
+  });
+
+  it('comes first: the pre-applied context leads the row', () => {
+    const ids = chips('Sam', 2026, 'sent').map((c) => c.id);
+    expect(ids[0]).toBe('scope');
+    expect(ids).toContain('from');
+  });
+
+  it('names a user folder by its leaf, quoted when it has spaces', () => {
+    expect(chips(null, 2026, 'folder:7', 'Receipts')[0].token).toBe('in:Receipts');
+    expect(chips(null, 2026, 'folder:9', 'Client contact')[0].token).toBe('in:"Client contact"');
   });
 });
 
 describe('scopedQuery', () => {
-  it('scopes a search that begins inside Spam or Trash', () => {
-    // Without this the mailbox is unsearchable: search excludes junk, so an
-    // unscoped search from inside Spam matches nothing at all.
-    expect(scopedQuery('refund', '', 'spam')).toBe('in:spam refund');
-    expect(scopedQuery('receipt', '', 'trash')).toBe('in:trash receipt');
+  it('scopes a beginning search to wherever you stand', () => {
+    expect(scopedQuery('a', '', 'in:spam')).toBe('in:spam a');
+    expect(scopedQuery('a', '', 'in:inbox')).toBe('in:inbox a');
+    expect(scopedQuery('a', '', 'in:"Client contact"')).toBe('in:"Client contact" a');
   });
 
-  it('leaves every other mailbox alone', () => {
-    for (const view of ['inbox', 'archive', 'sent', 'starred', 'tag:Urgent']) {
-      expect(scopedQuery('annex', '', view), view).toBe('annex');
-    }
+  it('never re-applies mid-edit, so deleting the token widens', () => {
+    expect(scopedQuery('in:inbox a', 'in:inbox ', 'in:inbox')).toBe('in:inbox a');
+    expect(scopedQuery('a', 'in:inbox a', 'in:inbox')).toBe('a');
+    expect(scopedQuery('a', '', null)).toBe('a');
   });
 
   it('only writes the token as the search begins', () => {

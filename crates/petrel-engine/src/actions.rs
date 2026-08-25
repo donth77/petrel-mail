@@ -149,6 +149,14 @@ pub struct PriorState {
     /// work the server has not seen.
     #[serde(default)]
     pub tag_ids: Vec<i64>,
+    /// Where the server holds this message, captured before the action
+    /// touches placements. A move deletes the placement rows — and with
+    /// them, the only copy of the UID delivery needs, so the queue held
+    /// actions that could never be sent. Defaulted: old queue rows lack it.
+    #[serde(default)]
+    pub source_path: Option<String>,
+    #[serde(default)]
+    pub source_uid: Option<u32>,
     /// When this was due back, if it was snoozed. Captured like the rest so
     /// undoing a snooze restores the previous one rather than clearing it.
     #[serde(default)]

@@ -11,7 +11,7 @@ use rusqlite::functions::FunctionFlags;
 use rusqlite::{Connection, params};
 use std::path::Path;
 
-pub const SCHEMA_VERSION: i64 = 14;
+pub const SCHEMA_VERSION: i64 = 15;
 /// Bumped whenever text extraction changes; a mismatch forces reindexing.
 pub const EXTRACTOR_VERSION: i64 = 1;
 
@@ -286,6 +286,22 @@ pub struct StorageReport {
     pub database_bytes: u64,
     pub blob_bytes: u64,
     pub index_bytes: u64,
+    /// Each account's share, in account order. The database and index are one
+    /// file each and cannot be split, so those figures have no per-account
+    /// counterpart.
+    pub accounts: Vec<AccountStorage>,
+}
+
+/// One account's share of what is on this Mac.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AccountStorage {
+    pub account_id: i64,
+    pub messages: i64,
+    /// Bytes of the blobs this account's messages and attachments point at.
+    /// A message two accounts both hold is in both their figures, so these
+    /// can sum to more than the total: each row answers "how much of this is
+    /// mine", and that answer does not shrink because someone else has a copy.
+    pub blob_bytes: u64,
 }
 
 /// A folder as the move picker shows it.
@@ -699,18 +715,25 @@ fn assign_thread(
 /// positive test would hide all of it — the same class of bug as joining on a
 /// NULL `thread_id`. Search deliberately does *not* use this: archived mail is
 /// exactly what people search for.
-fn not_filed(alias: &str) -> String {
-    // Every role except the inbox itself. Listing only archive/trash/spam let a
-    // draft sit in the Drafts folder and in the inbox at the same time, and
-    // would have done the same for sent mail the moment a Sent copy was filed.
-    // Roles are the closed set the provider mapping produces, so naming them is
-    // exact rather than a guess — and a user folder has no role at all, which
-    // is why moving something out of the inbox still hides it.
+fn in_inbox(alias: &str) -> String {
+    // Stated positively: the message holds an inbox placement. The first
+    // form was "not filed anywhere else", and it survived until All Mail
+    // sync existed — on Gmail every message is in All Mail (the archive
+    // role), so the moment the All Mail walk claimed a message, "filed
+    // elsewhere" became true of the entire inbox and the view emptied
+    // itself, message by message, while the walk ran. Membership is the
+    // fact the servers actually maintain: arriving grants the placement,
+    // and archiving, binning or moving away takes it — on both kinds of
+    // provider. The bin check stays as a belt: mail a sweep marks junk
+    // must drop out even if a stale inbox placement lingers.
     format!(
-        "NOT EXISTS (SELECT 1 FROM placements p
-                     JOIN folders f ON f.id = p.folder_id
-                     WHERE p.message_id = {alias}.id
-                       AND f.role IN ('archive','trash','spam','drafts','sent'))"
+        "EXISTS (SELECT 1 FROM placements p
+                 JOIN folders f ON f.id = p.folder_id
+                 WHERE p.message_id = {alias}.id AND f.role = 'inbox')
+         AND NOT EXISTS (SELECT 1 FROM placements p
+                         JOIN folders f ON f.id = p.folder_id
+                         WHERE p.message_id = {alias}.id
+                           AND f.role IN ('trash','spam'))"
     )
 }
 
@@ -812,7 +835,7 @@ impl ListView {
         match self {
             ListView::Inbox => format!(
                 "{} AND coalesce({alias}.snoozed_until_ms, 0) <= (strftime('%s','now') * 1000)",
-                not_filed(alias)
+                in_inbox(alias)
             ),
             ListView::Snoozed => {
                 format!("coalesce({alias}.snoozed_until_ms, 0) > (strftime('%s','now') * 1000)")
@@ -841,7 +864,18 @@ impl ListView {
             ListView::Folder(role) if role == "archive" => format!(
                 "EXISTS (SELECT 1 FROM placements p
                          JOIN folders f ON f.id = p.folder_id
-                         WHERE p.message_id = {alias}.id AND f.role = ?3)
+                         WHERE p.message_id = {alias}.id
+                           AND (f.role = ?3
+                                -- A mailbox tree files its history *under*
+                                -- Archive: mail in Archive/2023 is archived
+                                -- mail, and a view that admitted only the
+                                -- bare top folder showed a lifetime of
+                                -- filing as empty.
+                                OR EXISTS (SELECT 1 FROM folders af
+                                           WHERE af.role = 'archive'
+                                             AND af.account_id = f.account_id
+                                             AND (f.path LIKE af.path || '/%'
+                                                  OR f.path LIKE af.path || '.%'))))
                  AND NOT EXISTS (SELECT 1 FROM placements p2
                                  JOIN folders f2 ON f2.id = p2.folder_id
                                  WHERE p2.message_id = {alias}.id AND f2.role = 'inbox')"
@@ -955,6 +989,9 @@ impl Store {
         if ver < 14 {
             conn.execute_batch(include_str!("migrations/0014-rules.sql"))?;
         }
+        if ver < 15 {
+            conn.execute_batch(include_str!("migrations/0015-thread-key-index.sql"))?;
+        }
         if ver < SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             conn.execute(
@@ -1041,6 +1078,18 @@ impl Store {
             params![kind, email, display_name, json, colour],
         )?;
         Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Gives an existing account its server settings — the adoption path for
+    /// a row that was created from environment variables before onboarding
+    /// existed and so has none.
+    pub fn set_account_servers(&self, account_id: i64, servers: &AccountServers) -> Result<()> {
+        let json = serde_json::to_string(servers).unwrap_or_else(|_| "{}".into());
+        self.conn.execute(
+            "UPDATE accounts SET settings_json = ?2 WHERE id = ?1",
+            params![account_id, json],
+        )?;
+        Ok(())
     }
 
     /// An account's server settings, if it has been set up with any. The
@@ -1982,12 +2031,30 @@ impl Store {
     ///
     /// The row id is the identity, so placements, counts and the open view
     /// all survive the rename untouched; only the words change.
-    pub fn rename_folder(&self, folder_id: i64, new_path: &str) -> Result<()> {
+    pub fn rename_folder(&mut self, folder_id: i64, new_path: &str) -> Result<()> {
+        let (account, old_path): (i64, String) = self.conn.query_row(
+            "SELECT account_id, path FROM folders WHERE id = ?1",
+            params![folder_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
         let name = new_path.rsplit(['/', '.']).next().unwrap_or(new_path);
-        self.conn.execute(
+        let tx = self.conn.transaction()?;
+        tx.execute(
             "UPDATE folders SET path = ?2, name = ?3 WHERE id = ?1",
             params![folder_id, new_path, name],
         )?;
+        // The server renames a subtree in one RENAME (RFC 3501); the local
+        // tree follows suit, or every descendant's path goes quietly stale
+        // and the next survey prunes real folders as strangers.
+        for delim in ['/', '.'] {
+            tx.execute(
+                "UPDATE folders
+                 SET path = ?3 || substr(path, length(?2) + 1)
+                 WHERE account_id = ?1 AND path LIKE ?2 || ?4",
+                params![account, old_path, new_path, format!("{delim}%")],
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -2277,6 +2344,29 @@ impl Store {
         Ok(())
     }
 
+    /// The message this account holds under a wire Message-ID, if any.
+    pub fn message_by_msgid(&self, account_id: i64, msgid: &str) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id FROM messages
+                 WHERE account_id = ?1 AND message_id_hdr = ?2 AND deleted_at_ms IS NULL",
+                params![account_id, msgid],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Records that a folder holds a message at a UID, without touching the
+    /// message itself — how the All Mail walk claims mail it already has.
+    pub fn place_message_at(&self, message_id: i64, folder_id: i64, uid: u32) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO placements(message_id, folder_id, uid) VALUES (?1, ?2, ?3)",
+            params![message_id, folder_id, uid as i64],
+        )?;
+        Ok(())
+    }
+
     /// Marks a folder as local-only: it exists in this store and nowhere
     /// else. The sync survey never prunes it (the server not listing it is
     /// the point) and the sync loop never asks the server about it.
@@ -2536,7 +2626,48 @@ impl Store {
                 folder_path: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
             })
         })?;
-        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        let mut out: Vec<PendingAction> = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+        // A move deleted the placement its own delivery needed; the address
+        // captured at queue time is the fallback that makes such an action
+        // deliverable at all.
+        for row in &mut out {
+            if row.uid.is_some() {
+                continue;
+            }
+            let Some(payload) =
+                serde_json::from_str::<crate::actions::ActionPayload>(&row.payload_json).ok()
+            else {
+                continue;
+            };
+            if let Some(prior) = payload
+                .prior
+                .iter()
+                .find(|p| p.message_id == row.message_id)
+                && let (Some(path), Some(uid)) = (&prior.source_path, prior.source_uid)
+            {
+                // Only when the source placement is *gone* — a move deleted
+                // it, taking the address with it. A placement that still
+                // exists with its UID nulled is UIDVALIDITY quarantine, and
+                // quarantine means exactly "this number is a lie now": the
+                // captured address must stay unusable until recovery re-maps.
+                let quarantined: bool = self
+                    .conn
+                    .query_row(
+                        "SELECT 1 FROM placements p
+                         JOIN folders f ON f.id = p.folder_id
+                         WHERE p.message_id = ?1 AND f.path = ?2 AND f.account_id = ?3",
+                        params![row.message_id, path, account_id],
+                        |_| Ok(true),
+                    )
+                    .optional()?
+                    .unwrap_or(false);
+                if !quarantined {
+                    row.uid = Some(uid);
+                    row.folder_path = path.clone();
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// Whether this message has local changes the server has not been told about.
@@ -3068,6 +3199,21 @@ impl Store {
                 params![id],
                 |r| r.get(0),
             )?;
+            // The server address rides with the action from birth. A move is
+            // about to delete the placement row that holds it, and delivery
+            // read the row at drain time — so a delivered-after-move queue
+            // was structurally impossible.
+            let source: Option<(String, i64)> = self
+                .conn
+                .query_row(
+                    "SELECT f.path, p.uid FROM placements p
+                     JOIN folders f ON f.id = p.folder_id
+                     WHERE p.message_id = ?1 AND p.uid IS NOT NULL
+                     ORDER BY (f.role = 'inbox') DESC LIMIT 1",
+                    params![id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
             prior.push(PriorState {
                 message_id: *id,
                 flags,
@@ -3078,6 +3224,8 @@ impl Store {
                     |r| r.get(0),
                 )?,
                 folder_ids: self.folders_of(*id)?,
+                source_path: source.as_ref().map(|(p, _)| p.clone()),
+                source_uid: source.as_ref().map(|(_, u)| *u as u32),
             });
         }
 
@@ -3387,6 +3535,7 @@ impl Store {
     pub fn export_mbox(
         &self,
         blobs: &crate::blob::BlobStore,
+        account: i64,
         view: &ListView,
         path: &Path,
     ) -> Result<(usize, usize)> {
@@ -3396,8 +3545,12 @@ impl Store {
             // Every message in the view's conversations, not just the newest of
             // each: an archive that keeps one message per thread is not an
             // archive of your mail.
+            //
+            // The account is named rather than taken from whichever is
+            // active: an export is addressed to a person by their mailbox,
+            // and "the one on screen" is not something the file can record.
             let threads: Vec<i64> = self
-                .list_threads(view, 0, u32::MAX)?
+                .list_threads_for(account, view, 0, u32::MAX)?
                 .into_iter()
                 .map(|t| t.thread_id)
                 .collect();
@@ -3463,11 +3616,24 @@ impl Store {
     /// The index size comes from the FTS tables rather than being inferred from
     /// the file: the point of showing it separately is that it is the part you
     /// can rebuild, so a number that silently includes the mail is useless.
-    pub fn storage_report(&self, db_path: &Path, blob_bytes: u64) -> Result<StorageReport> {
+    ///
+    /// Mail bytes come from the `blobs` ledger, not from walking the blob
+    /// directory. The ledger records each blob's on-disk (compressed) size as
+    /// it is written, so the two agree to the byte — and the walk was a
+    /// `stat()` per message, most of a second on a mailbox of any size, which
+    /// is a long time for a settings pane to sit blank.
+    pub fn storage_report(&self, db_path: &Path) -> Result<StorageReport> {
         let file = |p: std::path::PathBuf| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
         let database_bytes = file(db_path.to_path_buf())
             + file(db_path.with_extension("db-wal"))
             + file(db_path.with_extension("db-shm"));
+
+        let blob_bytes: u64 = self
+            .conn
+            .query_row("SELECT coalesce(sum(size), 0) FROM blobs", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .map(|n| n.max(0) as u64)?;
 
         // dbstat is a compile-time option; when it is missing the honest answer
         // is zero rather than a guess that would be wrong by an order of
@@ -3483,6 +3649,30 @@ impl Store {
             .map(|n| n as u64)
             .unwrap_or(0);
 
+        // Per account. The bytes are deduplicated within an account (the hash
+        // set is a set) but not across accounts — see `AccountStorage`.
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT a.id,
+                    (SELECT count(*) FROM messages m WHERE m.account_id = a.id),
+                    (SELECT coalesce(sum(b.size), 0) FROM blobs b WHERE b.hash IN (
+                         SELECT blob_hash FROM messages
+                          WHERE account_id = a.id AND blob_hash IS NOT NULL
+                         UNION
+                         SELECT at.blob_hash FROM attachments at
+                           JOIN messages m ON m.id = at.message_id
+                          WHERE m.account_id = a.id AND at.blob_hash IS NOT NULL))
+               FROM accounts a ORDER BY a.id",
+        )?;
+        let accounts = stmt
+            .query_map([], |r| {
+                Ok(AccountStorage {
+                    account_id: r.get(0)?,
+                    messages: r.get(1)?,
+                    blob_bytes: r.get::<_, i64>(2)?.max(0) as u64,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
         Ok(StorageReport {
             messages: self.message_count()?,
             attachments: self
@@ -3491,7 +3681,19 @@ impl Store {
             database_bytes,
             blob_bytes,
             index_bytes,
+            accounts,
         })
+    }
+
+    /// Messages held for one account — what the account's own views can
+    /// honestly report, where the global count would smuggle in every other
+    /// account's mail.
+    pub fn message_count_for(&self, account_id: i64) -> Result<i64> {
+        Ok(self.conn.query_row(
+            "SELECT count(*) FROM messages WHERE account_id = ?1 AND deleted_at_ms IS NULL",
+            params![account_id],
+            |r| r.get(0),
+        )?)
     }
 
     pub fn message_count(&self) -> Result<i64> {
@@ -3641,7 +3843,26 @@ impl Store {
         offset: u32,
         limit: u32,
     ) -> Result<Vec<ThreadListing>> {
+        // Scoped to the account on screen. The query was written when one
+        // account was all there was; with two, every view showed both
+        // mailboxes merged — which is exactly the send-from-the-wrong-address
+        // mistake that "one active at a time" exists to prevent. A missing
+        // account (an empty store) scopes to nothing, which lists nothing.
+        let account = self.active_account()?.unwrap_or(-1);
+        self.list_threads_for(account, view, offset, limit)
+    }
+
+    /// `list_threads` for a named account rather than the active one — for
+    /// callers like export that act on a mailbox the window is not showing.
+    pub fn list_threads_for(
+        &self,
+        account: i64,
+        view: &ListView,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Vec<ThreadListing>> {
         self.listing_rows(
+            account,
             &view.predicate("messages"),
             &view.predicate("m"),
             limit,
@@ -3661,7 +3882,9 @@ impl Store {
     pub fn thread_by_id(&self, thread_id: i64) -> Result<Option<ThreadListing>> {
         // Bound as the same third parameter a view's folder role or tag name
         // would occupy, which is why this reads as a string.
+        let account = self.active_account()?.unwrap_or(-1);
         let rows = self.listing_rows(
+            account,
             "coalesce(thread_id, -id) = cast(?3 AS INTEGER)",
             "coalesce(m.thread_id, -m.id) = cast(?3 AS INTEGER)",
             1,
@@ -3674,18 +3897,13 @@ impl Store {
     /// The conversation-list query, shared by the views and by a lookup of one.
     fn listing_rows(
         &self,
+        account: i64,
         inner: &str,
         outer: &str,
         limit: u32,
         offset: u32,
         bound: Option<String>,
     ) -> Result<Vec<ThreadListing>> {
-        // Scoped to the account on screen. The query was written when one
-        // account was all there was; with two, every view showed both
-        // mailboxes merged — which is exactly the send-from-the-wrong-address
-        // mistake that "one active at a time" exists to prevent. A missing
-        // account (an empty store) scopes to nothing, which lists nothing.
-        let account = self.active_account()?.unwrap_or(-1);
         let sql = format!(
             "SELECT coalesce(m.thread_id, -m.id), m.id, coalesce(m.from_display,''), coalesce(m.from_addr,''),
                     coalesce(m.subject,''), coalesce(m.snippet,''), m.date_ms, t.n,
@@ -3817,8 +4035,49 @@ impl Store {
             [self.active_account()?.unwrap_or(-1)],
             |r| r.get(0),
         )?;
+        // Folders the user made get the same unread badge the mailboxes
+        // wear. One grouped query for all of them: the first version ran a
+        // full thread-grouping count per folder, and forty folders times a
+        // six-thousand-message account, refreshed on every sync tick, was a
+        // measurable share of what made the app feel stuck mid-sync.
+        if let Some(account) = self.active_account()? {
+            // The same mode the mailboxes answer in: unread by default, or
+            // everything when the badge setting says so.
+            let unread_clause = match mode {
+                // Off never reaches here (the fn returns empty above), but
+                // exhaustiveness is cheaper than the assumption.
+                CountMode::Off => return Ok(out),
+                CountMode::Total => String::new(),
+                CountMode::Unread => format!(" AND m.flags & {} = 0", flags::SEEN),
+            };
+            let mut stmt = self.conn.prepare_cached(&format!(
+                "SELECT p.folder_id, count(DISTINCT coalesce(m.thread_id, -m.id))
+                 FROM placements p
+                 JOIN folders f ON f.id = p.folder_id
+                 JOIN messages m ON m.id = p.message_id
+                 WHERE f.account_id = ?1 AND coalesce(f.role,'') = ''
+                   AND m.deleted_at_ms IS NULL{unread_clause}
+                 GROUP BY p.folder_id",
+            ))?;
+            let rows = stmt.query_map(params![account], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+            })?;
+            for row in rows {
+                let (fid, n) = row?;
+                if n > 0 {
+                    out.push((format!("folder:{fid}"), n));
+                }
+            }
+        }
         out.push(("outbox:attention".to_string(), needs));
         Ok(out)
+    }
+
+    /// The whole of a view, counted — what the status line reports, where
+    /// the loaded list is a 500-row window and its length is not a fact
+    /// about the mailbox.
+    pub fn conversations_in(&self, view: &ListView) -> Result<i64> {
+        self.count_view(view, true)
     }
 
     /// Conversations in a view: all of them, or only those holding something
@@ -4179,16 +4438,21 @@ impl Store {
         if q.is_empty() {
             return Ok(Vec::new());
         }
+        // No account, no results — never "everyone's results".
+        let Some(account) = self.active_account()? else {
+            return Ok(Vec::new());
+        };
         let wide = limit.saturating_mul(3).min(600);
 
         // Words rank; conditions filter. With no words there is nothing for
         // BM25 to score, so `has:attachment` on its own is a listing in date
         // order — which is the right answer to a question that named no terms.
         let hits: Vec<Listing> = if q.text.trim().is_empty() {
-            self.messages_meeting(&q, wide)?
+            self.messages_meeting(&q, wide, account)?
         } else {
             let found = self.search_listing(&q.text, wide)?;
-            let keep = self.ids_meeting(&found.iter().map(|h| h.id).collect::<Vec<_>>(), &q)?;
+            let keep =
+                self.ids_meeting(&found.iter().map(|h| h.id).collect::<Vec<_>>(), &q, account)?;
             found.into_iter().filter(|h| keep.contains(&h.id)).collect()
         };
         if hits.is_empty() {
@@ -4228,9 +4492,19 @@ impl Store {
     ///
     /// Built rather than interpolated: `from:` and `in:` carry whatever was
     /// typed, and a search box that reaches SQL is the oldest mistake there is.
-    fn conditions(q: &crate::search_query::SearchQuery) -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
+    fn conditions(
+        q: &crate::search_query::SearchQuery,
+        account: i64,
+    ) -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
         let mut sql = String::new();
         let mut args: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+        // The account on screen, always. Search used to run over the whole
+        // store, so standing in one account quietly answered with the other
+        // account's mail — the one wall the multi-account design promises
+        // never leaks (03 §4.1), broken precisely where it is least visible.
+        sql.push_str(" AND m.account_id = ?");
+        args.push(Box::new(account));
 
         // Junk and deleted mail stay out unless they are what was asked for.
         //
@@ -4261,12 +4535,24 @@ impl Store {
         if q.starred {
             sql.push_str(&format!(" AND m.flags & {} != 0", flags::FLAGGED));
         }
-        if let Some(role) = &q.in_role {
+        if q.snoozed {
+            sql.push_str(" AND coalesce(m.snoozed_until_ms, 0) > (strftime('%s','now') * 1000)");
+        }
+        if let Some(name) = &q.in_role {
+            // A role, or a folder the user made — by full path or by leaf, so
+            // `in:receipts` and `in:projects/petrel` both say what they mean.
+            // The parser lowercased the value; the comparisons follow suit.
             sql.push_str(
                 " AND EXISTS (SELECT 1 FROM placements p JOIN folders f ON f.id = p.folder_id
-                              WHERE p.message_id = m.id AND f.role = ?)",
+                              WHERE p.message_id = m.id
+                                AND (f.role = ?
+                                     OR lower(f.path) = ?
+                                     OR lower(f.path) LIKE '%/' || ?
+                                     OR lower(f.path) LIKE '%.' || ?))",
             );
-            args.push(Box::new(role.clone()));
+            for _ in 0..4 {
+                args.push(Box::new(name.clone()));
+            }
         }
         if let Some(after) = q.after_ms {
             sql.push_str(" AND m.date_ms >= ?");
@@ -4280,11 +4566,12 @@ impl Store {
         &self,
         ids: &[i64],
         q: &crate::search_query::SearchQuery,
+        account: i64,
     ) -> Result<std::collections::HashSet<i64>> {
         if ids.is_empty() {
             return Ok(std::collections::HashSet::new());
         }
-        let (conds, mut args) = Self::conditions(q);
+        let (conds, mut args) = Self::conditions(q, account);
         if conds.is_empty() {
             return Ok(ids.iter().copied().collect());
         }
@@ -4311,8 +4598,9 @@ impl Store {
         &self,
         q: &crate::search_query::SearchQuery,
         limit: u32,
+        account: i64,
     ) -> Result<Vec<Listing>> {
-        let (conds, mut args) = Self::conditions(q);
+        let (conds, mut args) = Self::conditions(q, account);
         let sql = format!(
             "SELECT m.id, coalesce(m.from_display,''), coalesce(m.from_addr,''),
                     coalesce(m.subject,''), m.date_ms

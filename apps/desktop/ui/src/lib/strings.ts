@@ -258,6 +258,9 @@ export const en = {
   'notify-one': 'New message from { $who }',
   'notify-many': '{ $count } new messages',
   'status-synced': 'Synced just now',
+  'status-synced-min': 'Synced { $min }m ago',
+  'status-synced-hr': 'Synced { $hr }h ago',
+  'status-sync-waiting': 'Waiting to sync\u2026',
   'status-seeding': 'Building your mailbox…',
   'status-counts': '{ $count } conversations · { $unread } unread',
 
@@ -311,6 +314,10 @@ export const en = {
   'storage-mail': 'Mail',
   'storage-database': 'Database',
   'storage-index': 'Search index',
+  'storage-by-account': 'By account',
+  'storage-by-account-help':
+    'The database and search index are shared, so they have no per-account figure. A message more than one account holds counts for each.',
+  'storage-account-messages': '{ $count } messages',
   'settings-rules': 'Rules',
   'rules-on-arrival': 'When mail arrives',
   'rules-help':
@@ -357,9 +364,9 @@ export const en = {
   'storage-export': 'Take your mail with you',
   'storage-export-help':
     'Writes to mbox, which every other mail client can read. Your mail stays yours whatever happens to Petrel — an export only Petrel could open would not be much of a promise.',
-  'storage-exported': 'Exported { $count } messages from { $view }',
+  'storage-exported': 'Exported { $count } messages from { $view } ({ $account })',
   'storage-exported-partial':
-    'Exported { $count } from { $view }; { $skipped } had no stored copy and were skipped',
+    'Exported { $count } from { $view } ({ $account }); { $skipped } had no stored copy and were skipped',
   'storage-export-failed': 'Export failed — { $error }',
   'settings-not-built': 'This pane is not built yet.',
   'accounts-yours': 'Your accounts',
@@ -474,6 +481,7 @@ export const en = {
   'privacy-trusted-help': 'Anyone you have written to is already included, without appearing here — they know your address, so nothing is given away.',
   'privacy-trusted-none': 'Nobody yet. “Always from this sender” on a message adds them.',
   'privacy-untrust': 'Stop loading images from { $addr }',
+  'menu-move-inbox': 'Move to Inbox',
   'msg-print': 'Print\u2026',
   'unsub-button': 'Unsubscribe',
   'unsub-confirm': 'Unsubscribe from { $sender }?',
@@ -490,6 +498,15 @@ export const en = {
   'folder-new-placeholder': 'Folder name\u2026',
   'folder-edit': 'Folder options',
   'folder-rename': 'Rename',
+  'folder-subfolder': 'New subfolder\u2026',
+  'folder-move': 'Move\u2026',
+  'folder-move-top': 'Top level',
+  'folder-archive-into': 'Move to Archive',
+  'folder-unarchive': 'Move out of Archive',
+  'folder-moved': 'Moved \u201c{ $name }\u201d into { $to }',
+  'folder-into-itself': 'A folder cannot move into itself.',
+  'folder-fold': 'Collapse',
+  'folder-unfold': 'Expand',
   'folder-delete': 'Delete folder',
   'folder-delete-confirm': 'Delete \u201c{ $name }\u201d?',
   'folder-delete-body':

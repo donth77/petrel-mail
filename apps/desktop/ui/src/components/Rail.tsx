@@ -1,7 +1,7 @@
 import type React from 'react';
 import { useEffect, useRef, useState } from 'react';
 import {
-  FolderClosed, Inbox, Star, Clock, Send, PencilLine, Upload, Archive, ShieldAlert, Trash2,
+  ChevronDown, ChevronRight, FolderClosed, Inbox, Star, Clock, Send, PencilLine, Upload, Archive, ShieldAlert, Trash2,
   CircleHelp, PanelLeftClose, PanelLeftOpen, PenSquare, Plus, Settings, type LucideIcon,
 } from 'lucide-react';
 import type { Account, Folder } from '../lib/api';
@@ -77,8 +77,15 @@ type Props = {
   folders: Folder[];
   onView: (v: string) => void;
   onCreateFolder: (name: string) => Promise<void>;
+  /** Begins carrying a folder toward a new parent. */
+  onDragFolder: (e: React.PointerEvent, folderId: number, label: string) => void;
+  /** Path of the folder mid-drag, so valid destinations can say so — and so
+   *  the folder itself and its descendants can decline to light up. */
+  folderDragPath: string | null;
   onRenameFolder: (folderId: number, newPath: string) => Promise<void>;
   onDeleteFolder: (folder: Folder) => void;
+  /** Opens the move-destination picker for this folder. */
+  onMoveFolder: (folder: Folder) => void;
   /** Make a tag that is attached to nothing yet. Returns once it exists, so the
    *  rail can put the input away only after the work succeeded. */
   onCreateTag: (name: string) => Promise<void>;
@@ -102,8 +109,11 @@ export function Rail({
   collapsed,
   onView,
   onCreateFolder,
+  onDragFolder,
+  folderDragPath,
   onRenameFolder,
   onDeleteFolder,
+  onMoveFolder,
   onCreateTag,
   onRenameTag,
   onColourTag,
@@ -128,10 +138,16 @@ export function Rail({
   // string, and a modal for one word is more ceremony than the act deserves.
   const [naming, setNaming] = useState(false);
   const [namingFolder, setNamingFolder] = useState(false);
+  /** What the naming field starts holding — "Parent/" for a subfolder. */
+  const [folderPrefill, setFolderPrefill] = useState('');
+  /** Paths whose children are folded away. */
+  const [closedNodes, setClosedNodes] = useState<Set<string>>(new Set());
   const [renamingFolder, setRenamingFolder] = useState<number | null>(null);
   // The tag being renamed, edited in place on its own row rather than in a
   // dialog: it is one short string, and the row is where you are looking.
   const [renaming, setRenaming] = useState<number | null>(null);
+  /** Where the archive tree roots, for the mailbox row's folder-drop. */
+  const archiveRolePath = folders.find((f) => f.role === 'archive')?.path;
   const nameInput = useRef<HTMLInputElement>(null);
   useEffect(() => {
     if (naming) nameInput.current?.focus();
@@ -195,7 +211,29 @@ export function Rail({
             data-attention={m.key === 'outbox' && outboxNeedsAttention > 0 ? true : undefined}
             onClick={() => onView(m.key)}
             {...dropTarget(m.key, view, dropOver)}
-            data-drop-ok={dragActive && acceptsDrop(m.key, view) ? true : undefined}
+            // A carried folder lands on these two as well: Archive re-nests
+            // it under the archive tree, Trash deletes it — behind the same
+            // confirm the menu uses, because the server deletes its mail.
+            data-folder-drop={
+              folderDragPath !== null && m.key === 'archive' && archiveRolePath !== undefined
+                ? archiveRolePath
+                : folderDragPath !== null && m.key === 'trash'
+                  ? '::trash'
+                  : undefined
+            }
+            data-drop-over={
+              (folderDragPath !== null &&
+                ((m.key === 'archive' && dropOver === `fdrop:${archiveRolePath}`) ||
+                  (m.key === 'trash' && dropOver === 'fdrop:::trash'))) ||
+              undefined
+            }
+            data-drop-ok={
+              (dragActive && acceptsDrop(m.key, view)) ||
+              (folderDragPath !== null &&
+                ((m.key === 'archive' && archiveRolePath !== undefined) || m.key === 'trash'))
+                ? true
+                : undefined
+            }
           >
             <Icon icon={m.glyph} />
             <span className="rail-text">{t(m.id)}</span>
@@ -213,7 +251,12 @@ export function Rail({
       {/* Folders the user made, between the fixed mailboxes and the tags —
           places before labels. The header shows even with none yet, because
           the + is how the first one gets made. */}
-      <div className="rail-label rail-label-row">
+      <div
+        className="rail-label rail-label-row"
+        data-folder-drop=""
+        data-drop-over={dropOver === 'fdrop:' || undefined}
+        data-drop-ok={folderDragPath !== null || undefined}
+      >
         <span>{t('rail-folders')}</span>
         <Tip label={t('folder-new')} placement="right">
           <button
@@ -228,14 +271,17 @@ export function Rail({
       </div>
       {!collapsed && namingFolder && (
         <input
+          key={folderPrefill}
           className="rail-new-tag"
           placeholder={t('folder-new-placeholder')}
           aria-label={t('folder-new')}
           autoComplete="off"
           autoFocus
+          defaultValue={folderPrefill}
           onBlur={(e) => {
             const name = e.currentTarget.value.trim();
             setNamingFolder(false);
+            setFolderPrefill('');
             if (name) void onCreateFolder(name);
           }}
           onKeyDown={(e) => {
@@ -253,59 +299,192 @@ export function Rail({
           }}
         />
       )}
-      {folders.filter((f) => !f.role).map((f) => (
-        <Tip key={f.id} label={f.path} placement="right" when={collapsed}>
-          {renamingFolder === f.id ? (
-            <input
-              key={`rename-folder-${f.id}`}
-              className="rail-new-tag"
-              defaultValue={f.path}
-              aria-label={t('folder-rename')}
-              autoComplete="off"
-              autoFocus
-              onFocus={(e) => e.currentTarget.select()}
-              onBlur={(e) => {
-                const next = e.currentTarget.value.trim();
-                setRenamingFolder(null);
-                if (next && next !== f.path) void onRenameFolder(f.id, next);
-              }}
-              onKeyDown={(e) => {
-                e.stopPropagation();
-                if (e.key === 'Escape') {
-                  e.currentTarget.value = f.path;
-                  setRenamingFolder(null);
-                  return;
-                }
-                if (e.key === 'Enter') e.currentTarget.blur();
-              }}
-            />
-          ) : (
+      {(() => {
+        /* The hierarchy the paths already spell, drawn as one. A mailbox
+           tree like Archive/Yearly/2023 is how people actually file, and a
+           flat list of leaf names turned forty filed years into anonymous
+           siblings. Containers that are not themselves folders (and the
+           Archive root, which is the archive mailbox wearing its tree) still
+           get a row, for the chevron. */
+        type FNode = {
+          label: string;
+          path: string;
+          folder?: (typeof folders)[number];
+          archiveRoot?: boolean;
+          children: FNode[];
+        };
+        const archivePath = folders.find((f) => f.role === 'archive')?.path;
+        const roots: FNode[] = [];
+        const attach = (path: string): FNode => {
+          const segs = path.split(/[/.]/);
+          let level = roots;
+          let prefix = '';
+          let node: FNode | undefined;
+          for (const [si, seg] of segs.entries()) {
+            prefix = si === 0 ? seg : `${prefix}${path[prefix.length]}${seg}`;
+            node = level.find((n) => n.path === prefix);
+            if (!node) {
+              node = { label: seg, path: prefix, children: [] };
+              if (archivePath && prefix === archivePath) node.archiveRoot = true;
+              level.push(node);
+              level.sort((a, b) => a.label.localeCompare(b.label));
+            }
+            level = node.children;
+          }
+          return node!;
+        };
+        for (const f of folders.filter((x) => !x.role)) {
+          attach(f.path).folder = f;
+        }
+        // Roots that exist only because the archive tree hangs off them stay;
+        // any other childless container is noise from a stale path.
+        const prune = (ns: FNode[]): FNode[] =>
+          ns
+            .map((n) => ({ ...n, children: prune(n.children) }))
+            .filter((n) => n.folder || n.archiveRoot || n.children.length > 0);
+        const tree = prune(roots);
+
+        const toggle = (path: string) =>
+          setClosedNodes((prev) => {
+            const next = new Set(prev);
+            if (next.has(path)) next.delete(path);
+            else next.add(path);
+            return next;
+          });
+
+        const renderNode = (n: FNode, depth: number): React.ReactNode => {
+          const open = !closedNodes.has(n.path);
+          const chevron = n.children.length > 0 && !collapsed && (
             <button
               type="button"
-              className="rail-item"
-              aria-current={view === `folder:${f.id}` ? 'page' : undefined}
-              onClick={() => onView(`folder:${f.id}`)}
-              {...dropTarget(`folder:${f.id}`, view, dropOver)}
-              data-drop-ok={
-                dragActive && acceptsDrop(`folder:${f.id}`, view) ? true : undefined
-              }
+              className="tree-toggle"
+              aria-label={open ? t('folder-fold') : t('folder-unfold')}
+              aria-expanded={open}
+              onClick={(e) => {
+                e.stopPropagation();
+                toggle(n.path);
+              }}
+              onPointerDown={(e) => e.stopPropagation()}
             >
-              <Icon icon={FolderClosed} />
-              {/* The leaf, because the rail is narrow; the full path lives in
-                  the tooltip and the rename field. */}
-              <span className="rail-text">{f.path.split(/[/.]/).pop() || f.path}</span>
-              {!collapsed && (
+              <Icon icon={open ? ChevronDown : ChevronRight} size={12} />
+            </button>
+          );
+          const indent = { paddingLeft: 10 + depth * 14 } as const;
+          const f = n.folder;
+          const row = f ? (
+            <Tip key={f.id} label={f.path} placement="right" when={collapsed}>
+              {renamingFolder === f.id ? (
+                <input
+                  key={`rename-folder-${f.id}`}
+                  className="rail-new-tag"
+                  defaultValue={f.path}
+                  aria-label={t('folder-rename')}
+                  autoComplete="off"
+                  autoFocus
+                  onFocus={(e) => e.currentTarget.select()}
+                  onBlur={(e) => {
+                    const next = e.currentTarget.value.trim();
+                    setRenamingFolder(null);
+                    if (next && next !== f.path) void onRenameFolder(f.id, next);
+                  }}
+                  onKeyDown={(e) => {
+                    e.stopPropagation();
+                    if (e.key === 'Escape') {
+                      e.currentTarget.value = f.path;
+                      setRenamingFolder(null);
+                      return;
+                    }
+                    if (e.key === 'Enter') e.currentTarget.blur();
+                  }}
+                />
+              ) : (
+                <button
+                  type="button"
+                  className="rail-item"
+                  style={indent}
+                  aria-current={view === `folder:${f.id}` ? 'page' : undefined}
+                  onClick={() => onView(`folder:${f.id}`)}
+                  onPointerDown={(e) => onDragFolder(e, f.id, n.label)}
+                  data-folder-drop={f.path}
+                  data-drop-over={dropOver === `fdrop:${f.path}` || undefined}
+                  {...dropTarget(`folder:${f.id}`, view, dropOver)}
+                  data-drop-ok={
+                    (dragActive && acceptsDrop(`folder:${f.id}`, view)) ||
+                    (folderDragPath !== null &&
+                      f.path !== folderDragPath &&
+                      !f.path.startsWith(`${folderDragPath}/`))
+                      ? true
+                      : undefined
+                  }
+                >
+                  {chevron}
+                  <Icon icon={FolderClosed} />
+                  <span className="rail-text">{n.label}</span>
+                  {!collapsed && counts[`folder:${f.id}`] > 0 && (
+                    <span className="count">{counts[`folder:${f.id}`]}</span>
+                  )}
+                  {!collapsed && (
+                    <FolderMenu
+                      path={f.path}
+                      onRename={() => setRenamingFolder(f.id)}
+                      onNewChild={() => {
+                        setFolderPrefill(`${f.path}/`);
+                        setNamingFolder(true);
+                      }}
+                      onMove={() => onMoveFolder(f)}
+                      onArchiveInto={
+                        archivePath && !f.path.startsWith(`${archivePath}/`)
+                          ? () => void onRenameFolder(f.id, `${archivePath}/${n.label}`)
+                          : undefined
+                      }
+                      onUnarchive={
+                        archivePath && f.path.startsWith(`${archivePath}/`)
+                          ? () => void onRenameFolder(f.id, n.label)
+                          : undefined
+                      }
+                      onDelete={() => onDeleteFolder(f)}
+                    />
+                  )}
+                </button>
+              )}
+            </Tip>
+          ) : (
+            <button
+              key={n.path}
+              type="button"
+              className="rail-item tree-container"
+              style={indent}
+              aria-current={n.archiveRoot && view === 'archive' ? 'page' : undefined}
+              onClick={() => (n.archiveRoot ? onView('archive') : toggle(n.path))}
+              data-folder-drop={n.archiveRoot ? n.path : undefined}
+              data-drop-over={
+                (n.archiveRoot && dropOver === `fdrop:${n.path}`) || undefined
+              }
+              data-drop-ok={(n.archiveRoot && folderDragPath !== null) || undefined}
+            >
+              {chevron}
+              <Icon icon={n.archiveRoot ? Archive : FolderClosed} />
+              <span className="rail-text">{n.label}</span>
+              {!collapsed && n.archiveRoot && (
                 <FolderMenu
-                  path={f.path}
-                  onRename={() => setRenamingFolder(f.id)}
-                  onDelete={() => onDeleteFolder(f)}
+                  path={n.path}
+                  onNewChild={() => {
+                    setFolderPrefill(`${n.path}/`);
+                    setNamingFolder(true);
+                  }}
                 />
               )}
             </button>
-          )}
-        </Tip>
-      ))}
-
+          );
+          return (
+            <div key={n.path}>
+              {row}
+              {open && n.children.map((c) => renderNode(c, depth + 1))}
+            </div>
+          );
+        };
+        return tree.map((n) => renderNode(n, 0));
+      })()}
       {/* The header shows even with no tags yet, because the + is how the first
           one gets made — a section that only appears once you already have one
           is a feature you cannot find.

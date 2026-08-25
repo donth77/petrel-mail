@@ -24,6 +24,10 @@ fn seeded() -> (Store, i64, Vec<i64>) {
         })
         .collect();
     let ids = store.insert_messages(&msgs).unwrap();
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+    for id in &ids {
+        store.place_message(*id, inbox).unwrap();
+    }
     (store, account, ids)
 }
 

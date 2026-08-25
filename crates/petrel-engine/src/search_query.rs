@@ -24,6 +24,9 @@ pub struct SearchQuery {
     pub has_attachment: bool,
     pub unread: bool,
     pub starred: bool,
+    /// Put-aside mail. In the grammar so the Snoozed view's search can scope
+    /// itself the way every other view's does.
+    pub snoozed: bool,
     /// A mailbox role — inbox, sent, archive and the rest.
     pub in_role: Option<String>,
     /// Only mail on or after this instant.
@@ -38,6 +41,7 @@ impl SearchQuery {
             && !self.has_attachment
             && !self.unread
             && !self.starred
+            && !self.snoozed
             && self.in_role.is_none()
             && self.after_ms.is_none()
     }
@@ -117,6 +121,7 @@ pub fn parse(input: &str) -> SearchQuery {
                 q.unread = false;
             }
             ("is", "starred" | "flagged") => q.starred = true,
+            ("is", "snoozed") => q.snoozed = true,
             ("in", _) => q.in_role = Some(value.to_ascii_lowercase()),
             ("after", _) => match value.parse::<i64>().ok().and_then(year_start_ms) {
                 Some(ms) => q.after_ms = Some(ms),

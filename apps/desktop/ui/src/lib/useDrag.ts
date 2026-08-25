@@ -9,6 +9,7 @@ import { DRAG_THRESHOLD, acceptsDrop, draggableFrom, draggedIds } from './dnd';
  * onto a conversation when you are looking at the tag and know where it goes.
  */
 export type Payload =
+  | { kind: 'folder'; folderId: number; label: string }
   | { kind: 'threads'; ids: number[] }
   | { kind: 'tag'; tagId: number; name: string };
 
@@ -38,6 +39,7 @@ export function useDrag(
   currentView: string,
   onDrop: (railKey: string, ids: number[]) => void,
   onTagRow: (tagId: number, threadId: number) => void,
+  onFolderDrop: (folderId: number, targetPath: string) => void,
 ) {
   const [drag, setDrag] = useState<Dragging | null>(null);
   // Held in a ref as well: the window listeners below are registered once and
@@ -62,6 +64,13 @@ export function useDrag(
   const targetAt = useCallback(
     (payload: Payload, x: number, y: number): { over: string | null; overRow: number | null } => {
       const el = document.elementFromPoint(x, y);
+      if (payload.kind === 'folder') {
+        // A folder lands on another folder, on the Archive root, or on the
+        // section header (which means "the top level").
+        const host = el?.closest<HTMLElement>('[data-folder-drop]');
+        const path = host?.dataset.folderDrop;
+        return { over: path !== undefined ? `fdrop:${path}` : null, overRow: null };
+      }
       if (payload.kind === 'tag') {
         const row = el?.closest<HTMLElement>('[data-drop-row]');
         const id = Number(row?.dataset.dropRow);
@@ -106,6 +115,10 @@ export function useDrag(
       const hit = targetAt(held.payload, e.clientX, e.clientY);
       if (held.payload.kind === 'tag') {
         if (hit.overRow !== null) onTagRow(held.payload.tagId, hit.overRow);
+      } else if (held.payload.kind === 'folder') {
+        if (hit.over?.startsWith('fdrop:')) {
+          onFolderDrop(held.payload.folderId, hit.over.slice('fdrop:'.length));
+        }
       } else if (hit.over) {
         onDrop(hit.over, held.payload.ids);
       }
@@ -131,7 +144,7 @@ export function useDrag(
       window.removeEventListener('pointercancel', up);
       window.removeEventListener('keydown', key);
     };
-  }, [onDrop, onTagRow, set, targetAt]);
+  }, [onDrop, onTagRow, onFolderDrop, set, targetAt]);
 
   /** Attach to a row: begins a drag once the pointer has travelled far enough. */
   const start = useCallback(
@@ -178,5 +191,18 @@ export function useDrag(
     };
   }, []);
 
-  return { drag, start, startTag };
+  /** Attach to a folder row: begins carrying the folder toward a new parent. */
+  const startFolder = useCallback((e: React.PointerEvent, folderId: number, label: string) => {
+    if (e.button !== 0) return;
+    const control = (e.target as HTMLElement).closest('input, a, .tag-edit, .tree-toggle');
+    if (control) return;
+    pending.current = {
+      payload: { kind: 'folder', folderId, label },
+      label,
+      x: e.clientX,
+      y: e.clientY,
+    };
+  }, []);
+
+  return { drag, start, startTag, startFolder };
 }

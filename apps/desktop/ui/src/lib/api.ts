@@ -154,7 +154,12 @@ export type StorageReport = {
   database_bytes: number;
   blob_bytes: number;
   index_bytes: number;
+  /** Each account's share, in account order. Bytes can sum to more than the
+      total: a message two accounts both hold counts for each. */
+  accounts: AccountStorage[];
 };
+
+export type AccountStorage = { account_id: number; messages: number; blob_bytes: number };
 
 export type Folder = { id: number; role: string; path: string };
 
@@ -209,6 +214,7 @@ export type Status = {
   source: string;
   retention: string;
   data_dir: string;
+  last_sync_ms: number;
 };
 
 /* Dev-only: `npm run dev` opens in a plain browser, where Tauri's invoke does
@@ -277,6 +283,7 @@ const mockAccounts: Account[] = [
 
 const mock = {
   status: async (): Promise<Status> => ({
+    last_sync_ms: Date.now(),
     configured: true,
     seeding: false, count: 10000, server_total: 12500, source: 'tom@northbay.example',
     retention: 'mirror', data_dir: '~/Library/Application Support/Petrel',
@@ -328,6 +335,7 @@ const mock = {
   unsubscribeInfo: async () => null,
   printMessage: async () => {},
   listRules: async () => [],
+  viewCount: async () => 40,
   saveRule: async () => 1,
   deleteRule: async () => {},
   moveRule: async () => {},
@@ -340,6 +348,9 @@ const mock = {
   storage: async (): Promise<StorageReport> => ({
     messages: 40, attachments: 2,
     database_bytes: 12_582_912, blob_bytes: 41_943_040, index_bytes: 3_145_728,
+    accounts: mockAccounts.map((a, i) => ({
+      account_id: a.id, messages: i === 0 ? 32 : 8, blob_bytes: i === 0 ? 33_554_432 : 8_388_608,
+    })),
   }),
   exportMbox: async () => '40/0',
   importMail: async () => ({ imported: 0, duplicates: 0, failed: 0 }),
@@ -534,6 +545,8 @@ const real = {
   undoTriage: (actionId: number) => invoke<boolean>('undo_triage', { actionId }),
   folders: () => invoke<Folder[]>('list_folders'),
   createFolder: (path: string) => invoke<number>('create_folder', { path }),
+  /** The view's true conversation count — the list itself is a 500-row window. */
+  viewCount: (view: string) => invoke<number>('view_count', { view }),
   listRules: () => invoke<Rule[]>('list_rules'),
   saveRule: (
     ruleId: number | null,
@@ -570,7 +583,8 @@ const real = {
   // the retry ladder and the ambiguous-outcome rule apply to all of them.
   // A binding that sent straight to the wire would be a way around all three.
   storage: () => invoke<StorageReport>('storage_report'),
-  exportMbox: (view: string, path: string) => invoke<string>('export_mbox', { view, path }),
+  exportMbox: (accountId: number, view: string, path: string) =>
+    invoke<string>('export_mbox', { accountId, view, path }),
   importMail: (paths: string[]) =>
     invoke<{ imported: number; duplicates: number; failed: number }>('import_mail', { paths }),
   identity: () => invoke<Identity>('get_identity'),

@@ -9,6 +9,15 @@
 use petrel_engine::actions::{ActionKind, PlacementPolicy};
 use petrel_engine::store::{CountMode, ListView, NewMessage, Store, flags};
 
+/// Places every seeded message in the inbox — the tests that read Inbox
+/// call this; the tests that build their own placements do not.
+fn inbox_all(store: &Store, account: i64, ids: &[i64]) {
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+    for id in ids {
+        store.place_message(*id, inbox).unwrap();
+    }
+}
+
 fn seeded() -> (Store, i64, Vec<i64>) {
     let mut store = Store::open_in_memory().unwrap();
     let account = store.ensure_test_account().unwrap();
@@ -66,6 +75,7 @@ fn parse_maps_rail_keys_and_never_errors() {
 #[test]
 fn archiving_moves_a_conversation_between_the_inbox_and_archive_views() {
     let (store, account, ids) = seeded();
+    inbox_all(&store, account, &ids);
     let tid = thread_of(&store, ids[0]);
 
     assert_eq!(subjects(&store, &ListView::Inbox).len(), 4);
@@ -95,6 +105,7 @@ fn archiving_moves_a_conversation_between_the_inbox_and_archive_views() {
 #[test]
 fn trash_and_spam_are_separate_views() {
     let (store, account, ids) = seeded();
+    inbox_all(&store, account, &ids);
     store
         .apply_thread_action(
             account,
@@ -154,6 +165,7 @@ fn starred_spans_folders_but_not_the_bin() {
 #[test]
 fn tag_views_select_by_tag_and_are_not_sql() {
     let (store, account, ids) = seeded();
+    inbox_all(&store, account, &ids);
     let tag = store.ensure_tag(account, "urgent", None).unwrap();
     store.tag_message(ids[2], tag).unwrap();
 
@@ -200,6 +212,7 @@ fn archive_excludes_anything_still_in_the_inbox() {
 #[test]
 fn view_counts_report_per_mailbox_and_by_conversation() {
     let (store, account, ids) = seeded();
+    inbox_all(&store, account, &ids);
     let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
     let spam = store
         .ensure_folder(account, "spam", "[Gmail]/Spam")
@@ -242,9 +255,13 @@ fn view_counts_report_per_mailbox_and_by_conversation() {
         .into_iter()
         .collect();
     assert_eq!(totals.get("sent"), Some(&1));
-    // Two, not four: the ones filed into Spam and Sent have left the inbox.
-    // Totals ignore read state, not placement.
-    assert_eq!(totals.get("inbox"), Some(&2));
+    // Three, not four — and not two, which the old "not filed elsewhere"
+    // inbox produced. Membership reads each placement for what it is: the
+    // spam-placed message is binned and leaves, but the sent-placed one
+    // still holds its inbox placement and stays — mail you sent to yourself
+    // is genuinely both, and only the *filing gestures* (archive, move,
+    // trash) take the inbox placement away.
+    assert_eq!(totals.get("inbox"), Some(&3));
 
     // Off means off, not zeroes.
     assert!(store.view_counts(CountMode::Off).unwrap().is_empty());
@@ -474,7 +491,8 @@ mod by_id {
 
     #[test]
     fn agrees_with_the_listing_it_shares_a_query_with() {
-        let (store, _account, ids) = seeded();
+        let (store, account, ids) = seeded();
+        inbox_all(&store, account, &ids);
         let thread = thread_of(&store, ids[3]);
         let from_view = store
             .list_threads(&ListView::Inbox, 0, 50)
@@ -487,5 +505,50 @@ mod by_id {
         assert_eq!(by_id.date_ms, from_view.date_ms);
         assert_eq!(by_id.message_count, from_view.message_count);
         assert_eq!(by_id.starred, from_view.starred);
+    }
+}
+
+/// Archived mail files *under* Archive; the view must know that.
+mod archive_tree {
+    use petrel_engine::blob::BlobStore;
+    use petrel_engine::store::{ListView, Store};
+
+    #[test]
+    fn mail_in_archive_subfolders_is_archived_mail() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("t.db")).unwrap();
+        let blobs = BlobStore::open(&dir.path().join("blobs")).unwrap();
+        let account = store.ensure_test_account().unwrap();
+        store.ensure_folder(account, "archive", "Archive").unwrap();
+        let sub = store
+            .ensure_named_folder(account, "Archive/Yearly/2023")
+            .unwrap();
+        let unrelated = store.ensure_named_folder(account, "Archivedream").unwrap();
+        let raw = |mid: &str| {
+            format!(
+                "From: a@example.com\r\nTo: b@example.com\r\nSubject: s\r\n\
+                 Message-ID: <{mid}>\r\nMIME-Version: 1.0\r\nContent-Type: text/plain\r\n\r\nx\r\n"
+            )
+            .into_bytes()
+        };
+        store
+            .ingest_raw(&blobs, account, Some(sub), Some(1), &raw("in-tree@x"))
+            .unwrap();
+        // A folder whose name merely *starts* with the archive path must not
+        // be swept in — the delimiter is part of the meaning.
+        store
+            .ingest_raw(
+                &blobs,
+                account,
+                Some(unrelated),
+                Some(1),
+                &raw("near-miss@x"),
+            )
+            .unwrap();
+
+        let rows = store
+            .list_threads(&ListView::parse("archive"), 0, 50)
+            .unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
     }
 }

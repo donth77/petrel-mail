@@ -16,11 +16,26 @@ import { t } from '../lib/strings';
 export function FolderMenu({
   path,
   onRename,
+  onNewChild,
+  onMove,
+  onArchiveInto,
+  onUnarchive,
   onDelete,
 }: {
   path: string;
-  onRename: () => void;
-  onDelete: () => void;
+  /** Absent on rows that are not renameable — the Archive root is the
+   *  archive mailbox wearing its tree, not a folder anyone named. */
+  onRename?: () => void;
+  /** Opens the naming field prefilled with this folder's path — a subfolder
+   *  is a name with a parent already decided. */
+  onNewChild: () => void;
+  /** Opens a destination picker — the menu's answer to the drag. */
+  onMove?: () => void;
+  /** Re-nests under Archive — present on folders standing outside it. */
+  onArchiveInto?: () => void;
+  /** Pulls back to the top level — present on folders inside Archive. */
+  onUnarchive?: () => void;
+  onDelete?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -36,13 +51,37 @@ export function FolderMenu({
         <Icon icon={MoreHorizontal} size={14} />
       </MenuButton>
       <Menu portal gutter={6} className="menu" aria-label={t('folder-edit', { name: path })}>
-        <MenuItem className="menu-item" onClick={onRename}>
-          {t('folder-rename')}
+        {onRename && (
+          <MenuItem className="menu-item" onClick={onRename}>
+            {t('folder-rename')}
+          </MenuItem>
+        )}
+        <MenuItem className="menu-item" onClick={onNewChild}>
+          {t('folder-subfolder')}
         </MenuItem>
-        <MenuSeparator className="menu-sep" />
-        <MenuItem className="menu-item danger" onClick={onDelete}>
-          {t('folder-delete')}
-        </MenuItem>
+        {onMove && (
+          <MenuItem className="menu-item" onClick={onMove}>
+            {t('folder-move')}
+          </MenuItem>
+        )}
+        {onArchiveInto && (
+          <MenuItem className="menu-item" onClick={onArchiveInto}>
+            {t('folder-archive-into')}
+          </MenuItem>
+        )}
+        {onUnarchive && (
+          <MenuItem className="menu-item" onClick={onUnarchive}>
+            {t('folder-unarchive')}
+          </MenuItem>
+        )}
+        {onDelete && (
+          <>
+            <MenuSeparator className="menu-sep" />
+            <MenuItem className="menu-item danger" onClick={onDelete}>
+              {t('folder-delete')}
+            </MenuItem>
+          </>
+        )}
       </Menu>
     </MenuProvider>
   );

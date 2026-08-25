@@ -41,6 +41,11 @@ fn seeded() -> (Store, Vec<i64>) {
     })
     .collect::<Vec<_>>();
     let ids = store.insert_messages(&msgs).unwrap();
+    // The Inbox means membership now; bare rows are in nobody's inbox.
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+    for id in &ids {
+        store.place_message(*id, inbox).unwrap();
+    }
     (store, ids)
 }
 
@@ -123,7 +128,11 @@ mod operators {
             body_text: (*body).into(),
         })
         .collect::<Vec<_>>();
-        store.insert_messages(&msgs).unwrap();
+        let placed = store.insert_messages(&msgs).unwrap();
+        let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+        for id in &placed {
+            store.place_message(*id, inbox).unwrap();
+        }
         (store, account)
     }
 
@@ -226,7 +235,11 @@ fn best_match_and_newest_are_not_the_same_order() {
         body_text: (*body).into(),
     })
     .collect::<Vec<_>>();
-    store.insert_messages(&msgs).unwrap();
+    let placed = store.insert_messages(&msgs).unwrap();
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+    for id in &placed {
+        store.place_message(*id, inbox).unwrap();
+    }
 
     let best: Vec<String> = store
         .search_threads_sorted("annex", 10, false)
@@ -339,5 +352,157 @@ mod the_bin {
 
         let rows = store.list_threads(&ListView::parse("spam"), 0, 50).unwrap();
         assert_eq!(rows.len(), 1, "the Spam view is where spam belongs");
+    }
+}
+
+/// The wall between accounts, at the surface where it was missing.
+mod account_walls {
+    use petrel_engine::blob::BlobStore;
+    use petrel_engine::store::Store;
+
+    fn message(mid: &str, subject: &str, body: &str, attach: bool) -> Vec<u8> {
+        let attachment = if attach {
+            "Content-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nBODY\r\n--b\r\nContent-Type: application/pdf; name=\"f.pdf\"\r\nContent-Disposition: attachment; filename=\"f.pdf\"\r\n\r\nx\r\n--b--\r\n".to_string()
+        } else {
+            format!("Content-Type: text/plain\r\n\r\n{body}\r\n")
+        };
+        format!(
+            "From: Dana Wu <dana@example.com>\r\nTo: me@example.com\r\n\
+             Subject: {subject}\r\nDate: Tue, 18 Aug 2026 14:02:00 +0000\r\n\
+             Message-ID: <{mid}>\r\nMIME-Version: 1.0\r\n{attachment}"
+        )
+        .replace("BODY", body)
+        .into_bytes()
+    }
+
+    #[test]
+    fn search_answers_only_for_the_account_on_screen() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("t.db")).unwrap();
+        let blobs = BlobStore::open(&dir.path().join("blobs")).unwrap();
+        let a = store.ensure_test_account().unwrap();
+        let b = store
+            .add_account(
+                "imap",
+                "other@example.net",
+                "Other",
+                &petrel_engine::store::AccountServers {
+                    imap_host: "imap.example.net".into(),
+                    imap_port: 993,
+                    smtp_host: "smtp.example.net".into(),
+                    smtp_port: 465,
+                    username: "other@example.net".into(),
+                    provider: String::new(),
+                },
+            )
+            .unwrap();
+        let inbox_a = store.ensure_folder(a, "inbox", "INBOX").unwrap();
+        let inbox_b = store.ensure_folder(b, "inbox", "INBOX").unwrap();
+
+        // The same word lives in both accounts; an attachment lives only in B.
+        store
+            .ingest_raw(
+                &blobs,
+                a,
+                Some(inbox_a),
+                Some(1),
+                &message("a1@x", "mine", "heliotrope invoice", false),
+            )
+            .unwrap();
+        store
+            .ingest_raw(
+                &blobs,
+                b,
+                Some(inbox_b),
+                Some(1),
+                &message("b1@x", "theirs", "heliotrope contract", false),
+            )
+            .unwrap();
+        store
+            .ingest_raw(
+                &blobs,
+                b,
+                Some(inbox_b),
+                Some(2),
+                &message("b2@x", "attached", "files", true),
+            )
+            .unwrap();
+
+        store.set_active_account(a).unwrap();
+
+        // Text search: the other account's hit must not appear.
+        let hits = store.search_threads("heliotrope", 20).unwrap();
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!(hits[0].subject, "mine");
+
+        // Conditions-only search: B's attachment is not A's result.
+        let hits = store.search_threads("has:attachment", 20).unwrap();
+        assert!(hits.is_empty(), "{hits:?}");
+
+        // And from the other side, both answers flip.
+        store.set_active_account(b).unwrap();
+        let hits = store.search_threads("heliotrope", 20).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].subject, "theirs");
+        assert_eq!(store.search_threads("has:attachment", 20).unwrap().len(), 1);
+    }
+}
+
+/// `in:` names places the user made, not only roles.
+mod in_user_folders {
+    use petrel_engine::blob::BlobStore;
+    use petrel_engine::store::Store;
+
+    #[test]
+    fn a_folder_can_be_searched_by_its_own_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("t.db")).unwrap();
+        let blobs = BlobStore::open(&dir.path().join("blobs")).unwrap();
+        let account = store.ensure_test_account().unwrap();
+        let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+        let nested = store
+            .ensure_named_folder(account, "Projects/Petrel")
+            .unwrap();
+        let raw = |mid: &str, body: &str| {
+            format!(
+                "From: a@example.com\r\nTo: b@example.com\r\nSubject: s\r\n\
+                 Message-ID: <{mid}>\r\nMIME-Version: 1.0\r\nContent-Type: text/plain\r\n\r\n{body}\r\n"
+            )
+            .into_bytes()
+        };
+        store
+            .ingest_raw(
+                &blobs,
+                account,
+                Some(inbox),
+                Some(1),
+                &raw("i@x", "annex in the inbox"),
+            )
+            .unwrap();
+        store
+            .ingest_raw(
+                &blobs,
+                account,
+                Some(nested),
+                Some(1),
+                &raw("f@x", "annex in the folder"),
+            )
+            .unwrap();
+
+        // The leaf, case-insensitively, and the full path both address it.
+        assert_eq!(
+            store.search_threads("in:petrel annex", 20).unwrap().len(),
+            1
+        );
+        assert_eq!(
+            store
+                .search_threads("in:projects/petrel annex", 20)
+                .unwrap()
+                .len(),
+            1
+        );
+        // Unscoped still finds both; a role keeps meaning the role.
+        assert_eq!(store.search_threads("annex", 20).unwrap().len(), 2);
+        assert_eq!(store.search_threads("in:inbox annex", 20).unwrap().len(), 1);
     }
 }

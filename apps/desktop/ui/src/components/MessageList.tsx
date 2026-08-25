@@ -106,6 +106,11 @@ export function MessageList({
     count: items.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => rowHeight,
+    // Identity for the measurement cache. Without it, measured heights are
+    // cached by *index*: remove one row and every later row wears its old
+    // neighbour's height — a gap and an overlap right where the dragged
+    // conversation used to sit.
+    getItemKey: (index) => items[index]?.id ?? index,
     overscan: 8,
     rangeExtractor,
     measureElement: (el) => el.getBoundingClientRect().height,

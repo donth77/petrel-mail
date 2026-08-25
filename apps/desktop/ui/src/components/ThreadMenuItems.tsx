@@ -1,6 +1,6 @@
 import { MenuItem, MenuSeparator } from '@ariakit/react';
 import {
-  Archive, Clock, ExternalLink, FolderClosed, Mail, MailOpen, Maximize2,
+  Archive, Clock, ExternalLink, FolderClosed, Inbox, Mail, MailOpen, Maximize2,
   Minimize2, ShieldAlert, Star, Tag as TagIcon, Trash2,
 } from 'lucide-react';
 import type { ActionKind, Thread } from '../lib/api';
@@ -14,6 +14,9 @@ export type ThreadMenuProps = {
   view: string;
   onAction: (kind: ActionKind) => void;
   onMove: () => void;
+  /** Back to the inbox — the inverse of archive and of filing, reachable
+   *  without a drag. Absent where the store cannot say which inbox. */
+  onMoveInbox?: () => void;
   onTag: () => void;
   onSnooze: () => void;
   /** Absent where there is nowhere to pop out to. */
@@ -41,7 +44,8 @@ export type ThreadMenuProps = {
  * whole of the difference between them.
  */
 export function ThreadMenuItems({
-  thread, view, onAction, onMove, onTag, onSnooze, onPopOut, onToggleFull, full, count,
+  thread, view, onAction, onMove, onMoveInbox, onTag, onSnooze, onPopOut, onToggleFull, full,
+  count,
 }: ThreadMenuProps) {
   const inTrash = view === 'trash';
   const many = (count ?? 1) > 1;
@@ -111,11 +115,26 @@ export function ThreadMenuItems({
         <span className="menu-label">{t('reader-snooze')}</span>
         <span className="menu-key">B</span>
       </MenuItem>
-      <MenuItem className="menu-item" onClick={() => onAction('archive')}>
-        <Icon icon={Archive} size={14} />
-        <span className="menu-label">{t('reader-archive')}</span>
-        <span className="menu-key">E</span>
-      </MenuItem>
+      {/* Not offered where it already happened, nor to mail you wrote —
+          archiving is a station in the life of something that arrived. */}
+      {!['archive', 'sent', 'drafts', 'outbox'].includes(view) && (
+        <MenuItem className="menu-item" onClick={() => onAction('archive')}>
+          <Icon icon={Archive} size={14} />
+          <span className="menu-label">{t('reader-archive')}</span>
+          <span className="menu-key">E</span>
+        </MenuItem>
+      )}
+
+      {/* The way back. Everywhere except the inbox itself — and except the
+          views for mail you wrote, which was never in the inbox to return
+          to. Restoring from Trash and Spam is this same item doing its most
+          important job. */}
+      {onMoveInbox && !['inbox', 'sent', 'drafts', 'outbox'].includes(view) && (
+        <MenuItem className="menu-item" onClick={onMoveInbox}>
+          <Icon icon={Inbox} size={14} />
+          <span className="menu-label">{t('menu-move-inbox')}</span>
+        </MenuItem>
+      )}
 
       <MenuSeparator className="menu-sep" />
 

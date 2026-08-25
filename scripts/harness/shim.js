@@ -51,6 +51,8 @@
   rows[5].filed = 'sent';
   rows[6].filed = 'sent';
   rows[7].filed = 'drafts';
+  // One filed into a user folder, so the way back out is exercisable.
+  rows[8].filed = 7;
   rows[8].tags = [{ id: 11, name: 'Urgent', colour: '#A8544B' }];
   rows[9].tags = [{ id: 11, name: 'Urgent', colour: '#A8544B' }];
 
@@ -59,8 +61,11 @@
     { id: 102, role: '', path: 'Contracts/2026' },
     { id: 103, role: '', path: 'Client contact' },
     { id: 1, role: 'archive', path: 'Archive' },
+    { id: 2, role: 'inbox', path: 'INBOX' },
         { id: 7, role: '', path: 'Receipts' },
         { id: 8, role: '', path: 'Projects/Petrel' },
+        { id: 9, role: '', path: 'Archive/Old letters' },
+        { id: 10, role: '', path: 'Archive/Old letters/2019' },
   ];
   var tags = [
     { id: 11, name: 'Urgent', colour: '#A8544B', thread_count: 0 },
@@ -95,6 +100,7 @@
       var configured = true;
       try { configured = localStorage.getItem('__petrel_unconfigured') !== '1'; } catch (e) {}
       return {
+        last_sync_ms: Date.now() - 3 * 60000,
         configured: configured,
         seeding: seeding,
         // A denominator larger than what is held, so the coverage line has
@@ -122,6 +128,12 @@
       }
       if (view === 'snoozed') return rows.filter(function (r) { return r.snoozed > now; });
       if (view === 'starred') return rows.filter(function (r) { return r.starred; });
+      // User folders: what the move test filed lands here, so the way back
+      // out of a folder can be exercised too.
+      if (view.indexOf('folder:') === 0) {
+        var fid = Number(view.slice(7));
+        return rows.filter(function (r) { return r.filed === fid; });
+      }
       if (view === 'outbox') return [];
       if (view.indexOf('tag:') === 0) {
         var name = view.slice(4);
@@ -331,6 +343,7 @@
     push_draft: function () { return null; },
     import_mail: function () { return { imported: 3, duplicates: 1, failed: 0 }; },
     print_message: function () { return null; },
+    view_count: function () { return 40; },
     list_rules: function () { return rules.slice(); },
     save_rule: function (a) {
       if (a.ruleId) {
@@ -402,6 +415,10 @@
       return {
         messages: rows.length, attachments: 2,
         database_bytes: 12582912, blob_bytes: 41943040, index_bytes: 3145728,
+        accounts: [
+          { account_id: 1, messages: rows.length, blob_bytes: 33554432 },
+          { account_id: 2, messages: 0, blob_bytes: 8388608 },
+        ],
       };
     },
     export_mbox: function () {
