@@ -1,12 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   api,
-  type Account,
   type Folder,
-  type Identity,
   type OutboxRow,
   type Status,
-  type Tag,
   type Thread,
 } from './lib/api';
 import { chips, hasToken, scopeFor, toggleToken, folderLeaf } from './lib/search-chips';
@@ -26,6 +23,7 @@ import { replyTargets } from './lib/reply';
 import { forwardBody, replyBody } from './lib/quote';
 import { dropMeaning } from './lib/dnd';
 import { useDrag } from './lib/useDrag';
+import { useReferenceData } from './lib/useReferenceData';
 import { useDropGuard } from './lib/useFileDrop';
 import { AppDialogs } from './components/AppDialogs';
 import { DragPreview } from './components/DragPreview';
@@ -99,7 +97,11 @@ export function App() {
   const [outgoing, setOutgoing] = useState<{ id: number; subject: string; left: number } | null>(null);
   const outgoingRef = useRef(outgoing);
   outgoingRef.current = outgoing;
-  const [folders, setFolders] = useState<Folder[]>([]);
+  // Reference data — tags, folders, accounts, identity — one hook, one
+  // effect. Called this early because the triage hook below reads tags to
+  // show one on a row the moment it is applied.
+  const { tags, setTags, folders, setFolders, accounts, setAccounts, activeAccount, identity } =
+    useReferenceData(status?.seeding, accountEpoch);
   // The view's true size; items.length is only the loaded window.
   const [viewTotal, setViewTotal] = useState<number | null>(null);
 
@@ -162,9 +164,6 @@ export function App() {
     if (scroller) scroller.scrollTop = 0;
   }, [query, view, newestFirst]);
 
-  // Declared here rather than with the other rail state: the triage hook
-  // below reads tags to show one on a row the moment it is applied.
-  const [tags, setTags] = useState<Tag[]>([]);
   // The tag awaiting confirmation. Deleting one takes it off every
   // conversation carrying it, which is not a thing to do on one click.
   const [deletingTag, setDeletingTag] = useState<{ id: number; name: string } | null>(null);
@@ -831,16 +830,7 @@ export function App() {
 
   const unread = useMemo(() => items.filter((m) => m.unread).length, [items]);
 
-  // Tags come from the account, so one that has no conversation on this page
-  // still appears in the rail.
   const [counts, setCounts] = useState<Record<string, number>>({});
-  const [accounts, setAccounts] = useState<Account[]>([]);
-  // The account the window is showing. Everything that used to read
-  // `accounts[0]` — the rail's label, the composer's From, the Gmail-only
-  // note in the folder picker — reads this, so a switch changes all of them.
-  const activeAccount = accounts.find((a) => a.active) ?? accounts[0];
-
-  const [identity, setIdentity] = useState<Identity | null>(null);
 
   // Folders show their full path so "Contracts/2026" is distinguishable from
   // another "2026" elsewhere; tags carry their colour and whether this
@@ -868,7 +858,7 @@ export function App() {
     return () => {
       live = false;
     };
-  }, [picker]);
+  }, [picker, setTags]);
 
   const pickerOptions: PickerOption[] = useMemo(() => {
     // The same times snooze offers, for the same reason: "tomorrow" means the
@@ -900,37 +890,6 @@ export function App() {
       .filter((f) => !f.role && `folder:${f.id}` !== view)
       .map((f) => ({ id: f.id, label: f.path }));
   }, [picker, folders, tags, active, view]);
-  useEffect(() => {
-    let live = true;
-    // Reported, not swallowed. A tag list that failed to load and an account
-    // with no tags produce exactly the same empty picker, so a silent catch
-    // here turns a broken call into "you have no tags" — which is the one
-    // reading of it that stops anyone looking for the real cause.
-    api
-      .tags()
-      .then((t) => live && setTags(t))
-      .catch((e) => api.log(`list_tags failed: ${e}`));
-    api.folders().then((f) => live && setFolders(f)).catch((e) => api.log(`folders failed: ${e}`));
-    api.identity().then((i) => live && setIdentity(i)).catch((e) => api.log(`identity failed: ${e}`));
-    api.accounts().then((a) => live && setAccounts(a)).catch(() => {});
-    return () => {
-      live = false;
-    };
-    // Deliberately *not* keyed on the message count.
-    //
-    // These four are reference data — they change when the user changes them,
-    // not when mail arrives. Keyed on the count they re-ran on every sync poll,
-    // and each re-run's cleanup set `live = false` on the request already in
-    // flight, so the answer was thrown away when it landed. During a sync the
-    // count changes faster than the round trip, so the list was cancelled over
-    // and over and simply stayed empty: no tags in the rail, none in the
-    // picker, and nothing logged, because nothing had failed.
-    //
-    // The seeding flag is the honest trigger. It changes when a sync starts and
-    // when it finishes — twice, not sixty times — which is exactly when folders
-    // may have appeared and a re-read is worth doing.
-  }, [status?.seeding, accountEpoch]);
-
   useEffect(() => {
     let live = true;
     setViewTotal(null);
