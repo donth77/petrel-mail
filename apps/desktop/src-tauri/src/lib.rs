@@ -127,134 +127,148 @@ pub fn run() {
         });
     }
 
-    // The account set up in the app first; the environment as the developer
-    // override when there is none. Before this every launch without the
-    // variables was a demo — which is how demo tags ended up decorating a
-    // store full of real mail.
-    // Every account set up in the app syncs, each on its own tasks. One is
-    // *shown* at a time — that is the switcher's job — but mail arriving for
-    // the other should be there, read or not, the moment you switch to it.
-    // The environment-driven row is the fallback for the developer case only.
-    let mut started = 0;
-    // Adoption: an account row created from environment variables before
-    // onboarding existed has no stored servers and no keychain entry — and
-    // once a second account *is* properly configured, the env fallback below
-    // never fires again, so that first account silently stops syncing
-    // (found exactly that way: Gmail dead for days behind a working
-    // Namecheap). If the environment names such an account's own address,
-    // its credentials move into the keychain now, once, and it becomes an
-    // ordinary configured account.
-    if let (Some(env), Ok(store)) = (imap_config_from_env(), state.store.lock()) {
-        for summary in store.accounts().unwrap_or_default() {
-            let stored = imap_config_for(&store, summary.id).is_some()
-                || store
-                    .account_servers(summary.id)
-                    .ok()
-                    .flatten()
-                    .is_some_and(|s| !s.imap_host.is_empty());
-            if stored || !summary.email.eq_ignore_ascii_case(&env.user) {
-                continue;
-            }
-            let smtp =
-                petrel_providers::smtp::SmtpConfig::for_imap_host(&env.host, &env.user, &env.pass);
-            let servers = petrel_engine::store::AccountServers {
-                imap_host: env.host.clone(),
-                imap_port: env.port,
-                smtp_host: smtp.host,
-                smtp_port: smtp.port,
-                username: env.user.clone(),
-                provider: String::new(),
-            };
-            if let Err(e) = store.set_account_servers(summary.id, &servers) {
-                eprintln!("[sync] could not adopt env servers for {}: {e}", env.user);
-                continue;
-            }
-            if let Ok(entry) = keychain_entry(summary.id) {
-                // set_password refuses to overwrite on macOS; clear first.
-                let _ = entry.delete_credential();
-                match entry.set_password(&env.pass) {
-                    Ok(()) => {
-                        remember_password(summary.id, &env.pass);
-                        log_sync(&format!(
-                            "adopted environment credentials for {} into the keychain",
-                            env.user
-                        ));
+    // Accounts and sync start off the launch path, for the same reason the
+    // garbage collector did: nothing here may stand between launch and the
+    // window. Reading a password is the worst offender — on a build macOS
+    // has not seen before, the keychain blocks on a consent dialog, and
+    // that dialog used to hold the whole startup hostage with no window
+    // behind it. Now the window comes up first and the prompt, when there
+    // is one, appears over a running app.
+    {
+        let state = Arc::clone(&state);
+        let account = account;
+        std::thread::spawn(move || {
+            // The account set up in the app first; the environment as the developer
+            // override when there is none. Before this every launch without the
+            // variables was a demo — which is how demo tags ended up decorating a
+            // store full of real mail.
+            // Every account set up in the app syncs, each on its own tasks. One is
+            // *shown* at a time — that is the switcher's job — but mail arriving for
+            // the other should be there, read or not, the moment you switch to it.
+            // The environment-driven row is the fallback for the developer case only.
+            let mut started = 0;
+            // Adoption: an account row created from environment variables before
+            // onboarding existed has no stored servers and no keychain entry — and
+            // once a second account *is* properly configured, the env fallback below
+            // never fires again, so that first account silently stops syncing
+            // (found exactly that way: Gmail dead for days behind a working
+            // Namecheap). If the environment names such an account's own address,
+            // its credentials move into the keychain now, once, and it becomes an
+            // ordinary configured account.
+            if let (Some(env), Ok(store)) = (imap_config_from_env(), state.store.lock()) {
+                for summary in store.accounts().unwrap_or_default() {
+                    let stored = imap_config_for(&store, summary.id).is_some()
+                        || store
+                            .account_servers(summary.id)
+                            .ok()
+                            .flatten()
+                            .is_some_and(|s| !s.imap_host.is_empty());
+                    if stored || !summary.email.eq_ignore_ascii_case(&env.user) {
+                        continue;
                     }
-                    Err(e) => eprintln!("[sync] keychain adopt failed: {e}"),
+                    let smtp = petrel_providers::smtp::SmtpConfig::for_imap_host(
+                        &env.host, &env.user, &env.pass,
+                    );
+                    let servers = petrel_engine::store::AccountServers {
+                        imap_host: env.host.clone(),
+                        imap_port: env.port,
+                        smtp_host: smtp.host,
+                        smtp_port: smtp.port,
+                        username: env.user.clone(),
+                        provider: String::new(),
+                    };
+                    if let Err(e) = store.set_account_servers(summary.id, &servers) {
+                        eprintln!("[sync] could not adopt env servers for {}: {e}", env.user);
+                        continue;
+                    }
+                    if let Ok(entry) = keychain_entry(summary.id) {
+                        // set_password refuses to overwrite on macOS; clear first.
+                        let _ = entry.delete_credential();
+                        match entry.set_password(&env.pass) {
+                            Ok(()) => {
+                                remember_password(summary.id, &env.pass);
+                                log_sync(&format!(
+                                    "adopted environment credentials for {} into the keychain",
+                                    env.user
+                                ));
+                            }
+                            Err(e) => eprintln!("[sync] keychain adopt failed: {e}"),
+                        }
+                    }
                 }
             }
-        }
-    }
-    let configs: Vec<(i64, ImapConfig)> = state
-        .store
-        .lock()
-        .ok()
-        .map(|s| {
-            s.account_ids()
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(|id| imap_config_for(&s, id).map(|c| (id, c)))
-                .collect()
-        })
-        .unwrap_or_default();
-    for (id, cfg) in configs {
-        eprintln!(
-            "[sync] account {id} configured: {} @ {}",
-            cfg.user, cfg.host
-        );
-        spawn_real_sync(state.clone(), id, cfg);
-        started += 1;
-    }
-    let configured = if started > 0 {
-        None
-    } else {
-        imap_config_from_env()
-    };
-    // The "N so far" figure starts from what is already here, whichever branch
-    // runs. It used to start at zero and be pushed along by every fetch; once
-    // the counter learned to count only genuinely new mail, a relaunch that
-    // re-fetches stored folders moved it not at all — and an empty folder
-    // showed "Fetching your mail — 0 so far…" over a store holding thousands.
-    {
-        let existing = state
-            .store
-            .lock()
-            .ok()
-            .and_then(|s| s.message_count().ok())
-            .unwrap_or(0);
-        state.seeded.store(existing as usize, Ordering::Relaxed);
-    }
-    match (started, configured) {
-        (n, _) if n > 0 => {}
-        (_, Some(cfg)) => {
-            eprintln!("[sync] account configured: {} @ {}", cfg.user, cfg.host);
-            spawn_real_sync(state.clone(), account, cfg);
-        }
-        (_, None) => {
-            // Demo data is for an empty first run only. Seeding it into a store
-            // that already holds real mail would mix fabricated messages into
-            // someone's actual mailbox — found the hard way when a persistence
-            // test relaunched without credentials and buried a real message
-            // under 10,000 synthetic ones.
-            let existing = state
+            let configs: Vec<(i64, ImapConfig)> = state
                 .store
                 .lock()
                 .ok()
-                .and_then(|s| s.message_count().ok())
-                .unwrap_or(0);
-            if existing > 0 {
-                state.seeded.store(existing as usize, Ordering::Relaxed);
-                state.seeding.store(false, Ordering::Relaxed);
-                *state.source.lock().unwrap() =
-                    "no account configured · showing stored mail".into();
-                if !reseed_demo_if_stale(&state, account) {
-                    decorate_demo_store(&state, account);
-                }
-            } else {
-                *state.source.lock().unwrap() = "synthetic demo data".into();
-                spawn_demo_seeding(state.clone(), account);
+                .map(|s| {
+                    s.account_ids()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter_map(|id| imap_config_for(&s, id).map(|c| (id, c)))
+                        .collect()
+                })
+                .unwrap_or_default();
+            for (id, cfg) in configs {
+                eprintln!(
+                    "[sync] account {id} configured: {} @ {}",
+                    cfg.user, cfg.host
+                );
+                spawn_real_sync(state.clone(), id, cfg);
+                started += 1;
             }
-        }
+            let configured = if started > 0 {
+                None
+            } else {
+                imap_config_from_env()
+            };
+            // The "N so far" figure starts from what is already here, whichever branch
+            // runs. It used to start at zero and be pushed along by every fetch; once
+            // the counter learned to count only genuinely new mail, a relaunch that
+            // re-fetches stored folders moved it not at all — and an empty folder
+            // showed "Fetching your mail — 0 so far…" over a store holding thousands.
+            {
+                let existing = state
+                    .store
+                    .lock()
+                    .ok()
+                    .and_then(|s| s.message_count().ok())
+                    .unwrap_or(0);
+                state.seeded.store(existing as usize, Ordering::Relaxed);
+            }
+            match (started, configured) {
+                (n, _) if n > 0 => {}
+                (_, Some(cfg)) => {
+                    eprintln!("[sync] account configured: {} @ {}", cfg.user, cfg.host);
+                    spawn_real_sync(state.clone(), account, cfg);
+                }
+                (_, None) => {
+                    // Demo data is for an empty first run only. Seeding it into a store
+                    // that already holds real mail would mix fabricated messages into
+                    // someone's actual mailbox — found the hard way when a persistence
+                    // test relaunched without credentials and buried a real message
+                    // under 10,000 synthetic ones.
+                    let existing = state
+                        .store
+                        .lock()
+                        .ok()
+                        .and_then(|s| s.message_count().ok())
+                        .unwrap_or(0);
+                    if existing > 0 {
+                        state.seeded.store(existing as usize, Ordering::Relaxed);
+                        state.seeding.store(false, Ordering::Relaxed);
+                        *state.source.lock().unwrap() =
+                            "no account configured · showing stored mail".into();
+                        if !reseed_demo_if_stale(&state, account) {
+                            decorate_demo_store(&state, account);
+                        }
+                    } else {
+                        *state.source.lock().unwrap() = "synthetic demo data".into();
+                        spawn_demo_seeding(state.clone(), account);
+                    }
+                }
+            }
+        });
     }
 
     tauri::Builder::default()
@@ -441,11 +455,15 @@ pub fn run() {
                 .focused(true)
                 .initialization_script(&init)
                 .on_navigation(|url| {
-                    eprintln!("[nav] {url}");
+                    log_sync(&format!("[nav] {url}"));
                     true
                 })
                 .on_page_load(|_webview, payload| {
-                    eprintln!("[pageload] {:?} {}", payload.event(), payload.url());
+                    log_sync(&format!(
+                        "[pageload] {:?} {}",
+                        payload.event(),
+                        payload.url()
+                    ));
                 })
                 .build()?;
 
@@ -454,10 +472,10 @@ pub fn run() {
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.set_focus();
                 if let (Ok(pos), Ok(size)) = (w.outer_position(), w.outer_size()) {
-                    eprintln!(
+                    log_sync(&format!(
                         "[window] main at {},{} size {}x{}",
                         pos.x, pos.y, size.width, size.height
-                    );
+                    ));
                 }
             }
             Ok(())
