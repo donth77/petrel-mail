@@ -505,6 +505,8 @@ export const en = {
   'folder-unarchive': 'Move out of Archive',
   'folder-moved': 'Moved \u201c{ $name }\u201d into { $to }',
   'folder-into-itself': 'A folder cannot move into itself.',
+  'folder-trashed':
+    'Moved \u201c{ $name }\u201d to Trash \u2014 drag it back out to restore, or delete it from its menu for good.',
   'folder-fold': 'Collapse',
   'folder-unfold': 'Expand',
   'folder-delete': 'Delete folder',

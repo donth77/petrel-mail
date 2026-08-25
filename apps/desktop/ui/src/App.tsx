@@ -658,13 +658,22 @@ export function App() {
     (folderId, targetPath) => {
       const f = folders.find((x) => x.id === folderId);
       if (!f) return;
-      // Dropping a folder on Trash is asking to delete it — through the same
-      // confirm the menu uses, because the server deletes its mail too.
+      const leaf = f.path.split(/[/.]/).pop() ?? f.path;
+      // Dropping a folder on Trash re-nests it under the trash folder — the
+      // Thunderbird semantics: trash is a holding pen, and dragging back out
+      // is the restore. Deletion proper stays in the menu, behind its
+      // confirm, because a mis-aimed drag must never be the gesture that
+      // destroys mail on the server.
       if (targetPath === '::trash') {
-        setDeletingFolder(f);
+        const trash = folders.find((x) => x.role === 'trash');
+        if (!trash) return;
+        void api
+          .renameFolder(folderId, `${trash.path}/${leaf}`)
+          .then(() => api.folders().then(setFolders))
+          .then(() => setToast(t('folder-trashed', { name: leaf })))
+          .catch((e) => setToast(t('folder-failed', { error: String(e) })));
         return;
       }
-      const leaf = f.path.split(/[/.]/).pop() ?? f.path;
       const next = targetPath ? `${targetPath}/${leaf}` : leaf;
       if (next === f.path) return; // already there
       // A folder cannot become its own descendant — the rename would eat

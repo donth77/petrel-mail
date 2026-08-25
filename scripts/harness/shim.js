@@ -62,6 +62,7 @@
     { id: 103, role: '', path: 'Client contact' },
     { id: 1, role: 'archive', path: 'Archive' },
     { id: 2, role: 'inbox', path: 'INBOX' },
+    { id: 3, role: 'trash', path: 'Trash' },
         { id: 7, role: '', path: 'Receipts' },
         { id: 8, role: '', path: 'Projects/Petrel' },
         { id: 9, role: '', path: 'Archive/Old letters' },
