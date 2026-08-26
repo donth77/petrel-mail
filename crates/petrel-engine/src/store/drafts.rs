@@ -12,6 +12,29 @@ impl Store {
     /// the Drafts view, search, and every triage action work on drafts without
     /// any of them learning a second kind of thing — and it is how a draft
     /// reaches the server the day sync learns to APPEND one.
+    /// The Message-ID header a stored message carries, for a reply that
+    /// must thread into its conversation at the other end.
+    pub fn msgid_header_of(&self, message_id: i64) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT message_id_hdr FROM messages WHERE id = ?1",
+                params![message_id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
+    /// Records what the reader answered to an invitation.
+    pub fn set_invite_response(&self, message_id: i64, response: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE messages SET invite_response = ?2 WHERE id = ?1",
+            params![message_id, response],
+        )?;
+        Ok(())
+    }
+
     pub fn save_draft(
         &self,
         account_id: i64,

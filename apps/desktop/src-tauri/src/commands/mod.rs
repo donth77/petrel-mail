@@ -3,6 +3,7 @@
 pub(crate) mod accounts;
 pub(crate) mod attachments;
 pub(crate) mod compose;
+pub(crate) mod invitations;
 pub(crate) mod mail;
 pub(crate) mod outbox;
 pub(crate) mod remote;

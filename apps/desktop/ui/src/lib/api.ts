@@ -112,6 +112,33 @@ export type ThreadMessage = {
   recipients: string[];
   recipient_addrs: string[];
   attachments: Attachment[];
+  /** A calendar part is aboard — the reader asks for the invitation then. */
+  has_calendar: boolean;
+  /** The recorded answer: accepted, tentative, declined. */
+  invite_response: string | null;
+};
+
+/** When an invitation's event happens, in the only forms honestly showable. */
+export type InvitationTime =
+  | { kind: 'utc'; ms: number }
+  | { kind: 'local'; raw: string; tzid: string | null }
+  | { kind: 'date'; date: string };
+
+export type InvitationView = {
+  method: string | null;
+  summary: string | null;
+  location: string | null;
+  description: string | null;
+  organizer_name: string | null;
+  organizer_email: string | null;
+  attendees: { name: string | null; email: string | null; partstat: string | null }[];
+  start: InvitationTime | null;
+  end: InvitationTime | null;
+  recurring: boolean;
+  status: string | null;
+  my_partstat: string | null;
+  can_respond: boolean;
+  responded: string | null;
 };
 
 export type FolderMapping = { role: string; path: string };
@@ -383,6 +410,8 @@ const mock = {
   ],
   viewCounts: async (mode: string): Promise<[string, number][]> =>
     mode === 'off' ? [] : [['inbox', 3], ['drafts', 1], ['spam', 2]],
+  invitation: async (): Promise<InvitationView | null> => null,
+  respondInvitation: async () => {},
   popoutMessage: async () => {},
   quoteMessage: async (): Promise<Quoted> => ({
     to: 'Sam Ortiz <sam@example.com>',
@@ -464,6 +493,7 @@ const mock = {
       subject: 'Q3 vendor contracts', snippet: 'Sending the draft ahead of Friday so you both have time…',
       date_ms: Date.now() - 3 * 86400000, unread: false,
       recipients: ['Sam Ortiz', 'me'], recipient_addrs: ['sam@example.com', 'you@example.com'], attachments: [],
+      has_calendar: false, invite_response: null,
     },
     {
       id: 2, from_display: 'Sam Ortiz', from_addr: 'sam@vendorco.example',
@@ -475,6 +505,8 @@ const mock = {
         { filename: 'contract-v3.pdf', size: 2202009, part: 0, mime: 'application/pdf' },
         { filename: 'annex-logistics.xlsx', size: 49152, part: 1, mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
       ],
+has_calendar: false,
+invite_response: null,
     },
   ],
   // A real document carrying the same injected script the petrel-msg: handler
@@ -531,6 +563,9 @@ const real = {
     invoke<{ path: string; name: string; size: number }>('stage_attachment', { name, bytes }),
   tags: () => invoke<Tag[]>('list_tags'),
   viewCounts: (mode: string) => invoke<[string, number][]>('view_counts', { mode }),
+  invitation: (messageId: number) => invoke<InvitationView | null>('invitation', { messageId }),
+  respondInvitation: (messageId: number, response: string) =>
+    invoke<void>('respond_invitation', { messageId, response }),
   popoutMessage: (threadId: number) => invoke<void>('popout_message', { threadId }),
   quoteMessage: (messageId: number) => invoke<Quoted>('quote_message', { messageId }),
   completeAddresses: (prefix: string) =>

@@ -259,9 +259,35 @@
             { filename: 'diagram.png', size: 48123, part: 0, mime: 'image/png' },
             { filename: 'setup.sh', size: 1290, part: 1, mime: 'text/x-shellscript' },
           ],
+          has_calendar: true,
+          invite_response: null,
         },
       ];
     },
+    invitation: function (a) {
+      // Message 1 wears a live REQUEST; ask with ?invCancel=1 for the
+      // cancellation face of the card.
+      var cancelled = location.search.indexOf('invCancel=1') !== -1;
+      return {
+        method: cancelled ? 'CANCEL' : 'REQUEST',
+        summary: 'Planning 1:1',
+        location: 'Video call',
+        description: 'Bring the draft.',
+        organizer_name: 'Dana Wu',
+        organizer_email: 'dana@example.com',
+        attendees: [
+          { name: 'me', email: 'tom@northbay.example', partstat: 'NEEDS-ACTION' },
+        ],
+        start: { kind: 'utc', ms: Date.now() + 3 * 86400000 },
+        end: { kind: 'utc', ms: Date.now() + 3 * 86400000 + 3600000 },
+        recurring: false,
+        status: cancelled ? 'CANCELLED' : 'CONFIRMED',
+        my_partstat: location.search.indexOf('invAccepted=1') !== -1 ? 'ACCEPTED' : 'NEEDS-ACTION',
+        can_respond: !cancelled,
+        responded: null,
+      };
+    },
+    respond_invitation: function () { return null; },
     attachment_is_executable: function (a) {
       return /\.(exe|bat|sh|js|jar|dmg|app|py)$/i.test(String(a.filename || ''));
     },

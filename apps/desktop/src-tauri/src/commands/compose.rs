@@ -295,6 +295,9 @@ pub(crate) fn guess_content_type(path: &std::path::Path) -> String {
         "heic" => "image/heic",
         "txt" | "md" => "text/plain",
         "csv" => "text/csv",
+        // The method the reply means is in the file's own METHOD line; the
+        // content type is what makes calendar systems look inside at all.
+        "ics" => "text/calendar",
         "zip" => "application/zip",
         "doc" | "docx" => "application/msword",
         "xls" | "xlsx" => "application/vnd.ms-excel",

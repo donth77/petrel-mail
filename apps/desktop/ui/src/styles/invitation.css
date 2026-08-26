@@ -1,0 +1,88 @@
+/* ------------------------------------------------------- invitation card */
+
+/* The event is the message's point, so its card sits above the body: the
+   facts at a glance, the answer one click, the mail below for the words. */
+.invite {
+  margin: 10px 14px 4px;
+  border: 1px solid var(--hair);
+  border-inline-start: 3px solid var(--accent);
+  border-radius: 9px;
+  padding: 10px 12px;
+  background: var(--surface2, var(--surface));
+  display: grid;
+  gap: 7px;
+}
+
+.invite.cancelled {
+  border-inline-start-color: var(--ink3);
+}
+
+.invite-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 13.5px;
+}
+
+.invite-repeats {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink3);
+  border: 1px solid var(--hair);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.invite-cancelled {
+  color: var(--ink2);
+  font-size: 12.5px;
+}
+
+.invite.cancelled .invite-title {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+.invite-facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 12px;
+  margin: 0;
+  font-size: 12.5px;
+}
+
+.invite-facts dt {
+  color: var(--ink3);
+}
+
+.invite-facts dd {
+  margin: 0;
+  min-inline-size: 0;
+}
+
+.invite-acts {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.invite-acts .reply {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.invite-answer {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12.5px;
+  color: var(--ink2);
+}
+
+.invite-answer.declined {
+  color: var(--ink3);
+}

@@ -18,7 +18,7 @@ mod listing;
 mod maintenance;
 mod search;
 
-pub const SCHEMA_VERSION: i64 = 16;
+pub const SCHEMA_VERSION: i64 = 18;
 /// Bumped whenever text extraction changes; a mismatch forces reindexing.
 pub const EXTRACTOR_VERSION: i64 = 1;
 
@@ -46,6 +46,9 @@ pub enum StoreError {
 pub struct GcReport {
     pub messages_purged: usize,
     pub blobs_removed: usize,
+    /// Queued actions that structurally cannot deliver, renamed out of the
+    /// queue — rows predating the action_messages table.
+    pub actions_orphaned: usize,
 }
 
 /// Outcome of ingesting one raw message.
@@ -174,6 +177,11 @@ pub struct ThreadMessage {
     /// because a reply-all built from display names sends to nobody.
     pub recipient_addrs: Vec<String>,
     pub attachments: Vec<Attachment>,
+    /// A calendar part is aboard — the reader asks for the invitation then,
+    /// and only then; most mail never pays for the question.
+    pub has_calendar: bool,
+    /// The recorded answer to an invitation: accepted, tentative, declined.
+    pub invite_response: Option<String>,
 }
 
 /// Somebody worth offering while a recipient is typed.
@@ -1010,6 +1018,12 @@ impl Store {
         }
         if ver < 16 {
             conn.execute_batch(include_str!("migrations/0016-blob-hash-index.sql"))?;
+        }
+        if ver < 17 {
+            conn.execute_batch(include_str!("migrations/0017-gmail-thread-ids.sql"))?;
+        }
+        if ver < 18 {
+            conn.execute_batch(include_str!("migrations/0018-invite-response.sql"))?;
         }
         if ver < SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;

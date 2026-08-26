@@ -369,12 +369,27 @@ impl Store {
     pub fn thread_detail(&self, thread_id: i64) -> Result<Vec<ThreadMessage>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT id, coalesce(from_display,''), coalesce(from_addr,''),
-                    coalesce(subject,''), coalesce(snippet,''), date_ms, flags
+                    coalesce(subject,''), coalesce(snippet,''), date_ms, flags,
+                    EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = messages.id
+                              AND (a.mime LIKE '%calendar%' OR a.mime = 'application/ics'
+                                   OR lower(coalesce(a.filename,'')) LIKE '%.ics')),
+                    invite_response
              FROM messages
              WHERE coalesce(thread_id, -id) = ?1 AND deleted_at_ms IS NULL
              ORDER BY date_ms ASC",
         )?;
-        let rows: Vec<(i64, String, String, String, String, i64, i64)> = stmt
+        type Row = (
+            i64,
+            String,
+            String,
+            String,
+            String,
+            i64,
+            i64,
+            bool,
+            Option<String>,
+        );
+        let rows: Vec<Row> = stmt
             .query_map(params![thread_id], |r| {
                 Ok((
                     r.get(0)?,
@@ -384,12 +399,25 @@ impl Store {
                     r.get(4)?,
                     r.get(5)?,
                     r.get(6)?,
+                    r.get(7)?,
+                    r.get(8)?,
                 ))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
         let mut out = Vec::with_capacity(rows.len());
-        for (id, from_display, from_addr, subject, snippet, date_ms, flags) in rows {
+        for (
+            id,
+            from_display,
+            from_addr,
+            subject,
+            snippet,
+            date_ms,
+            flags,
+            has_calendar,
+            invite_response,
+        ) in rows
+        {
             let mut to = self.conn.prepare_cached(
                 // message_addresses has no surrogate key; rowid preserves the
                 // order the parser inserted them, which is the header's order.
@@ -428,6 +456,8 @@ impl Store {
                 snippet,
                 date_ms,
                 unread: flags & flags::SEEN == 0,
+                has_calendar,
+                invite_response,
                 recipients,
                 recipient_addrs,
                 attachments,

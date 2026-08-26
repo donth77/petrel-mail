@@ -14,6 +14,7 @@ import { api, type ActionKind, type Thread, type ThreadMessage } from '../lib/ap
 import { count as fmtCount, fullTime, initials, messageTime } from '../lib/format';
 import { FindBar } from './FindBar';
 import { Icon } from './Icon';
+import { InvitationCard } from './InvitationCard';
 import { MessageBody } from './MessageBody';
 import { Attachments } from './Attachments';
 import { MoreMenu } from './MoreMenu';
@@ -150,6 +151,8 @@ function Expanded({
           </div>
         )}
       </header>
+
+      {m.has_calendar && <InvitationCard messageId={m.id} onToast={onToast} />}
 
       <MessageBody messageId={m.id} title={m.subject || '(no subject)'} />
 
