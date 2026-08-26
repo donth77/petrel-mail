@@ -277,10 +277,6 @@ pub(crate) async fn drain_actions(
             // marked done, so they deliver when keywords land instead of being
             // silently dropped.
             ActionKind::Tag | ActionKind::Untag => {
-                if !looks_like_gmail {
-                    stuck += 1;
-                    continue;
-                }
                 // The action names the tag by id, not by name: a tag can be
                 // renamed between queueing and delivery, and the action means
                 // "this tag" rather than "whatever it was called at the time".
@@ -304,14 +300,17 @@ pub(crate) async fn drain_actions(
                     }
                     continue;
                 };
-                petrel_providers::imap::store_gmail_labels(
-                    &cfg,
-                    &folder,
-                    uid,
-                    &name,
-                    matches!(kind, ActionKind::Tag),
-                )
-                .await
+                let adding = matches!(kind, ActionKind::Tag);
+                if looks_like_gmail {
+                    petrel_providers::imap::store_gmail_labels(&cfg, &folder, uid, &name, adding)
+                        .await
+                } else {
+                    // Everywhere else a tag travels as an IMAP keyword, which
+                    // Dovecot persists beside the system flags. These actions
+                    // used to sit 'queued' forever with nowhere to go.
+                    let keyword = petrel_engine::keywords::tag_keyword(&name);
+                    petrel_providers::imap::store_flag(&cfg, &folder, uid, &keyword, adding).await
+                }
             }
         };
 

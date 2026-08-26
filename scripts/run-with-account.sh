@@ -25,6 +25,15 @@ fi
 set -a
 # shellcheck disable=SC1090
 . "$ENV_FILE"
+# The second account's credentials ride along when present, so the app can
+# take every password from the environment and never wake the keychain — on
+# unsigned dev builds each rebuild is a new app to macOS, and the keychain
+# asked twice per launch otherwise.
+NC_ENV_FILE="${PETREL_NC_ENV_FILE:-$ROOT/.env.namecheap}"
+if [ -f "$NC_ENV_FILE" ]; then
+  # shellcheck disable=SC1090
+  . "$NC_ENV_FILE"
+fi
 set +a
 
 : "${PETREL_IMAP_HOST:?set PETREL_IMAP_HOST in $ENV_FILE}"
@@ -47,7 +56,9 @@ open -n "$ROOT/target/Petrel.app" \
   --env "PETREL_IMAP_PORT=${PETREL_IMAP_PORT:-993}" \
   --env "PETREL_IMAP_USER=$PETREL_IMAP_USER" \
   --env "PETREL_IMAP_PASS=$PETREL_IMAP_PASS" \
-  --env "PETREL_DATA_DIR=$DATA_DIR"
+  --env "PETREL_DATA_DIR=$DATA_DIR" \
+  ${PETREL_NC_USER:+--env "PETREL_NC_USER=$PETREL_NC_USER"} \
+  ${PETREL_NC_PASS:+--env "PETREL_NC_PASS=$PETREL_NC_PASS"}
 
 echo
 echo "Watching the sync (ctrl-C to stop tailing; the app keeps running):"

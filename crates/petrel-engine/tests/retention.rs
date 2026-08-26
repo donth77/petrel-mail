@@ -251,3 +251,21 @@ fn reconciling_an_unchanged_mailbox_deletes_nothing() {
     assert_eq!(removed, 0);
     assert_eq!(store.search("heron", 10).expect("search").len(), 3);
 }
+
+#[test]
+fn gc_retires_queued_actions_that_can_never_deliver() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut store = petrel_engine::store::Store::open(&dir.path().join("p.db")).expect("store");
+    let blobs = petrel_engine::blob::BlobStore::open(&dir.path().join("blobs")).expect("blobs");
+    let account = store.ensure_test_account().expect("account");
+    // An action row with no action_messages rows — the shape rows took
+    // before that table existed. pending_actions can never list it.
+    store
+        .plant_orphan_action_for_tests(account)
+        .expect("plant orphan");
+    let report = store.gc(&blobs, 1, 30).expect("gc");
+    assert_eq!(report.actions_orphaned, 1);
+    // Run twice: the rename sticks and is not recounted.
+    let again = store.gc(&blobs, 1, 30).expect("gc again");
+    assert_eq!(again.actions_orphaned, 0);
+}

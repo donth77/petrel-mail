@@ -564,6 +564,47 @@ impl Store {
     /// opinion would undo it on screen and then send the undo.
     ///
     /// Returns how many were refiled.
+    /// Records Gmail's own conversation id for the messages a sweep named.
+    /// Pairs are `(uid, thrid)` within the given folder — All Mail, in
+    /// practice, since every Gmail message lives there.
+    pub fn apply_gm_thrids(&self, folder_id: i64, pairs: &[(u32, u64)]) -> Result<usize> {
+        let mut stmt = self.conn.prepare_cached(
+            "UPDATE messages SET gm_thrid = ?2
+             WHERE id = (SELECT message_id FROM placements
+                          WHERE folder_id = ?1 AND uid = ?3)
+               AND (gm_thrid IS NULL OR gm_thrid != ?2)",
+        )?;
+        let mut n = 0usize;
+        for (uid, thrid) in pairs {
+            n += stmt.execute(params![folder_id, *thrid as i64, *uid as i64])?;
+        }
+        Ok(n)
+    }
+
+    /// Makes Gmail's word on conversations the store's word.
+    ///
+    /// Every message with a known X-GM-THRID moves to the thread canonical
+    /// for that id — the lowest message row id in the group, the same
+    /// convention local threading uses. This both merges what References
+    /// could not connect and splits what a shared subject wrongly glued.
+    /// Messages with no thrid yet keep their local threading until a sweep
+    /// names them.
+    pub fn regroup_gmail_threads(&self, account_id: i64) -> Result<usize> {
+        let n = self.conn.execute(
+            "UPDATE messages SET thread_id = (
+                 SELECT min(m2.id) FROM messages m2
+                  WHERE m2.account_id = messages.account_id
+                    AND m2.gm_thrid = messages.gm_thrid)
+             WHERE account_id = ?1 AND gm_thrid IS NOT NULL
+               AND coalesce(thread_id, -id) != (
+                 SELECT min(m2.id) FROM messages m2
+                  WHERE m2.account_id = messages.account_id
+                    AND m2.gm_thrid = messages.gm_thrid)",
+            params![account_id],
+        )?;
+        Ok(n)
+    }
+
     pub fn apply_gmail_labels(
         &self,
         account_id: i64,

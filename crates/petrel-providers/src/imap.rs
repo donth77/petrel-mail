@@ -25,6 +25,8 @@ pub enum ImapError {
     Imap(#[from] async_imap::error::Error),
     #[error("tls: {0}")]
     Tls(String),
+    #[error("protocol: {0}")]
+    Protocol(String),
 }
 
 pub type Result<T> = std::result::Result<T, ImapError>;
@@ -482,6 +484,157 @@ pub struct LabelSweep {
     /// Pass to the next sweep as `since`. None when the server has no CONDSTORE
     /// and every sweep must therefore be a full one.
     pub modseq: Option<u64>,
+}
+
+/// One folder's Gmail thread ids, `(uid, thrid)` pairs.
+pub struct ThridSweep {
+    pub thrids: Vec<(u32, u64)>,
+    /// Pass to the next sweep as `since`; None without CONDSTORE.
+    pub modseq: Option<u64>,
+}
+
+/// Gmail's own conversation ids, straight from `X-GM-THRID`.
+///
+/// The typed IMAP client parses this attribute but gives no way to read it
+/// back, so this speaks the four lines of protocol itself over a raw
+/// connection: LOGIN, EXAMINE with CONDSTORE, one FETCH, LOGOUT. Safe to
+/// hand-parse because a THRID fetch response is numbers on one line — no
+/// literals, no continuations. Same shape as the label sweep: bounded on the
+/// first pass, CHANGEDSINCE after, so it costs one round trip when nothing
+/// changed.
+pub async fn sweep_gmail_thrids(
+    cfg: &ImapConfig,
+    folder: &str,
+    limit: u32,
+    since: Option<u64>,
+) -> Result<ThridSweep> {
+    match cfg.security {
+        Security::Tls => {
+            let stream = tls_stream(&cfg.host, cfg.port).await?;
+            raw_thrid_exchange(stream, cfg, folder, limit, since).await
+        }
+        #[cfg(feature = "insecure-plaintext")]
+        Security::InsecurePlaintext => {
+            let stream = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
+            raw_thrid_exchange(stream, cfg, folder, limit, since).await
+        }
+    }
+}
+
+async fn raw_thrid_exchange<S>(
+    stream: S,
+    cfg: &ImapConfig,
+    folder: &str,
+    limit: u32,
+    since: Option<u64>,
+) -> Result<ThridSweep>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let quote = |v: &str| format!("\"{}\"", v.replace('\\', "\\\\").replace('\"', "\\\""));
+    let (read_half, mut write) = tokio::io::split(stream);
+    let mut lines = BufReader::new(read_half).lines();
+
+    // One tagged command, drained to its tag. Returns the untagged lines.
+    async fn exchange(
+        lines: &mut tokio::io::Lines<impl AsyncBufReadExt + Unpin>,
+        write: &mut (impl AsyncWriteExt + Unpin),
+        tag: &str,
+        cmd: &str,
+    ) -> Result<Vec<String>> {
+        write
+            .write_all(format!("{tag} {cmd}\r\n").as_bytes())
+            .await?;
+        write.flush().await?;
+        let mut out = Vec::new();
+        while let Some(line) = lines.next_line().await? {
+            if let Some(rest) = line.strip_prefix(tag) {
+                let rest = rest.trim_start();
+                if rest.starts_with("OK") {
+                    return Ok(out);
+                }
+                return Err(ImapError::Protocol(format!(
+                    "{cmd_name}: {rest}",
+                    cmd_name = cmd.split(' ').next().unwrap_or(cmd)
+                )));
+            }
+            out.push(line);
+        }
+        Err(ImapError::Protocol("connection closed mid-command".into()))
+    }
+
+    // Greeting first.
+    let greeting = lines.next_line().await?.unwrap_or_default();
+    if !greeting.starts_with("* OK") && !greeting.starts_with("* PREAUTH") {
+        return Err(ImapError::Protocol(format!("greeting: {greeting}")));
+    }
+    exchange(
+        &mut lines,
+        &mut write,
+        "t1",
+        &format!("LOGIN {} {}", quote(&cfg.user), quote(&cfg.pass)),
+    )
+    .await?;
+    let opened = exchange(
+        &mut lines,
+        &mut write,
+        "t2",
+        &format!("EXAMINE {} (CONDSTORE)", quote(folder)),
+    )
+    .await?;
+    let mut modseq: Option<u64> = None;
+    let mut exists: u32 = 0;
+    for line in &opened {
+        if let Some(i) = line.find("HIGHESTMODSEQ ") {
+            modseq = line[i + 14..]
+                .split(|c: char| !c.is_ascii_digit())
+                .next()
+                .and_then(|d| d.parse().ok());
+        }
+        if let Some(n) = line
+            .strip_prefix("* ")
+            .and_then(|r| r.strip_suffix(" EXISTS"))
+        {
+            exists = n.trim().parse().unwrap_or(0);
+        }
+    }
+
+    let mut thrids = Vec::new();
+    if exists > 0 {
+        let cmd = match since {
+            Some(m) => format!("FETCH 1:* (UID X-GM-THRID) (CHANGEDSINCE {m})"),
+            None => {
+                let first = exists.saturating_sub(limit.saturating_sub(1)).max(1);
+                format!("FETCH {first}:{exists} (UID X-GM-THRID)")
+            }
+        };
+        let rows = exchange(&mut lines, &mut write, "t3", &cmd).await?;
+        for line in rows {
+            if !line.starts_with("* ") || !line.contains(" FETCH ") {
+                continue;
+            }
+            let uid = line.find("UID ").and_then(|i| {
+                line[i + 4..]
+                    .split(|c: char| !c.is_ascii_digit())
+                    .next()?
+                    .parse()
+                    .ok()
+            });
+            let thrid = line.find("X-GM-THRID ").and_then(|i| {
+                line[i + 11..]
+                    .split(|c: char| !c.is_ascii_digit())
+                    .next()?
+                    .parse()
+                    .ok()
+            });
+            if let (Some(u), Some(t)) = (uid, thrid) {
+                thrids.push((u, t));
+            }
+        }
+    }
+    let _ = exchange(&mut lines, &mut write, "t4", "LOGOUT").await;
+    Ok(ThridSweep { thrids, modseq })
 }
 
 pub async fn sweep_gmail_labels(

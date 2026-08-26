@@ -153,6 +153,7 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
         // changed, which is usually nothing and costs one round trip.
         if looks_like_gmail {
             run_label_sweep(&state, account, &cfg).await;
+            run_thrid_sweep(&state, account, &cfg).await;
         }
 
         state.seeding.store(false, Ordering::Relaxed);
@@ -227,6 +228,7 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
             if state.server_is_gmail.load(Ordering::Relaxed) {
                 // One round trip when nothing changed; live labels when it did.
                 run_label_sweep(&state, account, &cfg).await;
+                run_thrid_sweep(&state, account, &cfg).await;
             }
 
             let trouble: Option<String> = if failures > 0 {
@@ -746,6 +748,55 @@ async fn run_label_sweep(state: &Arc<AppState>, account: i64, cfg: &ImapConfig) 
         // Not fatal: without it, filing falls back to the folder each
         // message arrived from, which is what it was before.
         Err(e) => log_sync(&format!("label sweep failed: {e}")),
+    }
+}
+
+/// Gmail's own conversation ids, swept the way labels are.
+///
+/// JWZ threading works from References headers, and mail that arrives
+/// without them threads alone — a Gmail inbox counted ~655 conversations
+/// where Gmail's UI said ~271. X-GM-THRID is Gmail's answer; where known it
+/// is authoritative, and each sweep regroups whatever it learned.
+async fn run_thrid_sweep(state: &Arc<AppState>, account: i64, cfg: &ImapConfig) {
+    let since: Option<u64> = state
+        .store
+        .lock()
+        .ok()
+        .and_then(|s| s.settings().ok())
+        .and_then(|s| s.get("gmail_thrid_modseq").and_then(|v| v.parse().ok()));
+    let bound: u32 = std::env::var("PETREL_LABEL_SWEEP")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5_000);
+    match petrel_providers::imap::sweep_gmail_thrids(cfg, "[Gmail]/All Mail", bound, since).await {
+        Ok(sweep) => {
+            let (applied, regrouped) = {
+                let Ok(store) = state.store.lock() else {
+                    return;
+                };
+                let folder = store.folder_for_role(account, "archive").ok().flatten();
+                let applied = folder
+                    .and_then(|fid| store.apply_gm_thrids(fid, &sweep.thrids).ok())
+                    .unwrap_or(0);
+                let regrouped = if applied > 0 {
+                    store.regroup_gmail_threads(account).unwrap_or(0)
+                } else {
+                    0
+                };
+                (applied, regrouped)
+            };
+            if applied > 0 {
+                log_sync(&format!(
+                    "threads: {} reported, {applied} learned, {regrouped} rethreaded",
+                    sweep.thrids.len()
+                ));
+            }
+            if let (Some(m), Ok(store)) = (sweep.modseq, state.store.lock()) {
+                let _ = store.set_setting("gmail_thrid_modseq", &m.to_string());
+            }
+        }
+        // Not fatal: threading falls back to what References could prove.
+        Err(e) => log_sync(&format!("thread sweep failed: {e}")),
     }
 }
 

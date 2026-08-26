@@ -116,10 +116,16 @@ pub fn run() {
                     now,
                     petrel_engine::retention::DEFAULT_GRACE_DAYS,
                 ) {
-                    Ok(r) if r.messages_purged > 0 || r.blobs_removed > 0 => eprintln!(
-                        "[store] gc purged {} message(s), reclaimed {} blob(s)",
-                        r.messages_purged, r.blobs_removed
-                    ),
+                    Ok(r)
+                        if r.messages_purged > 0
+                            || r.blobs_removed > 0
+                            || r.actions_orphaned > 0 =>
+                    {
+                        eprintln!(
+                            "[store] gc purged {} message(s), reclaimed {} blob(s), retired {} orphaned action(s)",
+                            r.messages_purged, r.blobs_removed, r.actions_orphaned
+                        )
+                    }
                     Ok(_) => {}
                     Err(e) => eprintln!("[store] gc failed: {e}"),
                 }
@@ -208,6 +214,40 @@ pub fn run() {
                         .collect()
                 })
                 .unwrap_or_default();
+            // Re-own the keychain items, once. A keychain item remembers the
+            // app that created it, and these were created by ad-hoc builds —
+            // a different "app" every rebuild — so even the signed build had
+            // to ask on every launch. Rewriting each item with the same
+            // secret makes the signed identity the creator, and that
+            // identity is stable now, so the asking ends here. The passwords
+            // are already in hand from the reads above; marker-gated so this
+            // runs once per signing identity, not per launch.
+            {
+                const REOWN_MARKER: &str = "petrel-dev-9e1c62a7";
+                let owned = state
+                    .store
+                    .lock()
+                    .ok()
+                    .and_then(|s| s.settings().ok())
+                    .and_then(|s| s.get("keychain_reowned").cloned())
+                    .unwrap_or_default();
+                if owned != REOWN_MARKER && !configs.is_empty() {
+                    let mut all_ok = true;
+                    for (id, cfg) in &configs {
+                        if let Ok(entry) = keychain_entry(*id) {
+                            let _ = entry.delete_credential();
+                            if let Err(e) = entry.set_password(&cfg.pass) {
+                                eprintln!("[keychain] re-own of account {id} failed: {e}");
+                                all_ok = false;
+                            }
+                        }
+                    }
+                    if all_ok && let Ok(store) = state.store.lock() {
+                        let _ = store.set_setting("keychain_reowned", REOWN_MARKER);
+                        log_sync("keychain items re-owned by the signed build");
+                    }
+                }
+            }
             for (id, cfg) in configs {
                 eprintln!(
                     "[sync] account {id} configured: {} @ {}",
@@ -342,6 +382,8 @@ pub fn run() {
             commands::settings::set_setting,
             commands::mail::search_messages,
             commands::mail::message_url,
+            commands::invitations::invitation,
+            commands::invitations::respond_invitation,
             diag::frontend_log
         ])
         .register_uri_scheme_protocol("petrel-msg", move |ctx, request| {

@@ -39,6 +39,28 @@ pub(crate) fn remember_password(account_id: i64, pass: &str) {
     }
 }
 
+/// Passwords handed in by the environment, keyed by the account's own
+/// username. The dev launch script exports both accounts' credentials from
+/// the gitignored env files; when a username matches, the keychain is never
+/// consulted at all. On dev builds that matters more than it sounds: a
+/// self-signed identity does not hold macOS keychain consent across
+/// rebuilds, so every rebuilt binary asked for the keychain password twice
+/// — once per account — before this. A packaged build runs with no such
+/// variables and uses the keychain as before.
+fn env_password_for(username: &str) -> Option<String> {
+    for (u, p) in [
+        ("PETREL_IMAP_USER", "PETREL_IMAP_PASS"),
+        ("PETREL_NC_USER", "PETREL_NC_PASS"),
+    ] {
+        if let (Ok(eu), Ok(ep)) = (std::env::var(u), std::env::var(p))
+            && eu.eq_ignore_ascii_case(username)
+        {
+            return Some(ep);
+        }
+    }
+    None
+}
+
 fn account_password(account_id: i64) -> Option<String> {
     let cache = PASS_CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
     if let Ok(map) = cache.lock()
@@ -66,7 +88,7 @@ pub(crate) fn imap_config_for(store: &Store, account_id: i64) -> Option<ImapConf
     if servers.imap_host.is_empty() {
         return None;
     }
-    let pass = account_password(account_id)?;
+    let pass = env_password_for(&servers.username).or_else(|| account_password(account_id))?;
     Some(ImapConfig {
         host: servers.imap_host,
         port: servers.imap_port,
@@ -87,7 +109,7 @@ pub(crate) fn smtp_config_for(
     if servers.smtp_host.is_empty() {
         return None;
     }
-    let pass = account_password(account_id)?;
+    let pass = env_password_for(&servers.username).or_else(|| account_password(account_id))?;
     Some(petrel_providers::smtp::SmtpConfig {
         host: servers.smtp_host,
         port: servers.smtp_port,

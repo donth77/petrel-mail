@@ -6,6 +6,7 @@
 
 pub mod actions;
 pub mod blob;
+pub mod keywords;
 pub mod mbox;
 pub mod outbox;
 pub mod retention;

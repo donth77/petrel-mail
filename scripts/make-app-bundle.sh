@@ -48,8 +48,16 @@ PLIST
 # and one "Always Allow" then holds through every rebuild. Used when present;
 # ad-hoc otherwise, which at least clears quarantine.
 if security find-identity -v -p codesigning 2>/dev/null | grep -q "Petrel Dev"; then
-  codesign --force --deep --sign "Petrel Dev" "$APP" >/dev/null 2>&1     && echo "signed as Petrel Dev (keychain consent will persist)"     || codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
+  if codesign --force --deep --sign "Petrel Dev" "$APP" >/dev/null 2>&1; then
+    echo "signed as Petrel Dev (keychain consent will persist)"
+  else
+    # Loud, because this fallback once hid for a day: an ad-hoc bundle is a
+    # brand-new app to macOS and every keychain consent starts over.
+    echo "WARNING: Petrel Dev signing FAILED — falling back to ad-hoc; keychain will re-ask" >&2
+    codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
+  fi
 else
+  echo "note: no Petrel Dev identity; ad-hoc signature (keychain re-asks every rebuild)" >&2
   codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
 fi
 echo "$APP"

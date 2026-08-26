@@ -247,6 +247,20 @@ impl Store {
     /// Blob reclamation is reachability-based rather than per-message, because
     /// blobs are shared by content hash — deleting one message's file could
     /// otherwise blank an identical message in another account.
+    /// Plants an action row with no action_messages rows — the shape queue
+    /// rows took before that table existed. Tests only: nothing in the
+    /// product can create this shape any more, which is the point of the
+    /// gc pass that retires it.
+    #[doc(hidden)]
+    pub fn plant_orphan_action_for_tests(&self, account_id: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO actions(account_id, kind, payload_json, state, created_ms)
+             VALUES (?1, '\"mark_read\"', '{}', 'queued', 1)",
+            params![account_id],
+        )?;
+        Ok(())
+    }
+
     pub fn gc(
         &mut self,
         blobs: &crate::blob::BlobStore,
@@ -259,6 +273,18 @@ impl Store {
         let purged = tx.execute(
             "DELETE FROM messages WHERE deleted_at_ms IS NOT NULL AND deleted_at_ms <= ?1",
             params![cutoff],
+        )?;
+
+        // Queued actions with no action_messages rows predate that table and
+        // can never be listed by pending_actions, let alone delivered — five
+        // of them sat 'queued' for days, invisible to every drain. Named for
+        // what they are, so 'queued' keeps meaning "will be tried".
+        let orphaned = tx.execute(
+            "UPDATE actions SET state = 'orphaned'
+             WHERE state = 'queued'
+               AND NOT EXISTS (SELECT 1 FROM action_messages am
+                                WHERE am.action_id = actions.id)",
+            [],
         )?;
 
         // Orphans: registered blobs no live row points at.
@@ -289,6 +315,7 @@ impl Store {
         Ok(GcReport {
             messages_purged: purged,
             blobs_removed,
+            actions_orphaned: orphaned,
         })
     }
 

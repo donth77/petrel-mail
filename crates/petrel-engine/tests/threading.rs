@@ -604,3 +604,101 @@ fn thread_detail_returns_recipients_and_files() {
     );
     assert!(m.attachments.is_empty(), "this message carries no files");
 }
+
+#[test]
+fn gmail_thread_ids_are_authoritative_where_known() {
+    // Two notification messages with no References thread alone under JWZ;
+    // Gmail says they are one conversation. And a shared subject once glued
+    // two messages Gmail says are different conversations. The regroup
+    // makes Gmail's word the store's word, both directions.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut store = petrel_engine::store::Store::open(&dir.path().join("p.db")).expect("store");
+    let blobs = petrel_engine::blob::BlobStore::open(&dir.path().join("blobs")).expect("blobs");
+    let account = store.ensure_test_account().expect("account");
+    let all = store
+        .ensure_folder(account, "archive", "[Gmail]/All Mail")
+        .expect("folder");
+    let raw = |mid: &str, subject: &str| {
+        format!(
+            "From: Jobs <no-reply@example.com>\r\nTo: me@example.com\r\n\
+             Subject: {subject}\r\nDate: Tue, 18 Aug 2026 14:02:00 +0000\r\n\
+             Message-ID: <{mid}>\r\nMIME-Version: 1.0\r\n\
+             Content-Type: text/plain; charset=utf-8\r\n\r\nbody\r\n"
+        )
+        .into_bytes()
+    };
+    // Distinct subjects: JWZ threads them apart.
+    let a = store
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(all),
+            Some(1),
+            &raw("a@x", "Your application"),
+        )
+        .expect("ingest");
+    let b = store
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(all),
+            Some(2),
+            &raw("b@x", "Interview times"),
+        )
+        .expect("ingest");
+    // Identical distinctive subjects, same hour: JWZ glues them together.
+    let c = store
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(all),
+            Some(3),
+            &raw("c@x", "Quarterly planning review"),
+        )
+        .expect("ingest");
+    let d = store
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(all),
+            Some(4),
+            &raw("d@x", "Quarterly planning review"),
+        )
+        .expect("ingest");
+    let thread_of = |store: &petrel_engine::store::Store, id| {
+        store
+            .thread_of(id)
+            .expect("thread lookup")
+            .expect("threaded")
+    };
+    assert_ne!(
+        thread_of(&store, a.message_id),
+        thread_of(&store, b.message_id)
+    );
+    assert_eq!(
+        thread_of(&store, c.message_id),
+        thread_of(&store, d.message_id),
+        "the subject fallback glued these — the setup this test needs"
+    );
+
+    // Gmail's word: a+b are one conversation; c and d are two.
+    let applied = store
+        .apply_gm_thrids(all, &[(1, 900), (2, 900), (3, 901), (4, 902)])
+        .expect("apply");
+    assert_eq!(applied, 4);
+    let regrouped = store.regroup_gmail_threads(account).expect("regroup");
+    // a and c already sit on their canonical ids; b joins a, d leaves c.
+    assert_eq!(regrouped, 2, "b and d move");
+    assert_eq!(
+        thread_of(&store, a.message_id),
+        thread_of(&store, b.message_id),
+        "References could not connect these; X-GM-THRID does"
+    );
+    assert_ne!(
+        thread_of(&store, c.message_id),
+        thread_of(&store, d.message_id),
+        "a shared subject is not a shared conversation when Gmail says otherwise"
+    );
+    // Idempotent: nothing left to move.
+    assert_eq!(store.regroup_gmail_threads(account).expect("again"), 0);
+}
