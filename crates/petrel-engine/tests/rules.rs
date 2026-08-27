@@ -80,3 +80,82 @@ fn rules_keep_their_order_and_their_edits() {
     store.delete_rule(b).unwrap();
     assert_eq!(store.rules_for_account(account).unwrap().len(), 1);
 }
+
+#[test]
+fn keywords_come_home_as_the_tags_that_sent_them() {
+    use petrel_engine::keywords::tag_keyword;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut store = petrel_engine::store::Store::open(&dir.path().join("p.db")).expect("store");
+    let blobs = petrel_engine::blob::BlobStore::open(&dir.path().join("blobs")).expect("blobs");
+    let account = store.ensure_test_account().expect("account");
+    let inbox = store
+        .ensure_folder(account, "inbox", "INBOX")
+        .expect("folder");
+    let raw = b"From: a@example.com\r\nTo: me@example.com\r\nSubject: hi\r\n\
+                Date: Tue, 18 Aug 2026 14:02:00 +0000\r\nMessage-ID: <k1@x>\r\n\
+                MIME-Version: 1.0\r\nContent-Type: text/plain\r\n\r\nbody\r\n";
+    let m = store
+        .ingest_raw(&blobs, account, Some(inbox), Some(7), raw)
+        .expect("ingest");
+    // A tag whose name does not survive as an atom: it travels munged, and
+    // must come home as itself rather than as a second tag.
+    let waiting = store.ensure_tag(account, "Waiting on", None).expect("tag");
+    assert_eq!(tag_keyword("Waiting on"), "Waiting_on");
+
+    // The server says this message wears that keyword, and one nobody here
+    // has ever heard of.
+    let changed = store
+        .apply_keywords(
+            account,
+            inbox,
+            &[(7, vec!["Waiting_on".into(), "FromPhone".into()])],
+        )
+        .expect("apply");
+    assert_eq!(changed, 2);
+    let by_id: std::collections::HashMap<i64, String> = store
+        .tags_for_account(account)
+        .expect("all tags")
+        .into_iter()
+        .map(|t| (t.id, t.name))
+        .collect();
+    let names = |store: &petrel_engine::store::Store| -> Vec<String> {
+        let mut v: Vec<String> = store
+            .tags_of(m.message_id)
+            .expect("tags")
+            .into_iter()
+            .filter_map(|id| by_id.get(&id).cloned())
+            .collect();
+        v.sort();
+        v
+    };
+    let names_now = names(&store);
+    assert!(
+        names_now.contains(&"Waiting on".to_string()),
+        "{names_now:?}"
+    );
+    assert!(
+        names_now.contains(&"FromPhone".to_string()),
+        "{names_now:?}"
+    );
+    assert_eq!(
+        store.tags_for_account(account).expect("all").len(),
+        2,
+        "the munged keyword matched its tag rather than making a new one"
+    );
+    let _ = waiting;
+
+    // Untagged elsewhere: the server's word removes it here too.
+    let changed = store
+        .apply_keywords(account, inbox, &[(7, vec!["FromPhone".into()])])
+        .expect("apply again");
+    assert_eq!(changed, 1);
+    assert_eq!(names(&store), vec!["FromPhone".to_string()]);
+
+    // Idempotent: saying the same thing twice changes nothing.
+    assert_eq!(
+        store
+            .apply_keywords(account, inbox, &[(7, vec!["FromPhone".into()])])
+            .expect("third"),
+        0
+    );
+}

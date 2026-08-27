@@ -31,7 +31,7 @@ import { DragPreview } from './components/DragPreview';
 import { startingBody, startingHtml } from './lib/signature';
 import { ATTACHMENT_LIMIT, pickAttachments, stageDropped } from './lib/attachments';
 import { extend, prune, targets, toggle } from './lib/selection';
-import { notifiable, postDesktopNotification } from './lib/notify';
+import { notifiable, postDesktopNotification, shouldNotify } from './lib/notify';
 import { Help } from './components/Help';
 import { Settings } from './components/Settings';
 import { RAIL_COLLAPSED, clampList, clampRail, useSettings } from './lib/settings';
@@ -220,6 +220,10 @@ export function App() {
   }, [activeId]);
 
   const [pendingDelete, setPendingDelete] = useState<number[] | null>(null);
+  // A draft opened while a foreign revision of it stands on the server.
+  const [draftConflict, setDraftConflict] = useState<{ draftId: number; otherId: number } | null>(
+    null,
+  );
   const askDelete = (ids?: number[]) => {
     const list = ids ?? targets(selected, activeId);
     if (list.length > 0) setPendingDelete(list);
@@ -562,8 +566,34 @@ export function App() {
         html: d.html,
         savedId: d.id,
       });
+      // Asked as the draft opens, not at save time: the person is about to
+      // continue from one of two versions, and should choose before typing
+      // into the wrong one. The data layer kept both; that is what makes
+      // this a question instead of a loss.
+      const conflict = await api.draftConflict(id);
+      if (conflict) setDraftConflict({ draftId: id, otherId: conflict.other_id });
     } catch (e) {
       setToast(t('compose-resume-failed', { error: String(e) }));
+    }
+  };
+
+  /** Settles a draft conflict the chosen way and shows it in the composer. */
+  const settleDraftConflict = async (takeServer: boolean) => {
+    const c = draftConflict;
+    setDraftConflict(null);
+    if (!c) return;
+    try {
+      await api.resolveDraftConflict(c.draftId, c.otherId, takeServer);
+      if (takeServer) {
+        // Reopened rather than merged into place: the composer's editor
+        // mounts its words once, and only a fresh mount shows the adopted
+        // revision rather than the one already on screen.
+        setDraft(null);
+        await resumeDraft(c.draftId);
+      }
+      setToast(takeServer ? t('draft-took-server') : t('draft-kept-local'));
+    } catch (e) {
+      setToast(t('draft-conflict-failed', { error: String(e) }));
     }
   };
 
@@ -767,6 +797,31 @@ export function App() {
       );
     }
   }, [items, view, query, settings, status?.seeding]);
+
+  // What a rule asked to announce. These never reach the inbox list the
+  // effect above watches — the rule filed them — so their word rides the
+  // status poll, already drained server-side so each is said once. The
+  // pause and off switches still govern: a rule outranks the level (the
+  // rule is a priority declaration), never the silence.
+  useEffect(() => {
+    const fresh = status?.notify ?? [];
+    if (fresh.length === 0) return;
+    if (!shouldNotify(settings, Date.now())) return;
+    const [who, subject] = fresh[0];
+    setToast(
+      fresh.length === 1
+        ? t('notify-one', { who })
+        : t('notify-many', { count: fmtCount(fresh.length) }),
+    );
+    if (settings.notifyDesktop === 'on') {
+      void postDesktopNotification(
+        who,
+        fresh.length === 1
+          ? subject || '(no subject)'
+          : t('notify-many', { count: fmtCount(fresh.length) }),
+      );
+    }
+  }, [status, settings]);
 
   // Moving off a conversation marks it read — the rule every mail client with
   // a reading pane uses, and the one Outlook states outright as "mark as read
@@ -1788,6 +1843,8 @@ export function App() {
         setDeletingFolder={setDeletingFolder}
         pendingDelete={pendingDelete}
         setPendingDelete={setPendingDelete}
+        draftConflict={draftConflict}
+        onSettleDraftConflict={(take) => void settleDraftConflict(take)}
         view={view}
         setView={setView}
         folders={folders}

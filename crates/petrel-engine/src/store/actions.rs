@@ -605,6 +605,89 @@ impl Store {
         Ok(n)
     }
 
+    /// Makes the server's keywords this account's tags, for one folder's
+    /// worth of UIDs.
+    ///
+    /// The write path munges a tag's name to an atom (`keywords::tag_keyword`),
+    /// so the way back matches on that munge rather than on the raw atom: a
+    /// tag called "Waiting on" travels as `Waiting_on` and must come home as
+    /// "Waiting on", not as a second tag spelled with an underscore. A keyword
+    /// no existing tag munges to is a tag made elsewhere, and becomes one here
+    /// under the atom's own name.
+    ///
+    /// Reconciles rather than adds: a keyword the message no longer wears
+    /// loses its tag, which is what makes untagging in another client mean
+    /// something here. Only tags that are keyword-shaped are touched — a tag
+    /// that has never been to the server keeps its own life.
+    pub fn apply_keywords(
+        &self,
+        account_id: i64,
+        folder_id: i64,
+        keyworded: &[(u32, Vec<String>)],
+    ) -> Result<usize> {
+        let tags: Vec<(String, i64)> = self
+            .tags_for_account(account_id)?
+            .into_iter()
+            .map(|t| (t.name, t.id))
+            .collect();
+        let mut changed = 0usize;
+        for (uid, keywords) in keyworded {
+            let message: Option<i64> = self
+                .conn
+                .query_row(
+                    "SELECT message_id FROM placements WHERE folder_id = ?1 AND uid = ?2",
+                    params![folder_id, *uid as i64],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(message_id) = message else { continue };
+
+            // What this message should wear, by tag id.
+            let mut want: std::collections::BTreeSet<i64> = Default::default();
+            for kw in keywords {
+                let existing = tags
+                    .iter()
+                    .find(|(name, _)| crate::keywords::tag_keyword(name) == *kw)
+                    .map(|(_, id)| *id);
+                let id = match existing {
+                    Some(id) => id,
+                    None => self.ensure_tag(account_id, kw, None)?,
+                };
+                want.insert(id);
+            }
+
+            // What it wears now, keeping only the keyword-shaped ones in view:
+            // a tag that never travelled is not the server's to remove.
+            let mut have = self.conn.prepare_cached(
+                "SELECT t.id, t.name FROM message_tags mt
+                 JOIN tags t ON t.id = mt.tag_id
+                 WHERE mt.message_id = ?1 AND t.account_id = ?2",
+            )?;
+            let current: Vec<(i64, String)> = have
+                .query_map(params![message_id, account_id], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            for id in &want {
+                if !current.iter().any(|(cid, _)| cid == id) {
+                    self.tag_message(message_id, *id)?;
+                    changed += 1;
+                }
+            }
+            for (id, name) in &current {
+                if !want.contains(id)
+                    && keywords
+                        .iter()
+                        .all(|k| *k != crate::keywords::tag_keyword(name))
+                {
+                    self.untag_message(message_id, *id)?;
+                    changed += 1;
+                }
+            }
+        }
+        Ok(changed)
+    }
+
     pub fn apply_gmail_labels(
         &self,
         account_id: i64,

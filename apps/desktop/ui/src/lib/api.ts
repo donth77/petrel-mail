@@ -198,6 +198,7 @@ export type RuleActions = {
   tag: number | null;
   mark_read: boolean;
   skip_inbox: boolean;
+    notify: boolean;
 };
 export type Rule = {
   id: number;
@@ -241,6 +242,8 @@ export type Status = {
   source: string;
   retention: string;
   data_dir: string;
+  /** Arrivals a rule marked notify-anyway: [who, subject], said once. */
+  notify?: [string, string][];
   last_sync_ms: number;
 };
 
@@ -412,6 +415,10 @@ const mock = {
     mode === 'off' ? [] : [['inbox', 3], ['drafts', 1], ['spam', 2]],
   invitation: async (): Promise<InvitationView | null> => null,
   respondInvitation: async () => {},
+  draftConflict: async (): Promise<{ other_id: number } | null> => null,
+  resolveDraftConflict: async () => {},
+  exportSettings: async (): Promise<string> => '12/2',
+  importSettings: async (): Promise<string> => '12/1/1',
   popoutMessage: async () => {},
   quoteMessage: async (): Promise<Quoted> => ({
     to: 'Sam Ortiz <sam@example.com>',
@@ -563,6 +570,11 @@ const real = {
     invoke<{ path: string; name: string; size: number }>('stage_attachment', { name, bytes }),
   tags: () => invoke<Tag[]>('list_tags'),
   viewCounts: (mode: string) => invoke<[string, number][]>('view_counts', { mode }),
+  draftConflict: (id: number) => invoke<{ other_id: number } | null>('draft_conflict', { id }),
+  resolveDraftConflict: (id: number, otherId: number, takeServer: boolean) =>
+    invoke<void>('resolve_draft_conflict', { id, otherId, takeServer }),
+  exportSettings: (path: string) => invoke<string>('export_settings', { path }),
+  importSettings: (path: string) => invoke<string>('import_settings', { path }),
   invitation: (messageId: number) => invoke<InvitationView | null>('invitation', { messageId }),
   respondInvitation: (messageId: number, response: string) =>
     invoke<void>('respond_invitation', { messageId, response }),

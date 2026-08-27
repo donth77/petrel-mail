@@ -114,7 +114,7 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
             cfg.clone(),
             has_move,
             has_uidplus,
-            state.server_is_gmail.load(Ordering::Relaxed),
+            account_is_gmail(&cfg),
         )
         .await;
         // A message due while the app was closed goes out now, rather than
@@ -216,7 +216,7 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
                 cfg.clone(),
                 has_move,
                 has_uidplus,
-                state.server_is_gmail.load(Ordering::Relaxed),
+                account_is_gmail(&cfg),
             )
             .await;
             send_due(Arc::clone(&state), account).await;
@@ -225,7 +225,7 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
             // One connection for the whole account, STATUS-gated per folder:
             // a quiet cycle costs a line per folder, not a login per folder.
             let (fresh, failures) = run_sync_cycle(&state, account, &cfg, false).await;
-            if state.server_is_gmail.load(Ordering::Relaxed) {
+            if account_is_gmail(&cfg) {
                 // One round trip when nothing changed; live labels when it did.
                 run_label_sweep(&state, account, &cfg).await;
                 run_thrid_sweep(&state, account, &cfg).await;
@@ -319,7 +319,9 @@ async fn run_sync_cycle(
             .map(|(p, fid)| p.since_uid > 0 && Some(*fid) == inbox_folder)
             .collect();
         let arrivals = &mut arrivals;
-        petrel_providers::imap::sync_pass(cfg, &passes, |index, uid, flags, raw| {
+        // Gmail's custom flags are labels, and the label sweep owns them.
+        let want_keywords = !account_is_gmail(cfg);
+        petrel_providers::imap::sync_pass(cfg, &passes, want_keywords, |index, uid, flags, raw| {
             // Compression happens out here, before the lock: one 20MB
             // attachment message compressed inside it stalled every click
             // and count in the app for the duration (measured at 11s).
@@ -386,10 +388,12 @@ async fn run_sync_cycle(
                 highest_modseq,
                 uid_next,
                 flag_updates,
+                keyword_updates,
                 total,
             } => {
                 server_total += *total as usize;
                 let mut reflagged = 0usize;
+                let mut retagged = 0usize;
                 if let Ok(mut store) = state.store.lock() {
                     if pass.expected_validity.is_none() {
                         let _ = store.set_folder_validity(*folder_id, *uid_validity);
@@ -408,10 +412,23 @@ async fn run_sync_cycle(
                             reflagged += 1;
                         }
                     }
+                    // Keywords other clients set become tags here, and ones
+                    // they removed stop being tags — the inbound half of the
+                    // tag story on servers where a tag is an IMAP keyword.
+                    if !keyword_updates.is_empty() {
+                        retagged = store
+                            .apply_keywords(account, *folder_id, keyword_updates)
+                            .unwrap_or(0);
+                    }
                 }
-                if verbose || *fetched > 0 || reflagged > 0 {
+                if verbose || *fetched > 0 || reflagged > 0 || retagged > 0 {
+                    let tags = if retagged > 0 {
+                        format!(", {retagged} tag change(s)")
+                    } else {
+                        String::new()
+                    };
                     log_sync(&format!(
-                        "{path}: {fetched} fetched, {reflagged} flag update(s)"
+                        "{path}: {fetched} fetched, {reflagged} flag update(s){tags}"
                     ));
                 }
             }
@@ -629,6 +646,20 @@ pub(crate) fn ingest_fenced(
     }
 }
 
+/// Whether this account's server is Gmail — asked of the account's own
+/// configuration rather than of shared state.
+///
+/// `AppState::server_is_gmail` is one flag for the whole app, written by
+/// whichever account probed last: with a Gmail account beside a Dovecot one
+/// it says "Gmail" for both half the time. Everything below that must be
+/// right *per account* — whether a tag is a label or a keyword, whether the
+/// label sweeps are worth running — asks this instead. The shared flag
+/// stays for the UI's benefit and is no longer consulted for correctness.
+fn account_is_gmail(cfg: &ImapConfig) -> bool {
+    let host = cfg.host.to_ascii_lowercase();
+    host.contains("gmail") || host.contains("googlemail") || host.ends_with("google.com")
+}
+
 /// Runs the account's filter rules over newly-arrived messages.
 ///
 /// Every enabled rule that matches contributes, in the user's order, and
@@ -695,6 +726,21 @@ fn apply_rules_to(state: &Arc<AppState>, account: i64, arrivals: &[i64]) {
             }
             if a.mark_read {
                 acts.push((ActionKind::MarkRead, None));
+            }
+            if a.notify {
+                // Said through the same announcer ordinary arrivals use:
+                // the next status poll carries it out, and the UI applies
+                // its own pause and level rules before saying anything.
+                let who = parsed
+                    .from_display
+                    .clone()
+                    .filter(|d| !d.is_empty())
+                    .or_else(|| parsed.from_addr.clone())
+                    .unwrap_or_default();
+                let subject = parsed.subject.clone().unwrap_or_default();
+                if let Ok(mut pending) = state.pending_notify.lock() {
+                    pending.push((who, subject));
+                }
             }
             for (kind, target) in acts {
                 if let Err(e) = store.apply_thread_action(account, thread, kind, target, policy) {

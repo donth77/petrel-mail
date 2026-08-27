@@ -135,6 +135,17 @@
       try { configured = localStorage.getItem('__petrel_unconfigured') !== '1'; } catch (e) {}
       return {
         last_sync_ms: Date.now() - 3 * 60000,
+        notify: (function () {
+          if (location.search.indexOf('ruleNotify=1') === -1) return [];
+          window.__STATUS_N__ = (window.__STATUS_N__ || 0) + 1;
+          // Delivered on the third poll, once: by then the launch toasts
+          // have had their say and the probe can see this one standing.
+          if (window.__STATUS_N__ === 3 && !window.__NOTIFIED__) {
+            window.__NOTIFIED__ = true;
+            return [['Robo Recruiter', 'Your application was received']];
+          }
+          return [];
+        })(),
         configured: configured,
         seeding: seeding,
         // A denominator larger than what is held, so the coverage line has
@@ -288,6 +299,17 @@
       };
     },
     respond_invitation: function () { return null; },
+    draft_conflict: function () {
+      return location.search.indexOf('draftConflict=1') !== -1 && !window.__CONFLICT_DONE__
+        ? { other_id: 909 }
+        : null;
+    },
+    resolve_draft_conflict: function () { window.__CONFLICT_DONE__ = true; return null; },
+    load_draft: function (a) {
+      return window.__CONFLICT_DONE__
+        ? { id: a.id, to: 'sam@example.com', subject: 'plans, revised', body: 'second thoughts', html: '' }
+        : { id: a.id, to: 'sam@example.com', subject: 'plans', body: 'first words', html: '' };
+    },
     attachment_is_executable: function (a) {
       return /\.(exe|bat|sh|js|jar|dmg|app|py)$/i.test(String(a.filename || ''));
     },
@@ -568,9 +590,6 @@
       return null;
     },
     save_draft: function () { return 1; },
-    load_draft: function () {
-      return { id: 1, to: '', subject: '', body: '', html: '' };
-    },
     delete_draft: function () { return null; },
     create_tag: function (a) {
       var id = 300 + tags.length;

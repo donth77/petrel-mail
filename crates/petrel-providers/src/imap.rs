@@ -340,6 +340,24 @@ fn flags_to_bits<'a>(flags: impl Iterator<Item = async_imap::types::Flag<'a>>) -
     bits
 }
 
+/// The custom keywords a fetch carries: everything that is not a system
+/// flag. Gmail's labels arrive by this door too, which is why the caller
+/// only asks on accounts whose tags are keywords rather than labels.
+fn keywords_of<'a>(flags: impl Iterator<Item = async_imap::types::Flag<'a>>) -> Vec<String> {
+    use async_imap::types::Flag;
+    flags
+        .filter_map(|f| match f {
+            Flag::Custom(name) => {
+                let n = name.trim().to_string();
+                // `\*` is the server saying "custom keywords allowed", not a
+                // keyword; nothing wears it.
+                (!n.is_empty() && n != "*").then_some(n)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 /// Fetches recent messages, handing each one to `on_message` as it arrives.
 ///
 /// The buffering version holds every message in memory and returns only once
@@ -988,6 +1006,10 @@ pub enum PassOutcome {
         /// Flags that changed on mail we already hold, by UID — read on the
         /// phone, starred on the web. Empty unless the server has CONDSTORE.
         flag_updates: Vec<(u32, i64)>,
+        /// The custom keywords those same messages now wear, by UID —
+        /// tags applied in another client. Empty unless the caller asked
+        /// (`want_keywords`) and the flag diff ran.
+        keyword_updates: Vec<(u32, Vec<String>)>,
         total: u32,
     },
     /// The folder was renumbered; nothing fetched. See `FetchOutcome`.
@@ -1009,6 +1031,9 @@ pub enum PassOutcome {
 pub async fn sync_pass<F>(
     cfg: &ImapConfig,
     passes: &[FolderPass],
+    // Whether to read custom keywords alongside the flag diff. Gmail says
+    // no: there, custom flags are labels, and the label sweep owns them.
+    want_keywords: bool,
     on_message: F,
 ) -> Result<Vec<PassOutcome>>
 where
@@ -1017,12 +1042,12 @@ where
     match cfg.security {
         Security::Tls => {
             let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
-            sync_pass_session(client, cfg, passes, on_message).await
+            sync_pass_session(client, cfg, passes, want_keywords, on_message).await
         }
         #[cfg(feature = "insecure-plaintext")]
         Security::InsecurePlaintext => {
             let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
-            sync_pass_session(Client::new(tcp), cfg, passes, on_message).await
+            sync_pass_session(Client::new(tcp), cfg, passes, want_keywords, on_message).await
         }
     }
 }
@@ -1031,6 +1056,7 @@ async fn sync_pass_session<S, F>(
     client: Client<S>,
     cfg: &ImapConfig,
     passes: &[FolderPass],
+    want_keywords: bool,
     mut on_message: F,
 ) -> Result<Vec<PassOutcome>>
 where
@@ -1151,6 +1177,7 @@ where
         }
 
         let mut flag_updates = Vec::new();
+        let mut keyword_updates: Vec<(u32, Vec<String>)> = Vec::new();
         if flags_moved && let Some(seen) = pass.since_modseq {
             // A server that advertised CONDSTORE and then refuses the fetch
             // leaves flags stale until the next full pass — the state they
@@ -1163,6 +1190,9 @@ where
                     let Ok(fetch) = fetch else { break };
                     if let Some(uid) = fetch.uid {
                         flag_updates.push((uid, flags_to_bits(fetch.flags())));
+                        if want_keywords {
+                            keyword_updates.push((uid, keywords_of(fetch.flags())));
+                        }
                     }
                 }
             }
@@ -1174,6 +1204,7 @@ where
             highest_modseq: mailbox.highest_modseq.or(status.highest_modseq),
             uid_next: mailbox.uid_next.or(status.uid_next),
             flag_updates,
+            keyword_updates,
             total: mailbox.exists,
         });
     }

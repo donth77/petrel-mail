@@ -41,7 +41,7 @@ async fn a_second_cycle_over_a_warm_store_fetches_nothing() {
     let mut fetched_bytes = 0usize;
     let mut watermarks: Vec<u32> = vec![0; names.len()];
     let t0 = Instant::now();
-    let out = sync_pass(&cfg, &cold, |i, uid, _f, raw| {
+    let out = sync_pass(&cfg, &cold, true, |i, uid, _f, raw: &[u8]| {
         fetched_bytes += raw.len();
         if uid > watermarks[i] {
             watermarks[i] = uid;
@@ -84,7 +84,7 @@ async fn a_second_cycle_over_a_warm_store_fetches_nothing() {
         })
         .collect();
     let t1 = Instant::now();
-    let out2 = sync_pass(&cfg, &warm, |_, _, _, _| {
+    let out2 = sync_pass(&cfg, &warm, true, |_, _, _, _: &[u8]| {
         panic!("a warm cycle over an unchanged mailbox must fetch nothing")
     })
     .await
