@@ -165,7 +165,13 @@ pub async fn delete_folder(folder_id: i64, state: State<'_, Arc<AppState>>) -> R
             .map_err(|e| e.to_string())?;
     }
     let mut store = state.store()?;
-    store.remove_folder(folder_id).map_err(|e| e.to_string())
+    let took = store.remove_folder(folder_id).map_err(|e| e.to_string())?;
+    if took > 0 {
+        log_sync(&format!(
+            "folder deleted: {took} message(s) that lived only there went with it"
+        ));
+    }
+    Ok(())
 }
 
 /// Empties the bin: everything in Trash, and in any folder filed under it,

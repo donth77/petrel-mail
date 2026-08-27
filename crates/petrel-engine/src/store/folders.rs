@@ -188,15 +188,55 @@ impl Store {
     /// not a licence to destroy the mail that passed through it. A message
     /// left with no placement drops out of folder views and remains findable
     /// in search.
-    pub fn remove_folder(&mut self, folder_id: i64) -> Result<()> {
+    /// Removes a folder and, with it, mail that was only ever in it.
+    ///
+    /// Dropping the placements alone left those messages in the store with
+    /// no folder at all: gone from every view, still answering searches, and
+    /// reachable by no other route. That is the ghost state the inbox
+    /// predicate was rewritten to avoid, arrived at from the other end — and
+    /// after deleting a folder *out of the Trash*, where the word means what
+    /// it says, it is also just wrong.
+    ///
+    /// So a message left with no placements is tombstoned exactly as
+    /// delete-forever tombstones one: out of search now, bytes reaped by the
+    /// grace-period sweep rather than here. Mail that lives somewhere else
+    /// too — a Gmail message carrying other labels — keeps those placements
+    /// and is untouched. Drafts and outbox rows are exempt: they are allowed
+    /// to have no placement, and always were.
+    ///
+    /// Returns how many messages the folder took with it.
+    pub fn remove_folder(&mut self, folder_id: i64) -> Result<usize> {
         let tx = self.conn.transaction()?;
+        let orphans: Vec<i64> = {
+            let mut stmt = tx.prepare(
+                "SELECT m.id FROM messages m
+                 JOIN placements p ON p.message_id = m.id AND p.folder_id = ?1
+                 WHERE m.deleted_at_ms IS NULL
+                   AND m.send_after_ms IS NULL
+                   AND m.draft_msgid IS NULL
+                   AND coalesce(m.draft_body, '') = ''
+                   AND coalesce(m.draft_html, '') = ''
+                   AND NOT EXISTS (SELECT 1 FROM placements q
+                                    WHERE q.message_id = m.id AND q.folder_id != ?1)",
+            )?;
+            let rows = stmt.query_map(params![folder_id], |r| r.get(0))?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        for id in &orphans {
+            tx.execute(
+                "UPDATE messages SET deleted_at_ms = (strftime('%s','now') * 1000)
+                 WHERE id = ?1",
+                params![id],
+            )?;
+            tx.execute("DELETE FROM fts_content WHERE message_id = ?1", params![id])?;
+        }
         tx.execute(
             "DELETE FROM placements WHERE folder_id = ?1",
             params![folder_id],
         )?;
         tx.execute("DELETE FROM folders WHERE id = ?1", params![folder_id])?;
         tx.commit()?;
-        Ok(())
+        Ok(orphans.len())
     }
 
     pub fn place_message(&self, message_id: i64, folder_id: i64) -> Result<()> {

@@ -269,3 +269,56 @@ fn gc_retires_queued_actions_that_can_never_deliver() {
     let again = store.gc(&blobs, 1, 30).expect("gc again");
     assert_eq!(again.actions_orphaned, 0);
 }
+
+#[test]
+fn deleting_a_folder_takes_the_mail_that_lived_only_there() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut store = petrel_engine::store::Store::open(&dir.path().join("p.db")).expect("store");
+    let blobs = petrel_engine::blob::BlobStore::open(&dir.path().join("blobs")).expect("blobs");
+    let account = store.ensure_test_account().expect("account");
+    let doomed = store
+        .ensure_folder(account, "", "Trash/old")
+        .expect("folder");
+    let keep = store
+        .ensure_folder(account, "inbox", "INBOX")
+        .expect("inbox");
+    let raw = |mid: &str| {
+        format!(
+            "From: a@example.com\r\nTo: me@example.com\r\nSubject: {mid}\r\n\
+             Date: Tue, 18 Aug 2026 14:02:00 +0000\r\nMessage-ID: <{mid}>\r\n\
+             MIME-Version: 1.0\r\nContent-Type: text/plain\r\n\r\nbody\r\n"
+        )
+        .into_bytes()
+    };
+    // One message only in the doomed folder; one also filed in the inbox.
+    let only = store
+        .ingest_raw(&blobs, account, Some(doomed), Some(1), &raw("only@x"))
+        .expect("ingest");
+    let both = store
+        .ingest_raw(&blobs, account, Some(doomed), Some(2), &raw("both@x"))
+        .expect("ingest");
+    store
+        .place_message_at(both.message_id, keep, 9)
+        .expect("place");
+
+    let took = store.remove_folder(doomed).expect("remove");
+    assert_eq!(took, 1, "only the message with nowhere else to be");
+
+    // The one that lived only there is gone from search and marked for the
+    // grace-period sweep — not left haunting the store with no folder.
+    assert!(
+        store.search("only@x", 10).expect("search").is_empty(),
+        "a deleted message must stop answering searches"
+    );
+    // The one that also lives in the inbox is untouched.
+    assert_eq!(
+        store.folders_of(both.message_id).expect("folders"),
+        vec![keep]
+    );
+    assert_eq!(
+        store.search("both@x", 10).expect("search").len(),
+        1,
+        "mail that lives somewhere else is not deleted by a folder going away"
+    );
+    let _ = only;
+}

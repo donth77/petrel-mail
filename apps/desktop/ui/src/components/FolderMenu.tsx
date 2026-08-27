@@ -17,6 +17,7 @@ export function FolderMenu({
   path,
   onRename,
   onNewChild,
+  onEmpty,
   onMove,
   onDelete,
 }: {
@@ -26,7 +27,10 @@ export function FolderMenu({
   onRename?: () => void;
   /** Opens the naming field prefilled with this folder's path — a subfolder
    *  is a name with a parent already decided. */
-  onNewChild: () => void;
+  /** Absent on a folder that takes no children — the bin. */
+  onNewChild?: () => void;
+  /** The bin's own verb, and the only irreversible one in the app. */
+  onEmpty?: () => void;
   /** Opens a destination picker — the menu's answer to the drag. */
   onMove?: () => void;
   /** Re-nests under Archive — present on folders standing outside it. */
@@ -52,9 +56,16 @@ export function FolderMenu({
             {t('folder-rename')}
           </MenuItem>
         )}
-        <MenuItem className="menu-item" onClick={onNewChild}>
-          {t('folder-subfolder')}
-        </MenuItem>
+        {onNewChild && (
+          <MenuItem className="menu-item" onClick={onNewChild}>
+            {t('folder-subfolder')}
+          </MenuItem>
+        )}
+        {onEmpty && (
+          <MenuItem className="menu-item danger" onClick={onEmpty}>
+            {t('trash-empty')}
+          </MenuItem>
+        )}
         {onMove && (
           <MenuItem className="menu-item" onClick={onMove}>
             {t('folder-move')}

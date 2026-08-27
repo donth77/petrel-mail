@@ -87,6 +87,8 @@ type Props = {
   onDeleteFolder: (folder: Folder) => void;
   /** Opens the move-destination picker for this folder. */
   onMoveFolder: (folder: Folder) => void;
+  /** Asks to empty the bin. Absent in windows that do not own that. */
+  onEmptyTrash?: () => void;
   /** Make a tag that is attached to nothing yet. Returns once it exists, so the
    *  rail can put the input away only after the work succeeded. */
   onCreateTag: (name: string) => Promise<void>;
@@ -115,6 +117,7 @@ export function Rail({
   onRenameFolder,
   onDeleteFolder,
   onMoveFolder,
+  onEmptyTrash,
   onCreateTag,
   onRenameTag,
   onColourTag,
@@ -470,6 +473,14 @@ export function Rail({
                   setNamingFolder(true);
                 }}
               />
+            )}
+            {/* The bin's verb lives where every other folder verb lives,
+                rather than in the list header: it is a thing done to a
+                folder, and the header has no other actions for it to sit
+                beside. Always offered, not only when the bin holds folders —
+                a menu that appears and disappears is one nobody learns. */}
+            {m.key === 'trash' && !collapsed && onEmptyTrash && (
+              <FolderMenu path={trashPath ?? 'Trash'} onEmpty={onEmptyTrash} />
             )}
           </button>
         </Tip>

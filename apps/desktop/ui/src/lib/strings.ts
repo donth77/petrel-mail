@@ -585,7 +585,7 @@ export const en = {
   'folder-delete': 'Delete folder',
   'folder-delete-confirm': 'Delete \u201c{ $name }\u201d?',
   'folder-delete-body':
-    'The folder and the mail inside it are deleted on the server. Copies already synced here stay readable and searchable.',
+    'The folder and its mail are deleted on the server and here. Mail that also lives in another folder stays there.',
   'folder-created': 'Created \u201c{ $name }\u201d',
   'folder-deleted': 'Deleted \u201c{ $name }\u201d',
   'folder-failed': 'Folder change failed: { $error }',
