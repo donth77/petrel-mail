@@ -49,24 +49,54 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 
 # Signing decides whether the keychain trusts the app across rebuilds.
-# Keychain ACLs bind to the code signature; an ad-hoc signature is unique
-# per build, so every rebuild is "a different app" and macOS re-asks for the
-# account passwords. A stable local identity — a self-signed code-signing
-# certificate named "Petrel Dev" (Keychain Access → Certificate Assistant →
-# Create a Certificate → type: Code Signing) — keeps the identity constant,
-# and one "Always Allow" then holds through every rebuild. Used when present;
-# ad-hoc otherwise, which at least clears quarantine.
-if security find-identity -v -p codesigning 2>/dev/null | grep -q "Petrel Dev"; then
-  if codesign --force --deep --sign "Petrel Dev" "$APP" >/dev/null 2>&1; then
-    echo "signed as Petrel Dev (keychain consent will persist)"
+# Keychain ACLs bind to the code signature, through the designated
+# requirement macOS derives from it. Get that wrong and every rebuild looks
+# like a different app, so the account passwords are asked for again.
+#
+# Developer ID first, when there is one. Its designated requirement is built
+# from the team id and the bundle id, both of which survive a rebuild, so one
+# "Always Allow" holds for good. It also makes this bundle the same identity
+# as the released app, so consent granted to one covers the other instead of
+# each asking separately.
+#
+# "Petrel Dev" — a self-signed code-signing certificate (Keychain Access →
+# Certificate Assistant → Create a Certificate → type: Code Signing) — is the
+# fallback for anyone without an Apple account. Stable across rebuilds, but it
+# carries no team identifier, so its requirement is weaker and it is a
+# different identity from the released app.
+#
+# Ad-hoc is the last resort: unique per build, so macOS re-asks every time.
+IDENTITY=""
+LABEL=""
+if [ -n "${PETREL_SIGN_IDENTITY:-}" ]; then
+  IDENTITY="$PETREL_SIGN_IDENTITY"
+  LABEL="$PETREL_SIGN_IDENTITY"
+else
+  # `|| true`: grep finds nothing when there is no such certificate, and under
+  # `set -e` a failing pipeline would end the script before the fallbacks.
+  DEVID="$(security find-identity -v -p codesigning 2>/dev/null \
+    | grep 'Developer ID Application' | head -1 \
+    | sed -E 's/.*"(.*)".*/\1/' || true)"
+  if [ -n "$DEVID" ]; then
+    IDENTITY="$DEVID"
+    LABEL="$DEVID (same identity as the released app)"
+  elif security find-identity -v -p codesigning 2>/dev/null | grep -q "Petrel Dev"; then
+    IDENTITY="Petrel Dev"
+    LABEL="Petrel Dev"
+  fi
+fi
+
+if [ -n "$IDENTITY" ]; then
+  if codesign --force --deep --sign "$IDENTITY" "$APP" >/dev/null 2>&1; then
+    echo "signed as $LABEL — keychain consent will persist"
   else
     # Loud, because this fallback once hid for a day: an ad-hoc bundle is a
     # brand-new app to macOS and every keychain consent starts over.
-    echo "WARNING: Petrel Dev signing FAILED — falling back to ad-hoc; keychain will re-ask" >&2
+    echo "WARNING: signing as '$IDENTITY' FAILED — falling back to ad-hoc; keychain will re-ask" >&2
     codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
   fi
 else
-  echo "note: no Petrel Dev identity; ad-hoc signature (keychain re-asks every rebuild)" >&2
+  echo "note: no signing identity found; ad-hoc signature (keychain re-asks every rebuild)" >&2
   codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
 fi
 echo "$APP ($VERSION)"
