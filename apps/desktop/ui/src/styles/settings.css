@@ -101,6 +101,14 @@
   border-block-end: 1px solid var(--hair2);
 }
 
+/* A divider separates one section from the next, so the last one has nothing
+   to separate from. It read as an unfinished pane rather than a finished
+   list — worst in Updates, which is a single section, where the rule hung
+   alone above an empty half-screen. */
+.field:last-child {
+  border-block-end: none;
+}
+
 .field.last {
   border-block-end: 0;
 }
