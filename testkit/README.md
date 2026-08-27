@@ -7,7 +7,7 @@ at real accounts, and never commit real addresses or recorded traffic (see AGENT
 
     docker run -d --rm --name petrel-greenmail -p 3143:3143 -p 3025:3025 \
       -e GREENMAIL_OPTS='-Dgreenmail.setup.test.all -Dgreenmail.hostname=0.0.0.0 \
-         -Dgreenmail.users=petrel:petrelpass -Dgreenmail.verbose' \
+         -Dgreenmail.users=petrel:petrelpass@example.com -Dgreenmail.verbose' \
       greenmail/standalone:latest
 
 IMAP on 3143, SMTP on 3025. Stop: `docker stop petrel-greenmail`.
@@ -16,6 +16,10 @@ IMAP on 3143, SMTP on 3025. Stop: `docker stop petrel-greenmail`.
 account's *address* is `petrel@example.com` but its *IMAP login* is the local part,
 `petrel`. Logging in with the full address fails with "Invalid login/password". Mail must be
 addressed to `petrel@example.com` to be delivered, and read by logging in as `petrel`.
+The domain in the user string is what makes that work: without it the
+command above starts a server that answers 250 to every send and shows an
+empty inbox to every login, which reads as a product bug rather than a
+fixture one — an hour lost to it on 2026-08-26.
 
 Its capabilities are deliberately modest — `IMAP4REV1 IDLE UIDPLUS MOVE SORT QUOTA LITERAL+
 SASL-IR AUTH=XOAUTH2`, with **no CONDSTORE/QRESYNC** — which makes it the reference test for
