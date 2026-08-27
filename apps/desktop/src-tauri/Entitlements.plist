@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- The hardened runtime is required for notarization, and it forbids
+       writable-executable memory by default. WKWebView's JavaScript engine
+       needs exactly that to run at all: without this the window comes up
+       and every page inside it is dead. -->
+  <key>com.apple.security.cs.allow-jit</key>            <true/>
+
+  <!-- Deliberately absent, and each for a reason:
+
+       * App Sandbox — Petrel is distributed outside the App Store and keeps
+         its mail in Application Support, reads attachments the user picks,
+         and writes exports where the user says. Sandboxing that would mean
+         security-scoped bookmarks for paths the user already chose, which
+         buys nothing outside the store's own rules.
+       * allow-unsigned-executable-memory / disable-library-validation —
+         the blunter escapes. WKWebView needs the JIT entitlement above and
+         nothing more; asking for the broader ones would widen the app's
+         attack surface to save reading this comment.
+       * Keychain access groups — the keychain works outside the sandbox
+         without an entitlement; an access group would only matter if
+         Petrel shared secrets with a sibling app, and it has none. -->
+</dict>
+</plist>
