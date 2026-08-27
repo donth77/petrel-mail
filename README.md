@@ -6,7 +6,7 @@
 
 **A fast, local-first desktop email client.**
 
-[![Release](https://img.shields.io/github/v/release/donth77/petrel-mail?style=flat-square&label=release&color=3DA9B5)](https://github.com/donth77/petrel-mail/releases/latest)
+[![Release](https://img.shields.io/github/v/release/donth77/petrel-mail?include_prereleases&style=flat-square&label=release&color=3DA9B5)](https://github.com/donth77/petrel-mail/releases)
 [![License](https://img.shields.io/badge/license-MIT-3DA9B5?style=flat-square)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.96.1-CE422B?style=flat-square&logo=rust&logoColor=white)](rust-toolchain.toml)
 [![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app)
@@ -73,9 +73,18 @@ Petrel talks straight to your mail server. No middleman service, no database you
 
 ## Install
 
-Releases land on the
-[Releases tab](https://github.com/donth77/petrel-mail/releases) as a signed `.dmg`.
+Download the `.dmg` from the
+[Releases tab](https://github.com/donth77/petrel-mail/releases), open it, and drag
+Petrel to your Applications folder.
 
+It is signed and notarized by Apple, so it opens without a warning.
+
+The `.app.tar.gz` and `latest.json` on a release are for the built-in updater. You do
+not need them.
+
+> **1.0.0 is a pre-release.** It is in daily use, but it is young. In-app update checks
+> will not find anything until the first full release, because GitHub does not treat a
+> pre-release as the latest one.
 
 ---
 
