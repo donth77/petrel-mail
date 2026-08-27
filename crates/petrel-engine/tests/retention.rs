@@ -322,3 +322,58 @@ fn deleting_a_folder_takes_the_mail_that_lived_only_there() {
     );
     let _ = only;
 }
+
+#[test]
+fn the_bin_measures_time_in_the_bin_not_the_age_of_the_mail() {
+    const DAY: i64 = 24 * 60 * 60 * 1000;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut store = petrel_engine::store::Store::open(&dir.path().join("p.db")).expect("store");
+    let blobs = petrel_engine::blob::BlobStore::open(&dir.path().join("blobs")).expect("blobs");
+    let account = store.ensure_test_account().expect("account");
+    let trash = store
+        .ensure_folder(account, "trash", "Trash")
+        .expect("trash");
+    let inbox = store
+        .ensure_folder(account, "inbox", "INBOX")
+        .expect("inbox");
+    // A two-year-old receipt: old mail, but only just binned.
+    let raw = b"From: shop@example.com\r\nTo: me@example.com\r\nSubject: receipt\r\n\
+                Date: Tue, 18 Aug 2024 14:02:00 +0000\r\nMessage-ID: <old@x>\r\n\
+                MIME-Version: 1.0\r\nContent-Type: text/plain\r\n\r\nbody\r\n";
+    let old = store
+        .ingest_raw(&blobs, account, Some(trash), Some(1), raw)
+        .expect("ingest");
+    let now = 1_800_000_000_000i64;
+    store.refresh_trash_clock(account, now).expect("clock");
+
+    // Just arrived in the bin: a thirty-day rule must not touch it, however
+    // old the message itself is.
+    assert!(
+        store
+            .trash_expired(account, 30, now)
+            .expect("expired")
+            .is_empty(),
+        "the clock starts at the bin, not at the postmark"
+    );
+    // Thirty-one days later it goes.
+    let later = now + 31 * DAY;
+    let due = store.trash_expired(account, 30, later).expect("expired");
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].2, old.message_id);
+
+    // Taken back out of the bin, the clock stops and resets.
+    store
+        .place_message_at(old.message_id, inbox, 5)
+        .expect("restore");
+    store
+        .remove_placement(old.message_id, account, "Trash")
+        .expect("unbin");
+    store.refresh_trash_clock(account, later).expect("clock");
+    assert!(
+        store
+            .trash_expired(account, 30, later + 99 * DAY)
+            .expect("expired")
+            .is_empty(),
+        "mail rescued from the bin is not still on its clock"
+    );
+}

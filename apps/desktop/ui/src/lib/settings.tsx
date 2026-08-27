@@ -39,6 +39,10 @@ export const DEFAULTS = {
   /// the rail to say how big each mailbox is; off is for anyone who would
   /// rather not be counted at.
   badges: 'unread' as 'unread' | 'total' | 'off',
+  /** Days a message may sit in the Trash before Petrel deletes it, on the
+   *  server and here. '0' is off, and is the default: deleting mail on a
+   *  timer is a promise to opt into rather than a default to discover. */
+  trashRetentionDays: '0' as '0' | '7' | '30' | '90',
 
   /// A checkbox column down the left of the list.
   ///

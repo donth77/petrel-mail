@@ -513,6 +513,13 @@ export const en = {
   'folder-trash-body':
     'The folder and the mail inside it go to the Trash. Drag it back out to undo, or empty the Trash to make it final.',
   'folder-trash-do': 'Move to Trash',
+  'trash-retention': 'Delete mail left in the Trash',
+  'trash-retention-help':
+    'Mail sits in the Trash until you empty it. Petrel can delete what has been there a while \u2014 from the server as well as from this Mac. The clock starts when a message reaches the Trash, not when it was sent.',
+  'trash-retention-off': 'Never \u2014 only when I empty it',
+  'trash-retention-days': 'After { $days } days',
+  'trash-retention-on-note':
+    'This applies to mail already in the Trash, so anything past that age goes on the next sync.',
   'trash-empty': 'Empty Trash',
   'trash-empty-confirm': 'Empty the Trash?',
   'trash-empty-body':

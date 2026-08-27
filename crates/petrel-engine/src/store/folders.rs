@@ -477,6 +477,71 @@ impl Store {
             .collect())
     }
 
+    /// Keeps `trashed_at_ms` honest: stamped when a message is first seen in
+    /// the bin, cleared when it is no longer there.
+    ///
+    /// Maintained here rather than at the point of triage because mail
+    /// reaches the bin by more routes than a click in this app — deleted on
+    /// a phone, filed by a rule, moved by another client — and an expiry
+    /// clock that only started for one of those routes would delete some
+    /// mail early and keep the rest forever.
+    pub fn refresh_trash_clock(&self, account_id: i64, now_ms: i64) -> Result<usize> {
+        let in_trash = "EXISTS (SELECT 1 FROM placements p
+                                JOIN folders f ON f.id = p.folder_id
+                                WHERE p.message_id = messages.id
+                                  AND f.account_id = ?1
+                                  AND (f.role = 'trash'
+                                       OR f.path LIKE (SELECT path || '/%' FROM folders
+                                                        WHERE account_id = ?1 AND role = 'trash')
+                                       OR f.path LIKE (SELECT path || '.%' FROM folders
+                                                        WHERE account_id = ?1 AND role = 'trash')))";
+        let started = self.conn.execute(
+            &format!(
+                "UPDATE messages SET trashed_at_ms = ?2
+                 WHERE account_id = ?1 AND trashed_at_ms IS NULL AND {in_trash}"
+            ),
+            params![account_id, now_ms],
+        )?;
+        let cleared = self.conn.execute(
+            &format!(
+                "UPDATE messages SET trashed_at_ms = NULL
+                 WHERE account_id = ?1 AND trashed_at_ms IS NOT NULL AND NOT {in_trash}"
+            ),
+            params![account_id],
+        )?;
+        Ok(started + cleared)
+    }
+
+    /// What has been in the bin longer than the given number of days, in the
+    /// same shape `trash_contents` returns: the address the server needs.
+    ///
+    /// A message with no clock yet is never expired — better a bin that
+    /// empties late than one that empties something it has not been watching.
+    pub fn trash_expired(
+        &self,
+        account_id: i64,
+        older_than_days: i64,
+        now_ms: i64,
+    ) -> Result<Vec<(String, u32, i64)>> {
+        let cutoff =
+            now_ms.saturating_sub(older_than_days.saturating_mul(crate::retention::MS_PER_DAY));
+        Ok(self
+            .trash_contents(account_id)?
+            .into_iter()
+            .filter(|(_, _, message_id)| {
+                self.conn
+                    .query_row(
+                        "SELECT trashed_at_ms FROM messages WHERE id = ?1",
+                        params![message_id],
+                        |r| r.get::<_, Option<i64>>(0),
+                    )
+                    .ok()
+                    .flatten()
+                    .is_some_and(|t| t <= cutoff)
+            })
+            .collect())
+    }
+
     /// Every UID sitting in this account's trash, with the folder path that
     /// holds it — what emptying the bin has to expunge on the server.
     ///

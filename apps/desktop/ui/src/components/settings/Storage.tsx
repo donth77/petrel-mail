@@ -4,6 +4,7 @@ import { api, type Account, type StorageReport } from '../../lib/api';
 import { fileSize } from '../../lib/format';
 import { Icon } from '../Icon';
 import { t } from '../../lib/strings';
+import { useSettings } from '../../lib/settings';
 
 /** Views worth exporting, in the order someone would think of them. */
 const SCOPES: { view: string; label: 'mailbox-inbox' | 'mailbox-archive' | 'mailbox-starred' }[] = [
@@ -13,6 +14,7 @@ const SCOPES: { view: string; label: 'mailbox-inbox' | 'mailbox-archive' | 'mail
 ];
 
 export function Storage({ onMessage }: { onMessage: (text: string) => void }) {
+  const { settings, set } = useSettings();
   const [report, setReport] = useState<StorageReport | null>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -243,6 +245,24 @@ export function Storage({ onMessage }: { onMessage: (text: string) => void }) {
           ))
         ) : (
           exportButtons(accounts[0])
+        )}
+      </section>
+
+      <section className="field">
+        <div className="flabel">{t('trash-retention')}</div>
+        <p className="fhelp">{t('trash-retention-help')}</p>
+        <select
+          className="select"
+          value={settings.trashRetentionDays}
+          onChange={(e) => set('trashRetentionDays', e.target.value as '0' | '7' | '30' | '90')}
+        >
+          <option value="0">{t('trash-retention-off')}</option>
+          <option value="7">{t('trash-retention-days', { days: '7' })}</option>
+          <option value="30">{t('trash-retention-days', { days: '30' })}</option>
+          <option value="90">{t('trash-retention-days', { days: '90' })}</option>
+        </select>
+        {settings.trashRetentionDays !== '0' && (
+          <p className="fhelp">{t('trash-retention-on-note')}</p>
         )}
       </section>
 

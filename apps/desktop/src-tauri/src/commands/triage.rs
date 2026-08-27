@@ -187,20 +187,38 @@ pub async fn delete_folder(folder_id: i64, state: State<'_, Arc<AppState>>) -> R
 /// outcome worse than not emptying it.
 #[tauri::command]
 pub async fn empty_trash(state: State<'_, Arc<AppState>>) -> Result<String, String> {
-    let (cfg, items, uidplus) = {
+    let (account, items) = {
         let store = state.store()?;
         let account = active_account(&store)?;
         let items = store.trash_contents(account).map_err(|e| e.to_string())?;
+        (account, items)
+    };
+    let (gone, kept) = destroy_trashed(&state, account, items).await?;
+    Ok(format!("{gone}/{kept}"))
+}
+
+/// Expunges a set of trashed messages and tombstones them here.
+///
+/// Shared by the button and the clock so they cannot drift: emptying the
+/// bin by hand and emptying it by expiry are the same act on a different
+/// selection, and two implementations of "destroy this mail" is one too
+/// many. Returns (removed, kept).
+pub(crate) async fn destroy_trashed(
+    state: &Arc<AppState>,
+    account: i64,
+    items: Vec<(String, u32, i64)>,
+) -> Result<(usize, usize), String> {
+    let (cfg, uidplus) = {
+        let store = state.store()?;
         (
             imap_config_for(&store, account),
-            items,
             state
                 .server_has_uidplus
                 .load(std::sync::atomic::Ordering::Relaxed),
         )
     };
     if items.is_empty() {
-        return Ok("0/0".into());
+        return Ok((0, 0));
     }
     let mut gone = 0usize;
     let mut kept = 0usize;
@@ -227,6 +245,6 @@ pub async fn empty_trash(state: State<'_, Arc<AppState>>) -> Result<String, Stri
             kept += 1;
         }
     }
-    log_sync(&format!("trash emptied: {gone} removed, {kept} kept"));
-    Ok(format!("{gone}/{kept}"))
+    log_sync(&format!("trash: {gone} removed, {kept} kept"));
+    Ok((gone, kept))
 }

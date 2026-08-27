@@ -163,6 +163,10 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
         // IDLE, so a conversation never spends the first half hour standing
         // in both its folder and the inbox.
         reconcile_ghost_placements(&state, account, &cfg).await;
+        // The bin's clock starts at launch too, not only on the next poll:
+        // with IDLE holding a quiet account open, "the next cycle" can be
+        // hours away, and mail would sit in the bin unstamped until then.
+        tend_the_bin(&state, account).await;
 
         // History fills in behind the present, on its own clock — see
         // spawn_backfill for why it is not part of the poll loop.
@@ -221,6 +225,7 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
             .await;
             send_due(Arc::clone(&state), account).await;
             reconcile_ghost_placements(&state, account, &cfg).await;
+            tend_the_bin(&state, account).await;
 
             // One connection for the whole account, STATUS-gated per folder:
             // a quiet cycle costs a line per folder, not a login per folder.
@@ -644,6 +649,46 @@ pub(crate) fn ingest_fenced(
             None
         }
     }
+}
+
+/// Keeps the bin's clock running, and empties what has run out.
+///
+/// Off unless `trashRetentionDays` says otherwise, because deleting
+/// somebody's mail on a timer is a promise to opt into rather than a
+/// default to discover. The clock itself is maintained either way: turning
+/// expiry on a month from now should not then treat everything in the bin
+/// as a month old, nor as brand new.
+async fn tend_the_bin(state: &Arc<AppState>, account: i64) {
+    let now = crate::state::now_ms();
+    let days: Option<i64> = {
+        let Ok(store) = state.store.lock() else {
+            return;
+        };
+        let _ = store.refresh_trash_clock(account, now);
+        store
+            .settings()
+            .ok()
+            .and_then(|s| {
+                s.get("trashRetentionDays")
+                    .and_then(|v| v.parse::<i64>().ok())
+            })
+            .filter(|d| *d > 0)
+    };
+    let Some(days) = days else { return };
+    let expired = {
+        let Ok(store) = state.store.lock() else {
+            return;
+        };
+        store.trash_expired(account, days, now).unwrap_or_default()
+    };
+    if expired.is_empty() {
+        return;
+    }
+    log_sync(&format!(
+        "trash expiry: {} message(s) older than {days} day(s)",
+        expired.len()
+    ));
+    let _ = crate::commands::triage::destroy_trashed(state, account, expired).await;
 }
 
 /// Whether this account's server is Gmail — asked of the account's own
