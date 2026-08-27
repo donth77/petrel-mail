@@ -4,7 +4,8 @@
   "description": "Minimal capability for the main window. Deny-by-default: grows only with explicit review. Message frames get no capability at all. Notifications are listed because the window asks the OS to post them; the OS still decides.",
   "windows": [
     "main",
-    "compose-*"
+    "compose-*",
+    "message-*"
   ],
   "permissions": [
     "core:default",
