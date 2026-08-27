@@ -389,6 +389,7 @@ pub fn run() {
             commands::compose::schedule_send,
             commands::windows::popout_compose,
             commands::windows::popout_message,
+            commands::windows::set_dock_badge,
             commands::compose::complete_addresses,
             commands::compose::quote_message,
             commands::compose::save_draft,

@@ -105,6 +105,22 @@ export function App() {
   // show one on a row the moment it is applied.
   const { tags, setTags, folders, setFolders, accounts, setAccounts, activeAccount, identity } =
     useReferenceData(status?.seeding, accountEpoch);
+
+  // The number on the Dock icon: unread in the inbox, added up across
+  // accounts. Not the current view's unread, which is what the rail and the
+  // footer show — that number is right for them because it names what you are
+  // looking at, and wrong for a Dock badge, which would then change every time
+  // you clicked a folder.
+  //
+  // "Mailbox counts: None" turns it off, on the grounds that someone who does
+  // not want counts beside their mailboxes does not want one on the Dock.
+  useEffect(() => {
+    const total =
+      settings.badges === 'off'
+        ? null
+        : accounts.reduce((sum, a) => sum + (a.unread_count ?? 0), 0);
+    void api.setDockBadge(total).catch(() => {});
+  }, [accounts, settings.badges]);
   // The view's true size; items.length is only the loaded window.
   const [viewTotal, setViewTotal] = useState<number | null>(null);
 

@@ -106,3 +106,36 @@ pub fn open_external(url: String) -> Result<(), String> {
     cmd.spawn().map_err(|e| e.to_string())?;
     Ok(())
 }
+
+/// The number on the Dock icon.
+///
+/// Unread in the inbox, summed across accounts, which is the number every
+/// other surface already shows: `unread_count` deliberately excludes spam,
+/// trash and anything filed elsewhere, because counting unread *anywhere*
+/// once had the account switcher announce seven for an account whose inbox
+/// said zero.
+///
+/// `None` clears it. That is what "Mailbox counts: None" means here, and it
+/// is also what zero means — macOS draws a badge for 0 rather than removing
+/// it, and a red dot insisting you have nothing to read is worse than no
+/// badge at all.
+///
+/// The badge lives on the main window rather than the app: a popped-out
+/// composer setting a count would be a second, competing badge.
+#[tauri::command]
+pub fn set_dock_badge(count: Option<i64>, app: tauri::AppHandle) -> Result<(), String> {
+    let Some(main) = app.get_webview_window("main") else {
+        // A pop-out asking before the main window exists is not an error.
+        return Ok(());
+    };
+    let shown = match count {
+        Some(n) if n > 0 => Some(n),
+        _ => None,
+    };
+    // Logged because the badge cannot be read back. macOS exposes it only to
+    // assistive APIs, which this machine refuses, so the log line is the only
+    // way anyone can check what was actually asked for against what the Dock
+    // shows.
+    crate::diag::log_sync(&format!("dock badge: {shown:?}"));
+    main.set_badge_count(shown).map_err(|e| e.to_string())
+}
