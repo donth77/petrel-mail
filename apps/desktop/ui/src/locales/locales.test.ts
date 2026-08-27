@@ -12,8 +12,9 @@ import esFtl from './es.ftl?raw';
 import frFtl from './fr.ftl?raw';
 import deFtl from './de.ftl?raw';
 import ptBrFtl from './pt-BR.ftl?raw';
+import jaFtl from './ja.ftl?raw';
 
-const LOCALES: Record<string, string> = { en: enFtl, es: esFtl, fr: frFtl, de: deFtl, 'pt-BR': ptBrFtl };
+const LOCALES: Record<string, string> = { en: enFtl, es: esFtl, fr: frFtl, de: deFtl, 'pt-BR': ptBrFtl, ja: jaFtl };
 
 function idsIn(source: string): string[] {
   return source
@@ -47,25 +48,50 @@ describe.each(Object.entries(LOCALES))('%s.ftl', (locale, source) => {
   it('keeps every placeholder English declares', () => {
     /* A translator dropping { $count } produces a sentence with a hole in the
        meaning; inventing one produces a literal {$typo} on screen. Neither
-       throws, and both reach the user. */
-    const en = new Map<string, string>();
-    for (const line of enFtl.split('\n')) {
-      const m = /^([a-zA-Z][a-zA-Z0-9_-]*)\s*=(.*)$/.exec(line);
-      if (m) en.set(m[1], m[2]);
-    }
-    const holes = (s: string) => new Set([...s.matchAll(/\{\s*\$(\w+)\s*\}/g)].map((m) => m[1]));
+       throws, and both reach the user.
 
+       Entries are read whole, not line by line. A plural is a multi-line
+       select expression whose first line is `{ $count ->`, which is not a
+       placeable and does not match the placeholder pattern. Reading one line
+       at a time therefore concluded that English declared no $count at all,
+       and flagged every correct translation of those strings as inventing
+       one. The test was wrong, not the translations. */
+    const holes = (value: string) =>
+      new Set([...value.matchAll(/\{\s*\$(\w+)\s*(?:\}|->)/g)].map((m) => m[1]));
+
+    const entries = (src: string) => {
+      const out = new Map<string, string>();
+      let id: string | null = null;
+      let buf: string[] = [];
+      const flush = () => {
+        if (id) out.set(id, buf.join('\n'));
+        id = null;
+        buf = [];
+      };
+      for (const line of src.split('\n')) {
+        const m = /^([a-zA-Z][a-zA-Z0-9_-]*)\s*=(.*)$/.exec(line);
+        if (m) {
+          flush();
+          id = m[1];
+          buf = [m[2]];
+        } else if (id && (line.startsWith(' ') || line.trim() === '}')) {
+          buf.push(line);
+        } else if (!line.trim() || line.startsWith('#')) {
+          flush();
+        }
+      }
+      flush();
+      return out;
+    };
+
+    const en = entries(enFtl);
     const mismatched: string[] = [];
-    for (const line of source.split('\n')) {
-      const m = /^([a-zA-Z][a-zA-Z0-9_-]*)\s*=(.*)$/.exec(line);
-      if (!m) continue;
-      const english = en.get(m[1]);
+    for (const [id, value] of entries(source)) {
+      const english = en.get(id);
       if (english === undefined) continue;
       const want = holes(english);
-      const got = holes(m[2]);
-      // Only flag holes the translation invented, or required ones it dropped.
-      const invented = [...got].filter((h) => !want.has(h));
-      if (invented.length) mismatched.push(`${m[1]}: unknown ${invented.join(', ')}`);
+      const invented = [...holes(value)].filter((h) => !want.has(h));
+      if (invented.length) mismatched.push(`${id}: unknown ${invented.join(', ')}`);
     }
     expect(mismatched).toEqual([]);
   });
