@@ -5,6 +5,7 @@ import { t } from '../lib/strings';
 import { nestableRolePath } from '../lib/folders';
 import { Archive as ArchiveIcon, Trash2 } from 'lucide-react';
 import { Confirm } from './Confirm';
+import { Dialog } from '@ariakit/react';
 import { Picker, type PickerOption } from './Picker';
 
 /**
@@ -38,6 +39,8 @@ export function AppDialogs({
   clearSelected,
   runTriage,
   clearUndo,
+  draftConflict,
+  onSettleDraftConflict,
 }: {
   discarding: OutboxRow | null;
   setDiscarding: Dispatch<SetStateAction<OutboxRow | null>>;
@@ -60,6 +63,8 @@ export function AppDialogs({
   clearSelected: () => void;
   runTriage: (kind: ActionKind, threadId?: number, targetId?: number, quiet?: boolean) => void;
   clearUndo: () => void;
+  draftConflict: { draftId: number; otherId: number } | null;
+  onSettleDraftConflict: (takeServer: boolean) => void;
 }) {
   return (
     <>
@@ -234,6 +239,34 @@ export function AppDialogs({
         }}
       />
 
+      {/* A draft with two living versions: ours, and one another client
+          saved. Neither was discarded — that is what makes this a question
+          rather than a loss — and dismissing chooses nothing: the composer
+          holds the local words until one button says otherwise. */}
+      <Dialog
+        open={draftConflict !== null}
+        onClose={() => onSettleDraftConflict(false)}
+        className="confirm-backdrop"
+        backdrop={<div className="palette-scrim" />}
+        aria-label={t('draft-conflict-title')}
+      >
+        <div className="confirm" role="alertdialog">
+          <div className="confirm-title">{t('draft-conflict-title')}</div>
+          <p className="confirm-detail">{t('draft-conflict-body')}</p>
+          <div className="confirm-foot">
+            <button type="button" className="reply" onClick={() => onSettleDraftConflict(false)}>
+              {t('draft-keep-local')}
+            </button>
+            <button
+              type="button"
+              className="reply primary"
+              onClick={() => onSettleDraftConflict(true)}
+            >
+              {t('draft-take-server')}
+            </button>
+          </div>
+        </div>
+      </Dialog>
     </>
   );
 }

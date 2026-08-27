@@ -14,6 +14,64 @@ impl Store {
     /// reaches the server the day sync learns to APPEND one.
     /// The Message-ID header a stored message carries, for a reply that
     /// must thread into its conversation at the other end.
+    /// A server revision of this draft that is not the copy this store
+    /// pushed: a second-copy row sharing the draft's Message-ID, standing in
+    /// the drafts folder. The reconcile sweep creates exactly this shape when
+    /// another client saved its own version of the draft, so its presence is
+    /// the conflict — no network question needed at composer-open time.
+    pub fn draft_conflict(&self, draft_id: i64) -> Result<Option<(i64, Option<i64>)>> {
+        let (msgid, _) = self.draft_sync_state(draft_id)?;
+        let Some(msgid) = msgid else {
+            return Ok(None);
+        };
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT m.id, p.uid FROM messages m
+                 JOIN placements p ON p.message_id = m.id
+                 JOIN folders f ON f.id = p.folder_id AND f.role = 'drafts'
+                 WHERE m.message_id_hdr LIKE ?1 || '::copy-%'
+                   AND m.deleted_at_ms IS NULL
+                 ORDER BY p.uid DESC LIMIT 1",
+                params![msgid],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?)),
+            )
+            .optional()?)
+    }
+
+    /// Makes the server's revision the draft: its words and subject land in
+    /// the draft columns, its UID becomes the recorded one, and the next
+    /// composer open shows what was chosen.
+    pub fn adopt_server_revision(
+        &self,
+        draft_id: i64,
+        subject: &str,
+        body: &str,
+        html: &str,
+        uid: Option<u32>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE messages SET subject = ?2, draft_body = ?3, draft_html = ?4,
+                    draft_server_uid = ?5
+             WHERE id = ?1",
+            params![draft_id, subject, body, html, uid.map(|u| u as i64)],
+        )?;
+        Ok(())
+    }
+
+    /// Removes the second-copy row a resolved conflict leaves behind. The
+    /// blob is content-addressed and may be shared, so only the row and its
+    /// placements go; gc owns the bytes.
+    pub fn retire_second_copy(&self, message_id: i64) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM placements WHERE message_id = ?1",
+            params![message_id],
+        )?;
+        self.conn
+            .execute("DELETE FROM messages WHERE id = ?1", params![message_id])?;
+        Ok(())
+    }
+
     pub fn msgid_header_of(&self, message_id: i64) -> Result<Option<String>> {
         Ok(self
             .conn

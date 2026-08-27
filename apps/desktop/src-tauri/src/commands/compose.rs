@@ -58,6 +58,127 @@ pub async fn push_draft(id: i64, state: State<'_, Arc<AppState>>) -> Result<(), 
     push_draft_to_server(state.inner(), id).await
 }
 
+/// A revision of this draft saved by another client, if the sweeps found
+/// one standing beside ours on the server.
+#[derive(serde::Serialize)]
+pub struct DraftConflict {
+    pub other_id: i64,
+}
+
+#[tauri::command]
+pub fn draft_conflict(
+    id: i64,
+    state: State<Arc<AppState>>,
+) -> Result<Option<DraftConflict>, String> {
+    let store = state.store()?;
+    Ok(store
+        .draft_conflict(id)
+        .map_err(|e| e.to_string())?
+        .map(|(other_id, _)| DraftConflict { other_id }))
+}
+
+/// Settles a draft conflict the way the person chose.
+///
+/// Take the server's: its words become the draft, its UID becomes the
+/// recorded one, and our superseded copy is expunged from the server. Keep
+/// this version: the other revision is expunged and a push makes the server
+/// say what the composer says. Either way exactly one revision remains,
+/// chosen rather than raced — the data layer never discarded either, which
+/// is what makes the question askable at all.
+#[tauri::command]
+pub async fn resolve_draft_conflict(
+    id: i64,
+    other_id: i64,
+    take_server: bool,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    use crate::config::imap_config_for;
+    use crate::state::active_account;
+
+    let (cfg, drafts_path, our_uid, other_uid) = {
+        let store = state.store()?;
+        let account = active_account(&store)?;
+        let cfg = imap_config_for(&store, account);
+        let drafts_path = store
+            .folder_for_role(account, "drafts")
+            .ok()
+            .flatten()
+            .and_then(|fid| store.folder_path(fid).ok().flatten());
+        let (_, our_uid) = store.draft_sync_state(id).map_err(|e| e.to_string())?;
+        let other_uid = store
+            .draft_conflict(id)
+            .map_err(|e| e.to_string())?
+            .filter(|(oid, _)| *oid == other_id)
+            .and_then(|(_, uid)| uid);
+        (cfg, drafts_path, our_uid, other_uid)
+    };
+
+    if take_server {
+        // The other revision's words, out of its blob.
+        let (subject, body, html) = {
+            let store = state.store()?;
+            let hash = store
+                .blob_hash_for(other_id)
+                .map_err(|e| e.to_string())?
+                .ok_or("the server revision has no stored body")?;
+            let raw = state.blobs.read(&hash).map_err(|e| e.to_string())?;
+            let parsed = petrel_mime::parse_message(&raw).ok_or("unparseable revision")?;
+            (
+                parsed.subject.unwrap_or_default(),
+                parsed.body_text,
+                parsed.body_html.unwrap_or_default(),
+            )
+        };
+        {
+            let store = state.store()?;
+            store
+                .adopt_server_revision(id, &subject, &body, &html, other_uid.map(|u| u as u32))
+                .map_err(|e| e.to_string())?;
+            store
+                .retire_second_copy(other_id)
+                .map_err(|e| e.to_string())?;
+        }
+        // Our superseded server copy goes; the adopted one stands.
+        if let (Some(cfg), Some(path), Some(uid)) = (&cfg, &drafts_path, our_uid)
+            && Some(uid as i64) != other_uid
+        {
+            let _ = petrel_providers::imap::expunge_uid(
+                cfg,
+                path,
+                uid,
+                state
+                    .server_has_uidplus
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            )
+            .await;
+        }
+        crate::diag::log_sync(&format!("draft {id}: took the server's revision"));
+    } else {
+        {
+            let store = state.store()?;
+            store
+                .retire_second_copy(other_id)
+                .map_err(|e| e.to_string())?;
+        }
+        // The other revision goes from the server too — that is what keeping
+        // this version means — and a push makes the server agree.
+        if let (Some(cfg), Some(path), Some(uid)) = (&cfg, &drafts_path, other_uid) {
+            let _ = petrel_providers::imap::expunge_uid(
+                cfg,
+                path,
+                uid as u32,
+                state
+                    .server_has_uidplus
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            )
+            .await;
+        }
+        crate::sync::drafts::schedule_draft_push(Arc::clone(&state), id);
+        crate::diag::log_sync(&format!("draft {id}: kept the local version"));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn load_draft(id: i64, state: State<Arc<AppState>>) -> Result<DraftRecord, String> {
     let store = state.store()?;

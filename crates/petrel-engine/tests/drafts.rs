@@ -394,3 +394,49 @@ fn two_drafts_list_as_two_even_when_threaded_together() {
     let rows = store.list_threads(&view, 0, 50).expect("list");
     assert_eq!(rows.len(), 2, "two drafts are two rows");
 }
+
+#[test]
+fn a_foreign_revision_is_a_conflict_and_both_resolutions_hold() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut store = petrel_engine::store::Store::open(&dir.path().join("p.db")).expect("store");
+    let blobs = petrel_engine::blob::BlobStore::open(&dir.path().join("blobs")).expect("blobs");
+    let account = store.ensure_test_account().expect("account");
+    let drafts = store
+        .ensure_folder(account, "drafts", "Drafts")
+        .expect("folder");
+    let draft = store
+        .save_draft(account, None, "sam@example.com", "plans", "first words", "")
+        .expect("draft");
+    store.set_draft_msgid(draft, "d-abc@petrel").expect("msgid");
+    store.set_draft_server_uid(draft, Some(40)).expect("uid");
+    assert_eq!(store.draft_conflict(draft).expect("none yet"), None);
+
+    // Another client's save, as the reconcile sweep stores it: a second-copy
+    // row sharing the Message-ID, placed in the drafts folder.
+    let raw = "From: Me <me@example.com>\r\nTo: sam@example.com\r\n\
+               Subject: plans, revised\r\nDate: Tue, 18 Aug 2026 14:02:00 +0000\r\n\
+               Message-ID: <d-abc@petrel>\r\nMIME-Version: 1.0\r\n\
+               Content-Type: text/plain; charset=utf-8\r\n\r\nsecond thoughts\r\n"
+        .as_bytes()
+        .to_vec();
+    let other = store
+        .ingest_raw_second_copy(&blobs, account, Some(drafts), 41, &raw)
+        .expect("second copy");
+    let found = store.draft_conflict(draft).expect("conflict");
+    assert_eq!(found, Some((other.message_id, Some(41))));
+
+    // Taking the server: its words land, its uid is recorded, the row folds.
+    store
+        .adopt_server_revision(draft, "plans, revised", "second thoughts", "", Some(41))
+        .expect("adopt");
+    store.retire_second_copy(other.message_id).expect("retire");
+    let rec = store.load_draft(draft).expect("load");
+    assert_eq!(rec.body, "second thoughts");
+    assert_eq!(rec.subject, "plans, revised");
+    assert_eq!(
+        store.draft_sync_state(draft).expect("state").1,
+        Some(41),
+        "the adopted uid is the recorded one"
+    );
+    assert_eq!(store.draft_conflict(draft).expect("settled"), None);
+}
