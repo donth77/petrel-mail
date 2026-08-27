@@ -76,9 +76,27 @@ jobs:
     # the shell used to sail through green. This job builds it the way
     # scripts/rebuild.sh does: UI assets first, then the crate with the
     # production feature, under clippy's -D warnings.
-    runs-on: macos-latest
+    #
+    # All three platforms, because the engine being portable says nothing
+    # about the shell: WebKitGTK on Linux and WebView2 on Windows are where
+    # a Tauri app actually differs. This job was macOS-only, so whether the
+    # shell even compiled elsewhere was simply unknown.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
+      # Tauri on Linux builds against WebKitGTK and friends; none of it is on
+      # the runner by default.
+      - name: Linux build dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
+            patchelf libssl-dev build-essential curl wget file libxdo-dev
       - uses: pnpm/action-setup@v4
         with:
           version: 10
