@@ -23,6 +23,14 @@ export function MessageBody({ messageId, title }: { messageId: number; title: st
   // Bumped to re-fetch the body once the policy for it has changed. The URL is
   // single-use, so a new one is the only way to render the same message again.
   const [reload, setReload] = useState(0);
+  // The per-message escape from the dark transform (and from a sender's own
+  // dark styling): render this one light. Session-local by intent.
+  const [forceLight, setForceLight] = useState(false);
+  const appDark =
+    settings.theme === 'dark' ||
+    (settings.theme !== 'light' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-color-scheme: dark)').matches);
 
   useEffect(() => {
     let live = true;
@@ -35,14 +43,19 @@ export function MessageBody({ messageId, title }: { messageId: number; title: st
       // message open. Which messages may actually go dark is the frame's own
       // decision (sender-declared, or plain text); this only says what the
       // app looks like today.
-      .then((u) =>
-        live && setUrl(u ? `${u}${u.includes('?') ? '&' : '?'}theme=${settings.theme}` : null),
-      )
+      .then((u) => {
+        if (!live) return;
+        // Resolved to light/dark here: the frame's transform has to decide
+        // *now*, and "system" is only answerable on this side of the wall.
+        const resolved = appDark ? 'dark' : 'light';
+        const force = forceLight ? '&force=light' : '';
+        setUrl(u ? `${u}${u.includes('?') ? '&' : '?'}theme=${resolved}${force}` : null);
+      })
       .catch(() => live && setUrl(null));
     return () => {
       live = false;
     };
-  }, [messageId, reload, settings.theme]);
+  }, [messageId, reload, settings.theme, forceLight, appDark]);
 
   useEffect(() => {
     function onMessage(e: MessageEvent) {
@@ -139,6 +152,17 @@ export function MessageBody({ messageId, title }: { messageId: number; title: st
         </div>
       )}
       {sender && <div className="blocked-remote quiet">{t('remote-trusted', { addr: sender })}</div>}
+      {appDark && (
+        <div className="frame-theme-row">
+          <button
+            type="button"
+            className="linkish"
+            onClick={() => setForceLight((v) => !v)}
+          >
+            {forceLight ? t('msg-view-dark') : t('msg-view-light')}
+          </button>
+        </div>
+      )}
     {/* No `scrolling="no"`: that turns off both axes, and sideways is the last
         resort for a message too wide to shrink to a readable size — without it
         such a message is simply cut off with no way to reach the rest. The

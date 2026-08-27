@@ -5,6 +5,7 @@
 //! malformed message must degrade, not crash the engine), and **never lose the
 //! original** (parsing produces a view; the raw bytes stay the source of truth).
 
+pub mod darken;
 pub mod ical;
 pub mod parse;
 pub mod sanitize;

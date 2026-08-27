@@ -682,6 +682,12 @@ pub fn handle(
     // its sender said the colors survive that (the meta is read from the raw
     // HTML; the sanitizer strips it before rendering). Plain text is marked
     // up by us, so its colors are ours to theme, like any other chrome.
+    let query = request.uri().query();
+    // The per-message escape: whatever else is true of this message, render
+    // it light. It overrides the transform and a sender's declaration alike,
+    // because the person asking has seen the result and wants out of it.
+    let force_light = query.unwrap_or("").split('&').any(|kv| kv == "force=light");
+    let app_dark = query.unwrap_or("").split('&').any(|kv| kv == "theme=dark");
     let (body, report, theme) = match parsed.body_html.as_deref() {
         Some(html) => {
             let declared = petrel_mime::declares_dark(html);
@@ -690,11 +696,20 @@ pub fn handle(
             // webview cannot follow a cid, but it can fetch the same bytes
             // from the message's own protocol. Root-relative, so it resolves
             // against this document's origin on every platform spelling.
-            let html = petrel_mime::resolve_cids(&s.html, &parsed.attachments, |part| {
+            let mut html = petrel_mime::resolve_cids(&s.html, &parsed.attachments, |part| {
                 format!("/attachment/{token}/{part}")
             });
-            let theme = if declared {
-                FrameTheme::adaptive_from_query(request.uri().query())
+            let theme = if force_light {
+                FrameTheme::AlwaysLight
+            } else if declared {
+                FrameTheme::adaptive_from_query(query)
+            } else if app_dark {
+                // Light-only mail in a dark app: recolor rather than glare.
+                // Lightness flips, hue holds, images are never touched, and
+                // the frame's own variables go dark with it. The sender's
+                // declared-dark path above stays exactly as it was.
+                html = petrel_mime::darken::recolor_for_dark(&html);
+                FrameTheme::adaptive_from_query(query)
             } else {
                 FrameTheme::AlwaysLight
             };
@@ -703,7 +718,11 @@ pub fn handle(
         None => (
             petrel_mime::plain_text_to_html(&parsed.body_text),
             Default::default(),
-            FrameTheme::adaptive_from_query(request.uri().query()),
+            if force_light {
+                FrameTheme::AlwaysLight
+            } else {
+                FrameTheme::adaptive_from_query(query)
+            },
         ),
     };
 
