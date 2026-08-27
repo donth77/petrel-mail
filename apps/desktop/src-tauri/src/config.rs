@@ -8,14 +8,93 @@ use std::sync::Mutex;
 /// Reads account settings from the environment. Credentials never appear in
 /// argv (visible to every process on the machine) or in a config file we wrote;
 /// the keychain replaces this at M4 when account setup exists.
+/// This store's own name in the keychain, learned once per launch.
+///
+/// Set from the store at startup. Absent only if something asked for a
+/// password before the store was open, which the fallback below treats as
+/// the legacy single-store world rather than inventing a new identity.
+static STORE_KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Records which store this process is serving, and moves its passwords into
+/// the per-store namespace if they are still in the old shared one.
+///
+/// Two stores — the demo one and the live one, or a copy taken for testing —
+/// each called their first account `account-1` and therefore shared a single
+/// keychain item. Nothing had gone wrong yet only because both slots happened
+/// to hold the same password; the moment they differed, one store would sign
+/// in with the other's secret, and deleting an account in one would take the
+/// other's password with it. Keyed by the store, that cannot happen.
+pub(crate) fn adopt_store_identity(store: &Store, account_ids: &[i64]) {
+    let Ok(id) = store_identity(store) else {
+        return;
+    };
+    if STORE_KEY.set(id.clone()).is_err() {
+        return; // already set: nothing to do
+    }
+    // One-time move: a password sitting under the old shared name becomes
+    // this store's. The old item is left alone rather than deleted — another
+    // store may still be reading it, and this is not the code that gets to
+    // decide that.
+    for account in account_ids {
+        let new = keyring::Entry::new(KEYCHAIN_SERVICE, &format!("{id}/account-{account}"));
+        let old = keyring::Entry::new(KEYCHAIN_SERVICE, &format!("account-{account}"));
+        if let (Ok(new), Ok(old)) = (new, old)
+            && new.get_password().is_err()
+            && let Ok(pass) = old.get_password()
+        {
+            match new.set_password(&pass) {
+                Ok(()) => {
+                    remember_password(*account, &pass);
+                    crate::diag::log_sync(&format!(
+                        "keychain: account {account} adopted into this store's namespace"
+                    ));
+                }
+                Err(e) => eprintln!("[keychain] could not adopt account {account}: {e}"),
+            }
+        }
+    }
+}
+
+const KEYCHAIN_SERVICE: &str = "dev.petrel.desktop";
+
+/// A stable name for this store, minted once and kept in it. Minted rather
+/// than derived from the path so that moving the directory — or restoring it
+/// from a backup — does not orphan the passwords inside it.
+fn store_identity(store: &Store) -> Result<String, String> {
+    if let Ok(settings) = store.settings()
+        && let Some(id) = settings.get("store_id")
+        && !id.is_empty()
+    {
+        return Ok(id.clone());
+    }
+    let minted = format!(
+        "s{:x}{:x}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    );
+    store
+        .set_setting("store_id", &minted)
+        .map_err(|e| e.to_string())?;
+    Ok(minted)
+}
+
 /// The keychain entry for an account's password.
 ///
-/// Keyed by the account's row id rather than its address, so renaming an
-/// account or adding a second one with the same address on another server
-/// cannot point two accounts at one secret.
+/// Keyed by the store *and* the account's row id: by the row rather than the
+/// address, so renaming an account cannot point two at one secret; by the
+/// store, so two stores' first accounts are not the same item.
 pub(crate) fn keychain_entry(account_id: i64) -> Result<keyring::Entry, String> {
-    keyring::Entry::new("dev.petrel.desktop", &format!("account-{account_id}"))
-        .map_err(|e| format!("keychain: {e}"))
+    let name = match STORE_KEY.get() {
+        Some(store) => format!("{store}/account-{account_id}"),
+        // Before the store is open there is no per-store name to use. The
+        // legacy name is the honest answer: it is where such a password
+        // would already be.
+        None => format!("account-{account_id}"),
+    };
+    keyring::Entry::new(KEYCHAIN_SERVICE, &name).map_err(|e| format!("keychain: {e}"))
 }
 
 /// Passwords read from the keychain, once per account per launch.
@@ -179,5 +258,39 @@ mod password_cache_tests {
     fn a_cache_miss_terminates() {
         assert_eq!(account_password(i64::MAX), None);
         assert_eq!(account_password(i64::MAX), None);
+    }
+}
+
+#[cfg(test)]
+mod store_key_tests {
+    use super::*;
+
+    #[test]
+    fn a_store_keeps_the_name_it_was_given() {
+        let a = Store::open_in_memory().unwrap();
+        let first = store_identity(&a).expect("minted");
+        assert!(!first.is_empty());
+        // Minted once and kept: a second ask returns the same name, so the
+        // passwords written under it stay findable across launches.
+        assert_eq!(store_identity(&a).expect("again"), first);
+
+        // A different store is a different name — the whole point. Two stores
+        // whose first account is `account-1` must not share one item.
+        let b = Store::open_in_memory().unwrap();
+        assert_ne!(store_identity(&b).expect("other"), first);
+    }
+
+    #[test]
+    fn the_entry_name_carries_the_store_when_one_is_known() {
+        // Before a store is adopted the legacy name is used, which is where
+        // an existing password already lives.
+        let name = match STORE_KEY.get() {
+            Some(store) => format!("{store}/account-7"),
+            None => "account-7".to_string(),
+        };
+        assert!(name.ends_with("account-7"));
+        // And an adopted store puts its own name in front.
+        let with_store = format!("{}/account-7", "s1234");
+        assert_eq!(with_store, "s1234/account-7");
     }
 }

@@ -32,7 +32,9 @@ mod spike_s2;
 mod state;
 mod sync;
 
-use config::{imap_config_for, imap_config_from_env, keychain_entry, remember_password};
+use config::{
+    adopt_store_identity, imap_config_for, imap_config_from_env, keychain_entry, remember_password,
+};
 use demo::{decorate_demo_store, reseed_demo_if_stale, spawn_demo_seeding};
 use diag::{DIAG, SELFTEST, data_dir, log_sync};
 use message_view::ViewTokens;
@@ -144,6 +146,13 @@ pub fn run() {
     {
         let state = Arc::clone(&state);
         std::thread::spawn(move || {
+            // Which store this is, before any password is read: keychain items
+            // are named per store, and a read under the wrong name is a
+            // consent dialog for nothing.
+            if let Ok(store) = state.store.lock() {
+                let ids = store.account_ids().unwrap_or_default();
+                adopt_store_identity(&store, &ids);
+            }
             // The account set up in the app first; the environment as the developer
             // override when there is none. Before this every launch without the
             // variables was a demo — which is how demo tags ended up decorating a
