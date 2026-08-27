@@ -154,6 +154,11 @@ say "notarize (this waits on Apple; a few minutes is normal)"
 xcrun notarytool submit "$DMG" "${NOTARY_ARGS[@]}" --wait
 
 say "staple"
+# The .app is stapled as well as the DMG. The updater ships the .app inside a
+# tarball, never the DMG, so an update that arrives unstapled has to ask
+# Apple's servers to prove it was notarized. Stapled, it carries the proof
+# with it and verifies offline. The ticket is found by the app's own hash.
+xcrun stapler staple "$APP"
 # Stapling puts the ticket inside the file, so a machine that has never
 # spoken to Apple — or is offline when the DMG is opened — still sees a
 # notarized app rather than a warning.
@@ -194,24 +199,26 @@ if [ -f "$KEY_PATH" ] && command -v cargo-tauri >/dev/null; then
     cargo tauri signer sign "$TARBALL" >/dev/null
   SIGNATURE="$(cat "$TARBALL.sig")"
   NOTES="${PETREL_RELEASE_NOTES:-}"
+  [ -n "$NOTES" ] || echo "warning: PETREL_RELEASE_NOTES is empty; the Updates pane will show no notes" >&2
   PUBDATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  cat > "$ROOT/target/release/latest.json" <<JSON
-{
-  "version": "$VERSION",
-  "notes": "$NOTES",
-  "pub_date": "$PUBDATE",
-  "platforms": {
-    "darwin-aarch64": {
-      "signature": "$SIGNATURE",
-      "url": "https://github.com/donth77/petrel-mail/releases/download/v$VERSION/Petrel-$VERSION.app.tar.gz"
+  URL="https://github.com/donth77/petrel-mail/releases/download/v$VERSION/Petrel-$VERSION.app.tar.gz"
+  # Written by a JSON writer rather than a heredoc. Release notes are prose,
+  # and the moment one contains a quote or a line break, string interpolation
+  # emits a broken manifest. A manifest that will not parse means every
+  # install silently stops seeing updates. These go in as data.
+  RELEASE_VERSION="$VERSION" RELEASE_NOTES="$NOTES" RELEASE_PUBDATE="$PUBDATE" \
+  RELEASE_SIG="$SIGNATURE" RELEASE_URL="$URL" RELEASE_OUT="$ROOT/target/release/latest.json" \
+  python3 -c 'import json, os
+sig, url = os.environ["RELEASE_SIG"], os.environ["RELEASE_URL"]
+json.dump({
+    "version":  os.environ["RELEASE_VERSION"],
+    "notes":    os.environ["RELEASE_NOTES"],
+    "pub_date": os.environ["RELEASE_PUBDATE"],
+    "platforms": {
+        "darwin-aarch64": {"signature": sig, "url": url},
+        "darwin-x86_64":  {"signature": sig, "url": url},
     },
-    "darwin-x86_64": {
-      "signature": "$SIGNATURE",
-      "url": "https://github.com/donth77/petrel-mail/releases/download/v$VERSION/Petrel-$VERSION.app.tar.gz"
-    }
-  }
-}
-JSON
+}, open(os.environ["RELEASE_OUT"], "w"), indent=2)' || die "could not write latest.json"
   echo "signed tarball: $TARBALL"
   echo "manifest:       $ROOT/target/release/latest.json"
 else
