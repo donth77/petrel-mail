@@ -12,6 +12,10 @@
 [![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app)
 [![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=white)](https://react.dev)
 
+<img src="assets/screenshot-inbox.png" width="820" alt="Petrel's inbox: the mailbox sidebar with tags and counts, a conversation list, and a message open in the reading pane.">
+
+
+
 </div>
 
 ---

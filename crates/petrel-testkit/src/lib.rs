@@ -131,6 +131,117 @@ pub struct GenMessage {
     pub date_ms: i64,
 }
 
+impl GenMessage {
+    /// The message as bytes, the way it would have arrived off the wire.
+    ///
+    /// Synthetic mail is inserted in bulk for speed, which stores headers and
+    /// an index but no body — and the reading pane renders from stored bytes,
+    /// so every message opens blank. This is what gives it something to read.
+    ///
+    /// `seq` only has to be unique within a mailbox: it is the Message-ID, and
+    /// the store dedupes on that, so a repeated one silently drops the message.
+    pub fn to_rfc822(&self, seq: usize) -> Vec<u8> {
+        let mut out = String::with_capacity(self.body.len() + 512);
+        out.push_str(&format!(
+            "From: {} <{}>\r\n",
+            self.from_display, self.from_addr
+        ));
+        out.push_str(&format!("To: {}\r\n", self.to_addr));
+        out.push_str(&format!("Subject: {}\r\n", self.subject));
+        out.push_str(&format!("Date: {}\r\n", rfc2822_date(self.date_ms)));
+        out.push_str(&format!("Message-ID: <demo-{seq}@petrel.example>\r\n"));
+        out.push_str("MIME-Version: 1.0\r\n");
+        out.push_str("Content-Type: text/plain; charset=utf-8\r\n");
+        out.push_str("Content-Transfer-Encoding: 8bit\r\n\r\n");
+
+        // The generated line, then enough around it that the reading pane has
+        // the shape of a message rather than one orphaned sentence.
+        out.push_str(&self.body);
+        out.push_str("\r\n\r\n");
+        out.push_str(FOLLOW_ONS[seq % FOLLOW_ONS.len()]);
+        out.push_str("\r\n\r\n");
+        // People sign their mail; billing systems and newsletters do not, and
+        // "Thanks, Fastmail" under an invoice is the kind of detail that makes
+        // synthetic mail read as synthetic.
+        if let Some(name) = self.signs_off_as() {
+            out.push_str(CLOSINGS[seq % CLOSINGS.len()]);
+            out.push_str("\r\n");
+            out.push_str(name);
+            out.push_str("\r\n");
+        }
+        out.into_bytes()
+    }
+}
+
+impl GenMessage {
+    /// The sender's first name, when the sender is a person.
+    ///
+    /// Decided from the address rather than the display name: a person's
+    /// mailbox is usually named after them (`dana@`, `sam.ortiz@`), and an
+    /// organisation's is named after its function (`billing@`, `news@`,
+    /// `orders@`). No list of company names to keep up to date.
+    fn signs_off_as(&self) -> Option<&str> {
+        let first = self.from_display.split(' ').next()?;
+        if first.len() < 2 {
+            return None;
+        }
+        let local = self.from_addr.split('@').next()?.to_lowercase();
+        local.contains(&first.to_lowercase()).then_some(first)
+    }
+}
+
+/// Second paragraphs. Deliberately dull and specific: demo prose that tries to
+/// be interesting reads as filler, and filler is what you notice in a
+/// screenshot.
+const FOLLOW_ONS: &[&str] = &[
+    "I have put the numbers in the shared folder so you can check the working rather than take my word for it. The summary is on the first tab; everything else is the trail that produced it.",
+    "No rush on this — end of week is fine, and if it slips to Monday nothing breaks. I would rather it were right than early.",
+    "Two of us have read it and landed in the same place, which is either reassuring or a sign we have both missed the same thing. A third pair of eyes would settle it.",
+    "The short version: it holds. The longer version is below, for whoever wants to see how we got there.",
+    "I have left the old version in place for now so the two can be compared side by side. Say the word and I will take it down.",
+];
+
+/// Sign-offs, so a message ends the way people end them.
+const CLOSINGS: &[&str] = &["Thanks,", "Best,", "Cheers,", "Regards,", "Talk soon,"];
+
+/// RFC 2822 date, in UTC.
+///
+/// Civil-from-days (Howard Hinnant's algorithm): no date crate, no timezone
+/// database, and the same arithmetic the store uses for mbox From lines.
+pub fn rfc2822_date(ms: i64) -> String {
+    const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let secs = ms.div_euclid(1000);
+    let days = secs.div_euclid(86_400);
+    let tod = secs.rem_euclid(86_400);
+    let (h, m, s) = (tod / 3600, (tod % 3600) / 60, tod % 60);
+
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { y + 1 } else { y };
+    let dow = (days + 4).rem_euclid(7) as usize;
+
+    format!(
+        "{}, {:02} {} {} {:02}:{:02}:{:02} +0000",
+        DAYS[dow],
+        d,
+        MONTHS[(month - 1) as usize],
+        year,
+        h,
+        m,
+        s
+    )
+}
+
 pub struct MailboxGen {
     rng: Rng,
     n: usize,
@@ -347,7 +458,7 @@ impl Iterator for DemoMailbox {
             date_ms: self.now_ms - minutes_back * 60_000,
             from_addr: addr.to_string(),
             from_display: display.to_string(),
-            to_addr: "me@example.com".to_string(),
+            to_addr: "you@example.com".to_string(),
             subject,
             body: body.to_string(),
         })

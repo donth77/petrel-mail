@@ -11,6 +11,11 @@ pub(crate) struct AppState {
     pub(crate) store: Mutex<Store>,
     pub(crate) blobs: BlobStore,
     pub(crate) seeding: AtomicBool,
+    /// True when the window is showing synthetic mail because no account is
+    /// configured. The UI needs to tell that apart from a first run: both have
+    /// no account, but one has a mailbox to show and the other has onboarding
+    /// to offer, and treating demo mode as a first run hid the demo entirely.
+    pub(crate) demo: AtomicBool,
     pub(crate) seeded: AtomicUsize,
     pub(crate) source: Mutex<String>,
     /// Set when a sync fails. Separate from `source` because a failure has to

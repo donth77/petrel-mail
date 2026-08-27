@@ -43,6 +43,7 @@ import { MessageList } from './components/MessageList';
 import { Reader } from './components/Reader';
 import { Outbox } from './components/Outbox';
 import { Onboarding } from './components/Onboarding';
+import { syncState } from './lib/sync-status';
 import { Dialog } from '@ariakit/react';
 import { PaneResize } from './components/PaneResize';
 
@@ -1086,7 +1087,8 @@ export function App() {
   // Adding another account, from the switcher or from Settings. The same
   // three steps as a first run, in a dialog over the app.
   const [addingAccount, setAddingAccount] = useState(false);
-  if (status && !status.configured && !onboarded) {
+  // Demo mode has a mailbox to show; onboarding is for a genuine first run.
+  if (status && !status.configured && !status.demo && !onboarded) {
     return (
       <div className="app-frame">
         <TitleBar synced="" />
@@ -1097,7 +1099,16 @@ export function App() {
 
   return (
     <div className="app-frame">
-      <TitleBar synced={status?.seeding ? t('status-seeding') : t('titlebar-sync')} />
+      <TitleBar
+        synced={((): string => {
+          const sync = syncState(status);
+          if (sync.kind === 'seeding') return t('status-seeding');
+          if (sync.kind === 'failed') return t('titlebar-sync-failed');
+          if (sync.kind === 'demo') return t('titlebar-demo');
+          if (sync.kind === 'never') return t('titlebar-sync-waiting');
+          return t('titlebar-sync');
+        })()}
+      />
       {status?.sync_error && (
         // Loud on purpose. A sync that fails silently is indistinguishable from
         // an account with no mail in it, and that ambiguity cost real time.
@@ -1937,18 +1948,20 @@ export function App() {
       <footer className="status">
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
           <span className="dot" style={{ background: 'var(--good)', inlineSize: 6, blockSize: 6 }} />
-          {status?.seeding
-            ? t('status-seeding')
-            : (() => {
-                // Aged from a real timestamp; the old label was a constant
-                // and therefore eternally "just now".
-                const at = status?.last_sync_ms ?? 0;
-                if (!at) return t('status-sync-waiting');
-                const min = Math.floor((Date.now() - at) / 60000);
-                if (min < 2) return t('status-synced');
-                if (min < 120) return t('status-synced-min', { min: String(min) });
-                return t('status-synced-hr', { hr: String(Math.floor(min / 60)) });
-              })()}
+          {((): string => {
+            const sync = syncState(status);
+            if (sync.kind === 'seeding') return t('status-seeding');
+            if (sync.kind === 'failed') return t('status-sync-failed');
+            // Nothing is on its way, so nothing is being waited for.
+            if (sync.kind === 'demo') return t('status-demo');
+            if (sync.kind === 'never') return t('status-sync-waiting');
+            // Aged from a real timestamp; the old label was a constant
+            // and therefore eternally "just now".
+            const min = Math.floor((Date.now() - sync.at) / 60000);
+            if (min < 2) return t('status-synced');
+            if (min < 120) return t('status-synced-min', { min: String(min) });
+            return t('status-synced-hr', { hr: String(Math.floor(min / 60)) });
+          })()}
         </span>
         {/* A rule between two facts, drawn as a character. Hidden from
             assistive technology because "pipe" between them is noise, and

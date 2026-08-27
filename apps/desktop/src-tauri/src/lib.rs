@@ -82,6 +82,7 @@ pub fn run() {
         store: Mutex::new(store),
         blobs,
         seeding: AtomicBool::new(true),
+        demo: AtomicBool::new(false),
         seeded: AtomicUsize::new(0),
         source: Mutex::new("starting…".into()),
         sync_error: Mutex::new(None),
@@ -292,6 +293,10 @@ pub fn run() {
                     spawn_real_sync(state.clone(), account, cfg);
                 }
                 (_, None) => {
+                    // No account anywhere: whatever is on screen is synthetic,
+                    // and the window is told so rather than being left to infer
+                    // a first run from the absence of one.
+                    state.demo.store(true, Ordering::Relaxed);
                     // Demo data is for an empty first run only. Seeding it into a store
                     // that already holds real mail would mix fabricated messages into
                     // someone's actual mailbox — found the hard way when a persistence

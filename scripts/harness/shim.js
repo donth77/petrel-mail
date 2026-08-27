@@ -147,6 +147,11 @@
           return [];
         })(),
         configured: configured,
+        // Set localStorage.__petrel_demo to model synthetic-mail mode, where
+        // the window shows the mailbox instead of onboarding.
+        demo: (function () {
+          try { return localStorage.getItem('__petrel_demo') === '1'; } catch (e) { return false; }
+        })(),
         seeding: seeding,
         // A denominator larger than what is held, so the coverage line has
         // something true to say during a backfill.

@@ -240,6 +240,10 @@ export type Status = {
   /** Whether any account can sign in. `false` means first run: show
    *  onboarding rather than an empty mailbox. */
   configured: boolean;
+  /** Synthetic mail, no account configured. Both this and `configured` are
+   *  false on a genuine first run; only this one means there is something to
+   *  look at. */
+  demo: boolean;
   /** Present when a sync failed. A login that fails must not read as an empty
    *  mailbox — the two look identical until something says so. */
   sync_error?: string | null;
@@ -323,7 +327,7 @@ const mockAccounts: Account[] = [
 const mock = {
   status: async (): Promise<Status> => ({
     last_sync_ms: Date.now(),
-    configured: true,
+    configured: true, demo: false,
     seeding: false, count: 10000, server_total: 12500, source: 'tom@northbay.example',
     retention: 'mirror', data_dir: '~/Library/Application Support/Petrel',
   }),

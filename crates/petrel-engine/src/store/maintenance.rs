@@ -13,6 +13,48 @@ impl Store {
         Ok(())
     }
 
+    /// Gives bulk-inserted rows the stored bytes the reading pane renders from.
+    ///
+    /// `insert_messages` writes headers, a snippet and the index — everything a
+    /// list needs and nothing a reader does. A row left that way still claims a
+    /// full body, because that is the column default, so it looks perfectly
+    /// ordinary in the list and opens blank. Real mail never comes this way:
+    /// it arrives through `ingest_raw`, which stores the bytes as it parses
+    /// them. This is for synthetic mail, which is seeded in bulk for speed and
+    /// still has to be readable.
+    ///
+    /// One transaction for the batch: a statement pair per message, each
+    /// committing on its own, is thousands of fsyncs and turns seeding from
+    /// seconds into minutes.
+    pub fn attach_raw_bodies(
+        &mut self,
+        blobs: &crate::blob::BlobStore,
+        bodies: &[(i64, Vec<u8>)],
+    ) -> Result<usize> {
+        let mut written = Vec::with_capacity(bodies.len());
+        for (id, raw) in bodies {
+            let (hash, size) = blobs
+                .write(raw)
+                .map_err(|e| StoreError::Ingest(format!("blob write failed: {e}")))?;
+            written.push((*id, hash, size, raw.len() as i64));
+        }
+        let tx = self.conn.transaction()?;
+        {
+            let mut ins = tx.prepare_cached(
+                "INSERT OR IGNORE INTO blobs(hash, kind, size) VALUES (?1, 'raw', ?2)",
+            )?;
+            let mut upd = tx.prepare_cached(
+                "UPDATE messages SET blob_hash = ?2, blob_kind = 'raw', size = ?3 WHERE id = ?1",
+            )?;
+            for (id, hash, size, raw_len) in &written {
+                ins.execute(params![hash, *size as i64])?;
+                upd.execute(params![id, hash, raw_len])?;
+            }
+        }
+        tx.commit()?;
+        Ok(written.len())
+    }
+
     pub fn update_body(&mut self, id: i64, new_body: &str) -> Result<()> {
         let tx = self.conn.transaction()?;
         tx.execute(

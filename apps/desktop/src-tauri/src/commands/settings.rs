@@ -13,6 +13,10 @@ pub(crate) struct Status {
     /// environment. `false` is the first-run signal: the window shows
     /// onboarding instead of an empty mailbox pretending to be a mailbox.
     configured: bool,
+    /// Showing synthetic mail with no account configured. Distinct from
+    /// `configured`: both are false on a first run, but only one of them
+    /// means "there is a mailbox here to look at".
+    demo: bool,
     seeding: bool,
     count: usize,
     /// What the server says it holds across the synced folders, or 0 if it has
@@ -60,6 +64,7 @@ pub fn status(state: State<Arc<AppState>>) -> Status {
         .unwrap_or_default();
     Status {
         configured,
+        demo: state.demo.load(Ordering::Relaxed),
         notify,
         seeding: state.seeding.load(Ordering::Relaxed),
         // The active account's held mail, not the store's total: while one
