@@ -63,7 +63,7 @@ export function Updates({ onMessage }: { onMessage: (text: string) => void }) {
   };
 
   return (
-    <div className="pane">
+    <div className="pane-body">
       <h1 className="pane-title">{t('settings-updates')}</h1>
 
       <section className="field">

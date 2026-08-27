@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Guidance for AI agents (and new humans) working in this repository.
+Guidance for agents and new humans working in this repository.
 
 ## What this is
 

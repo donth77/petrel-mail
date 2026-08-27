@@ -119,6 +119,16 @@
   margin: 0;
 }
 
+/* Release notes arrive from the update manifest as authored text, so the line
+   breaks whoever cut the release put there are meaning, not accident. Without
+   pre-wrap a bulleted changelog collapses into one paragraph. */
+.update-notes {
+  white-space: pre-wrap;
+  margin-block-start: 6px;
+  padding-inline-start: 10px;
+  border-inline-start: 2px solid var(--hair);
+}
+
 .seg {
   display: flex;
   border: 1px solid var(--hair);

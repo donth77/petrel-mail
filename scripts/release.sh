@@ -74,6 +74,22 @@ fi
 [ -f "$ENTITLEMENTS" ] || die "missing $ENTITLEMENTS"
 command -v hdiutil >/dev/null || die "hdiutil not found (is this macOS?)"
 
+# The version the app REPORTS comes from tauri.conf.json, compiled in by
+# generate_context!. It is what check_update calls "current" and what the
+# updater compares against a manifest. This script only stamps $VERSION into
+# the plist, the DMG name and latest.json — so if the two disagree, a 0.1.0
+# release ships a binary that still calls itself 0.0.1, the manifest offers
+# 0.1.0 to it forever, and the update installs on a loop that never ends.
+# One source of truth, checked before anything is built.
+CONF="$ROOT/apps/desktop/src-tauri/tauri.conf.json"
+CONF_VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$CONF" | head -1)"
+[ "$CONF_VERSION" = "$VERSION" ] || die "version mismatch.
+  $CONF says \"$CONF_VERSION\", you asked for \"$VERSION\".
+  Set the version in tauri.conf.json and commit it, then run this again:
+    \"version\": \"$VERSION\"
+  That file is the only place a version is declared; everything else follows it."
+echo "version:  $VERSION"
+
 # A release built from a dirty tree is a release nobody can reproduce.
 if [ -n "$(git status --porcelain)" ]; then
   echo "warning: working tree is dirty; this build will not be reproducible" >&2

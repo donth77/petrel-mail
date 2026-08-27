@@ -1,21 +1,108 @@
+<div align="center">
+
+<img src="assets/icon.svg" width="128" alt="">
+
 # Petrel
 
-*Working codename — a fast, local-first desktop email client.*
+**A fast, local-first desktop email client.**
 
-Petrel is a personal project building an email client around four commitments: **fast**
-(sub-100ms interactions, keyboard-first), **open** (IMAP today; Gmail and Microsoft 365
-via their native APIs; JMAP planned), **private** (your mail syncs directly between this
-device and your providers — no vendor cloud in the path, remote content blocked by
-default), and **durable** (a documented local store of ordinary files plus SQLite that
-outlives any app).
+[![Release](https://img.shields.io/github/v/release/donth77/petrel-mail?style=flat-square&label=release&color=3DA9B5)](https://github.com/donth77/petrel-mail/releases/latest)
+[![License](https://img.shields.io/badge/license-MIT-3DA9B5?style=flat-square)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.96.1-CE422B?style=flat-square&logo=rust&logoColor=white)](rust-toolchain.toml)
+[![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app)
+[![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=white)](https://react.dev)
 
-**Status: pre-alpha, milestone M0** — engine foundations and feasibility spikes. Nothing
-here is usable as a mail client yet.
+</div>
 
-## Stack
+---
 
-Rust engine (protocols, storage, full-text search, sanitization) behind a typed IPC seam;
-Tauri 2 shell with a React/TypeScript UI. The engine is headless and UI-agnostic.
+Petrel talks straight to your mail server. No web app, no middleman service, no
+database you can't read.
+
+| | |
+|---|---|
+| **Fast** | Opens a 100,000-message mailbox in 45ms. Search comes back in 43ms. |
+| **Open** | IMAP and SMTP. Gmail and Microsoft 365 native APIs next, JMAP after that. |
+| **Private** | Your mail goes between your machine and your provider. Remote images off by default. |
+| **Durable** | SQLite and ordinary files. Export any folder to mbox. |
+
+---
+
+## What works
+
+**Mail**
+- IMAP and SMTP, multiple accounts
+- Autodiscovery for 16 providers
+- Gmail and iCloud
+- Conversation threading
+- Instant arrival, no polling
+
+**Reading**
+- HTML sandboxed. No scripts, no network.
+- Remote images and trackers blocked
+- Attachments and inline images
+- Dark mode 
+- Meeting invites 
+
+**Writing**
+- Rich text editor
+- Signatures
+- Drafts, local and server
+- Undo send
+- Missing-attachment warning
+
+**Organizing**
+- Search: `from:alice has:attachment before:2026-01-01`
+- Archive, move, star, delete. 
+- Tags sync as Gmail labels or IMAP keywords
+- Rules
+- Trash auto-empty: 7, 30, 90 days, or never
+
+<details>
+<summary><strong>And the rest</strong></summary>
+
+- Keyboard shortcuts, ⌘K palette
+- Notifications, with pause
+- mbox and `.eml` import, mbox export
+- Signed updates
+- Keyboard and screen reader accessible
+- QRESYNC and CONDSTORE where the server has them
+
+</details>
+
+---
+
+## Install
+
+Releases land on the
+[Releases tab](https://github.com/donth77/petrel-mail/releases) as a signed `.dmg`.
+
+
+---
+
+## Build
+
+Rust engine for protocols, storage, search and sanitizing. Tauri 2 shell around a
+React UI. The engine runs fine without a window.
+
+Needs **Rust 1.96+** and **Node 22+ with pnpm**.
+
+```sh
+pnpm install
+
+# Run it
+pnpm --dir apps/desktop/ui build
+cargo petrel
+
+# Or build a .app bundle (macOS)
+./scripts/rebuild.sh
+```
+
+> `cargo petrel` is an alias for `cargo run --release -p petrel-desktop --features
+> custom-protocol`. That feature puts Tauri in production mode. Leave it out and the
+> webview goes looking for the Vite dev server, and you get a blank window.
+
+### Layout
 
 ```
 crates/petrel-engine       storage, search, actions, the engine API
@@ -26,31 +113,22 @@ crates/petrel-testkit      synthetic mailboxes, fault injection, corpora
 apps/desktop               Tauri shell + UI
 ```
 
-## Build
+<details>
+<summary><strong>Tests</strong></summary>
 
 ```sh
-cargo test                      # engine crates (default members)
-cargo test --release -p petrel-engine --test store_spike -- --ignored --nocapture
-                                # storage/search benchmark (100k synthetic messages)
+cargo test --workspace
+cargo clippy --workspace --all-targets \
+  --features petrel-desktop/custom-protocol -- -D warnings
+pnpm --dir apps/desktop/ui exec vitest run
 
-# Run the app (M0 demo: 10k synthetic messages + live engine search):
-pnpm install
-pnpm --dir apps/desktop/ui build
-cargo petrel
+# Storage and search benchmark, 100k synthetic messages
+cargo test --release -p petrel-engine --test store_spike -- --ignored --nocapture
 ```
 
-`cargo petrel` is an alias for `cargo run --release -p petrel-desktop --features
-custom-protocol`. The `custom-protocol` feature is what puts Tauri in production mode —
-without it the webview navigates to the Vite dev server and you get a blank window.
+Integration tests can point at a throwaway GreenMail server; see `testkit/`. Don't aim
+them at a mailbox you care about. They interrupt sends and kill the process mid-write
+on purpose.
 
-Requires Rust 1.96+ (pinned via `rust-toolchain.toml`). The desktop app additionally needs
-Node 22+ / pnpm for the UI.
+</details>
 
-## Releases
-
-Distributed as build artifacts on the GitHub Releases tab. Pre-alpha artifacts are
-unsigned: on macOS use right-click → Open on first launch.
-
-## License
-
-Not yet chosen — all rights reserved until a license lands with the first public release.
