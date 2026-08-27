@@ -167,3 +167,60 @@ pub async fn delete_folder(folder_id: i64, state: State<'_, Arc<AppState>>) -> R
     let mut store = state.store()?;
     store.remove_folder(folder_id).map_err(|e| e.to_string())
 }
+
+/// Empties the bin: everything in Trash, and in any folder filed under it,
+/// expunged on the server and tombstoned here.
+///
+/// The one action in the app with no undo, which is why it is a button
+/// someone presses in the Trash itself and not a thing that happens on a
+/// timer. Retention already reaps *tombstones* after their grace period;
+/// this is the person saying "now", about mail they can see.
+///
+/// A message the server refuses to expunge stays — reported, not pretended
+/// away. Emptying half a bin and saying it is empty would be the one
+/// outcome worse than not emptying it.
+#[tauri::command]
+pub async fn empty_trash(state: State<'_, Arc<AppState>>) -> Result<String, String> {
+    let (cfg, items, uidplus) = {
+        let store = state.store()?;
+        let account = active_account(&store)?;
+        let items = store.trash_contents(account).map_err(|e| e.to_string())?;
+        (
+            imap_config_for(&store, account),
+            items,
+            state
+                .server_has_uidplus
+                .load(std::sync::atomic::Ordering::Relaxed),
+        )
+    };
+    if items.is_empty() {
+        return Ok("0/0".into());
+    }
+    let mut gone = 0usize;
+    let mut kept = 0usize;
+    for (path, uid, message_id) in items {
+        let removed = match &cfg {
+            Some(cfg) => {
+                match petrel_providers::imap::expunge_uid(cfg, &path, uid, uidplus).await {
+                    Ok(_) => true,
+                    Err(e) => {
+                        log_sync(&format!("empty trash: {path} uid {uid}: {e}"));
+                        false
+                    }
+                }
+            }
+            // No server for this account: local-only mail is ours to drop.
+            None => true,
+        };
+        if removed {
+            if let Ok(store) = state.store.lock() {
+                let _ = store.tombstone_message(message_id);
+            }
+            gone += 1;
+        } else {
+            kept += 1;
+        }
+    }
+    log_sync(&format!("trash emptied: {gone} removed, {kept} kept"));
+    Ok(format!("{gone}/{kept}"))
+}

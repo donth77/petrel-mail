@@ -308,6 +308,7 @@
     // The browser cannot hand a URL to the system, and navigating the
     // harness tab away would take the app under test with it.
     open_external: function () { return null; },
+    empty_trash: function () { return '7/0'; },
     check_update: function () {
       // ?update=1 offers one; ?update=err makes the check itself fail, which
       // must not read as "up to date".

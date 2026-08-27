@@ -35,11 +35,34 @@ fn current_version(app: &tauri::AppHandle) -> String {
     app.package_info().version.to_string()
 }
 
+/// The updater, pointed at a different feed when one is named.
+///
+/// `PETREL_UPDATE_ENDPOINT` exists so a release can be *tested* before it is
+/// published: a staging manifest, or a local one, without rebuilding the app
+/// against a different configuration and thereby testing something other
+/// than what ships. The signature check is untouched by it — an endpoint can
+/// choose what to offer, never whether it is trusted.
+fn updater_for(app: &tauri::AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
+    let builder = app.updater_builder();
+    let builder = match std::env::var("PETREL_UPDATE_ENDPOINT") {
+        Ok(url) if !url.trim().is_empty() => {
+            let parsed = url
+                .trim()
+                .parse()
+                .map_err(|e| format!("bad endpoint: {e}"))?;
+            log_sync(&format!("updates: using endpoint {url}"));
+            builder.endpoints(vec![parsed]).map_err(|e| e.to_string())?
+        }
+        _ => builder,
+    };
+    builder.build().map_err(|e| e.to_string())
+}
+
 /// Asks the endpoint whether there is a newer signed build.
 #[tauri::command]
 pub async fn check_update(app: tauri::AppHandle) -> Result<UpdateStatus, String> {
     let current = current_version(&app);
-    let updater = match app.updater() {
+    let updater = match updater_for(&app) {
         Ok(u) => u,
         // No endpoint configured is the ordinary state of a dev build, not
         // a fault worth a red banner.
@@ -80,7 +103,7 @@ pub async fn check_update(app: tauri::AppHandle) -> Result<UpdateStatus, String>
 /// before installing; a failure here means nothing was installed.
 #[tauri::command]
 pub async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
-    let updater = app.updater().map_err(|e| e.to_string())?;
+    let updater = updater_for(&app)?;
     let Some(update) = updater.check().await.map_err(|e| e.to_string())? else {
         return Err("there is no update to install".into());
     };

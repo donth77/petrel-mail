@@ -426,6 +426,7 @@ const mock = {
   respondInvitation: async () => {},
   draftConflict: async (): Promise<{ other_id: number } | null> => null,
   resolveDraftConflict: async () => {},
+  emptyTrash: async (): Promise<string> => '12/0',
   checkUpdate: async (): Promise<UpdateStatus> => ({
     current: '0.0.1',
     available: null,
@@ -590,6 +591,7 @@ const real = {
   draftConflict: (id: number) => invoke<{ other_id: number } | null>('draft_conflict', { id }),
   resolveDraftConflict: (id: number, otherId: number, takeServer: boolean) =>
     invoke<void>('resolve_draft_conflict', { id, otherId, takeServer }),
+  emptyTrash: () => invoke<string>('empty_trash'),
   checkUpdate: () => invoke<UpdateStatus>('check_update'),
   installUpdate: () => invoke<void>('install_update'),
   restartForUpdate: () => invoke<void>('restart_for_update'),

@@ -509,6 +509,19 @@ export const en = {
   'draft-conflict-failed': 'Could not settle the draft conflict: { $error }',
   'rule-sum-notify': 'notify',
   'rule-act-notify': 'Notify anyway — announce it even though this rule files it',
+  'folder-trash-confirm': 'Move \u201c{ $name }\u201d to Trash?',
+  'folder-trash-body':
+    'The folder and the mail inside it go to the Trash. Drag it back out to undo, or empty the Trash to make it final.',
+  'folder-trash-do': 'Move to Trash',
+  'trash-empty': 'Empty Trash',
+  'trash-empty-confirm': 'Empty the Trash?',
+  'trash-empty-body':
+    'Everything in the Trash, including folders filed inside it, is deleted from the server. This one cannot be undone.',
+  'trash-emptied': 'Trash emptied \u2014 { $count } removed.',
+  'trash-emptied-partial':
+    'Trash emptied \u2014 { $count } removed, { $kept } the server would not delete.',
+  'trash-empty-failed': 'Could not empty the Trash: { $error }',
+  'trash-already-empty': 'The Trash is already empty.',
   'link-risk-title': 'This link may not go where it says',
   'link-risk-body':
     'It reads as { $typed } but resolves to { $real }. Addresses can be spelled with letters from other alphabets that look identical to these ones.',

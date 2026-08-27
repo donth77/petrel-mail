@@ -2,7 +2,7 @@ import type { Dispatch, SetStateAction } from 'react';
 import { api, type ActionKind, type Folder, type OutboxRow, type Thread } from '../lib/api';
 import { count as fmtCount } from '../lib/format';
 import { t } from '../lib/strings';
-import { nestableRolePath } from '../lib/folders';
+import { nestableRolePath, underAnchor } from '../lib/folders';
 import { Archive as ArchiveIcon, Trash2 } from 'lucide-react';
 import { Confirm } from './Confirm';
 import { Dialog } from '@ariakit/react';
@@ -43,6 +43,9 @@ export function AppDialogs({
   onSettleDraftConflict,
   riskyLink,
   onDismissRiskyLink,
+  emptyingTrash,
+  onCancelEmptyTrash,
+  onEmptyTrash,
 }: {
   discarding: OutboxRow | null;
   setDiscarding: Dispatch<SetStateAction<OutboxRow | null>>;
@@ -69,7 +72,15 @@ export function AppDialogs({
   onSettleDraftConflict: (takeServer: boolean) => void;
   riskyLink: { risk: import('../lib/links').HomographRisk; open: () => void } | null;
   onDismissRiskyLink: () => void;
+  emptyingTrash: boolean;
+  onCancelEmptyTrash: () => void;
+  onEmptyTrash: () => void;
 }) {
+  /** Whether a folder already sits in the bin, which is what makes deleting
+   *  it mean deletion rather than a move. */
+  const binned = (f: Folder | null) =>
+    f !== null && underAnchor(f.path, nestableRolePath(folders, 'trash'));
+
   return (
     <>
       <Confirm
@@ -190,21 +201,36 @@ export function AppDialogs({
         onCreate={() => {}}
       />
 
+      {/* Deleting a folder puts it in the Trash first, exactly as dragging
+          it there does — one word, one meaning. Only a folder already in the
+          Trash is deleted outright, which is also the only time the wording
+          promises that. */}
       <Confirm
         open={deletingFolder !== null}
-        title={t('folder-delete-confirm', { name: deletingFolder?.path ?? '' })}
-        detail={t('folder-delete-body')}
-        confirmLabel={t('folder-delete')}
+        title={
+          binned(deletingFolder)
+            ? t('folder-delete-confirm', { name: deletingFolder?.path ?? '' })
+            : t('folder-trash-confirm', { name: deletingFolder?.path ?? '' })
+        }
+        detail={binned(deletingFolder) ? t('folder-delete-body') : t('folder-trash-body')}
+        confirmLabel={binned(deletingFolder) ? t('folder-delete') : t('folder-trash-do')}
         onClose={() => setDeletingFolder(null)}
         onConfirm={() => {
           const folder = deletingFolder;
           setDeletingFolder(null);
           if (!folder) return;
           if (view === `folder:${folder.id}`) setView('inbox');
-          void api
-            .deleteFolder(folder.id)
-            .then(() => api.folders().then(setFolders))
-            .then(() => setToast(t('folder-deleted', { name: folder.path })))
+          const leaf = folder.path.split(/[/.]/).pop() ?? folder.path;
+          const trash = nestableRolePath(folders, 'trash');
+          const act =
+            binned(folder) || !trash
+              ? api.deleteFolder(folder.id).then(() => t('folder-deleted', { name: folder.path }))
+              : api
+                  .renameFolder(folder.id, `${trash}/${leaf}`)
+                  .then(() => t('folder-trashed', { name: leaf }));
+          void act
+            .then((message) => api.folders().then(setFolders).then(() => message))
+            .then((message) => setToast(message))
             .catch((e) => setToast(t('folder-failed', { error: String(e) })));
         }}
       />
@@ -306,6 +332,14 @@ export function AppDialogs({
           </div>
         </div>
       </Dialog>
+      <Confirm
+        open={emptyingTrash}
+        title={t('trash-empty-confirm')}
+        detail={t('trash-empty-body')}
+        confirmLabel={t('trash-empty')}
+        onClose={onCancelEmptyTrash}
+        onConfirm={onEmptyTrash}
+      />
     </>
   );
 }

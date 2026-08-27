@@ -228,6 +228,8 @@ export function App() {
   const [riskyLink, setRiskyLink] = useState<{ risk: HomographRisk; open: () => void } | null>(
     null,
   );
+  // The Trash, waiting on "yes, permanently".
+  const [emptyingTrash, setEmptyingTrash] = useState(false);
   const askDelete = (ids?: number[]) => {
     const list = ids ?? targets(selected, activeId);
     if (list.length > 0) setPendingDelete(list);
@@ -1344,6 +1346,19 @@ export function App() {
               </>
             ) : (
               <span className="view-count">
+                {/* The bin is the one place with a "make it final" verb, and
+                    it lives in the bin rather than in a menu: emptying is a
+                    thing you decide while looking at what you are about to
+                    lose. */}
+                {view === 'trash' && selected.size === 0 && (
+                  <button
+                    type="button"
+                    className="linkish trash-empty"
+                    onClick={() => setEmptyingTrash(true)}
+                  >
+                    {t('trash-empty')}
+                  </button>
+                )}
                 {selected.size > 0
                   ? t('list-selected', { count: fmtCount(selected.size) })
                   : view === 'outbox'
@@ -1857,6 +1872,25 @@ export function App() {
         onSettleDraftConflict={(take) => void settleDraftConflict(take)}
         riskyLink={riskyLink}
         onDismissRiskyLink={() => setRiskyLink(null)}
+        emptyingTrash={emptyingTrash}
+        onCancelEmptyTrash={() => setEmptyingTrash(false)}
+        onEmptyTrash={() => {
+          setEmptyingTrash(false);
+          void api
+            .emptyTrash()
+            .then((r) => {
+              const [gone, kept] = r.split('/');
+              setAccountEpoch((n) => n + 1);
+              setToast(
+                Number(gone) === 0 && Number(kept) === 0
+                  ? t('trash-already-empty')
+                  : Number(kept) > 0
+                    ? t('trash-emptied-partial', { count: gone, kept })
+                    : t('trash-emptied', { count: gone }),
+              );
+            })
+            .catch((e) => setToast(t('trash-empty-failed', { error: String(e) })));
+        }}
         view={view}
         setView={setView}
         folders={folders}

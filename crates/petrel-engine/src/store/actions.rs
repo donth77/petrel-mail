@@ -442,6 +442,25 @@ impl Store {
         Ok(())
     }
 
+    /// Tombstones one message the way delete-forever does: out of search at
+    /// once, bytes reaped by the grace-period sweep rather than here.
+    pub fn tombstone_message(&self, message_id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE messages SET deleted_at_ms = (strftime('%s','now') * 1000)
+             WHERE id = ?1 AND deleted_at_ms IS NULL",
+            params![message_id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM fts_content WHERE message_id = ?1",
+            params![message_id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM placements WHERE message_id = ?1",
+            params![message_id],
+        )?;
+        Ok(())
+    }
+
     /// Creates a tag if it is new, returning its id either way. Names are the
     /// provider's own (IMAP keyword, Gmail label), so they are matched exactly.
     pub fn ensure_tag(&self, account_id: i64, name: &str, colour: Option<&str>) -> Result<i64> {

@@ -345,6 +345,7 @@ pub fn run() {
             commands::triage::create_folder,
             commands::triage::rename_folder,
             commands::triage::delete_folder,
+            commands::triage::empty_trash,
             commands::triage::create_tag,
             commands::triage::rename_tag,
             commands::triage::set_tag_colour,
@@ -537,6 +538,30 @@ pub fn run() {
                     ));
                 }
             }
+            // PETREL_UPDATE_PROBE=check|install: drive the update path from
+            // the running app and report through the log, so a release can be
+            // verified end to end without a person clicking a button in a
+            // window no test can reach.
+            if let Ok(mode) = std::env::var("PETREL_UPDATE_PROBE") {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    match commands::updates::check_update(handle.clone()).await {
+                        Ok(status) => log_sync(&format!(
+                            "update probe: current={} available={:?} error={:?}",
+                            status.current, status.available, status.error
+                        )),
+                        Err(e) => log_sync(&format!("update probe: check failed: {e}")),
+                    }
+                    if mode == "install" {
+                        match commands::updates::install_update(handle).await {
+                            Ok(()) => log_sync("update probe: installed"),
+                            Err(e) => log_sync(&format!("update probe: install failed: {e}")),
+                        }
+                    }
+                });
+            }
+
             Ok(())
         })
         .run(tauri::generate_context!())

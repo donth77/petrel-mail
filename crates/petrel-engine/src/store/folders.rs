@@ -437,6 +437,31 @@ impl Store {
             .collect())
     }
 
+    /// Every UID sitting in this account's trash, with the folder path that
+    /// holds it — what emptying the bin has to expunge on the server.
+    ///
+    /// Folders nested under the trash count too: dragging a folder to Trash
+    /// puts it there, and a bin that quietly kept the mail inside its own
+    /// subfolders would not be empty in any sense the word carries.
+    pub fn trash_contents(&self, account_id: i64) -> Result<Vec<(String, u32, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT f.path, p.uid, p.message_id
+             FROM placements p
+             JOIN folders f ON f.id = p.folder_id
+             WHERE f.account_id = ?1 AND p.uid IS NOT NULL
+               AND (f.role = 'trash'
+                    OR f.path LIKE (SELECT path || '/%' FROM folders
+                                     WHERE account_id = ?1 AND role = 'trash')
+                    OR f.path LIKE (SELECT path || '.%' FROM folders
+                                     WHERE account_id = ?1 AND role = 'trash'))
+             ORDER BY f.path, p.uid",
+        )?;
+        let rows = stmt.query_map(params![account_id], |r| {
+            Ok((r.get(0)?, r.get::<_, i64>(1)? as u32, r.get(2)?))
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
     /// The UID a message's placement in one folder carries, if it is placed
     /// there at all. `None`: not placed. `Some(None)`: placed without a
     /// number — local or quarantined.
