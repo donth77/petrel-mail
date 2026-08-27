@@ -88,11 +88,11 @@ export function Storage({ onMessage }: { onMessage: (text: string) => void }) {
       onMessage(
         r.failed > 0 || r.duplicates > 0
           ? t('storage-imported-mixed', {
-              count: String(r.imported),
+              count: r.imported,
               duplicates: String(r.duplicates),
               failed: String(r.failed),
             })
-          : t('storage-imported', { count: String(r.imported) }),
+          : t('storage-imported', { count: r.imported }),
       );
     } catch (e) {
       onMessage(t('storage-import-failed', { error: String(e) }));

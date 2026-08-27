@@ -54,7 +54,7 @@ export function ThreadMenuItems({
     <>
       {/* Says what the next click will hit. Right-clicking inside a selection
           acts on all of it, which is right but invisible without this. */}
-      {many && <div className="menu-note">{t('menu-applies-to', { count: String(count) })}</div>}
+      {many && <div className="menu-note">{t('menu-applies-to', { count: count ?? 1 })}</div>}
 
       {/* The view group, first and separated: the only items here that change
           nothing about the mail. They live in the menu rather than the header

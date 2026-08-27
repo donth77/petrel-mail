@@ -21,7 +21,7 @@ export function DragPreview({ drag }: { drag: Dragging | null }) {
       aria-hidden="true"
     >
       {drag.payload.kind === 'threads' && drag.payload.ids.length > 1
-        ? t('drag-count', { count: String(drag.payload.ids.length) })
+        ? t('drag-count', { count: drag.payload.ids.length })
         : drag.label}
     </div>
   );

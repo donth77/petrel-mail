@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@ariakit/react": "^0.4.37",
+    "@fluent/bundle": "^0.19.1",
     "@tanstack/react-virtual": "^3.14.10",
     "@tauri-apps/api": "^2.9.0",
     "@tauri-apps/plugin-dialog": "^2.7.2",

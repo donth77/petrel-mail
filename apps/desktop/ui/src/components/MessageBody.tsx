@@ -141,7 +141,7 @@ export function MessageBody({ messageId, title }: { messageId: number; title: st
       {blocked > 0 && (
         <div className="blocked-remote">
           <span className="blocked-what">
-            {t('remote-blocked', { count: String(blocked) })}
+            {t('remote-blocked', { count: blocked })}
           </span>
           <button type="button" className="linkish" onClick={() => void allow(false)}>
             {t('remote-show-once')}

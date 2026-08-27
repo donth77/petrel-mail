@@ -86,8 +86,8 @@ function Row({
           <>
             {' · '}
             <Icon icon={Paperclip} size={11} />{' '}
-            {t(row.attachments === 1 ? 'outbox-attachments' : 'outbox-attachments-plural', {
-              count: String(row.attachments),
+            {t('outbox-attachments', {
+              count: row.attachments,
             })}
           </>
         )}

@@ -1778,7 +1778,7 @@ export function App() {
         <div className="sending" role="status">
           <span className="sending-count mono">{outgoing.left}s</span>
           <span className="clip">
-            {t('compose-sending', { count: String(outgoing.left) })} — {outgoing.subject || t('no-subject')}
+            {t('compose-sending', { count: outgoing.left })}: {outgoing.subject || t('no-subject')}
           </span>
           {/* The same path as Z, so the button and the key cannot drift. */}
           <button type="button" className="reply" onClick={cancelPendingSend}>
