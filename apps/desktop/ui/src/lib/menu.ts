@@ -135,6 +135,11 @@ export const MENU: MenuNode[] = [
           { role: 'choice', setting: 'density', value: 'compact', label: 'density-compact' },
         ],
       },
+      { role: 'separator' },
+      // Kept, not added. Tauri's default View menu held this one item, and
+      // ⌃⌘F exists only because a menu item claims it — replacing the menu
+      // without it would have quietly taken full screen off the keyboard.
+      { role: 'native', native: 'Fullscreen', label: 'menubar-fullscreen' },
     ],
   },
   {

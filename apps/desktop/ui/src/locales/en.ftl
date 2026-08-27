@@ -654,3 +654,4 @@ menubar-view = View
 menubar-window = Window
 menubar-minimize = Minimize
 menubar-zoom = Zoom
+menubar-fullscreen = Toggle Full Screen

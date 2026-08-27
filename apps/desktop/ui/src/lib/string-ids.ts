@@ -617,6 +617,7 @@ export const STRING_IDS = [
   'menubar-window',
   'menubar-minimize',
   'menubar-zoom',
+  'menubar-fullscreen',
 ] as const;
 
 export type StringId = (typeof STRING_IDS)[number];

@@ -74,6 +74,18 @@ describe('the menu bar', () => {
     expect(natives).toEqual(['Undo', 'Redo', 'Cut', 'Copy', 'Paste', 'SelectAll']);
   });
 
+  it('keeps the full screen item the menu it replaced had', () => {
+    const view = MENU.find((n) => n.role === 'submenu' && n.label === 'menubar-view');
+    const natives =
+      view?.role === 'submenu'
+        ? view.items.map((i) => (i.role === 'native' ? i.native : null)).filter(Boolean)
+        : [];
+    // ⌃⌘F is not a system binding: it works only while some menu item claims
+    // it. Replacing Tauri's default View menu without this took full screen
+    // off the keyboard, which is a loss no new item makes up for.
+    expect(natives).toContain('Fullscreen');
+  });
+
   it('puts the app menu first and Window last, as macOS expects', () => {
     const titles = MENU.map((n) => (n.role === 'submenu' ? n.label : null));
     expect(titles[0]).toBe('app-name');
