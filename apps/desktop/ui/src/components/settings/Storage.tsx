@@ -99,6 +99,45 @@ export function Storage({ onMessage }: { onMessage: (text: string) => void }) {
     }
   };
 
+  /** The settings backup: preferences and account shapes, never passwords. */
+  const exportSettings = async () => {
+    setBusy(true);
+    try {
+      const { save } = await import('@tauri-apps/plugin-dialog');
+      const path = await save({
+        defaultPath: 'petrel-settings.json',
+        filters: [{ name: 'Petrel settings', extensions: ['json'] }],
+      });
+      if (!path) return;
+      const r = await api.exportSettings(path);
+      const [prefs, accounts] = r.split('/');
+      onMessage(t('settings-exported', { prefs, accounts }));
+    } catch (e) {
+      onMessage(t('settings-export-failed', { error: String(e) }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const importSettings = async () => {
+    setBusy(true);
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const picked = await open({
+        multiple: false,
+        filters: [{ name: 'Petrel settings', extensions: ['json'] }],
+      });
+      if (!picked || typeof picked !== 'string') return;
+      const r = await api.importSettings(picked);
+      const [prefs, updated, added] = r.split('/');
+      onMessage(t('settings-imported', { prefs, updated, added }));
+    } catch (e) {
+      onMessage(t('settings-import-failed', { error: String(e) }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   // The rows are laid out before the numbers arrive. The pane is what the
   // person selected; the figures are a detail of it, and a settings pane that
   // withholds its whole body until a background count finishes reads as the
@@ -205,6 +244,21 @@ export function Storage({ onMessage }: { onMessage: (text: string) => void }) {
         ) : (
           exportButtons(accounts[0])
         )}
+      </section>
+
+      <section className="field">
+        <div className="flabel">{t('settings-backup')}</div>
+        <p className="fhelp">{t('settings-backup-help')}</p>
+        <div className="storage-actions">
+          <button type="button" className="fbtn" disabled={busy} onClick={() => void exportSettings()}>
+            <Icon icon={Download} size={13} />
+            {t('settings-export-button')}
+          </button>
+          <button type="button" className="fbtn" disabled={busy} onClick={() => void importSettings()}>
+            <Icon icon={Upload} size={13} />
+            {t('settings-import-button')}
+          </button>
+        </div>
       </section>
 
       <section className="field">

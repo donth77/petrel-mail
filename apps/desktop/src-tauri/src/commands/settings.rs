@@ -25,6 +25,11 @@ pub(crate) struct Status {
     data_dir: String,
     sync_error: Option<String>,
     last_sync_ms: i64,
+    /// Arrivals a rule marked notify-anyway, drained on read: mail a rule
+    /// filed away never reaches the inbox list the announcer watches, so
+    /// the rule's word rides the status poll instead. Each entry is said
+    /// once, by whichever poll picks it up.
+    notify: Vec<(String, String)>,
 }
 
 #[tauri::command]
@@ -48,8 +53,14 @@ pub fn status(state: State<Arc<AppState>>) -> Status {
         })
         .unwrap_or(false)
         || imap_config_from_env().is_some();
+    let notify = state
+        .pending_notify
+        .lock()
+        .map(|mut p| std::mem::take(&mut *p))
+        .unwrap_or_default();
     Status {
         configured,
+        notify,
         seeding: state.seeding.load(Ordering::Relaxed),
         // The active account's held mail, not the store's total: while one
         // account backfills a deep archive, the other's empty folders were
@@ -142,4 +153,222 @@ pub fn delete_rule(rule_id: i64, state: State<Arc<AppState>>) -> Result<(), Stri
 pub fn move_rule(rule_id: i64, up: bool, state: State<Arc<AppState>>) -> Result<(), String> {
     let mut store = state.store()?;
     store.move_rule(rule_id, up).map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------- backup ---
+
+/// Engine bookkeeping that lives in the settings table but is not a
+/// preference: sync watermarks and one-time markers. They describe *this*
+/// store's conversation with *these* servers, and carrying them to another
+/// machine would hand it a stranger's place-markers.
+const BOOKKEEPING: &[&str] = &[
+    "gmail_labels_modseq",
+    "gmail_thrid_modseq",
+    "keychain_reowned",
+];
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct IdentityExport {
+    pub display_name: String,
+    pub signature: String,
+    pub signature_on_reply: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct AccountExport {
+    pub email: String,
+    pub kind: String,
+    #[serde(default)]
+    pub color: String,
+    #[serde(default)]
+    pub local_archive: bool,
+    #[serde(default)]
+    pub servers: Option<petrel_engine::store::AccountServers>,
+    #[serde(default)]
+    pub identity: Option<IdentityExport>,
+}
+
+/// The whole backup: preferences and account shapes, and pointedly nothing
+/// secret. Passwords live in the keychain and are never written here — the
+/// UI says so in as many words beside the button.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct SettingsFile {
+    pub version: u32,
+    pub exported_at_ms: i64,
+    pub settings: std::collections::BTreeMap<String, String>,
+    pub accounts: Vec<AccountExport>,
+}
+
+fn build_settings_file(store: &petrel_engine::store::Store) -> Result<SettingsFile, String> {
+    let settings = store
+        .settings()
+        .map_err(|e| e.to_string())?
+        .iter()
+        .filter(|(k, _)| !BOOKKEEPING.contains(&k.as_str()))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let mut accounts = Vec::new();
+    for a in store.accounts().map_err(|e| e.to_string())? {
+        let servers = store.account_servers(a.id).ok().flatten();
+        let identity = store.identity(a.id).ok().map(|i| IdentityExport {
+            display_name: i.display_name,
+            signature: i.signature,
+            signature_on_reply: i.signature_on_reply,
+        });
+        accounts.push(AccountExport {
+            email: a.email,
+            kind: a.kind,
+            color: a.color,
+            local_archive: a.local_archive,
+            servers,
+            identity,
+        });
+    }
+    Ok(SettingsFile {
+        version: 1,
+        exported_at_ms: crate::state::now_ms(),
+        settings,
+        accounts,
+    })
+}
+
+/// Applies a backup by merging: file entries land, everything else stands.
+/// Returns (settings applied, accounts updated, accounts added).
+fn apply_settings_file(
+    store: &petrel_engine::store::Store,
+    file: &SettingsFile,
+) -> Result<(usize, usize, usize), String> {
+    let mut applied = 0usize;
+    for (k, v) in &file.settings {
+        if BOOKKEEPING.contains(&k.as_str()) {
+            continue;
+        }
+        store.set_setting(k, v).map_err(|e| e.to_string())?;
+        applied += 1;
+    }
+    let existing = store.accounts().map_err(|e| e.to_string())?;
+    let (mut updated, mut added) = (0usize, 0usize);
+    for imp in &file.accounts {
+        let found = existing
+            .iter()
+            .find(|a| a.email.eq_ignore_ascii_case(&imp.email));
+        let id = match found {
+            Some(a) => {
+                updated += 1;
+                a.id
+            }
+            None => {
+                added += 1;
+                store
+                    .add_account(
+                        &imp.kind,
+                        &imp.email,
+                        imp.identity
+                            .as_ref()
+                            .map(|i| i.display_name.as_str())
+                            .unwrap_or(""),
+                        &imp.servers.clone().unwrap_or_default(),
+                    )
+                    .map_err(|e| e.to_string())?
+            }
+        };
+        if let Some(servers) = &imp.servers {
+            store
+                .set_account_servers(id, servers)
+                .map_err(|e| e.to_string())?;
+        }
+        if !imp.color.is_empty() {
+            store
+                .set_account_color(id, &imp.color)
+                .map_err(|e| e.to_string())?;
+        }
+        store
+            .set_local_archive(id, imp.local_archive)
+            .map_err(|e| e.to_string())?;
+        if let Some(i) = &imp.identity {
+            store
+                .set_identity(id, &i.display_name, &i.signature, i.signature_on_reply)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok((applied, updated, added))
+}
+
+/// Writes the settings backup to a path the user picked.
+#[tauri::command]
+pub fn export_settings(path: String, state: State<Arc<AppState>>) -> Result<String, String> {
+    let store = state.store()?;
+    let file = build_settings_file(&store)?;
+    let json = serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| e.to_string())?;
+    Ok(format!("{}/{}", file.settings.len(), file.accounts.len()))
+}
+
+/// Merges a settings backup in. Never deletes: an account or preference the
+/// file does not mention is left exactly as it was. Accounts the file adds
+/// arrive without passwords — those stay in the keychain of the machine
+/// that wrote the file — and sync once one is entered.
+#[tauri::command]
+pub fn import_settings(path: String, state: State<Arc<AppState>>) -> Result<String, String> {
+    let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let file: SettingsFile = serde_json::from_str(&raw)
+        .map_err(|_| "This is not a Petrel settings file.".to_string())?;
+    if file.version > 1 {
+        return Err("This file was written by a newer Petrel.".into());
+    }
+    let store = state.store()?;
+    let (applied, updated, added) = apply_settings_file(&store, &file)?;
+    Ok(format!("{applied}/{updated}/{added}"))
+}
+
+#[cfg(test)]
+mod backup_tests {
+    use super::{SettingsFile, apply_settings_file, build_settings_file};
+    use petrel_engine::store::Store;
+
+    #[test]
+    fn a_backup_round_trips_and_merges_rather_than_clobbers() {
+        let a = Store::open_in_memory().unwrap();
+        let acc = a.ensure_test_account().unwrap();
+        a.set_setting("theme", "dark").unwrap();
+        a.set_setting("gmail_thrid_modseq", "99").unwrap();
+        a.set_account_color(acc, "#9A6B1F").unwrap();
+        a.set_identity(acc, "Tom", "— t", true).unwrap();
+        let file = build_settings_file(&a).unwrap();
+        assert_eq!(file.settings.get("theme").map(String::as_str), Some("dark"));
+        assert!(
+            !file.settings.contains_key("gmail_thrid_modseq"),
+            "bookkeeping stays home"
+        );
+        assert_eq!(file.accounts.len(), 1);
+
+        // A second store with its own preference the file never mentions.
+        let b = Store::open_in_memory().unwrap();
+        b.set_setting("badges", "unread").unwrap();
+        let (applied, updated, added) = apply_settings_file(&b, &file).unwrap();
+        assert_eq!((updated, added), (0, 1), "the account is new here");
+        assert!(applied >= 1);
+        let s = b.settings().unwrap();
+        assert_eq!(s.get("theme").map(String::as_str), Some("dark"));
+        assert_eq!(
+            s.get("badges").map(String::as_str),
+            Some("unread"),
+            "merging never clobbers what the file does not mention"
+        );
+        let accs = b.accounts().unwrap();
+        assert_eq!(accs.len(), 1);
+        assert_eq!(accs[0].color, "#9A6B1F");
+
+        // Importing the same file again updates rather than duplicates.
+        let (_, updated2, added2) = apply_settings_file(&b, &file).unwrap();
+        assert_eq!((updated2, added2), (1, 0));
+
+        // A newer version is refused before anything is touched — checked at
+        // the command layer; the struct itself still parses.
+        let newer = SettingsFile {
+            version: 2,
+            ..serde_json::from_str(&serde_json::to_string(&file).unwrap()).unwrap()
+        };
+        assert_eq!(newer.version, 2);
+    }
 }
