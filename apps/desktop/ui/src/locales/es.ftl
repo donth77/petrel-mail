@@ -1,8 +1,23 @@
-# Spanish. Machine translated, pending native review of the destructive
-# strings (delete, empty, move, send) before this ships.
+# Spanish. Machine translated. Complete against en.ftl.
 #
-# Deliberately partial while the mechanism is being proved: anything missing
-# here falls back to English rather than showing an id.
+# NEEDS NATIVE REVIEW BEFORE SHIPPING, and one part of it more than the rest.
+#
+# A clumsy sentence in a hint is a papercut. A wrong verb on a button that
+# destroys mail is somebody's correspondence gone. These are the strings that
+# delete, empty or discard, and they are what a reviewer should read first:
+#
+#   delete-forever  delete-forever-confirm  delete-forever-one
+#   delete-forever-many  deleted-forever
+#   trash-empty-confirm  trash-empty-body  trash-emptied-partial
+#   trash-empty-failed  trash-retention  trash-retention-help
+#   folder-delete  folder-delete-confirm  folder-delete-body
+#   folder-deleted  folder-trash-body  folder-trashed
+#   tag-delete  tag-delete-confirm  tag-delete-body  tag-deleted
+#   outbox-discard  outbox-discard-confirm  outbox-discard-body
+#   accounts-remove-body  rule-delete  settings-backup-help
+#
+# Anything absent here falls back to English rather than showing an id, so an
+# incomplete file is safe to ship. A wrong one is not.
 
 rail-mailboxes = Buzones
 mailbox-inbox = Bandeja de entrada
@@ -25,3 +40,612 @@ list-conversations = { $count ->
     [one] { $count } conversación
    *[other] { $count } conversaciones
 }
+
+app-name = Petrel
+rail-switch-account = Cambiar de cuenta
+list-selected = { $count } seleccionadas
+reader-archive = Archivar
+reader-star = Destacar
+reader-more = Más acciones
+menu-star = Destacar
+menu-unstar = Quitar destacado
+menu-spam = Marcar como correo no deseado
+reader-mark-read = Marcar como leído
+reader-mark-unread = Marcar como no leído
+qact-archive = Archivar
+qact-mark-read = Marcar como leído
+qact-mark-unread = Marcar como no leído
+qact-snooze = Posponer
+reader-message-count = { $count ->
+    [one] { $count } mensaje
+   *[other] { $count } mensajes
+}
+list-inbox-heading = Bandeja de entrada
+search-hint-key = /
+rail-collapse = Contraer barra lateral
+rail-expand = Expandir barra lateral
+rail-resize = Redimensionar barra lateral
+titlebar-sync = todo el correo sincronizado
+reader-snooze = Posponer
+reader-reply = Responder
+reader-reply-all = Responder a todos
+reader-forward = Reenviar
+reader-failed = No se pudo abrir esta conversación
+reader-to = para { $who }
+reader-collapse = Contraer el mensaje de { $who }
+msg-reply = Responder a este mensaje
+msg-reply-all = Responder a todos en este mensaje
+msg-forward = Reenviar este mensaje
+msg-actions = Acciones para este mensaje
+drag-count = { $count ->
+    [one] { $count } conversación
+   *[other] { $count } conversaciones
+}
+pane-resize = Redimensionar la lista de conversaciones
+compose-drop = Suelta para adjuntar
+compose-img-too-big = Esa imagen es demasiado grande para incrustarla. Adjúntala en su lugar, así el tamaño queda a la vista.
+reader-earlier = { $count ->
+    [one] { $count } mensaje anterior
+   *[other] { $count } mensajes anteriores
+}
+reader-none-title = Nada seleccionado
+reader-none-body = Elige una conversación con J y K, o pulsa Intro para abrir una.
+empty-inbox-title = La bandeja de entrada está vacía
+empty-view-title = No hay nada en { $view }
+empty-view-body = Las conversaciones que muevas aquí aparecerán en esta lista.
+empty-outbox-body = Los mensajes que esperan su hora de envío se quedan aquí. Todavía puedes recuperar alguno.
+onb-step-1 = 1 · Añadir una cuenta
+onb-step-2 = 2 · Confirmar
+onb-step-3 = 3 · Primera sincronización
+onb-ask = ¿Cuál es tu dirección de correo?
+onb-ask-help = Con eso suele bastar. Petrel busca el resto.
+onb-nothing-sent = Todavía no se envía nada a ninguna parte.
+onb-manual = Introducir la configuración a mano
+onb-continue = Continuar
+onb-looking = Buscando tu proveedor…
+onb-found = Encontrado: { $provider }
+onb-found-domain = { $domain } usa { $provider }.
+onb-found-mx = { $domain } está alojado por { $provider }.
+onb-no-imap = { $detail } Su correo solo se puede leer en su propia aplicación o web, así que Petrel no puede añadirlo.
+onb-not-found = No hemos encontrado la configuración de { $domain }.
+onb-not-found-help = Pasa con proveedores pequeños. Puedes introducir los servidores tú mismo. Hemos rellenado los nombres habituales.
+onb-direct = Tu correo va directamente entre este Mac y { $provider }. No hay ningún servidor de Petrel en medio. No hay ningún servidor de Petrel.
+onb-stored = Los mensajes se guardan en este Mac para que la búsqueda y la lectura funcionen sin conexión. Puedes eliminar la cuenta y su correo cuando quieras.
+onb-not-this = ¿No es { $provider }?
+onb-setup-manually = Configurar a mano
+onb-back = Atrás
+onb-sign-in = Iniciar sesión
+onb-password = Contraseña
+onb-app-password = Contraseña de aplicación
+onb-app-password-help = { $provider } pide una contraseña de aplicación en vez de la normal. Crea una en sus ajustes de seguridad y pégala aquí. Petrel la guarda en el llavero de tu Mac, nunca en un archivo.
+onb-app-password-link = Crear una contraseña de aplicación
+onb-password-help = Petrel la guarda en el llavero de tu Mac, nunca en un archivo.
+onb-servers = Configuración del servidor
+onb-servers-help = Para proveedores sin botón de inicio de sesión. Hemos deducido los servidores de tu dirección.
+onb-username = Nombre de usuario
+onb-incoming = Entrante · IMAP
+onb-outgoing = Saliente · SMTP
+onb-testing-imap = Conectando con el servidor entrante…
+onb-testing-smtp = Servidor entrante conectado. Ahora el saliente…
+onb-tested = Conectado con ambos servidores por TLS. Los certificados son correctos.
+onb-retest = Volver a probar
+onb-getting = Recibiendo tu correo
+onb-getting-help = Los mensajes recientes llegan primero, así puedes empezar a leer enseguida.
+onb-progress = { $count } de unos { $total } mensajes
+onb-progress-unknown = { $count ->
+    [one] { $count } mensaje hasta ahora
+   *[other] { $count } mensajes hasta ahora
+}
+onb-inbox-ready = La bandeja de entrada está lista
+onb-start = Empezar a leer
+onb-add-another = Añadir otra cuenta
+onb-failed = No se pudo iniciar sesión: { $error }
+onb-add-failed = No se pudo guardar la cuenta: { $error }
+att-preview = Vista previa
+att-open = Abrir
+att-save = Guardar { $name }
+att-saved = { $name } guardado
+att-save-failed = No se pudo guardar: { $error }
+att-open-failed = No se pudo abrir: { $error }
+att-exec-confirm = ¿Abrir “{ $name }”?
+att-exec-body = Esto es un programa, no un documento. Abrirlo lo ejecuta, y un programa puede hacer todo lo que puedes hacer tú. La mayoría del malware llega por correo. Continúa solo si le pediste este archivo al remitente.
+att-exec-open = Abrirlo de todas formas
+outbox-title = Bandeja de salida: todos los mensajes que Petrel está reteniendo
+outbox-to = Para { $who }
+outbox-attachments = { $count ->
+    [one] { $count } archivo adjunto
+   *[other] { $count } archivos adjuntos
+}
+outbox-sending-in = Se envía en { $when }. Todavía puedes detenerlo.
+outbox-scheduled-for = Sale a las { $when }. Todavía puedes cambiarlo.
+outbox-transmitting = Enviando…
+outbox-offline = Esperando conexión. Se enviará solo cuando vuelvas a estar en línea.
+outbox-retrying = El servidor rechazó la conexión, así que no se envió nada. Se reintenta en { $when }.
+outbox-rejected = Rechazado: { $reason }.
+outbox-rejected-user = Rechazado: { $reason }. Esa dirección ya no existe.
+outbox-unknown-1 = La conexión se cortó justo cuando el servidor estaba aceptando este mensaje, así que de verdad no sabemos si se envió.
+outbox-unknown-2 = Petrel miró tu carpeta de Enviados para averiguarlo y tampoco pudo conectar con el servidor. No se volverá a enviar por su cuenta, porque eso podría entregarlo dos veces.
+outbox-undo = Deshacer
+outbox-send-now = Enviar ahora
+outbox-try-now = Intentar ahora
+outbox-edit = Editar
+outbox-discard = Descartar
+outbox-check-again = Comprobar de nuevo
+outbox-send-anyway = Enviar de todas formas
+outbox-checked-sent = Se envió. Está en tu carpeta de Enviados.
+outbox-checked-absent = No se envió. Reintentando ahora, que es seguro.
+outbox-checked-unknown = Sigue sin poder conectar con el servidor para comprobarlo.
+outbox-discard-confirm = ¿Descartar “{ $subject }”?
+outbox-discard-body = No se ha enviado. Esto lo elimina definitivamente.
+outbox-needs-you = Necesita tu atención
+outbox-notify-title = Un mensaje necesita tu atención
+outbox-notify = { $count } en la bandeja de salida no se pudo enviar y necesita una decisión.
+outbox-count = { $count } en espera
+outbox-count-attention = { $count } en espera · { $needs } necesitan tu atención
+empty-snoozed-body = Aparta una conversación con { $key } y esperará aquí hasta que toque.
+empty-starred-body = Destaca una conversación con { $key } y estará aquí.
+empty-sent-body = Petrel aún no puede enviar correo, así que aquí no ha llegado nada.
+empty-drafts-body = Los mensajes que empiezas y cierras se guardan aquí.
+empty-inbox-body = No queda nada por revisar. El correo pospuesto vuelve cuando se lo pediste.
+empty-search-title = Sin resultados para “{ $query }”
+empty-search-body = { $count ->
+    [one] Se buscó en el único mensaje.
+   *[other] Se buscó en los { $count } mensajes.
+}
+empty-loading = Cargando tu correo…
+empty-syncing = Recibiendo tu correo. { $count } hasta ahora…
+sync-failed-title = No se pudo acceder a tu correo
+sync-failed-body = Se muestra lo que Petrel ya tenía. No se pierde nada. Los detalles están en sync.log.
+compose-undo = Deshacer envío
+compose-undo-help = Después de pulsar Enviar, Petrel retiene el mensaje este tiempo y muestra un botón para deshacer. Nada llega al servidor hasta que se acaba el tiempo, así que esto lo cancela de verdad. No es una solicitud de retirada que el otro lado pueda ignorar.
+compose-undo-off-label = Desactivado
+compose-undo-off = enviar al momento
+compose-undo-default = predeterminado
+compose-undo-most = más margen
+compose-writing = Escritura
+compose-warn-attachment = Avisar si falta un archivo adjunto
+compose-warn-attachment-help = Si el mensaje menciona adjuntar algo y no hay nada adjunto, Petrel pregunta antes de enviarlo.
+compose-replying = Respuestas
+compose-reply-default-help = Qué botón va primero, y qué hace R.
+compose-title = Redactar
+compose-new = Mensaje nuevo
+compose-reply = Responder
+compose-from = De
+compose-to = Para
+compose-cc = Cc
+compose-subject = Asunto
+compose-body = Mensaje
+compose-send = Enviar
+compose-attach = Adjuntar
+compose-send-later = Enviar más tarde
+compose-popout = Abrir en su propia ventana
+compose-remove-attachment = Quitar { $name }
+compose-too-large = { $name } no cabe. Los mensajes admiten unos { $limit } una vez codificados, y los adjuntos crecen alrededor de un tercio por el camino.
+compose-attach-failed = No se pudo adjuntar: { $error }
+compose-missing-attachment = Esto menciona un archivo adjunto y no lleva ninguno. Pulsa Enviar otra vez para enviarlo igualmente.
+compose-no-recipient = Añade a alguien a quien enviarlo.
+compose-sending = Se envía en { $count }s
+compose-send-now = Enviar ahora
+compose-sent = Enviado
+compose-saved = Guardado en Borradores
+compose-scheduled = Se enviará { $when }
+compose-already-popped = Este mensaje ya tiene su propia ventana.
+compose-popout-failed = No se pudo abrir una ventana para eso: { $error }
+compose-resume-failed = No se pudo abrir ese borrador: { $error }
+compose-save-failed = No se pudo guardar el borrador: { $error }
+compose-cancelled = Retenido. No se envió nada.
+compose-failed = No enviado: { $error }
+notify-paused-toast = Notificaciones pausadas durante una hora
+notify-pause = Pausar notificaciones
+notify-pause-help = Nada te interrumpirá mientras esté en pausa. El correo sigue llegando.
+notify-paused-until = En pausa hasta { $when }.
+notify-pause-off = Desactivado
+notify-pause-hour = Durante una hora
+notify-pause-tomorrow = Hasta mañana
+notify-level = Qué merece una interrupción
+notify-level-help = Prioritario significa por ahora las conversaciones destacadas; esto crece a medida que Petrel aprende con qué actúas.
+notify-level-all = Todo el correo nuevo
+notify-level-priority = Solo lo prioritario
+notify-level-none = Nada
+badges = Contadores de buzones
+badges-help = El número junto a cada buzón en la barra lateral. Borradores y la bandeja de salida siempre muestran cuántos esperan, porque el correo que escribiste nunca está sin leer.
+badges-unread = Sin leer
+badges-total = Todo
+badges-off = Ninguno
+notify-desktop = Notificaciones del escritorio
+notify-desktop-help = Las notificaciones fuera de la ventana pasan por macOS, que puede rechazarlas. El aviso dentro de la aplicación siempre aparece.
+notify-desktop-on = Activadas
+notify-desktop-off = Desactivadas
+notify-test = Enviar una notificación de prueba
+notify-test-body = Las notificaciones funcionan.
+notify-one = Mensaje nuevo de { $who }
+notify-many = { $count ->
+    [one] { $count } mensaje nuevo
+   *[other] { $count } mensajes nuevos
+}
+status-synced = Sincronizado ahora mismo
+status-synced-min = Sincronizado hace { $min } min
+status-synced-hr = Sincronizado hace { $hr } h
+status-sync-waiting = Esperando para sincronizar…
+status-seeding = Construyendo tu buzón…
+status-counts = { $count } conversaciones · { $unread } sin leer
+cmd-archive = Marcar como hecho
+cmd-archive-alias = Archivar
+cmd-snooze = Posponer esta conversación
+cmd-star = Destacar
+cmd-tag = Etiquetar
+cmd-move = Mover a una carpeta
+cmd-reply = Responder
+cmd-trash = Mover a la papelera
+cmd-search = Buscar
+cmd-pause-notifications = Pausar notificaciones durante 1 hora
+hint-folder = carpeta
+hint-settings = ajustes
+settings-title = Ajustes
+settings-accounts = Cuentas
+settings-identities = Identidades y firmas
+settings-composing = Redacción
+settings-notifications = Notificaciones
+settings-appearance = Apariencia
+settings-privacy = Privacidad y seguridad
+settings-storage = Almacenamiento y datos
+identity-sending-as = Enviando como
+identity-alias-note = Por ahora, una identidad por cuenta. Enviar desde otra dirección exige demostrarle al servidor que es tuya, y eso llega con el trabajo de proveedores.
+identity-name = Tu nombre
+identity-name-placeholder = El nombre que ven los destinatarios
+identity-signature = Firma
+identity-signature-placeholder = Se añade al final de los mensajes que escribes.
+identity-signature-replies = Usar esta firma también en las respuestas
+identity-signature-replies-help = Desactivado significa solo mensajes nuevos. Una firma repetida a lo largo de un hilo largo es de lo que más se queja la gente.
+identity-save-failed = No se pudo guardar: { $error }
+privacy-remote = Contenido remoto
+privacy-remote-help = Imágenes y otros archivos que un mensaje carga de internet. Bloquearlos es lo que permite leer un mensaje sin que el remitente se entere de nada sobre ti.
+privacy-remote-block = Bloquear
+privacy-remote-allow = Permitir
+privacy-remote-warning = Los remitentes podrán saber cuándo abriste un mensaje, cuántas veces y desde dónde aproximadamente.
+privacy-always = Siempre cierto en todos los mensajes
+privacy-fact-scripts = Los scripts de los mensajes nunca se ejecutan.
+privacy-fact-links = Los enlaces se abren en tu navegador, nunca dentro de Petrel.
+privacy-fact-forms = Los formularios de los mensajes no pueden enviarse a ninguna parte.
+privacy-fact-referrer = Nada de lo que carga un mensaje lleva un referente.
+storage-on-this-mac = En este Mac
+storage-messages = Mensajes
+storage-attachments = Archivos adjuntos
+storage-mail = Correo
+storage-database = Base de datos
+storage-index = Índice de búsqueda
+storage-by-account = Por cuenta
+storage-by-account-help = La base de datos y el índice de búsqueda son compartidos, así que no tienen una cifra por cuenta. Un mensaje que tienen varias cuentas cuenta para cada una.
+storage-account-messages = { $count ->
+    [one] { $count } mensaje
+   *[other] { $count } mensajes
+}
+settings-rules = Reglas
+rules-on-arrival = Cuando llega correo
+rules-help = Las reglas se aplican al correo nuevo según llega, de arriba abajo, y se ejecutan todas las que coincidan. Nunca tocan el correo que ya está aquí, y esperan mientras Petrel sigue descargando correo antiguo.
+rule-new = Regla nueva
+rule-enabled = Regla activada
+rule-up = Ejecutar antes
+rule-down = Ejecutar después
+rule-delete = Eliminar regla
+rule-name-placeholder = Ponle nombre a esta regla…
+rule-when = Cuando se cumpla todo esto
+rule-then = Haz esto
+rule-field = Campo
+rule-field-from = De
+rule-field-to = Para
+rule-field-subject = Asunto
+rule-field-list_id = Lista
+rule-contains-placeholder = contiene…
+rule-cond-add = Y…
+rule-cond-remove = Quitar condición
+rule-act-move = Mover a
+rule-act-move-none = Dejarlo donde está
+rule-act-tag = Etiquetar
+rule-act-tag-none = Sin etiqueta
+rule-act-skip = Saltarse la bandeja de entrada (archivar)
+rule-act-read = Marcar como leído
+rule-save = Guardar regla
+rule-saved = “{ $name }” guardada
+rule-failed = Regla no guardada: { $error }
+rule-needs-substance = Una regla necesita un nombre y al menos una condición con texto.
+rule-sum-move = mover a { $folder }
+rule-sum-skip = saltarse la bandeja de entrada
+rule-sum-tag = etiquetar { $tag }
+rule-sum-read = marcar como leído
+rule-sum-nothing = no hacer nada todavía
+storage-import = Traer correo
+storage-import-help = Los archivos mbox y .eml van a una carpeta local llamada “Importado” en este Mac. Puedes leerlos y buscarlos aquí, y no se sube nada. Importar el mismo archivo dos veces no añade nada.
+storage-import-button = Importar mbox o .eml…
+storage-imported = { $count ->
+    [one] Importado { $count } mensaje
+   *[other] Importados { $count } mensajes
+}
+storage-imported-mixed = Importados { $count }: { $duplicates } ya estaban aquí, { $failed } ilegibles
+storage-import-failed = La importación falló: { $error }
+storage-export = Llévate tu correo
+storage-export-help = Escribe en mbox, que cualquier otro cliente de correo puede leer. Tu correo sigue siendo tuyo pase lo que pase con Petrel. Una exportación que solo Petrel pudiera abrir no sería gran promesa.
+storage-exported = Exportados { $count } mensajes de { $view } ({ $account })
+storage-exported-partial = Exportados { $count } de { $view } ({ $account }); { $skipped } no tenían copia guardada y se omitieron
+storage-export-failed = La exportación falló: { $error }
+settings-not-built = Este panel todavía no está hecho.
+accounts-yours = Tus cuentas
+account-switch-failed = No se pudo cambiar de cuenta: { $error }
+accounts-add = Añadir cuenta
+accounts-remove = Eliminar cuenta
+accounts-remove-help = Quita esta cuenta, su correo y su contraseña de este Mac. En el servidor no cambia nada.
+accounts-remove-confirm = ¿Eliminar { $email }?
+accounts-remove-body = Sus mensajes se borran de este Mac y su contraseña del llavero. El correo en sí se queda en el servidor, intacto.
+accounts-none = Todavía no hay cuentas.
+accounts-failed = No se pudieron leer tus cuentas
+accounts-synced = sincronizada { $when }
+accounts-storage = { $count ->
+    [one] { $count } mensaje guardado en este Mac.
+   *[other] { $count } mensajes guardados en este Mac.
+}
+accounts-colour = Color
+accounts-colour-help = Identifica esta cuenta en toda la aplicación.
+accounts-keep = Cuando el correo desaparece del servidor
+accounts-keep-mirror = Si se va de allí, se va de aquí, tras 30 días de margen por si fue un error.
+accounts-keep-archive = Petrel conserva su copia después de que el servidor la suelte. Tu archivo sobrevive al buzón, y crece sin límite.
+accounts-mirror = Reflejar el servidor
+accounts-archive = Guardar un archivo local
+accounts-folders = Dónde va cada cosa
+accounts-folders-help = Cada proveedor nombra sus carpetas de forma distinta: Enviados, Sent Items, [Gmail]/Sent Mail. Petrel le pregunta al servidor cuál es cuál, para que archivar y eliminar acaben donde esperas. Cambia alguna solo si tu proveedor ha puesto un nombre raro.
+accounts-folders-none = Aún no se sabe. Petrel se lo pregunta al servidor la primera vez que una cuenta sincroniza, y esta todavía no lo ha hecho.
+folder-archive = Archivo
+folder-sent = Enviados
+folder-drafts = Borradores
+folder-spam = Correo no deseado
+folder-trash = Papelera
+folder-unmapped = sin asignar
+appearance-theme = Tema
+appearance-theme-help = Sistema sigue a tu sistema operativo, incluso por horario.
+theme-light = Claro
+theme-dark = Oscuro
+theme-system = Sistema
+appearance-language = Idioma
+appearance-language-help = Sistema sigue el idioma de tu Mac. Petrel recurre al inglés para lo que aún no esté traducido.
+language-system = Sistema (español)
+appearance-accent = Color de acento
+appearance-accent-help = Se usa para la selección, las marcas de no leído y la única acción destacada de cada pantalla.
+appearance-list = Lista de mensajes
+appearance-list-help = La densidad afecta solo a la lista. El mensaje que estás leyendo mantiene su tamaño cómodo.
+appearance-density = Densidad
+appearance-reading-pane = Panel de lectura
+density-relaxed = Amplia
+density-compact = Compacta
+layout-right = Derecha
+layout-below = Abajo
+layout-off = Desactivado
+appearance-text-size = Tamaño del texto de lectura
+appearance-text-size-help = Solo el cuerpo de los mensajes. El texto de la interfaz sigue los ajustes de tu sistema.
+reset = Restablecer
+help-report = ¿Has encontrado un problema? Cuéntanoslo
+help-source = Ver el código en GitHub
+help-title = Ayuda
+help-tab-shortcuts = Atajos
+help-tab-search = Búsqueda
+help-filter-shortcuts = …filtrar atajos
+help-filter-search = …filtrar filtros de búsqueda
+help-together = Todo junto
+help-together-note = De Sam, desde junio, con un archivo adjunto, que menciona el anexo. Los botones de filtro escriben esto por ti.
+close = Cerrar
+cancel = Cancelar
+search-found = { $count } encontrados
+search-filters = Filtros
+find-placeholder = Buscar en esta conversación
+find-position = { $at } de { $total }
+find-none = Sin coincidencias
+find-next = Coincidencia siguiente
+find-previous = Coincidencia anterior
+search-coverage = Se buscó en { $searched } de unos { $total } mensajes.
+search-coverage-syncing = El resto todavía se está descargando.
+search-sort = Ordenar resultados por
+search-sort-best = Mejor coincidencia
+search-sort-newest = Más recientes
+compose-formatting = Formato
+format-bold = Negrita
+format-italic = Cursiva
+format-underline = Subrayado
+format-strike = Tachado
+format-code = Código
+format-bullets = Lista con viñetas
+format-numbers = Lista numerada
+format-quote = Cita
+format-link = Añadir un enlace
+format-unlink = Quitar el enlace
+format-link-remove = Quitar
+format-link-placeholder = Escribe o pega un enlace
+format-link-text = Texto
+format-link-apply = Aplicar
+format-font = Tipografía
+format-size = Tamaño del texto
+list-select-row = Seleccionar esta conversación
+appearance-checkboxes = Casillas
+appearance-checkboxes-help = Una casilla en cada conversación. Sin ella, al hacer clic en el avatar se selecciona. ⌘-clic y ⇧-clic funcionan de las dos formas.
+checkboxes-on = Mostrar
+checkboxes-off = Ocultar
+menu-applies-to = Las { $count } seleccionadas
+recipient-remove = Quitar { $addr }
+recipient-suggestions = Personas que coinciden
+recipient-written-to = les has escrito
+reader-expand = Ocupar la ventana
+reader-shrink = Salir de ventana completa
+reader-popout = Abrir en una ventana nueva
+popout-failed = No se pudo abrir una ventana: { $error }
+popout-missing = Esa conversación ya no está aquí.
+popout-in-main-window = Archivar, etiquetar y posponer se hacen en la ventana principal.
+remote-blocked = Imágenes no cargadas. { $count } le habrían dicho al remitente que abriste esto.
+remote-show-once = Mostrar imágenes
+remote-always = Siempre de este remitente
+remote-trusted = Las imágenes de { $addr } se cargarán a partir de ahora.
+privacy-trusted = Remitentes cuyas imágenes siempre se cargan
+privacy-trusted-help = Cualquiera a quien hayas escrito ya está incluido, sin aparecer aquí. Conocen tu dirección, así que no se revela nada.
+privacy-trusted-none = Todavía nadie. “Siempre de este remitente” en un mensaje los añade.
+privacy-untrust = Dejar de cargar imágenes de { $addr }
+menu-move-inbox = Mover a la bandeja de entrada
+msg-print = Imprimir…
+unsub-button = Cancelar suscripción
+unsub-confirm = ¿Cancelar la suscripción a { $sender }?
+unsub-body-oneclick = Petrel le pide al remitente que pare, directamente. No se abre nada, no se pulsa nada, y los enlaces rastreados del mensaje quedan intactos.
+unsub-body-url = Abre la página de baja del remitente en tu navegador. Es su enlace oficial, tomado de las cabeceras del mensaje, no un enlace del cuerpo.
+unsub-body-mailto = Este remitente acepta las bajas por correo. Se preparará un mensaje para que lo envíes.
+unsub-done = Se le pidió a { $sender } que pare
+unsub-failed = No se pudo cancelar la suscripción: { $error }
+folder-new = Carpeta nueva
+folder-new-placeholder = Nombre de la carpeta…
+folder-edit = Opciones de la carpeta
+folder-rename = Cambiar el nombre
+folder-subfolder = Subcarpeta nueva…
+draft-conflict-title = Este borrador se editó en otro sitio.
+draft-conflict-body = Otra aplicación guardó su propia versión de este borrador. Las dos siguen existiendo. Elige desde cuál continuar.
+draft-keep-local = Quedarme con esta versión
+draft-take-server = Tomar la del servidor
+draft-kept-local = Se conservó esta versión. El servidor se pondrá al día en breve.
+draft-took-server = Se tomó la revisión del servidor.
+draft-conflict-failed = No se pudo resolver el conflicto del borrador: { $error }
+rule-sum-notify = avisar
+rule-act-notify = Avisar igualmente: anunciarlo aunque esta regla lo archive
+folder-trash-confirm = ¿Mover “{ $name }” a la papelera?
+folder-trash-body = La carpeta y el correo que contiene van a la papelera. Arrástrala fuera para deshacerlo, o vacía la papelera para hacerlo definitivo.
+folder-trash-do = Mover a la papelera
+trash-retention = Eliminar el correo que quede en la papelera
+trash-retention-help = El correo se queda en la papelera hasta que la vacías. Petrel puede eliminar lo que lleve un tiempo ahí, tanto en el servidor como aquí. El reloj empieza cuando un mensaje llega a la papelera, no cuando se envió.
+trash-retention-off = Nunca, solo cuando la vacíe yo
+trash-retention-days = Después de { $days } días
+trash-retention-on-note = Esto se aplica al correo que ya está en la papelera, así que todo lo que supere esa antigüedad se irá en la próxima sincronización.
+trash-empty = Vaciar la papelera
+trash-empty-confirm = ¿Vaciar la papelera?
+trash-empty-body = Todo lo que hay en la papelera, incluidas las carpetas guardadas dentro, se elimina del servidor. Esto no se puede deshacer.
+trash-emptied = Papelera vaciada. { $count } eliminados.
+trash-emptied-partial = Papelera vaciada. { $count } eliminados, { $kept } que el servidor no quiso borrar.
+trash-empty-failed = No se pudo vaciar la papelera: { $error }
+trash-already-empty = La papelera ya está vacía.
+link-risk-title = Puede que este enlace no lleve a donde dice
+link-risk-body = Se lee como { $typed } pero lleva a { $real }. Las direcciones pueden escribirse con letras de otros alfabetos idénticas a estas.
+link-risk-stay = Quedarme aquí
+link-risk-open = Abrir de todas formas
+settings-updates = Actualizaciones
+update-this-version = Esta copia de Petrel
+update-running = Versión { $version }.
+update-reading = Leyendo la versión…
+update-check = Buscar actualizaciones
+update-none = Petrel está actualizado.
+update-found = La versión { $version } está disponible.
+update-available = La versión { $version } está disponible
+update-signed-note = Las actualizaciones están firmadas, y cualquiera cuya firma no coincida se rechaza antes de ejecutar nada.
+update-install = Descargar e instalar
+update-installed = Instalada. Reinicia para usarla.
+update-install-failed = No se pudo instalar la actualización: { $error }
+update-ready = Lista para reiniciar
+update-restart-note = Petrel se cerrará y volverá a abrirse. Lo que esté sin enviar se queda en la bandeja de salida.
+update-restart = Reiniciar ahora
+update-err-offline = Petrel no pudo conectar con el servidor de actualizaciones. Comprueba tu conexión e inténtalo de nuevo.
+update-err-not-configured = Esta versión no tiene servidor de actualizaciones configurado, así que no hay nada que comprobar.
+update-err-missing = El servidor de actualizaciones no ofreció nada. Puede que todavía no haya ninguna versión publicada.
+update-err-malformed = El servidor de actualizaciones no envió nada que Petrel pudiera usar. Puede que todavía no haya ninguna versión publicada. Los detalles están en sync.log.
+update-err-unknown = La comprobación no terminó. Los detalles están en sync.log.
+update-could-not-ask = No se pudo comprobar
+update-check-failed = No se pudieron buscar actualizaciones: { $error }
+settings-backup = Copia de los ajustes
+settings-backup-help = Un archivo con tus preferencias, cuentas, servidores, colores y firmas. Las contraseñas nunca están dentro. Se quedan en el llavero. Al importar se combina lo que encuentra, así que un archivo que no mencione algo no lo borra.
+settings-export-button = Exportar ajustes…
+settings-import-button = Importar ajustes…
+settings-exported = Guardadas { $prefs } preferencia(s) y { $accounts } cuenta(s).
+settings-export-failed = No se pudieron exportar los ajustes: { $error }
+settings-imported = Aplicadas { $prefs } preferencia(s); { $updated } cuenta(s) actualizada(s), { $added } añadida(s). Las cuentas nuevas sincronizan en cuanto se introduce su contraseña.
+settings-import-failed = No se pudieron importar los ajustes: { $error }
+msg-view-light = Ver en modo claro
+msg-view-dark = Volver al oscuro
+invite-when = Cuándo
+invite-where = Dónde
+invite-organizer = Organizador
+invite-untitled = Invitación
+invite-repeats = Se repite
+invite-cancelled = Este evento se canceló.
+invite-respond = Responder a la invitación
+invite-change = Cambiar
+invite-accept = Aceptar
+invite-tentative = Quizá
+invite-decline = Rechazar
+invite-accepted = Aceptada
+invite-tentative-answer = Aceptada provisionalmente
+invite-declined = Rechazada
+invite-all-day = Todo el día, { $date }
+invite-answered = { $response }. La respuesta va camino del organizador.
+invite-failed = No se pudo enviar la respuesta: { $error }
+folder-move = Mover…
+folder-move-top = Nivel superior
+folder-moved = “{ $name }” movida a { $to }
+folder-into-itself = Una carpeta no puede moverse dentro de sí misma.
+folder-trashed = “{ $name }” movida a la papelera. Arrástrala fuera para restaurarla, o elimínala desde su menú para siempre.
+folder-fold = Contraer
+folder-unfold = Expandir
+folder-delete = Eliminar carpeta
+folder-delete-confirm = ¿Eliminar “{ $name }”?
+folder-delete-body = La carpeta y su correo se eliminan en el servidor y aquí. El correo que también esté en otra carpeta se queda ahí.
+folder-created = “{ $name }” creada
+folder-deleted = “{ $name }” eliminada
+folder-failed = No se pudo cambiar la carpeta: { $error }
+tag-new = Etiqueta nueva
+tag-new-placeholder = Nombre de la etiqueta…
+tag-create-failed = No se pudo crear la etiqueta: { $error }
+tag-edit = Editar etiqueta
+tag-rename = Cambiar el nombre
+tag-colour = Color
+tag-delete = Eliminar etiqueta
+tag-delete-confirm = ¿Eliminar “{ $name }”?
+tag-delete-body = Se quita de todas las conversaciones que la llevan. Las conversaciones se quedan donde están.
+tag-rename-failed = No se pudo cambiar el nombre de la etiqueta: { $error }
+tag-colour-none = Sin color
+tag-deleted = “{ $name }” eliminada
+no-subject = (sin asunto)
+delete-forever = Eliminar permanentemente
+delete-forever-confirm = ¿Eliminar permanentemente?
+delete-forever-one = Esto quita “{ $subject }” del servidor. No se puede deshacer.
+delete-forever-many = { $count ->
+    [one] Esto quita { $count } conversación del servidor. No se puede deshacer.
+   *[other] Esto quita { $count } conversaciones del servidor. No se puede deshacer.
+}
+deleted-forever = Eliminado
+picker-folder-title = Mover a una carpeta
+picker-tag-title = Etiquetar
+picker-folder-hint = …escribe para filtrar
+picker-tag-hint = Escribe para filtrar o crear
+picker-new-folder = Carpeta nueva “{ $name }”…
+picker-new-tag = Etiqueta nueva “{ $name }”…
+picker-snooze-title = Posponer
+picker-snooze-hint = Traer esto de vuelta…
+picker-snooze-foot = Posponer es cosa de Petrel, no del servidor: la conversación sigue en tu bandeja de entrada en todos los demás sitios hasta que vuelve aquí.
+snooze-later = Más tarde hoy
+snooze-tomorrow = Mañana
+snooze-weekend = Este fin de semana
+snooze-next-week = La semana que viene
+picker-none = No coincide nada.
+picker-folder-foot = La conversación sale de esta vista y pasa a vivir en la carpeta que elijas.
+picker-folder-foot-labels = Gmail las llama etiquetas. Esto añade la que elijas y saca la conversación de la bandeja de entrada. Las demás etiquetas que tenga se quedan.
+picker-tag-foot = Las etiquetas se quedan en la conversación esté archivada donde esté.
+palette-title = Paleta rápida
+palette-placeholder = Busca correo, o escribe un comando…
+palette-group-mail = Correo
+palette-group-conversation = Esta conversación
+palette-group-goto = Ir a
+palette-group-app = Petrel
+palette-empty = No coincide nada con “{ $query }”
+palette-navigate = navegar
+palette-run = ejecutar
+palette-all-shortcuts = todos los atajos
+palette-more = { $count ->
+    [one] { $count } resultado más
+   *[other] { $count } resultados más
+}
+triage-failed = No se pudo hacer eso: { $error }
+undo-done = Deshecho
+undo-too-late = Demasiado tarde para deshacerlo. Eso ya fue al servidor.
+undo = Deshacer
+account-switched = Cambiado a { $email }
+account-none-at = No hay ninguna cuenta en { $n }
+a11y-message-list = Conversaciones
+a11y-row = { $unread }{ $from }, { $subject }, { $time }
+a11y-unread-prefix = sin leer,{ " " }
