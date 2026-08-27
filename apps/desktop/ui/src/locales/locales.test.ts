@@ -9,8 +9,9 @@ import { describe, expect, it } from 'vitest';
 import { FluentBundle, FluentResource } from '@fluent/bundle';
 import enFtl from './en.ftl?raw';
 import esFtl from './es.ftl?raw';
+import frFtl from './fr.ftl?raw';
 
-const LOCALES: Record<string, string> = { en: enFtl, es: esFtl };
+const LOCALES: Record<string, string> = { en: enFtl, es: esFtl, fr: frFtl };
 
 function idsIn(source: string): string[] {
   return source
