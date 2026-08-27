@@ -509,6 +509,11 @@ export const en = {
   'draft-conflict-failed': 'Could not settle the draft conflict: { $error }',
   'rule-sum-notify': 'notify',
   'rule-act-notify': 'Notify anyway — announce it even though this rule files it',
+  'link-risk-title': 'This link may not go where it says',
+  'link-risk-body':
+    'It reads as { $typed } but resolves to { $real }. Addresses can be spelled with letters from other alphabets that look identical to these ones.',
+  'link-risk-stay': 'Stay here',
+  'link-risk-open': 'Open anyway',
   'settings-updates': 'Updates',
   'update-this-version': 'This copy of Petrel',
   'update-running': 'Version { $version }.',

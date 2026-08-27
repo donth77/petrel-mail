@@ -35,7 +35,7 @@ import { notifiable, postDesktopNotification, shouldNotify } from './lib/notify'
 import { Help } from './components/Help';
 import { Settings } from './components/Settings';
 import { RAIL_COLLAPSED, clampList, clampRail, useSettings } from './lib/settings';
-import { useMessageLinks } from './lib/links';
+import { useMessageLinks, type HomographRisk } from './lib/links';
 import { RowMenu } from './components/RowMenu';
 import { Toast } from './components/Toast';
 import { MessageList } from './components/MessageList';
@@ -222,6 +222,10 @@ export function App() {
   const [pendingDelete, setPendingDelete] = useState<number[] | null>(null);
   // A draft opened while a foreign revision of it stands on the server.
   const [draftConflict, setDraftConflict] = useState<{ draftId: number; otherId: number } | null>(
+    null,
+  );
+  // A link waiting on "is this really where you meant to go?".
+  const [riskyLink, setRiskyLink] = useState<{ risk: HomographRisk; open: () => void } | null>(
     null,
   );
   const askDelete = (ids?: number[]) => {
@@ -1008,6 +1012,12 @@ export function App() {
       },
       [identity],
     ),
+    // A link whose spelling hides where it goes gets a question first. The
+    // question names both spellings, because the whole trick is that one of
+    // them is the one you read.
+    useCallback((risk: HomographRisk, open: () => void) => {
+      setRiskyLink({ risk, open });
+    }, []),
   );
 
   // The rail's numbers come from the engine, not from the loaded page: counting
@@ -1845,6 +1855,8 @@ export function App() {
         setPendingDelete={setPendingDelete}
         draftConflict={draftConflict}
         onSettleDraftConflict={(take) => void settleDraftConflict(take)}
+        riskyLink={riskyLink}
+        onDismissRiskyLink={() => setRiskyLink(null)}
         view={view}
         setView={setView}
         folders={folders}

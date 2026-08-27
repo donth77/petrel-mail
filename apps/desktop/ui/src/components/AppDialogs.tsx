@@ -41,6 +41,8 @@ export function AppDialogs({
   clearUndo,
   draftConflict,
   onSettleDraftConflict,
+  riskyLink,
+  onDismissRiskyLink,
 }: {
   discarding: OutboxRow | null;
   setDiscarding: Dispatch<SetStateAction<OutboxRow | null>>;
@@ -65,6 +67,8 @@ export function AppDialogs({
   clearUndo: () => void;
   draftConflict: { draftId: number; otherId: number } | null;
   onSettleDraftConflict: (takeServer: boolean) => void;
+  riskyLink: { risk: import('../lib/links').HomographRisk; open: () => void } | null;
+  onDismissRiskyLink: () => void;
 }) {
   return (
     <>
@@ -263,6 +267,41 @@ export function AppDialogs({
               onClick={() => onSettleDraftConflict(true)}
             >
               {t('draft-take-server')}
+            </button>
+          </div>
+        </div>
+      </Dialog>
+      {/* A link that reads as one address and resolves to another. Both
+          spellings are shown, and the safe answer is the default: doing
+          nothing leaves the browser unopened. */}
+      <Dialog
+        open={riskyLink !== null}
+        onClose={onDismissRiskyLink}
+        className="confirm-backdrop"
+        backdrop={<div className="palette-scrim" />}
+        aria-label={t('link-risk-title')}
+      >
+        <div className="confirm" role="alertdialog">
+          <div className="confirm-title">{t('link-risk-title')}</div>
+          <p className="confirm-detail">
+            {t('link-risk-body', {
+              typed: riskyLink?.risk.asTyped ?? '',
+              real: riskyLink?.risk.asPunycode ?? '',
+            })}
+          </p>
+          <div className="confirm-foot">
+            <button type="button" className="reply" onClick={onDismissRiskyLink}>
+              {t('link-risk-stay')}
+            </button>
+            <button
+              type="button"
+              className="reply danger"
+              onClick={() => {
+                riskyLink?.open();
+                onDismissRiskyLink();
+              }}
+            >
+              {t('link-risk-open')}
             </button>
           </div>
         </div>
