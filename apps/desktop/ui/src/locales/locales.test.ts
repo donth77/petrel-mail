@@ -10,8 +10,9 @@ import { FluentBundle, FluentResource } from '@fluent/bundle';
 import enFtl from './en.ftl?raw';
 import esFtl from './es.ftl?raw';
 import frFtl from './fr.ftl?raw';
+import deFtl from './de.ftl?raw';
 
-const LOCALES: Record<string, string> = { en: enFtl, es: esFtl, fr: frFtl };
+const LOCALES: Record<string, string> = { en: enFtl, es: esFtl, fr: frFtl, de: deFtl };
 
 function idsIn(source: string): string[] {
   return source

@@ -15,6 +15,7 @@ import { FluentBundle, FluentResource } from '@fluent/bundle';
 import enFtl from '../locales/en.ftl?raw';
 import esFtl from '../locales/es.ftl?raw';
 import frFtl from '../locales/fr.ftl?raw';
+import deFtl from '../locales/de.ftl?raw';
 import { type StringId } from './string-ids';
 
 export { type StringId };
@@ -26,6 +27,7 @@ const SOURCES: Record<string, string> = {
   en: enFtl,
   es: esFtl,
   fr: frFtl,
+  de: deFtl,
 };
 
 /** English is the floor. Nothing below it, so a missing translation shows the
