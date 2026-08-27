@@ -16,3 +16,7 @@ dist/
 # Tauri-generated schemas (build artifacts)
 apps/desktop/src-tauri/gen/
 .harness/
+
+# Tauri icon generator also emits mobile sets; this is a desktop app.
+apps/desktop/src-tauri/icons/android/
+apps/desktop/src-tauri/icons/ios/
