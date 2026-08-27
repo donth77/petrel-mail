@@ -32,6 +32,12 @@ pub struct Actions {
     pub mark_read: bool,
     #[serde(default)]
     pub skip_inbox: bool,
+    /// Announce this arrival even though the rule files it away. Mail a
+    /// rule moves out of the inbox never reaches the list the announcer
+    /// watches, so without this a rule is also a silencer — and some
+    /// filed mail is exactly the mail worth interrupting for.
+    #[serde(default)]
+    pub notify: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

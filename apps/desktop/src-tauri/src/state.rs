@@ -30,6 +30,10 @@ pub(crate) struct AppState {
     /// Drafts edited since their last push to the server, for the 30-second
     /// debounce. A draft in here has exactly one push task sleeping on it.
     pub(crate) draft_dirty: Mutex<std::collections::HashSet<i64>>,
+    /// Arrivals a rule marked notify-anyway, waiting for the next status
+    /// poll to carry them to the announcer. Drained on read: each is said
+    /// once.
+    pub(crate) pending_notify: Mutex<Vec<(String, String)>>,
     /// When a sync cycle last completed clean, in ms. Zero until one has.
     /// The status bar ages this into words; a static "just now" was the
     /// previous implementation, and it was stuck by construction.

@@ -23,6 +23,7 @@ function summary(rule: Rule, folders: Folder[], tags: Tag[]): string {
     acts.push(t('rule-sum-tag', { tag: tg ? tg.name : '?' }));
   }
   if (a.mark_read) acts.push(t('rule-sum-read'));
+  if (a.notify) acts.push(t('rule-sum-notify'));
   return `${conds} → ${acts.join(', ') || t('rule-sum-nothing')}`;
 }
 
@@ -55,7 +56,7 @@ export function Rules({ onMessage }: { onMessage: (text: string) => void }) {
     enabled: true,
     name: '',
     conditions: [{ field: 'from', contains: '' }],
-    actions: { move_to: null, tag: null, mark_read: false, skip_inbox: false },
+    actions: { move_to: null, tag: null, mark_read: false, skip_inbox: false, notify: false },
   };
 
   const save = async (r: Rule) => {
@@ -267,6 +268,19 @@ export function Rules({ onMessage }: { onMessage: (text: string) => void }) {
                 }
               />
               {t('rule-act-read')}
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={editing.actions.notify}
+                onChange={(e) =>
+                  setEditing({
+                    ...editing,
+                    actions: { ...editing.actions, notify: e.target.checked },
+                  })
+                }
+              />
+              {t('rule-act-notify')}
             </label>
           </div>
 
