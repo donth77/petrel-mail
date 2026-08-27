@@ -1316,6 +1316,20 @@ export function App() {
             {/* Searching is a different question from browsing, so the header
                 answers a different one: how many were found, and in what
                 order — not how many are unread. */}
+            {/* The bin is the one place with a "make it final" verb, and it
+                lives in the bin rather than in a menu: emptying is decided
+                while looking at what is about to be lost. A sibling of the
+                count rather than a child of it — nested inside, it inherited
+                the count's push-right and the two sat on top of each other. */}
+            {view === 'trash' && !query.trim() && selected.size === 0 && (
+              <button
+                type="button"
+                className="linkish trash-empty"
+                onClick={() => setEmptyingTrash(true)}
+              >
+                {t('trash-empty')}
+              </button>
+            )}
             {query.trim() ? (
               <>
                 <span className="view-count">
@@ -1346,19 +1360,6 @@ export function App() {
               </>
             ) : (
               <span className="view-count">
-                {/* The bin is the one place with a "make it final" verb, and
-                    it lives in the bin rather than in a menu: emptying is a
-                    thing you decide while looking at what you are about to
-                    lose. */}
-                {view === 'trash' && selected.size === 0 && (
-                  <button
-                    type="button"
-                    className="linkish trash-empty"
-                    onClick={() => setEmptyingTrash(true)}
-                  >
-                    {t('trash-empty')}
-                  </button>
-                )}
                 {selected.size > 0
                   ? t('list-selected', { count: fmtCount(selected.size) })
                   : view === 'outbox'

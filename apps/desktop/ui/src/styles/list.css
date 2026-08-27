@@ -416,3 +416,17 @@ mark {
   border-radius: 2px;
   flex-shrink: 0;
 }
+
+/* Pushed to the right-hand end alongside the count, with the count still
+   last. Without its own auto margin it sat immediately after the view's
+   name, reading as part of the title. */
+.trash-empty {
+  margin-inline-start: auto;
+  font-size: 11.5px;
+}
+
+/* When both are present the count keeps its place at the end, and the gap
+   between them is a real gap rather than two spans touching. */
+.trash-empty + .view-count {
+  margin-inline-start: 12px;
+}
