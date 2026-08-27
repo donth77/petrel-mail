@@ -20,7 +20,7 @@
 # after a five-minute build that a certificate is missing is the kind of
 # thing that makes people stop cutting releases.
 #
-#   ./scripts/release.sh 0.1.0
+#   ./scripts/release.sh 1.0.0
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -28,7 +28,7 @@ cd "$ROOT"
 
 VERSION="${1:-}"
 if [ -z "$VERSION" ]; then
-  echo "usage: $0 <version>   e.g. $0 0.1.0" >&2
+  echo "usage: $0 <version>   e.g. $0 1.0.0" >&2
   exit 2
 fi
 
