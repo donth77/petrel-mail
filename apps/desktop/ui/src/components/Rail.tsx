@@ -238,27 +238,25 @@ export function Rail({
 
   const renderNode = (n: FNode, depth: number): React.ReactNode => {
     const open = !closedNodes.has(n.path);
-    // Rows without children still reserve the chevron's width: without the
-    // gap, a sibling wearing a chevron sat visibly further right and read as
-    // that sibling's child — "Archive is inside apply".
-    const chevron =
-      n.children.length > 0 && !collapsed ? (
-        <button
-          type="button"
-          className="tree-toggle"
-          aria-label={open ? t('folder-fold') : t('folder-unfold')}
-          aria-expanded={open}
-          onClick={(e) => {
-            e.stopPropagation();
-            toggle(n.path);
-          }}
-          onPointerDown={(e) => e.stopPropagation()}
-        >
-          <Icon icon={open ? ChevronDown : ChevronRight} size={12} />
-        </button>
-      ) : (
-        !collapsed && <span className="tree-toggle tree-toggle-gap" aria-hidden="true" />
-      );
+    // The chevron hangs in the row's left padding, so the icon holds the
+    // same column whether a row can fold or not — a chevron that pushed the
+    // icon right made every folding root read as its neighbour's child.
+    const chevron = n.children.length > 0 && !collapsed && (
+      <button
+        type="button"
+        className="tree-toggle hanging"
+        style={{ insetInlineStart: (10 + depth * 14) - 15 }}
+        aria-label={open ? t('folder-fold') : t('folder-unfold')}
+        aria-expanded={open}
+        onClick={(e) => {
+          e.stopPropagation();
+          toggle(n.path);
+        }}
+        onPointerDown={(e) => e.stopPropagation()}
+      >
+        <Icon icon={open ? ChevronDown : ChevronRight} size={12} />
+      </button>
+    );
     // Depth is meaningless in a collapsed rail: an indented icon leaves the
     // one column everything else lines up in, so the padding only applies
     // when there is text to indent.
@@ -440,7 +438,8 @@ export function Rail({
                 return (
                   <button
                     type="button"
-                    className="tree-toggle"
+                    className="tree-toggle hanging"
+                    style={{ insetInlineStart: -6 }}
                     aria-label={open ? t('folder-fold') : t('folder-unfold')}
                     aria-expanded={open}
                     onClick={(e) => {

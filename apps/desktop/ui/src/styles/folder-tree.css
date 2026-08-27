@@ -14,9 +14,16 @@
   color: var(--ink2);
 }
 
-/* The chevron's width, held by rows that have none, so siblings' icons sit
-   in one column and depth is the only thing indentation says. */
-.tree-toggle-gap {
-  display: inline-block;
-  visibility: hidden;
+/* A folding row's chevron hangs in the left padding rather than sitting in
+   the flow: icons keep one column whether a row folds or not, and depth is
+   the only thing indentation ever says. The row anchors it. */
+.rail-item {
+  position: relative;
+}
+
+.tree-toggle.hanging {
+  position: absolute;
+  inset-block-start: 50%;
+  transform: translateY(-50%);
+  margin-left: 0;
 }
