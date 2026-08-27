@@ -11,8 +11,9 @@ import enFtl from './en.ftl?raw';
 import esFtl from './es.ftl?raw';
 import frFtl from './fr.ftl?raw';
 import deFtl from './de.ftl?raw';
+import ptBrFtl from './pt-BR.ftl?raw';
 
-const LOCALES: Record<string, string> = { en: enFtl, es: esFtl, fr: frFtl, de: deFtl };
+const LOCALES: Record<string, string> = { en: enFtl, es: esFtl, fr: frFtl, de: deFtl, 'pt-BR': ptBrFtl };
 
 function idsIn(source: string): string[] {
   return source
