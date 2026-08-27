@@ -2,7 +2,19 @@ import { useEffect, useState } from 'react';
 import { Download, RefreshCw, RotateCw } from 'lucide-react';
 import { api, type UpdateStatus } from '../../lib/api';
 import { Icon } from '../Icon';
-import { t } from '../../lib/strings';
+import { t, type StringId } from '../../lib/strings';
+
+/** A category from the engine becomes a sentence here, where it can be
+ *  translated. Anything unrecognised falls to the vague one rather than
+ *  showing a code. */
+const ERROR_TEXT: Record<string, StringId> = {
+  offline: 'update-err-offline',
+  'not-configured': 'update-err-not-configured',
+  missing: 'update-err-missing',
+  malformed: 'update-err-malformed',
+  unknown: 'update-err-unknown',
+};
+const errorText = (kind: string) => t(ERROR_TEXT[kind] ?? 'update-err-unknown');
 
 /**
  * Updates, asked for rather than arriving.
@@ -39,7 +51,7 @@ export function Updates({ onMessage }: { onMessage: (text: string) => void }) {
       setStatus(s);
       onMessage(
         s.error
-          ? t('update-check-failed', { error: s.error })
+          ? errorText(s.error)
           : s.available
             ? t('update-found', { version: s.available })
             : t('update-none'),
@@ -84,7 +96,7 @@ export function Updates({ onMessage }: { onMessage: (text: string) => void }) {
           <div className="flabel">{t('update-could-not-ask')}</div>
           {/* Said plainly rather than shown as "up to date": not knowing and
               knowing there is nothing are different answers. */}
-          <p className="fhelp">{t('update-check-failed', { error: status.error })}</p>
+          <p className="fhelp">{errorText(status.error)}</p>
         </section>
       )}
 

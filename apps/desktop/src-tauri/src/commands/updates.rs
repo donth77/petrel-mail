@@ -24,11 +24,44 @@ pub struct UpdateStatus {
     pub available: Option<String>,
     /// The release notes that came with it, if any.
     pub notes: Option<String>,
-    /// Set when the check could not be made — offline, no endpoint
-    /// configured, a host that answered with rubbish. Reported rather than
-    /// swallowed: "no update" and "could not ask" are different answers and
-    /// a pane that shows the first for the second is lying quietly.
-    pub error: Option<String>,
+    /// Set when the check could not be made: offline, no endpoint configured,
+    /// a host that answered with rubbish. Reported rather than swallowed,
+    /// because "no update" and "could not ask" are different answers and a
+    /// pane that shows the first for the second is lying quietly.
+    ///
+    /// This is a category, not a sentence. The pane needs to say something a
+    /// person can act on, and it used to print the plugin's own words
+    /// straight through: "Could not fetch a valid release JSON from the
+    /// remote". Nobody should ever read the phrase "release JSON". The words
+    /// belong on the UI side where they can be translated; the detail goes to
+    /// sync.log, where it is useful to whoever is debugging rather than to
+    /// whoever is trying to update.
+    pub error: Option<&'static str>,
+}
+
+/// Sorts an updater failure into something the pane can phrase.
+fn classify(e: &str) -> &'static str {
+    let low = e.to_lowercase();
+    if low.contains("secure protocol") || low.contains("not configured") {
+        "not-configured"
+    } else if low.contains("dns")
+        || low.contains("connect")
+        || low.contains("timed out")
+        || low.contains("timeout")
+        || low.contains("network")
+    {
+        "offline"
+    } else if low.contains("json") || low.contains("parse") || low.contains("decode") {
+        // The plugin says the same thing for a body it cannot parse and for a
+        // 404 with no release behind it: "Could not fetch a valid release JSON
+        // from the remote". Since it will not tell them apart, the sentence
+        // this maps to names both rather than guessing one.
+        "malformed"
+    } else if low.contains("404") || low.contains("not found") {
+        "missing"
+    } else {
+        "unknown"
+    }
 }
 
 fn current_version(app: &tauri::AppHandle) -> String {
@@ -67,11 +100,12 @@ pub async fn check_update(app: tauri::AppHandle) -> Result<UpdateStatus, String>
         // No endpoint configured is the ordinary state of a dev build, not
         // a fault worth a red banner.
         Err(e) => {
+            log_sync(&format!("updates are not configured: {e}"));
             return Ok(UpdateStatus {
                 current,
                 available: None,
                 notes: None,
-                error: Some(format!("updates are not configured: {e}")),
+                error: Some("not-configured"),
             });
         }
     };
@@ -88,12 +122,16 @@ pub async fn check_update(app: tauri::AppHandle) -> Result<UpdateStatus, String>
             notes: None,
             error: None,
         }),
-        Err(e) => Ok(UpdateStatus {
-            current,
-            available: None,
-            notes: None,
-            error: Some(format!("{e}")),
-        }),
+        Err(e) => {
+            // The detail is worth keeping, just not worth showing.
+            log_sync(&format!("update check failed: {e}"));
+            Ok(UpdateStatus {
+                current,
+                available: None,
+                notes: None,
+                error: Some(classify(&e.to_string())),
+            })
+        }
     }
 }
 
