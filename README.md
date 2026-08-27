@@ -18,12 +18,14 @@
 
 Petrel talks straight to your mail server. No middleman service, no database you can't read.
 
-| | |
-|---|---|
-| **Fast** | Opens a 100,000-message mailbox in ~50ms. Search comes back in ~45ms. |
-| **Open** | IMAP and SMTP. Gmail and Microsoft 365 native APIs next, JMAP after that. |
-| **Private** | Your mail goes between your machine and your provider. Remote images off by default. |
-| **Durable** | SQLite and ordinary files. Export any folder to mbox. |
+**Fast.** Opens a 100,000-message mailbox in ~50ms. Search comes back in ~45ms.
+
+**Open.** IMAP and SMTP. Gmail and Microsoft 365 native APIs next, JMAP after that.
+
+**Private.** Your mail goes between your machine and your provider. Remote images off
+by default.
+
+**Durable.** SQLite and ordinary files. Export any folder to mbox.
 
 ---
 
