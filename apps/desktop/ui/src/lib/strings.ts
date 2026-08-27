@@ -12,23 +12,28 @@
  */
 
 import { FluentBundle, FluentResource } from '@fluent/bundle';
-import enFtl from '../locales/en.ftl?raw';
-import esFtl from '../locales/es.ftl?raw';
-import frFtl from '../locales/fr.ftl?raw';
-import deFtl from '../locales/de.ftl?raw';
 import { type StringId } from './string-ids';
 
 export { type StringId };
 
 type Args = Record<string, string | number>;
 
-/** Every locale that ships. One line and one file to add another. */
-const SOURCES: Record<string, string> = {
-  en: enFtl,
-  es: esFtl,
-  fr: frFtl,
-  de: deFtl,
-};
+/** Every locale that ships, discovered rather than listed.
+ *
+ * This was a hand-written map, and it silently fell behind: pt-BR, ja and
+ * zh-Hans were translated, committed, and covered by the locale tests, but
+ * never added here — so the runtime could not serve them and the language
+ * picker never offered them. The tests read the .ftl files directly and were
+ * perfectly happy.
+ *
+ * A glob cannot fall behind. Dropping a file in is now the whole job, which
+ * is what "adding a language is a data change" was supposed to mean.
+ */
+const SOURCES: Record<string, string> = Object.fromEntries(
+  Object.entries(
+    import.meta.glob('../locales/*.ftl', { query: '?raw', import: 'default', eager: true }),
+  ).map(([path, source]) => [path.replace(/^.*\/(.+)\.ftl$/, '$1'), source as string]),
+);
 
 /** English is the floor. Nothing below it, so a missing translation shows the
  *  English rather than an id. */

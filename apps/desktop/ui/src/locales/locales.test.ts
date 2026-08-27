@@ -7,14 +7,16 @@
  */
 import { describe, expect, it } from 'vitest';
 import { FluentBundle, FluentResource } from '@fluent/bundle';
+import { availableLocales, setLocale, t } from '../lib/strings';
 import enFtl from './en.ftl?raw';
 import esFtl from './es.ftl?raw';
 import frFtl from './fr.ftl?raw';
 import deFtl from './de.ftl?raw';
 import ptBrFtl from './pt-BR.ftl?raw';
 import jaFtl from './ja.ftl?raw';
+import zhHansFtl from './zh-Hans.ftl?raw';
 
-const LOCALES: Record<string, string> = { en: enFtl, es: esFtl, fr: frFtl, de: deFtl, 'pt-BR': ptBrFtl, ja: jaFtl };
+const LOCALES: Record<string, string> = { en: enFtl, es: esFtl, fr: frFtl, de: deFtl, 'pt-BR': ptBrFtl, ja: jaFtl, 'zh-Hans': zhHansFtl };
 
 function idsIn(source: string): string[] {
   return source
@@ -108,5 +110,30 @@ describe.each(Object.entries(LOCALES))('%s.ftl', (locale, source) => {
       expect(errors).toEqual([]);
       expect(one).not.toBe(many);
     }
+  });
+});
+
+describe('the runtime serves what the files provide', () => {
+  /* The gap this exists to close: pt-BR, ja and zh-Hans were translated,
+     committed, and passing every test above, while the runtime's own map of
+     locales still listed four. The tests read the .ftl files; nothing checked
+     that the app could reach them. Three languages were shipped that could
+     not be selected. */
+  it('offers every locale that has a file', () => {
+    const offered = new Set(availableLocales());
+    const expected = Object.keys(LOCALES);
+    expect(expected.filter((code) => !offered.has(code))).toEqual([]);
+  });
+
+  it('actually renders each one', () => {
+    for (const code of Object.keys(LOCALES)) {
+      setLocale(code);
+      const inbox = t('mailbox-inbox');
+      expect(inbox, `${code} did not render mailbox-inbox`).toBeTruthy();
+      // English is the fallback, so any other locale rendering the English
+      // word means its bundle was not reached.
+      if (code !== 'en') expect(inbox, `${code} fell back to English`).not.toBe('Inbox');
+    }
+    setLocale('en');
   });
 });
