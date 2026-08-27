@@ -1569,7 +1569,17 @@ export function App() {
             // Keeping it, not discarding it. Losing what someone wrote because
             // they hit the wrong corner is unforgivable, and a confirmation on
             // every close is worse than simply keeping the message.
-            if (draft.to || draft.subject || draft.body.trim())
+            // CC and attachments count as content too. They did not, and a
+            // draft that was only a CC line or only an attached file was
+            // dropped on close without a word — the exact loss the comment
+            // above is about.
+            if (
+              draft.to ||
+              draft.cc ||
+              draft.subject ||
+              draft.body.trim() ||
+              (draft.attachments?.length ?? 0) > 0
+            )
               void saveDraft(draft).then((id) => {
                 // Closing must not wait out the 30-second debounce.
                 if (id != null) void api.pushDraft(id).catch(() => {});

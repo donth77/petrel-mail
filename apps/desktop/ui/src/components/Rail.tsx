@@ -393,6 +393,11 @@ export function Rail({
         </button>
       </Tip>
 
+      {/* Everything you navigate to scrolls; the things you reach for do not.
+          With a few dozen folders the account switcher, Compose, Help and
+          Settings used to scroll off with them, so the way out of a long
+          mailbox list was to scroll back up it. */}
+      <div className="rail-scroll">
       <div className="rail-label">{t('rail-mailboxes')}</div>
       {MAILBOXES.map((m) => {
         const row = (
@@ -679,6 +684,8 @@ export function Rail({
             )}
             </Tip>
       ))}
+
+      </div>
 
       {/* Help and Settings sit at the foot of the rail, out of the triage path
           but always in the same place — not hidden behind a menu. */}

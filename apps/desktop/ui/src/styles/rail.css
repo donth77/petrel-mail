@@ -8,7 +8,23 @@
   padding: 10px;
   background: var(--bg);
   border-inline-end: 1px solid var(--hair);
+  /* The rail itself no longer scrolls — .rail-scroll does. When the whole
+     column scrolled, a long folder list carried Compose and Settings off
+     the top and bottom with it. */
+  overflow: hidden;
+}
+
+/* The navigable middle: mailboxes, folders and tags. Takes the space the
+   pinned ends leave and scrolls inside it. min-block-size:0 is what actually
+   allows a flex child to shrink below its content and therefore to scroll at
+   all; without it this grows instead and the ends are pushed out of view. */
+.rail-scroll {
+  flex: 1 1 auto;
+  min-block-size: 0;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .account {
@@ -82,7 +98,9 @@
 }
 
 .rail-foot {
-  margin-block-start: auto;
+  /* No margin-block-start:auto any more — .rail-scroll takes the slack, and
+     an auto margin here would fight it for the leftover space. */
+  flex: 0 0 auto;
   padding-block-start: 10px;
   display: flex;
   flex-direction: column;
