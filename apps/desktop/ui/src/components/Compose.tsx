@@ -8,6 +8,7 @@ import { RichText } from './RichText';
 import { plainTextFromDoc } from '../lib/plain-text';
 import { key } from '../lib/keys';
 import { t } from '../lib/strings';
+import { useDragWindow } from '../lib/drag-window';
 import { useFileDropZone } from '../lib/useFileDrop';
 
 export type Draft = {
@@ -62,6 +63,9 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
   const { over: dropping, dropProps } = useFileDropZone(onDropFiles);
   const toRef = useRef<HTMLInputElement>(null);
   const [showCc, setShowCc] = useState(draft.cc.length > 0);
+  // Draggable by its header. The pop-out button is still the way to get a
+  // real OS window; this is for nudging it off whatever it is covering.
+  const drag = useDragWindow();
 
   // Focus where the work is: a fresh message needs a recipient, a reply already
   // has one and needs words. The body half is the editor's own autoFocus, which
@@ -77,6 +81,8 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
   return (
     <section
       className="compose"
+      ref={drag.ref as React.RefObject<HTMLElement>}
+      style={drag.style}
       aria-label={t('compose-title')}
       data-dropping={dropping || undefined}
       {...dropProps}
@@ -115,7 +121,7 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
         </div>
       )}
 
-      <header className="compose-head">
+      <header className="compose-head" {...drag.handleProps}>
         <span className="compose-title">{draft.inReplyTo ? t('compose-reply') : t('compose-new')}</span>
         {/* Closing keeps the message. Discarding what someone wrote because
             they hit the wrong corner is unforgivable, and a confirmation

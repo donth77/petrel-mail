@@ -673,3 +673,19 @@ body.resizing {
 .rail[data-collapsed] .compose-new {
   padding-inline: 9px;
 }
+
+/* The header doubles as the drag handle. `grab` says so; without a cursor
+   change the only way to discover it is to try. The buttons inside keep their
+   own pointer, since dragging by the close button is not a thing. */
+.compose-head {
+  cursor: grab;
+  /* A drag that begins on the title would otherwise select the text and leave
+     it highlighted behind the moved panel. */
+  user-select: none;
+}
+.compose-head:active {
+  cursor: grabbing;
+}
+.compose-head button {
+  cursor: pointer;
+}
