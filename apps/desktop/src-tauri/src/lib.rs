@@ -323,6 +323,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             commands::settings::status,
@@ -371,6 +372,9 @@ pub fn run() {
             commands::settings::save_rule,
             commands::settings::delete_rule,
             commands::settings::move_rule,
+            commands::updates::check_update,
+            commands::updates::install_update,
+            commands::updates::restart_for_update,
             commands::settings::export_settings,
             commands::settings::import_settings,
             commands::compose::get_identity,

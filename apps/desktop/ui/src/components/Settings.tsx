@@ -2,8 +2,7 @@ import { useEffect, useState } from 'react';
 import { Dialog, DialogDismiss } from '@ariakit/react';
 import { Filter,
   Bell, Database, Mail, PencilLine, Shield, SunMoon, User, X,
-  type LucideIcon,
-} from 'lucide-react';
+  type LucideIcon, RefreshCw } from 'lucide-react';
 import { Accounts } from './settings/Accounts';
 import { Appearance } from './settings/Appearance';
 import { Rules } from './settings/Rules';
@@ -12,13 +11,14 @@ import { Notifications } from './settings/Notifications';
 import { Identities } from './settings/Identities';
 import { Privacy } from './settings/Privacy';
 import { Storage } from './settings/Storage';
+import { Updates } from './settings/Updates';
 import { Icon } from './Icon';
 import { clickAway } from '../lib/dialog';
 import { t, type StringId } from '../lib/strings';
 
 type PaneId =
   | 'accounts' | 'identities' | 'composing' | 'notifications'
-  | 'appearance' | 'privacy' | 'storage' | 'rules';
+  | 'appearance' | 'privacy' | 'storage' | 'rules' | 'updates';
 
 const PANES: { id: PaneId; label: StringId; icon: LucideIcon }[] = [
   { id: 'accounts', label: 'settings-accounts', icon: Mail },
@@ -29,6 +29,7 @@ const PANES: { id: PaneId; label: StringId; icon: LucideIcon }[] = [
   { id: 'rules', label: 'settings-rules', icon: Filter },
   { id: 'privacy', label: 'settings-privacy', icon: Shield },
   { id: 'storage', label: 'settings-storage', icon: Database },
+  { id: 'updates', label: 'settings-updates', icon: RefreshCw },
 ];
 
 // Help is deliberately not in this list. Settings is where things are
@@ -100,7 +101,8 @@ export function Settings({ open, pane: requested, onClose, onMessage, onAddAccou
           {pane === 'rules' && <Rules onMessage={onMessage} />}
           {pane === 'privacy' && <Privacy />}
           {pane === 'identities' && <Identities onMessage={onMessage} />}
-          {pane !== 'appearance' && pane !== 'accounts' && pane !== 'notifications' && pane !== 'composing' && pane !== 'storage' && pane !== 'privacy' && pane !== 'identities' && (
+          {pane === 'updates' && <Updates onMessage={onMessage} />}
+          {pane !== 'appearance' && pane !== 'accounts' && pane !== 'notifications' && pane !== 'composing' && pane !== 'storage' && pane !== 'privacy' && pane !== 'identities' && pane !== 'updates' && (
             <div className="empty">
               <h2>{t(PANES.find((p) => p.id === pane)!.label)}</h2>
               <p>{t('settings-not-built')}</p>

@@ -141,6 +141,15 @@ export type InvitationView = {
   responded: string | null;
 };
 
+/** What the Updates pane shows. `error` set means the check could not be
+ *  made — which is not the same as there being nothing to install. */
+export type UpdateStatus = {
+  current: string;
+  available: string | null;
+  notes: string | null;
+  error: string | null;
+};
+
 export type FolderMapping = { role: string; path: string };
 
 export type Account = {
@@ -417,6 +426,14 @@ const mock = {
   respondInvitation: async () => {},
   draftConflict: async (): Promise<{ other_id: number } | null> => null,
   resolveDraftConflict: async () => {},
+  checkUpdate: async (): Promise<UpdateStatus> => ({
+    current: '0.0.1',
+    available: null,
+    notes: null,
+    error: 'updates are not configured in the browser harness',
+  }),
+  installUpdate: async () => {},
+  restartForUpdate: async () => {},
   exportSettings: async (): Promise<string> => '12/2',
   importSettings: async (): Promise<string> => '12/1/1',
   popoutMessage: async () => {},
@@ -573,6 +590,9 @@ const real = {
   draftConflict: (id: number) => invoke<{ other_id: number } | null>('draft_conflict', { id }),
   resolveDraftConflict: (id: number, otherId: number, takeServer: boolean) =>
     invoke<void>('resolve_draft_conflict', { id, otherId, takeServer }),
+  checkUpdate: () => invoke<UpdateStatus>('check_update'),
+  installUpdate: () => invoke<void>('install_update'),
+  restartForUpdate: () => invoke<void>('restart_for_update'),
   exportSettings: (path: string) => invoke<string>('export_settings', { path }),
   importSettings: (path: string) => invoke<string>('import_settings', { path }),
   invitation: (messageId: number) => invoke<InvitationView | null>('invitation', { messageId }),

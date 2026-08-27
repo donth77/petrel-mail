@@ -10,4 +10,5 @@ pub(crate) mod remote;
 pub(crate) mod settings;
 pub(crate) mod storage;
 pub(crate) mod triage;
+pub(crate) mod updates;
 pub(crate) mod windows;

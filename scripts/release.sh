@@ -153,4 +153,58 @@ spctl --assess --type execute --verbose=4 "$VERIFY/mnt/Petrel.app"
 hdiutil detach -quiet "$VERIFY/mnt"
 rm -rf "$VERIFY"
 
+# ------------------------------------------------------- update artifact
+say "update artifact"
+# The updater installs a tarball of the .app, not the DMG, and verifies its
+# signature against the public key compiled into the running copy. The
+# private key never enters this repository: it lives at
+# ~/.config/petrel/updater.key (or wherever TAURI_SIGNING_PRIVATE_KEY_PATH
+# points), and losing it means no existing install can ever be updated
+# again — back it up somewhere you would keep an SSH key.
+KEY_PATH="${TAURI_SIGNING_PRIVATE_KEY_PATH:-$HOME/.config/petrel/updater.key}"
+TARBALL="$ROOT/target/release/Petrel-$VERSION.app.tar.gz"
+if [ -f "$KEY_PATH" ] && command -v cargo-tauri >/dev/null; then
+  (cd "$(dirname "$APP")" && tar czf "$TARBALL" "$(basename "$APP")")
+  TAURI_SIGNING_PRIVATE_KEY_PATH="$KEY_PATH" \
+  TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" \
+    cargo tauri signer sign "$TARBALL" >/dev/null
+  SIGNATURE="$(cat "$TARBALL.sig")"
+  NOTES="${PETREL_RELEASE_NOTES:-}"
+  PUBDATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  cat > "$ROOT/target/release/latest.json" <<JSON
+{
+  "version": "$VERSION",
+  "notes": "$NOTES",
+  "pub_date": "$PUBDATE",
+  "platforms": {
+    "darwin-aarch64": {
+      "signature": "$SIGNATURE",
+      "url": "https://github.com/donth77/petrel-mail/releases/download/v$VERSION/Petrel-$VERSION.app.tar.gz"
+    },
+    "darwin-x86_64": {
+      "signature": "$SIGNATURE",
+      "url": "https://github.com/donth77/petrel-mail/releases/download/v$VERSION/Petrel-$VERSION.app.tar.gz"
+    }
+  }
+}
+JSON
+  echo "signed tarball: $TARBALL"
+  echo "manifest:       $ROOT/target/release/latest.json"
+else
+  echo "no update-signing key at $KEY_PATH — skipping the update artifact." >&2
+  echo "Existing installs will not see this release. Generate one with:" >&2
+  echo "  cargo tauri signer generate -w $KEY_PATH" >&2
+  echo "and put the printed public key in tauri.conf.json under plugins.updater." >&2
+fi
+
 printf '\n%s\n' "release ready: $DMG"
+if [ -f "$ROOT/target/release/latest.json" ]; then
+  cat <<'NEXT'
+
+To publish: create the GitHub release for this version and attach both the
+.dmg (what a person downloads) and the .app.tar.gz plus latest.json (what
+existing installs read). The endpoint in tauri.conf.json points at
+releases/latest/download/latest.json, so the manifest must be an asset of
+the release marked latest — not a file in the repository.
+NEXT
+fi

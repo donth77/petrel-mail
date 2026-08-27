@@ -1,0 +1,119 @@
+import { useEffect, useState } from 'react';
+import { Download, RefreshCw, RotateCw } from 'lucide-react';
+import { api, type UpdateStatus } from '../../lib/api';
+import { Icon } from '../Icon';
+import { t } from '../../lib/strings';
+
+/**
+ * Updates, asked for rather than arriving.
+ *
+ * Checking is a button, not something the app does at launch: an updater
+ * that phones home on its own is a second network dependency between a
+ * person and their mail, and one that can replace the running program.
+ * Installing and restarting are separate presses for the same reason — an
+ * app that restarts itself while a reply is half-written is worse than one
+ * that waits to be asked.
+ */
+export function Updates({ onMessage }: { onMessage: (text: string) => void }) {
+  const [status, setStatus] = useState<UpdateStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [installed, setInstalled] = useState(false);
+
+  // The version is a fact about this app and costs nothing to read, so the
+  // pane can say what it is before anyone asks it to look further.
+  useEffect(() => {
+    let live = true;
+    api
+      .checkUpdate()
+      .then((s) => live && setStatus(s))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  const check = async () => {
+    setBusy(true);
+    try {
+      const s = await api.checkUpdate();
+      setStatus(s);
+      onMessage(
+        s.error
+          ? t('update-check-failed', { error: s.error })
+          : s.available
+            ? t('update-found', { version: s.available })
+            : t('update-none'),
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const install = async () => {
+    setBusy(true);
+    try {
+      await api.installUpdate();
+      setInstalled(true);
+      onMessage(t('update-installed'));
+    } catch (e) {
+      onMessage(t('update-install-failed', { error: String(e) }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="pane">
+      <h1 className="pane-title">{t('settings-updates')}</h1>
+
+      <section className="field">
+        <div className="flabel">{t('update-this-version')}</div>
+        <p className="fhelp">
+          {status ? t('update-running', { version: status.current }) : t('update-reading')}
+        </p>
+        <div className="storage-actions">
+          <button type="button" className="fbtn" disabled={busy} onClick={() => void check()}>
+            <Icon icon={RefreshCw} size={13} />
+            {t('update-check')}
+          </button>
+        </div>
+      </section>
+
+      {status?.error && (
+        <section className="field">
+          <div className="flabel">{t('update-could-not-ask')}</div>
+          {/* Said plainly rather than shown as "up to date": not knowing and
+              knowing there is nothing are different answers. */}
+          <p className="fhelp">{t('update-check-failed', { error: status.error })}</p>
+        </section>
+      )}
+
+      {status?.available && !installed && (
+        <section className="field">
+          <div className="flabel">{t('update-available', { version: status.available })}</div>
+          <p className="fhelp">{t('update-signed-note')}</p>
+          {status.notes && <p className="fhelp update-notes">{status.notes}</p>}
+          <div className="storage-actions">
+            <button type="button" className="fbtn" disabled={busy} onClick={() => void install()}>
+              <Icon icon={Download} size={13} />
+              {t('update-install')}
+            </button>
+          </div>
+        </section>
+      )}
+
+      {installed && (
+        <section className="field">
+          <div className="flabel">{t('update-ready')}</div>
+          <p className="fhelp">{t('update-restart-note')}</p>
+          <div className="storage-actions">
+            <button type="button" className="fbtn" onClick={() => void api.restartForUpdate()}>
+              <Icon icon={RotateCw} size={13} />
+              {t('update-restart')}
+            </button>
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}

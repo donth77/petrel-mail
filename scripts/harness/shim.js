@@ -305,6 +305,19 @@
         : null;
     },
     resolve_draft_conflict: function () { window.__CONFLICT_DONE__ = true; return null; },
+    check_update: function () {
+      // ?update=1 offers one; ?update=err makes the check itself fail, which
+      // must not read as "up to date".
+      if (location.search.indexOf('update=err') !== -1) {
+        return { current: '0.0.1', available: null, notes: null, error: 'network unreachable' };
+      }
+      if (location.search.indexOf('update=1') !== -1) {
+        return { current: '0.0.1', available: '0.2.0', notes: 'Faster lists, invitations.', error: null };
+      }
+      return { current: '0.0.1', available: null, notes: null, error: null };
+    },
+    install_update: function () { return null; },
+    restart_for_update: function () { return null; },
     load_draft: function (a) {
       return window.__CONFLICT_DONE__
         ? { id: a.id, to: 'sam@example.com', subject: 'plans, revised', body: 'second thoughts', html: '' }
