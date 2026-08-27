@@ -72,11 +72,19 @@ body.dragging * {
   z-index: 5;
 }
 
-.pane-resize:hover,
-.pane-resize:focus-visible {
+.pane-resize:hover {
   background: var(--accent);
   opacity: 0.5;
-  outline: none;
+}
+
+/* Focus reads differently from hover on purpose: the two looked
+   identical, so a keyboard user could not tell whether the tint
+   under the pointer was where focus actually was. */
+.pane-resize:focus-visible {
+  background: var(--accent);
+  opacity: 1;
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 /* A file being dragged onto the composer.

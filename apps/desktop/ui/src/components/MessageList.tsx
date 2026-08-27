@@ -446,12 +446,21 @@ export function MessageList({
                   open the palette, which already has its own shortcut and is a
                   first-class surface in this app. The reader header, which has
                   room, keeps it. */}
+              {/* Hidden from assistive technology on purpose: every verb here
+                  has a key, and announcing three more controls on every row
+                  would treble what a screen reader reads to reach the next
+                  message. Hidden and focusable together is the one
+                  combination to avoid, though — it puts a stop in the tab
+                  order that nothing can name — so each is taken out of the
+                  tab order below. The tooltip wrapper is what would
+                  otherwise put them in it. */}
               <span className="row-actions" aria-hidden="true">
                 {/* stopPropagation, or the click also lands on the row behind
                     and selects the conversation we are about to archive. */}
                 <Tip label={t('qact-archive')} keys={['E']}>
                   <span
                     className="qact"
+                    tabIndex={-1}
                     onClick={(e) => {
                       e.stopPropagation();
                       onAction('archive', m.id);
@@ -474,6 +483,7 @@ export function MessageList({
                 >
                   <span
                     className="qact"
+                    tabIndex={-1}
                     onClick={(e) => {
                       e.stopPropagation();
                       onAction(m.unread ? 'mark_read' : 'mark_unread', m.id);
@@ -485,6 +495,7 @@ export function MessageList({
                 <Tip label={t('qact-snooze')} keys={['B']}>
                   <span
                     className="qact"
+                    tabIndex={-1}
                     onClick={(e) => {
                       e.stopPropagation();
                       onSnooze(m.id);

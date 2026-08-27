@@ -34,3 +34,11 @@
   padding: 2px 14px 0;
   font-size: 11.5px;
 }
+
+/* The message body is a frame, and focus moving into it is otherwise
+   invisible — the document inside paints its own world. A ring on the frame
+   says where the keyboard went. */
+.msg-frame:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
