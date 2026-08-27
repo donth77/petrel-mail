@@ -3,6 +3,8 @@ import { Dialog, DialogDismiss, Tab, TabList, TabPanel, useTabStore } from '@ari
 import { Search, X } from 'lucide-react';
 import { OPERATOR_GROUPS, shortcutGroups } from '../lib/help';
 import { Icon } from './Icon';
+import { GithubMark } from './GithubMark';
+import { api } from '../lib/api';
 import { clickAway } from '../lib/dialog';
 import { t } from '../lib/strings';
 
@@ -111,7 +113,7 @@ export function Help({ open, onClose }: { open: boolean; onClose: () => void }) 
                   <code>{o.op}</code>
                   <span>
                     {o.means}
-                    {o.means && o.example ? ' — ' : ''}
+                    {o.means && o.example ? ': ' : ''}
                     {o.example && <code className="bare">{o.example}</code>}
                   </span>
                 </div>
@@ -132,6 +134,26 @@ export function Help({ open, onClose }: { open: boolean; onClose: () => void }) 
           )}
         </TabPanel>
 
+        {/* Outside the tabs on purpose: reporting a problem is not a thing you
+            look up under Shortcuts or Search, and someone who wants it wants it
+            from wherever they happen to be. */}
+        <div className="help-foot">
+          <button
+            type="button"
+            className="fbtn"
+            onClick={() => void api.openExternal('https://github.com/donth77/petrel-mail/issues')}
+          >
+            <GithubMark size={13} />
+            {t('help-report')}
+          </button>
+          <button
+            type="button"
+            className="linkish help-source"
+            onClick={() => void api.openExternal('https://github.com/donth77/petrel-mail#petrel')}
+          >
+            {t('help-source')}
+          </button>
+        </div>
       </div>
     </Dialog>
   );
