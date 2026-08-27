@@ -1892,7 +1892,13 @@ export function App() {
                 return t('status-synced-hr', { hr: String(Math.floor(min / 60)) });
               })()}
         </span>
-        <span style={{ color: 'var(--hair)' }}>|</span>
+        {/* A rule between two facts, drawn as a character. Hidden from
+            assistive technology because "pipe" between them is noise, and
+            exempt from contrast for the same reason it is faint: it is a
+            divider, not something to read. */}
+        <span style={{ color: 'var(--hair)' }} aria-hidden="true">
+          |
+        </span>
         <span>
           {view === 'outbox'
             ? t('outbox-count', { count: fmtCount(counts['outbox'] ?? 0) })

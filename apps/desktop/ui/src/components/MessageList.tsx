@@ -420,12 +420,25 @@ export function MessageList({
                             <span className="clip">{m.attachment_name}</span>
                           </span>
                         )}
+                        {/* The tag's colour rides a swatch and the border, not
+                            the text. It is the user's colour and can be any
+                            colour at all — as text at 10px it is a contrast
+                            failure waiting to happen (a red tag measured
+                            3.1:1), and the rail already solved this the same
+                            way. */}
                         {m.tags.map((tag) => (
                           <span
                             key={tag.name}
                             className="rchip"
-                            style={tag.colour ? { color: tag.colour, borderColor: tag.colour } : undefined}
+                            style={tag.colour ? { borderColor: tag.colour } : undefined}
                           >
+                            {tag.colour && (
+                              <span
+                                className="rchip-dot"
+                                style={{ background: tag.colour }}
+                                aria-hidden="true"
+                              />
+                            )}
                             {tag.name}
                           </span>
                         ))}

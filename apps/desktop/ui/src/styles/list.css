@@ -404,3 +404,15 @@ mark {
   color: inherit;
   border-radius: 2px;
 }
+
+/* A tag's colour on a row chip: a swatch beside readable ink, matching the
+   rail's own tags. Painting the name itself in the user's colour looked
+   tidier and failed contrast for any colour darker or lighter than the
+   middle of the range — the app cannot choose those colours, so it must not
+   depend on them being legible. */
+.rchip-dot {
+  inline-size: 7px;
+  block-size: 7px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}

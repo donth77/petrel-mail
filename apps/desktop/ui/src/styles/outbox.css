@@ -91,12 +91,16 @@
   margin-block-start: 4px;
 }
 
-/* The Outbox row in the rail, while a message is waiting on a decision. */
+/* The Outbox row in the rail, while a message is waiting on a decision.
+   The token rather than a literal: a hardcoded amber here was the one thing
+   tokens.css warns about in its first paragraph, and it was measurably wrong
+   in both themes — 3.9:1 in light, 4.3:1 in dark, for text that exists to be
+   noticed. */
 .rail-item[data-attention] {
-  color: #a7741e;
+  color: var(--amber);
 }
 
 .rail-item[data-attention] .count {
-  color: #a7741e;
+  color: var(--amber);
   font-weight: 650;
 }

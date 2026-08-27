@@ -16,7 +16,10 @@
   /* ink */
   --ink: #182730;
   --ink2: #54666e;
-  --ink3: #7c8f96;
+  /* Measured, not chosen by eye: at 10-11px this token carries timestamps,
+     counts and section labels, and at #7c8f96 they sat at 3.2:1 against the
+     rail — under the 4.5:1 small text needs. */
+  --ink3: #62757c;
 
   /* lines */
   --hair: #d9e1e2;
@@ -29,7 +32,7 @@
 
   /* semantic, kept separate from the accent on purpose */
   --good: #2e7d5b;
-  --amber: #9a6b1f;
+  --amber: #98691d;
   --amber-bg: #f8f1e2;
   --amber-line: #e7d6b4;
   --danger: #a8544b;
@@ -61,7 +64,7 @@
     --raised: #17282f;
     --ink: #e4edee;
     --ink2: #96a9af;
-    --ink3: #7a8d94;
+    --ink3: #7c8f96;
     --hair: #24363d;
     --hair2: #1d2e35;
     --accent: color-mix(in oklab, var(--accent-user, #0e7c86) 62%, #ffffff);
@@ -86,7 +89,7 @@
   --raised: #17282f;
   --ink: #e4edee;
   --ink2: #96a9af;
-  --ink3: #7a8d94;
+  --ink3: #7c8f96;
   --hair: #24363d;
   --hair2: #1d2e35;
   --accent: color-mix(in oklab, var(--accent-user, #0e7c86) 62%, #ffffff);
