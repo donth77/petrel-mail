@@ -42,11 +42,14 @@
 
 /* The close button in the palette and help sheets, which have no header row to
    sit in. Same placement as the settings one. */
+/* The palette's close button is already the last child of the flex row that
+   holds the search field, so it just needs to stay in that row. It used to be
+   absolutely positioned, which took it out of the flow twice over: the field
+   grew to full width underneath it, and with no positioned ancestor it
+   resolved against the full-width backdrop and landed at the window edge,
+   432px clear of the palette. Being a flex item solves both. */
 .palette-esc {
-  position: absolute;
-  inset-block-start: 12px;
-  inset-inline-end: 14px;
-  z-index: 1;
+  flex: 0 0 auto;
 }
 
 .compose-head {
