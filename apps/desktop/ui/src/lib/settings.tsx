@@ -1,6 +1,7 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, Fragment, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { api } from './api';
 import { setFormatPrefs, type ClockPref } from './format';
+import { availableLocales, setLocale } from './strings';
 
 /**
  * Preferences, with their defaults in one place.
@@ -189,9 +190,50 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
     api.setSetting(key, '').catch(() => {});
   }, []);
 
+  // Which language the interface speaks. "system" follows the Mac, but only as
+  // far as a locale we actually ship: asking for de-AT when only de exists
+  // should give German, and asking for something we have nothing for should
+  // give English rather than a screen of ids.
+  const resolved = resolveLocale(settings.language);
+
+  // Set during render, not in an effect. An effect runs after the children have
+  // already rendered, so the first paint after a language change would still be
+  // in the old language. This is a module-level assignment, cheap and
+  // idempotent, so running it every render costs nothing.
+  setLocale(resolved);
+
   return (
-    <SettingsContext.Provider value={{ settings, set, reset }}>{children}</SettingsContext.Provider>
+    <SettingsContext.Provider value={{ settings, set, reset }}>
+      {/* Keyed on the language, so changing it remounts the tree. t() is a
+          plain function rather than a hook, so nothing re-renders on its own
+          when the locale changes; without this, half the window would keep the
+          old words until something else happened to redraw it.
+
+          A remount can reset component state that was not worth persisting.
+          That is the trade, and an explicit language change is the one moment
+          it is clearly worth making. */}
+      <Fragment key={resolved}>{children}</Fragment>
+    </SettingsContext.Provider>
   );
+}
+
+/** Requested language to one we ship: exact match, then base language, then
+ *  English. `system` asks the browser first. */
+function resolveLocale(setting: string): string {
+  const have = new Set(availableLocales());
+  const wanted =
+    setting && setting !== 'system'
+      ? [setting]
+      : typeof navigator !== 'undefined'
+        ? [...(navigator.languages ?? []), navigator.language]
+        : [];
+  for (const tag of wanted) {
+    if (!tag) continue;
+    if (have.has(tag)) return tag;
+    const base = tag.split('-')[0];
+    if (base && have.has(base)) return base;
+  }
+  return 'en';
 }
 
 export function useSettings(): Ctx {

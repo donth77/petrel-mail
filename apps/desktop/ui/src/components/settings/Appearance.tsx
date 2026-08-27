@@ -1,7 +1,7 @@
 import { Monitor, Moon, Sun, type LucideIcon } from 'lucide-react';
 import { DEFAULTS, useSettings, type Settings } from '../../lib/settings';
 import { Icon } from '../Icon';
-import { t, type StringId } from '../../lib/strings';
+import { availableLocales, t, type StringId } from '../../lib/strings';
 
 const ACCENTS = ['#0E7C86', '#3B6EA5', '#6B5CA5', '#9A6B1F', '#5E7C4A', '#A8544B'];
 
@@ -70,10 +70,16 @@ export function Appearance() {
           value={settings.language}
           onChange={(e) => set('language', e.target.value)}
         >
-          {/* Only English ships today; the picker enumerates what exists rather
-              than promising locales that do not, so adding one is a data change. */}
+          {/* Enumerated from the bundles that exist rather than a hand-kept
+              list, so adding a locale really is a data change. Each is named in
+              its own language: someone looking for German is looking for
+              "Deutsch", not for the English word for it. */}
           <option value="system">{t('language-system')}</option>
-          <option value="en">English</option>
+          {availableLocales().map((code) => (
+            <option key={code} value={code}>
+              {endonym(code)}
+            </option>
+          ))}
         </select>
       </section>
 
@@ -181,4 +187,15 @@ export function Appearance() {
       </section>
     </div>
   );
+}
+
+/** A language's name in that language. Intl knows them; a hand-kept table would
+ *  go stale the moment a locale is added, which is the thing this file is
+ *  trying to stop being. */
+function endonym(code: string): string {
+  try {
+    return new Intl.DisplayNames([code], { type: 'language' }).of(code) ?? code;
+  } catch {
+    return code;
+  }
 }
