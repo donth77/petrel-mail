@@ -630,3 +630,27 @@ account-none-at = No account at { $n }
 a11y-message-list = Conversations
 a11y-row = { $unread }{ $from }, { $subject }, { $time }
 a11y-unread-prefix = unread,{ " " }
+
+# The menu bar. macOS supplies most of these itself, in its own language;
+# Petrel names them so they follow the language setting like everything else.
+menubar-about = About Petrel
+menubar-settings = Settings…
+menubar-services = Services
+menubar-hide = Hide Petrel
+menubar-hide-others = Hide Others
+menubar-show-all = Show All
+menubar-quit = Quit Petrel
+menubar-file = File
+menubar-new-message = New Message
+menubar-close-window = Close Window
+menubar-edit = Edit
+menubar-undo = Undo
+menubar-redo = Redo
+menubar-cut = Cut
+menubar-copy = Copy
+menubar-paste = Paste
+menubar-select-all = Select All
+menubar-view = View
+menubar-window = Window
+menubar-minimize = Minimize
+menubar-zoom = Zoom

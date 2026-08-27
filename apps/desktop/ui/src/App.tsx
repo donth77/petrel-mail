@@ -12,6 +12,7 @@ import { t, type StringId } from './lib/strings';
 import { Search } from 'lucide-react';
 import { Rail } from './components/Rail';
 import { useKeyboard } from './lib/useKeyboard';
+import { useAppMenu } from './lib/menu';
 import { useTriage, type UndoOffer } from './lib/useTriage';
 import { TitleBar } from './components/TitleBar';
 import { Palette } from './components/Palette';
@@ -248,6 +249,22 @@ export function App() {
     setView(v);
   };
 
+  /** A blank message, signed. The C key, the palette and the File menu all
+   *  come here — it was written out three times before the menu made a fourth
+   *  copy unthinkable, and one of the three had already drifted: the palette
+   *  forgot to clear the attachment warning, so a composer opened from there
+   *  had used up its one warning before it began. */
+  const startCompose = () => {
+    attachmentWarned.current = false;
+    setDraft({
+      to: '',
+      cc: '',
+      subject: '',
+      body: startingBody(identity, false),
+      html: startingHtml(identity, false),
+    });
+  };
+
   const railRef = useRef<HTMLElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -337,16 +354,7 @@ export function App() {
       if (acc.active) return;
       void switchAccount(acc.id, acc.email);
     },
-    compose: () => {
-      attachmentWarned.current = false;
-      setDraft({
-        to: '',
-        cc: '',
-        subject: '',
-        body: startingBody(identity, false),
-        html: startingHtml(identity, false),
-      });
-    },
+    compose: startCompose,
     reply: (all) => {
       // R follows the configured default; A always means reply-all.
       if (active) void startReply(active.id, all || settings.replyDefault === 'reply-all');
@@ -385,6 +393,19 @@ export function App() {
     openHelp: () => setHelpOpen(true),
     openSettings: () => setSettingsOpen('appearance'),
     focusSearch: () => searchRef.current?.focus(),
+  });
+
+  // The macOS menu bar, driving the same functions as everything above it. Its
+  // ⌘, arrives here rather than in useKeyboard now — the OS gives a menu's key
+  // equivalents first refusal — which is only safe because both open the same
+  // pane.
+  useAppMenu({
+    newMessage: startCompose,
+    openSettings: () => setSettingsOpen('appearance'),
+    theme: settings.theme,
+    density: settings.density,
+    setTheme: (v) => set('theme', v),
+    setDensity: (v) => set('density', v),
   });
 
   // The rail key is the view's identity; its label comes from the same string
@@ -1738,14 +1759,7 @@ export function App() {
           onSnooze: () => setPicker('snooze'),
           onMove: () => setPicker('folder'),
           onTag: () => setPicker('tag'),
-          onCompose: () =>
-            setDraft({
-              to: '',
-              cc: '',
-              subject: '',
-              body: startingBody(identity, false),
-              html: startingHtml(identity, false),
-            }),
+          onCompose: startCompose,
           onReply: () => {
             if (active) void startReply(active.id, settings.replyDefault === 'reply-all');
           },
