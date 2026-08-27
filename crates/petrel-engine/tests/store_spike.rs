@@ -293,3 +293,93 @@ fn bench_insert_and_search() {
         "search budget exceeded: {worst:.2}ms >= {budget}ms"
     );
 }
+
+/// Opening a mailbox at scale — the other half of the exit bar, which the
+/// search bench above never measured.
+///
+/// The list is a different query from search and has its own history: at six
+/// thousand messages it once took ten seconds, because grouping by
+/// `coalesce(thread_id, -id)` is an expression no plain column index can
+/// serve (migration 0015 added one on the expression itself). Search being
+/// fast says nothing about it, so it is timed here on the same store.
+///
+/// Messages are placed in an inbox folder rather than merely inserted:
+/// membership *is* the inbox predicate, so a store of unplaced rows would
+/// time a query that returns nothing.
+///
+/// `cargo test --release -p petrel-engine --test store_spike -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn bench_list_open() {
+    use petrel_engine::store::ListView;
+    use std::time::Instant;
+
+    let n: usize = std::env::var("PETREL_BENCH_N")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100_000);
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&dir.path().join("bench.db")).unwrap();
+    let account = store.ensure_test_account().unwrap();
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+
+    let mut generator = MailboxGen::new(42, n);
+    let mut uid = 1u32;
+    loop {
+        let batch: Vec<NewMessage> = generator
+            .by_ref()
+            .take(1000)
+            .map(|g| to_new(account, g))
+            .collect();
+        if batch.is_empty() {
+            break;
+        }
+        let ids = store.insert_messages(&batch).unwrap();
+        for id in ids {
+            store.place_message_at(id, inbox, uid).unwrap();
+            uid += 1;
+        }
+    }
+    let placed = store.conversations_in(&ListView::parse("inbox")).unwrap();
+    println!("--- list-open bench: {n} messages, {placed} conversations ---");
+
+    let time = |label: &str, offset: u32| {
+        let view = ListView::parse("inbox");
+        for _ in 0..3 {
+            store.list_threads(&view, offset, 50).unwrap();
+        }
+        let mut times: Vec<f64> = (0..50)
+            .map(|_| {
+                let t = Instant::now();
+                let rows = store.list_threads(&view, offset, 50).unwrap();
+                let ms = t.elapsed().as_secs_f64() * 1000.0;
+                std::hint::black_box(rows);
+                ms
+            })
+            .collect();
+        times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let (p50, p95) = (times[24], times[47]);
+        println!("list {label:<16} offset {offset:<7} p50 {p50:7.2}ms  p95 {p95:7.2}ms");
+        p50
+    };
+
+    // Opening the mailbox, and scrolling deep into it — the page a person
+    // reaches after a minute of flicking, where OFFSET has the most to skip.
+    let open = time("open", 0);
+    let deep = time("scrolled", (n as u32 / 2).min(50_000));
+
+    let t = Instant::now();
+    let counted = store.conversations_in(&ListView::parse("inbox")).unwrap();
+    let count_ms = t.elapsed().as_secs_f64() * 1000.0;
+    println!("count_view: {count_ms:.2}ms ({counted} conversations)");
+
+    // The exit bar: a cached list opens in under 150ms.
+    assert!(
+        open < 150.0,
+        "list open budget exceeded: {open:.2}ms >= 150ms"
+    );
+    assert!(
+        deep < 150.0,
+        "deep-scroll list budget exceeded: {deep:.2}ms >= 150ms"
+    );
+}

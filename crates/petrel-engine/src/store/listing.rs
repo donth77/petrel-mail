@@ -86,6 +86,15 @@ struct ListingQuery<'a> {
 
 impl Store {
     /// The conversation-list query, shared by the views and by a lookup of one.
+    ///
+    /// Two steps, and the order is the whole performance story. Aggregating
+    /// first and paging afterwards means grouping every message in the
+    /// mailbox — participants, counts, flags — to show fifty rows: at a
+    /// hundred thousand messages that measured 562ms to open a list, against
+    /// a 150ms budget, and no index helps because the work is real. So the
+    /// page is chosen first, by walking newest-first down an index and
+    /// collecting distinct conversations until there are enough, and only
+    /// those conversations are aggregated.
     fn listing_rows(&self, account: i64, q: ListingQuery<'_>) -> Result<Vec<ThreadListing>> {
         let ListingQuery {
             inner,
@@ -95,6 +104,83 @@ impl Store {
             bound,
             per_message,
         } = q;
+        let keys = self.page_keys(account, inner, per_message, limit, offset, bound.clone())?;
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.rows_for_keys(account, inner, outer, per_message, &keys, bound)
+    }
+
+    /// The conversations one page of the list shows, newest first.
+    ///
+    /// Walks messages down `(account_id, date_ms DESC)` and keeps the first
+    /// sighting of each conversation, stopping the moment the page is full —
+    /// SQLite streams the rows, so a mailbox of any size costs about a page's
+    /// worth of them. A conversation's *position* is its newest message,
+    /// which is exactly what walking newest-first gives.
+    fn page_keys(
+        &self,
+        account: i64,
+        inner: &str,
+        per_message: bool,
+        limit: u32,
+        offset: u32,
+        bound: Option<String>,
+    ) -> Result<Vec<i64>> {
+        let key = if per_message {
+            "-id"
+        } else {
+            "coalesce(thread_id, -id)"
+        };
+        let sql = format!(
+            "SELECT {key} FROM messages
+             WHERE deleted_at_ms IS NULL AND account_id = {account} AND {inner}
+             ORDER BY date_ms DESC"
+        );
+        let mut stmt = self.conn.prepare_cached(&sql)?;
+        // A view's predicate binds its folder role or tag name as ?3; one
+        // without a bound references no parameters at all. Bind exactly as
+        // many as this statement asks for, filling the two lower slots it
+        // never reads.
+        let supplied: Vec<Box<dyn rusqlite::ToSql>> = vec![
+            Box::new(rusqlite::types::Null),
+            Box::new(rusqlite::types::Null),
+            match bound {
+                Some(b) => Box::new(b) as Box<dyn rusqlite::ToSql>,
+                None => Box::new(rusqlite::types::Null),
+            },
+        ];
+        let wanted = stmt.parameter_count();
+        let mut rows = stmt.query(rusqlite::params_from_iter(
+            supplied.into_iter().take(wanted),
+        ))?;
+        let want = (offset as usize).saturating_add(limit as usize);
+        let mut seen: std::collections::HashSet<i64> = Default::default();
+        let mut ordered: Vec<i64> = Vec::with_capacity(want.min(1024));
+        while let Some(row) = rows.next()? {
+            let k: i64 = row.get(0)?;
+            if seen.insert(k) {
+                ordered.push(k);
+                if ordered.len() >= want {
+                    break;
+                }
+            }
+        }
+        Ok(ordered.into_iter().skip(offset as usize).collect())
+    }
+
+    /// The full row for each of a known set of conversations.
+    fn rows_for_keys(
+        &self,
+        account: i64,
+        inner: &str,
+        outer: &str,
+        per_message: bool,
+        keys: &[i64],
+        bound: Option<String>,
+    ) -> Result<Vec<ThreadListing>> {
+        let limit = keys.len() as u32;
+        let offset = 0u32;
         let key = if per_message {
             "-id"
         } else {
@@ -129,9 +215,11 @@ impl Store {
                       max(CASE WHEN flags & 4 != 0 THEN 1 ELSE 0 END) AS starred,
                       max(has_attachments) AS attach
                FROM messages WHERE deleted_at_ms IS NULL AND account_id = {account} AND {inner}
+                 AND {key} IN ({holes})
                GROUP BY {key}
              ) t ON {mkey} = t.thread_id AND m.date_ms = t.md
              WHERE m.deleted_at_ms IS NULL AND m.account_id = {account} AND {outer}
+               AND {mkey} IN ({holes})
              GROUP BY {mkey}
              ORDER BY m.date_ms DESC LIMIT ?1 OFFSET ?2",
             inner = inner,
@@ -139,6 +227,15 @@ impl Store {
             account = account,
             key = key,
             mkey = mkey,
+            // Written into the SQL rather than bound: these are row ids this
+            // query just read out of the database, and mixing anonymous
+            // placeholders with the predicate's numbered ?3 is how a key
+            // silently gets bound as a folder role.
+            holes = keys
+                .iter()
+                .map(|k| k.to_string())
+                .collect::<Vec<_>>()
+                .join(","),
         );
         let mut stmt = self.conn.prepare_cached(&sql)?;
         // Two params, or three when the view binds a folder role or tag name.
