@@ -12,6 +12,15 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="${1:-$ROOT/target/release/petrel-desktop}"
 APP="$ROOT/target/Petrel.app"
+# The one place a version is declared is tauri.conf.json — it is what the
+# running app reports as its own version, and therefore what the updater
+# compares against a release. A plist that hardcodes a different number
+# makes the bundle disagree with the program inside it: Finder says one
+# thing, the Updates pane another, and a local update test compares
+# versions that were never the same number.
+CONF="$ROOT/apps/desktop/src-tauri/tauri.conf.json"
+VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$CONF" | head -1)"
+[ -n "$VERSION" ] || { echo "no version in $CONF" >&2; exit 1; }
 
 [ -x "$BIN" ] || { echo "no binary at $BIN — build it first" >&2; exit 1; }
 
@@ -20,7 +29,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$ROOT/assets/Petrel.icns" "$APP/Contents/Resources/Petrel.icns"
 cp "$BIN" "$APP/Contents/MacOS/petrel-desktop"
 
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -30,8 +39,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleExecutable</key>        <string>petrel-desktop</string>
   <key>CFBundleIconFile</key>          <string>Petrel</string>
   <key>CFBundleIdentifier</key>        <string>dev.petrel.desktop</string>
-  <key>CFBundleVersion</key>           <string>0.0.1</string>
-  <key>CFBundleShortVersionString</key><string>0.0.1</string>
+  <key>CFBundleVersion</key>           <string>$VERSION</string>
+  <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundlePackageType</key>       <string>APPL</string>
   <key>LSMinimumSystemVersion</key>    <string>10.15</string>
   <key>NSHighResolutionCapable</key>   <true/>
@@ -60,4 +69,4 @@ else
   echo "note: no Petrel Dev identity; ad-hoc signature (keychain re-asks every rebuild)" >&2
   codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
 fi
-echo "$APP"
+echo "$APP ($VERSION)"
