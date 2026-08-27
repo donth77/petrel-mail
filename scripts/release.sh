@@ -164,7 +164,15 @@ say "update artifact"
 KEY_PATH="${TAURI_SIGNING_PRIVATE_KEY_PATH:-$HOME/.config/petrel/updater.key}"
 TARBALL="$ROOT/target/release/Petrel-$VERSION.app.tar.gz"
 if [ -f "$KEY_PATH" ] && command -v cargo-tauri >/dev/null; then
-  (cd "$(dirname "$APP")" && tar czf "$TARBALL" "$(basename "$APP")")
+  # COPYFILE_DISABLE=1 is load-bearing. Without it macOS tar stores each
+  # file's extended attributes as a second, parallel "._name" member —
+  # half the archive — and the updater's Rust tar reader has no special
+  # case for them: it tries to unpack "._Petrel.app" as a bundle and
+  # fails. The update then downloads, verifies its signature, and refuses
+  # to install, which reads as a corrupt release rather than a packaging
+  # bug. macOS tar also hides these members from its own `tar tzf`, so
+  # the archive looks right until a real install unpacks it.
+  (cd "$(dirname "$APP")" && COPYFILE_DISABLE=1 tar czf "$TARBALL" "$(basename "$APP")")
   TAURI_SIGNING_PRIVATE_KEY_PATH="$KEY_PATH" \
   TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" \
     cargo tauri signer sign "$TARBALL" >/dev/null
