@@ -203,10 +203,8 @@ pub fn authentication(raw: &[u8]) -> Option<Authentication> {
     let flat = header.replace(['\r', '\n'], " ");
     let lower = flat.to_ascii_lowercase();
 
-    let mut out = Authentication::default();
-
     // Everything before the first semicolon is the authserv-id.
-    out.authserv = flat
+    let authserv = flat
         .split(';')
         .next()
         .map(|s| s.trim().trim_matches('"').to_string())
@@ -238,24 +236,29 @@ pub fn authentication(raw: &[u8]) -> Option<Authentication> {
         None
     };
 
-    out.spf = read("spf");
-    out.dkim = read("dkim");
-    out.dmarc = read("dmarc");
-
     // The domain DMARC aligned against, when the server names it.
+    let mut domain = None;
     for key in ["header.from=", "d="] {
         if let Some(at) = lower.find(key) {
             let after = &flat[at + key.len()..];
-            let domain: String = after
+            let found: String = after
                 .chars()
                 .take_while(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '-')
                 .collect();
-            if !domain.is_empty() {
-                out.domain = Some(domain.to_ascii_lowercase());
+            if !found.is_empty() {
+                domain = Some(found.to_ascii_lowercase());
                 break;
             }
         }
     }
+
+    let out = Authentication {
+        authserv,
+        spf: read("spf"),
+        dkim: read("dkim"),
+        dmarc: read("dmarc"),
+        domain,
+    };
 
     if out.is_empty() { None } else { Some(out) }
 }
