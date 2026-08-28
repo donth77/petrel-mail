@@ -79,18 +79,16 @@ by default.
 
 ## Install
 
-Download the `.dmg` from the
-[Releases tab](https://github.com/donth77/petrel-mail/releases), open it, and drag
-Petrel to your Applications folder.
+> **No release is published yet.** 1.0 is being finished. Until it is cut, build from
+> source with the steps under [Build](#build).
 
-It is signed and notarized by Apple, so it opens without a warning.
+When there is one, download the `.dmg` from the
+[Releases tab](https://github.com/donth77/petrel-mail/releases), open it, and drag
+Petrel to your Applications folder. It is signed and notarized by Apple, so it opens
+without a warning.
 
 The `.app.tar.gz` and `latest.json` on a release are for the built-in updater. You do
 not need them.
-
-> **1.0.0 is a pre-release.** It is in daily use, but it is young. In-app update checks
-> will not find anything until the first full release, because GitHub does not treat a
-> pre-release as the latest one.
 
 ---
 
