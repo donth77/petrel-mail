@@ -370,6 +370,12 @@ fn print_document(
   blockquote {{ margin: 8px 0; padding-left: 12px; border-left: 2px solid #d9e1e2; color: #54666e; }}
   .petrel-plain {{ white-space: pre-wrap; font: 11.5px/1.6 ui-monospace, monospace; }}
   a {{ color: inherit; }}
+  /* Same reasoning as the screen document: a fixed-width message is scaled as
+     one piece rather than squeezed. `max-width: 100%` on a table takes the
+     design apart — cells shrink independently, image mosaics stop lining up,
+     text reflows into columns a pixel wide. Paper is narrower than the reading
+     pane, so this matters more here, not less. */
+  #petrel-fit {{ transform-origin: 0 0; }}
 </style></head><body>
 <header>
   <h1>{subject}</h1>
@@ -378,11 +384,29 @@ fn print_document(
   {cc_line}
   <div class="line"><span>Date</span>{date}</div>
 </header>
-{body}
+<div id="petrel-box"><div id="petrel-fit">{body}</div></div>
 <script nonce="{nonce}">
-  // Give images a beat to arrive before the dialog freezes the page.
+  // Give images a beat to arrive, then fit the message to the page before the
+  // dialog freezes it. Without this a message laid out at 600 or 700px — which
+  // is most marketing mail — printed at its natural width and ran off the
+  // right-hand edge, taking a column of every table with it.
   window.addEventListener('load', function () {{
-    setTimeout(function () {{ window.print(); }}, 250);
+    setTimeout(function () {{
+      var box = document.getElementById('petrel-box');
+      var fit = document.getElementById('petrel-fit');
+      if (box && fit) {{
+        var avail = box.clientWidth;
+        var natural = fit.scrollWidth;
+        if (natural > avail && avail > 0) {{
+          var scale = avail / natural;
+          fit.style.transform = 'scale(' + scale + ')';
+          // The transform does not change layout, so the page would still
+          // reserve the unscaled height and print blank sheets after it.
+          fit.style.height = Math.ceil(fit.scrollHeight * scale) + 'px';
+        }}
+      }}
+      window.print();
+    }}, 250);
   }});
 </script></body></html>"#,
         subject = esc(subject),
@@ -794,6 +818,39 @@ mod tests {
         assert!(!doc.contains("petrelHeight"), "{doc}");
         // Paper is light: the print page never carries the dark palette.
         assert!(!doc.contains("prefers-color-scheme"), "{doc}");
+    }
+
+    /// The printed page scales a wide message rather than letting it run off.
+    ///
+    /// Most marketing mail is laid out at a fixed 600 to 700px. Paper is
+    /// narrower than that once margins are taken, so without a fitter the
+    /// right-hand column of every table printed off the edge of the sheet.
+    #[test]
+    fn a_wide_message_is_fitted_to_the_page_before_the_dialog_opens() {
+        let doc = super::print_document(
+            "<table width=\"700\"><tr><td>wide</td></tr></table>",
+            "Subject",
+            "a@example.com",
+            "me@example.com",
+            "",
+            "Tue, 18 Aug 2026",
+            "n0nce",
+        );
+        // The body is wrapped, so there is something to scale.
+        assert!(doc.contains("id=\"petrel-box\""), "no measuring box");
+        assert!(doc.contains("id=\"petrel-fit\""), "no scaled wrapper");
+        // Scaled as one piece, the way the screen document does it, rather
+        // than squeezed with max-width — which pulls a fixed layout apart.
+        assert!(doc.contains("scale("), "nothing scales the message");
+        assert!(
+            !doc.contains("table { max-width"),
+            "tables must not be squeezed individually"
+        );
+        // The transform leaves layout height untouched, so the height has to
+        // be corrected or the sheet after the message prints blank.
+        assert!(doc.contains("fit.style.height"), "height not reserved");
+        // And it still ends in the dialog.
+        assert!(doc.contains("window.print()"));
     }
 
     #[test]
