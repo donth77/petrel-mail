@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# The check CI runs first and the one that kept failing.
+#
+# scripts/rebuild.sh runs `cargo fmt --all`, which *rewrites* the tree at build
+# time. That is useful but it hides unformatted code: the reformat lands in
+# whatever commit comes next, so a commit made before a rebuild goes to CI
+# unformatted and the fix arrives a commit too late. Six pushes in a row failed
+# this way. Checking here, where the code is actually being committed, is the
+# part that was missing.
+#
+# Only the checks that are fast enough to sit in front of every commit. Clippy
+# and the tests stay in CI where they belong.
+set -euo pipefail
+
+staged_rust=$(git diff --cached --name-only --diff-filter=ACMR | grep -c '\.rs$' || true)
+[ "$staged_rust" -eq 0 ] && exit 0
+
+if ! cargo fmt --all --check >/dev/null 2>&1; then
+    echo "pre-commit: rustfmt would change these files:" >&2
+    cargo fmt --all --check 2>/dev/null |
+        sed -nE 's/^Diff in (.*):[0-9]+:$/\1/p' | sort -u |
+        sed "s|^$(git rev-parse --show-toplevel)/|  |" >&2 || true
+    echo >&2
+    echo "  cargo fmt --all   # then re-stage and commit" >&2
+    exit 1
+fi
