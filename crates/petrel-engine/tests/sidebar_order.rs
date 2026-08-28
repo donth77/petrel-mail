@@ -89,7 +89,12 @@ fn reordering_twice_settles_rather_than_drifting() {
 fn one_accounts_order_leaves_the_other_alone() {
     let (_dir, mut store, first) = store();
     let second = store
-        .add_account("imap", "other@example.com", "Other", &AccountServers::default())
+        .add_account(
+            "imap",
+            "other@example.com",
+            "Other",
+            &AccountServers::default(),
+        )
         .expect("second account");
     for account in [first, second] {
         for path in ["Apple", "Zebra"] {
