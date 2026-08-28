@@ -130,11 +130,19 @@
 /* Release notes arrive from the update manifest as authored text, so the line
    breaks whoever cut the release put there are meaning, not accident. Without
    pre-wrap a bulleted changelog collapses into one paragraph. */
+/* Release notes are prose of unknown length, and the pane around them is a
+   settings pane, not a document. Capped and scrolled in place so a long set
+   cannot push the Install button off the bottom of the window — which is
+   exactly what 1.0's notes would have done. The cap is in em, so it holds a
+   predictable number of lines rather than a fixed number of pixels. */
 .update-notes {
   white-space: pre-wrap;
   margin-block-start: 6px;
   padding-inline-start: 10px;
   border-inline-start: 2px solid var(--hair);
+  max-block-size: 11em;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .seg {

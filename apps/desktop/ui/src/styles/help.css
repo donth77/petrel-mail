@@ -207,27 +207,25 @@
   line-height: 1.45;
 }
 
+/* The footer sits below the tab panels, so it is reachable from either tab.
+   Column rather than row: the button is the thing being offered, and the
+   source link is a quieter second thought under it. Centred, so the pair reads
+   as one offer rather than as content left-aligned with the lists above.
+
+   One rule, not two. There were two `.help-foot` blocks: the second won on
+   display, gap and padding while the first still supplied font-size, colour
+   and flex-shrink, so the footer's appearance was split across a collision
+   nobody could see from either half. */
 .help-foot {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 8px;
-  padding: 11px 20px;
+  gap: 6px;
+  padding: 12px 16px 14px;
   border-block-start: 1px solid var(--hair);
   font-size: 11.5px;
   color: var(--ink3);
   flex-shrink: 0;
-}
-
-/* The footer sits below the tab panels, so it is reachable from either tab.
-   Column rather than row: the button is the thing being offered, and the
-   source link is a quieter second thought under it. */
-.help-foot {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 6px;
-  padding: 12px 16px 14px;
-  border-block-start: 1px solid var(--hair);
 }
 
 .help-foot .fbtn {
