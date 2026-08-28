@@ -3,85 +3,50 @@
 Petrel handles your mail and your passwords. If you find a way to get at either
 one, please tell us before you tell anyone else.
 
-## Supported versions
-
-| Version | Security fixes |
-| ------- | -------------- |
-| Latest release | Yes |
-| Anything older | No |
-
-Fixes go into the next release. There are no backports, so the answer to "am I
-patched?" is "am I on the latest version?".
-
-## Reporting a vulnerability
-
-Use [GitHub's private vulnerability
-reporting](https://github.com/donth77/petrel-mail/security/advisories/new). It
-opens a report only you and the maintainers can read.
-
-Please do not open a public issue for a security bug. A public issue is a
-working exploit handed to everyone who reads it, including people running the
-version you just broke.
-
-It helps to include:
-
-- What the bug lets an attacker do.
-- The steps to reproduce it, and the message or file that triggers it if there
-  is one. A `.eml` is ideal.
-- Your version of Petrel and of macOS.
-- A fix, if you have one in mind. Not required.
-
-You will get a reply within 72 hours saying whether we can reproduce it. If a
-fix is needed, you will hear what it is and when it ships. If we think the
-report is not a vulnerability, you will hear why, not silence.
 
 ## How Petrel is built to fail safely
 
-Some of this is worth knowing before you go looking, because it says where the
-interesting edges are.
+Worth knowing before you go looking, because it says where the interesting
+edges are.
 
-**There is no server.** Mail moves between your Mac and your provider and
-stops there. No account of ours sits in the middle, because there is no account
-of ours. Nothing is uploaded, and there is no telemetry to turn off.
+**There is no server.** Mail moves between your computer and your provider and
+stops there. Nothing is uploaded, and there is no telemetry.
 
-**Passwords live in the macOS keychain**, never in a file, never in the
-database, never in a log. The database holds your mail; taking a copy of it
-gets someone your mail, not your account.
+**Passwords live in the operating system's credential store**, never in a file,
+the database, or a log. That is Keychain on macOS, Credential Manager on
+Windows, and Secret Service on Linux. The database holds your mail, so a copy
+of it gets someone your mail, not your account.
 
-**A message is treated as hostile HTML written by a stranger**, because that is
-what it is. Three separate layers stand between it and you, and each one blocks
-something the others do not:
+**A message is hostile HTML written by a stranger.** Three layers sit between
+it and you, and each blocks something the others do not:
 
-- The sanitizer works from an allowlist. Anything not explicitly permitted is
-  removed, CSS declarations are filtered, and `url()` is banned outright inside
-  styles. Anything it cannot parse degrades to plain text rather than being
-  passed along.
-- Message bodies render in a sandboxed frame under their own `petrel-msg://`
-  origin, so a message cannot reach the app's own page or its data.
-- A per-message CSP blocks network egress from inside that frame.
+1. The sanitizer works from an allowlist. Anything not permitted is removed,
+   CSS declarations are filtered, `url()` is banned inside styles, and anything
+   it cannot parse degrades to plain text.
+2. The body renders in a sandboxed frame under its own `petrel-msg://` origin,
+   so it cannot reach the app's page or its data.
+3. A per-message CSP blocks network egress from inside that frame.
 
-The practical results: scripts in messages never run, forms in messages cannot
-submit anywhere, links open in your browser rather than inside Petrel, and
-nothing a message loads carries a referrer.
+The result: scripts never run, forms cannot submit, links open in your browser,
+and nothing a message loads carries a referrer.
 
-**Remote images are blocked until you ask for them**, and the count of what was
-blocked is shown to you. That is the difference between reading a message and
-telling the sender you read it.
+**Remote images are blocked until you ask for them**, and Petrel tells you how
+many it blocked. That is the difference between reading a message and telling
+the sender you read it.
 
-**Links that read as one address and go to another ask first.** An address can
-be spelled with letters from other alphabets that look identical to Latin ones,
-and Petrel says so rather than trusting the rendering.
+**Two things ask before they can hurt you:** a link whose text and destination
+disagree, because an address can be spelled with letters that look identical to
+Latin ones, and an attachment that is a program rather than a document.
 
-**Attachments that are programs say so before they open.** Most malware arrives
-by email, and the confirmation names the file and what running it means.
+**Updates are checked against a signing key.** One whose signature does not
+match is refused before any of it runs.
 
-**Updates are signed.** An update whose signature does not match is refused
-before any of it runs. Releases are also signed with an Apple Developer ID and
-notarized.
+**Mail connections use TLS with certificate validation**, tested against both
+the incoming and outgoing server when you add an account.
 
-**Connections to your provider are TLS with certificate validation.** Petrel
-tests both the incoming and outgoing server when you add an account, and says
-so plainly if either one cannot be reached safely.
+One platform difference worth stating: macOS builds are also signed with an
+Apple Developer ID and notarized. Windows and Linux packages are not
+code-signed yet, so your system may warn you when you install one.
 
 ## In scope
 
@@ -97,19 +62,10 @@ so plainly if either one cannot be reached safely.
 
 ## Out of scope
 
-- Anything that needs an attacker to already have your unlocked Mac.
-- Bugs in your mail provider, or in macOS itself.
+- Anything that needs an attacker to already have your unlocked computer.
+- Bugs in your mail provider, or in your operating system.
 - Denial of service by feeding Petrel an enormous or malformed mailbox, unless
   it corrupts stored mail or leaks something.
 - Missing hardening that has no demonstrated impact. Tell us anyway if you
   think it matters, but say what it lets an attacker do.
 - Reports from an automated scanner with no working reproduction.
-
-## Disclosure
-
-We aim to ship a fix within 90 days of a confirmed report, and would rather
-disclose together than have you wait indefinitely on us. If a fix is going to
-take longer than that, you will be told why and can publish on your own
-schedule.
-
-You will be credited by whatever name you give us, or not at all if you prefer.
