@@ -397,6 +397,7 @@ pub fn run() {
             commands::compose::save_draft,
             commands::compose::push_draft,
             commands::remote::unsubscribe_info,
+            commands::remote::authentication_info,
             commands::remote::unsubscribe_one_click,
             commands::compose::draft_conflict,
             commands::compose::resolve_draft_conflict,

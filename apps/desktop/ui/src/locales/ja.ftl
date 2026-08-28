@@ -684,3 +684,10 @@ search-op-is = 未読 · 既読 · スター付き · スヌーズ中
 search-op-subject = 件名だけ、本文は対象外
 search-op-tag = 自分で付けたタグ
 search-op-to = 宛先に入っている人
+
+# Sender authentication. Silence is the default: most legitimate mail
+# carries no verdict, so nothing is shown unless DMARC actually decided.
+auth-pass = 確認済み
+auth-pass-tip = 本当に { $domain } から届いたことをプロバイダが確認しました。安全であるという意味ではありません。
+auth-fail = 送信元の確認に失敗
+auth-fail-tip = { $domain } はこのメッセージを自分たちが送ったものではないとしています。リンクや添付ファイルに注意してください。

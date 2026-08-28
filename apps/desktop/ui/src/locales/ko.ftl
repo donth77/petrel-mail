@@ -722,3 +722,10 @@ search-op-is = 읽지 않음 · 읽음 · 별표 · 다시 알림
 search-op-subject = 제목만, 본문은 제외
 search-op-tag = 직접 붙인 태그
 search-op-to = 받는사람에 있는 누구든
+
+# Sender authentication. Silence is the default: most legitimate mail
+# carries no verdict, so nothing is shown unless DMARC actually decided.
+auth-pass = 확인됨
+auth-pass-tip = 이 메일이 정말 { $domain }에서 왔음을 제공업체가 확인했습니다. 메시지가 안전하다는 뜻은 아닙니다.
+auth-fail = 발신자 확인 실패
+auth-fail-tip = { $domain }은(는) 이 메시지를 자신들이 보내지 않았다고 합니다. 링크와 첨부에 주의하세요.

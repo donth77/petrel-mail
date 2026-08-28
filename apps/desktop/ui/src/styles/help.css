@@ -228,12 +228,6 @@
   flex-shrink: 0;
 }
 
-.help-foot .fbtn {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-}
-
 .help-source {
   font-size: 12px;
 }

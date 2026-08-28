@@ -108,6 +108,57 @@ pub(crate) struct UnsubInfo {
     mailto: Option<String>,
 }
 
+/// What the receiving server concluded about who sent a message.
+///
+/// A verdict relayed, not reached. Petrel cannot check SPF or DKIM itself
+/// after the fact: SPF needs the connecting IP, gone by the time the message
+/// is stored, and DKIM needs a DNS lookup against a key that may have rotated
+/// since. The server that accepted the mail did that work and wrote it down.
+#[derive(serde::Serialize)]
+pub(crate) struct AuthInfo {
+    /// Some(true) only when DMARC passed, Some(false) only when it failed,
+    /// None whenever there is nothing to claim. The UI must treat None as
+    /// silence, never as suspicion: most legitimate mail carries no verdict.
+    verified: Option<bool>,
+    /// The domain the sender was checked against, for a sentence a person can
+    /// read instead of a status code.
+    domain: Option<String>,
+    /// Who did the checking. A stamp is only worth what the stamper is worth.
+    authserv: Option<String>,
+    spf: Option<String>,
+    dkim: Option<String>,
+    dmarc: Option<String>,
+}
+
+fn word(v: Option<petrel_mime::AuthVerdict>) -> Option<String> {
+    use petrel_mime::AuthVerdict::*;
+    v.map(|v| {
+        match v {
+            Pass => "pass",
+            Fail => "fail",
+            Inconclusive => "unknown",
+        }
+        .to_string()
+    })
+}
+
+/// Reads the sender authentication verdicts for one message.
+#[tauri::command]
+pub fn authentication_info(
+    message_id: i64,
+    state: State<Arc<AppState>>,
+) -> Result<Option<AuthInfo>, String> {
+    let raw = raw_message_of(&state, message_id)?;
+    Ok(petrel_mime::authentication(&raw).map(|a| AuthInfo {
+        verified: a.identity_verified(),
+        domain: a.domain.clone(),
+        authserv: a.authserv.clone(),
+        spf: word(a.spf),
+        dkim: word(a.dkim),
+        dmarc: word(a.dmarc),
+    }))
+}
+
 fn raw_message_of(state: &AppState, message_id: i64) -> Result<Vec<u8>, String> {
     let hash = {
         let store = state.store()?;

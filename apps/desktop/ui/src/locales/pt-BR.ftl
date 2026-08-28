@@ -720,3 +720,10 @@ search-op-is = não lida · lida · com estrela · adiada
 search-op-subject = somente o assunto, não o corpo
 search-op-tag = uma etiqueta que você aplicou
 search-op-to = qualquer pessoa em Para
+
+# Sender authentication. Silence is the default: most legitimate mail
+# carries no verdict, so nothing is shown unless DMARC actually decided.
+auth-pass = Verificado
+auth-pass-tip = Seu provedor confirmou que isto veio mesmo de { $domain }. Isso não significa que a mensagem seja segura.
+auth-fail = Falhou na verificação
+auth-fail-tip = { $domain } diz que esta mensagem não partiu deles. Cuidado com os links e anexos.

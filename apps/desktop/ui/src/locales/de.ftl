@@ -719,3 +719,10 @@ search-op-is = ungelesen · gelesen · markiert · zurückgestellt
 search-op-subject = nur die Betreffzeile, nicht der Text
 search-op-tag = ein Schlagwort, das Sie vergeben haben
 search-op-to = alle im An-Feld
+
+# Sender authentication. Silence is the default: most legitimate mail
+# carries no verdict, so nothing is shown unless DMARC actually decided.
+auth-pass = Verifiziert
+auth-pass-tip = Ihr Anbieter hat bestätigt, dass dies wirklich von { $domain } kam. Das heißt nicht, dass die Nachricht sicher ist.
+auth-fail = Absenderprüfung fehlgeschlagen
+auth-fail-tip = { $domain } sagt, diese Nachricht stammt nicht von ihnen. Seien Sie vorsichtig mit Links und Anhängen.

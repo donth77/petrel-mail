@@ -75,6 +75,15 @@
 
 /* A plain secondary button inside a settings field. */
 .fbtn {
+  /* Icon and label on one centred line. Without this the button is a plain
+     inline box, so an <Icon> sits on the text baseline: it rides low against
+     the words and there is no space between them. The Help footer had already
+     worked around it locally, which is the usual sign the fix belongs on the
+     class rather than at one call site — every fbtn with an icon had the same
+     misalignment waiting in it. */
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   margin-block-start: 10px;
   padding: 6px 11px;
   border: 1px solid var(--hair);

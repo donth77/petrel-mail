@@ -95,7 +95,15 @@ export function initials(display: string, addr: string): string {
   const parts = source.split(/[\s@._-]+/).filter(Boolean);
   if (parts.length === 0) return '?';
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return (parts[0][0] + parts[1][0]).toUpperCase();
+  // An initial is a letter or a digit, never punctuation. "Pluto (YC)" splits
+  // into ["Pluto", "(YC)"] and the second word's first character is a bracket,
+  // so taking it blindly drew "P(" in the avatar. Anything that is not a
+  // letter is dropped rather than substituted, which leaves "P" — the same
+  // answer a person would give. Note it is the *first* character that is
+  // tested, not the first letter found: reaching into "(YC)" for the Y would
+  // turn a qualifier nobody thinks of as a name into half the initials.
+  const first = [parts[0][0], parts[1][0]].filter((c) => /[\p{L}\p{N}]/u.test(c));
+  return (first.length > 0 ? first.join('') : parts[0].slice(0, 2)).toUpperCase();
 }
 
 /** File sizes as people write them, not as computers store them. */

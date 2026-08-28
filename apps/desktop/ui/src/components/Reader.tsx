@@ -19,6 +19,7 @@ import { FindBar } from './FindBar';
 import { Icon } from './Icon';
 import { InvitationCard } from './InvitationCard';
 import { MessageBody } from './MessageBody';
+import { SenderAuth } from './SenderAuth';
 import { Attachments } from './Attachments';
 import { MoreMenu } from './MoreMenu';
 import { Tip } from './Tip';
@@ -90,9 +91,25 @@ function Expanded({
             <span className="msg-to">
               {m.recipients.length > 0 && <>{t('reader-to', { who: m.recipients.join(', ') })} · </>}
               <span className="mono">{m.from_addr}</span>
+              {/* Next to the address, because the address is what it makes a
+                  claim about. A mark anywhere else in the header is a mark
+                  about "the message", which is not what it means. */}
+              <SenderAuth messageId={m.id} />
             </span>
           </span>
         </button>
+        {/* Unsubscribe first, then the time. The offer belongs to the sender
+            and the time belongs to the message, and with the time in front the
+            right-hand edge of the header jumped between messages depending on
+            whether a list header happened to be present. */}
+        {(onReply || onForward) && (
+          <Unsubscribe
+            messageId={m.id}
+            sender={m.from_display || m.from_addr}
+            onToast={onToast}
+            onComposeMailto={onComposeMailto}
+          />
+        )}
         <Tip label={fullTime(m.date_ms)}>
           <time className="mono msg-time" dateTime={new Date(m.date_ms).toISOString()}>
             {messageTime(m.date_ms)}
@@ -106,12 +123,6 @@ function Expanded({
             Absent in the popped-out window, which has no composer to open. */}
         {(onReply || onForward) && (
           <div className="msg-acts">
-            <Unsubscribe
-              messageId={m.id}
-              sender={m.from_display || m.from_addr}
-              onToast={onToast}
-              onComposeMailto={onComposeMailto}
-            />
             {onReply && (
               <Tip label={t('msg-reply')}>
                 <button
@@ -456,6 +467,10 @@ export function Reader({
                 one long message wants the width this window can give it, and
                 a message you are working *from* wants to stay open while you
                 do something else in the app. */}
+            {/* onReply and onForward target the newest message, which is what
+                replying to a conversation means and what the R key already
+                does. Replying to the middle of a thread is the per-message
+                menu's job, and it has its own. */}
             <MoreMenu
               thread={thread}
               view={view}
@@ -467,6 +482,8 @@ export function Reader({
               onMoveInbox={onMoveInbox}
               onTag={onTag}
               onSnooze={onSnooze}
+              onReply={newest && onReplyTo ? (all) => onReplyTo(newest.id, all) : undefined}
+              onForward={newest && onForwardFrom ? () => onForwardFrom(newest.id) : undefined}
             />
           </div>
         </div>
@@ -540,11 +557,13 @@ export function Reader({
             )}
             {onReplyTo && (
               <button type="button" className="reply" onClick={() => onReplyTo(newest.id, true)}>
+                <Icon icon={ReplyAll} size={14} />
                 {t('reader-reply-all')} <span className="kbd">A</span>
               </button>
             )}
             {onForwardFrom && (
               <button type="button" className="reply" onClick={() => onForwardFrom(newest.id)}>
+                <Icon icon={ForwardIcon} size={14} />
                 {t('reader-forward')} <span className="kbd">F</span>
               </button>
             )}

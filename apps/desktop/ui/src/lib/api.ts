@@ -201,6 +201,20 @@ export type Folder = { id: number; role: string; path: string };
 
 export type UnsubInfo = { one_click: boolean; url: string | null; mailto: string | null };
 
+/** What the receiving server concluded about who sent a message.
+ *
+ *  `verified` is deliberately three-valued. Most legitimate mail carries no
+ *  verdict at all, so null means "nothing to say" and must render as silence
+ *  rather than as doubt. */
+export type AuthInfo = {
+  verified: boolean | null;
+  domain: string | null;
+  authserv: string | null;
+  spf: string | null;
+  dkim: string | null;
+  dmarc: string | null;
+};
+
 export type RuleCondition = { field: 'from' | 'to' | 'subject' | 'list_id'; contains: string };
 export type RuleActions = {
   move_to: number | null;
@@ -376,6 +390,7 @@ const mock = {
   renameFolder: async () => {},
   pushDraft: async () => {},
   unsubscribeInfo: async () => null,
+  authenticationInfo: async () => null,
   printMessage: async () => {},
   listRules: async () => [],
   viewCount: async () => 40,
@@ -641,6 +656,8 @@ const real = {
   /** The List-Unsubscribe offer this message makes, if any. */
   unsubscribeInfo: (messageId: number) =>
     invoke<UnsubInfo | null>('unsubscribe_info', { messageId }),
+  authenticationInfo: (messageId: number) =>
+    invoke<AuthInfo | null>('authentication_info', { messageId }),
   /** RFC 8058: leave the list without opening anything. */
   unsubscribeOneClick: (messageId: number) =>
     invoke<void>('unsubscribe_one_click', { messageId }),

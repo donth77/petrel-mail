@@ -319,8 +319,18 @@
   cursor: pointer;
 }
 
+/* The border alone was the whole hover, which is invisible on the primary
+   button: it sits on an accent fill, so a border darkening from --hair to
+   --ink3 changes nothing anyone can see. Both variants move their fill now. */
 .reply:hover {
   border-color: var(--ink3);
+  background: var(--hair2);
+}
+
+.reply.primary:hover {
+  background: var(--accent-strong, var(--accent));
+  border-color: var(--accent-strong, var(--accent));
+  filter: brightness(0.94);
 }
 
 .reply.primary {
@@ -334,4 +344,55 @@
   background: rgba(255, 255, 255, 0.2);
   border-color: rgba(255, 255, 255, 0.3);
   color: #fff;
+}
+
+/* Sender authentication, beside the address it is a claim about.
+ *
+ * Quiet by design. A pass is the common case for mail from a large provider,
+ * so it is a small neutral mark rather than a green flash: a badge that shouts
+ * on ordinary mail is a badge people stop seeing, which is exactly when the
+ * failing one needs to be noticed. The failure gets the alert colour, and it
+ * is the only one of the two that does. */
+.auth {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-inline-start: 6px;
+  padding: 0 5px 0 4px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  line-height: 1.7;
+  white-space: nowrap;
+  vertical-align: baseline;
+}
+
+.auth-pass {
+  color: var(--ink3);
+  background: var(--hair2);
+}
+
+.auth-fail {
+  color: var(--danger);
+  background: var(--danger-bg);
+  font-weight: 500;
+}
+
+.auth-text {
+  letter-spacing: 0.01em;
+}
+
+/* A message card answers the pointer.
+ *
+ * The body is an iframe on its own origin, so a background set here stops at
+ * its edge and a card-wide fill would look like a rendering fault rather than
+ * a hover. The chrome is what moves instead: the header tints and the card's
+ * border lifts, which is the same language a collapsed message already speaks
+ * (.collapsed:hover) and reads as one card responding rather than two halves
+ * disagreeing. */
+.msg:hover {
+  border-color: var(--ink3);
+}
+
+.msg:hover .msg-head {
+  background: var(--hair2);
 }

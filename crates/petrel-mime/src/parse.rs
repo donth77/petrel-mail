@@ -107,6 +107,159 @@ pub fn unsubscribe_info(raw: &[u8]) -> Option<Unsubscribe> {
     if out.is_empty() { None } else { Some(out) }
 }
 
+/// What the receiving server concluded about who sent a message.
+///
+/// Read from `Authentication-Results` (RFC 8601), which the server that
+/// accepted the mail writes after doing the SPF, DKIM and DMARC checks
+/// itself. Petrel cannot redo those checks: SPF needs the connecting IP,
+/// which is gone by the time the message is stored, and DKIM needs a DNS
+/// lookup against a key that may since have rotated. So this reports a
+/// verdict rather than reaching one.
+///
+/// That makes the header only as trustworthy as the server that wrote it,
+/// which is why `authserv` is kept and shown. A stamp from your own provider
+/// means something; one a sender put there themselves means nothing, and the
+/// two are told apart by who is named, not by the header's presence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthVerdict {
+    /// The check ran and the message passed it.
+    Pass,
+    /// The check ran and the message failed it. Worth saying out loud.
+    Fail,
+    /// The check ran and reached no conclusion: `none`, `neutral`,
+    /// `policy`, `temperror`, `permerror`. Not a failure, and not a pass.
+    Inconclusive,
+}
+
+/// The verdicts a message carries, and who reached them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Authentication {
+    /// The server that performed the checks, verbatim from the header.
+    pub authserv: Option<String>,
+    pub spf: Option<AuthVerdict>,
+    pub dkim: Option<AuthVerdict>,
+    pub dmarc: Option<AuthVerdict>,
+    /// The domain DMARC aligned against, when it says. This is the one worth
+    /// showing a person: "really from example.com" is a sentence, whereas
+    /// "dmarc=pass" is a log line.
+    pub domain: Option<String>,
+}
+
+impl Authentication {
+    /// Whether anything was actually reported. A message with the header but
+    /// no method we recognise is the same as a message without it.
+    pub fn is_empty(&self) -> bool {
+        self.spf.is_none() && self.dkim.is_none() && self.dmarc.is_none()
+    }
+
+    /// DMARC is the only one that answers the question a person is asking.
+    ///
+    /// SPF and DKIM each pass for a domain that need not be the one in the
+    /// From line, so neither on its own says the sender is who they appear to
+    /// be. DMARC is the check that ties them to it. Where DMARC is absent,
+    /// this stays quiet rather than promoting a weaker check into a claim it
+    /// cannot support.
+    pub fn identity_verified(&self) -> Option<bool> {
+        match self.dmarc {
+            Some(AuthVerdict::Pass) => Some(true),
+            Some(AuthVerdict::Fail) => Some(false),
+            _ => None,
+        }
+    }
+}
+
+fn verdict(word: &str) -> AuthVerdict {
+    match word {
+        "pass" => AuthVerdict::Pass,
+        // `softfail` is a fail the domain owner asked to be treated gently.
+        // It is still the domain saying this did not come from them.
+        "fail" | "softfail" => AuthVerdict::Fail,
+        _ => AuthVerdict::Inconclusive,
+    }
+}
+
+/// Reads the authentication verdicts out of a raw message, if any.
+///
+/// Only the *first* `Authentication-Results` header is read. Mail can carry
+/// several, and they are prepended in order, so the first is the one written
+/// by the server closest to you. A later one was written further upstream,
+/// possibly by a host you have no reason to trust.
+pub fn authentication(raw: &[u8]) -> Option<Authentication> {
+    let msg = MessageParser::default().parse(raw)?;
+    // header_values, not header_raw. header_raw hands back the *last*
+    // occurrence, and a receiving server prepends its results — so the last
+    // one is the furthest upstream, which on inbound mail means the one the
+    // sender could have written themselves. Taking it would let anybody claim
+    // dmarc=pass by adding a header. Verified against mail-parser rather than
+    // assumed: with two headers present it returned the upstream one.
+    let header = msg
+        .header_values("Authentication-Results")
+        .next()
+        .and_then(|v| v.as_text().map(|t| t.to_string()))
+        .or_else(|| {
+            msg.header_raw("Authentication-Results")
+                .map(|h| h.to_string())
+        })?;
+    let flat = header.replace(['\r', '\n'], " ");
+    let lower = flat.to_ascii_lowercase();
+
+    let mut out = Authentication::default();
+
+    // Everything before the first semicolon is the authserv-id.
+    out.authserv = flat
+        .split(';')
+        .next()
+        .map(|s| s.trim().trim_matches('"').to_string())
+        .filter(|s| !s.is_empty());
+
+    // `method=result`, with the result running to the next space, semicolon or
+    // bracket. Values may be quoted and may carry a `(comment)` after them.
+    let read = |method: &str| -> Option<AuthVerdict> {
+        let needle = format!("{method}=");
+        let mut from = 0usize;
+        while let Some(at) = lower[from..].find(&needle) {
+            let start = from + at;
+            // Must not be the tail of a longer token: `header.dkim=` and
+            // `dkim=` are different things, and so is `xdmarc=`.
+            let ok_before = start == 0
+                || !lower.as_bytes()[start - 1].is_ascii_alphanumeric()
+                    && lower.as_bytes()[start - 1] != b'.'
+                    && lower.as_bytes()[start - 1] != b'-';
+            let after = &lower[start + needle.len()..];
+            let word: String = after
+                .chars()
+                .take_while(|c| c.is_ascii_alphabetic())
+                .collect();
+            if ok_before && !word.is_empty() {
+                return Some(verdict(&word));
+            }
+            from = start + needle.len();
+        }
+        None
+    };
+
+    out.spf = read("spf");
+    out.dkim = read("dkim");
+    out.dmarc = read("dmarc");
+
+    // The domain DMARC aligned against, when the server names it.
+    for key in ["header.from=", "d="] {
+        if let Some(at) = lower.find(key) {
+            let after = &flat[at + key.len()..];
+            let domain: String = after
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '-')
+                .collect();
+            if !domain.is_empty() {
+                out.domain = Some(domain.to_ascii_lowercase());
+                break;
+            }
+        }
+    }
+
+    if out.is_empty() { None } else { Some(out) }
+}
+
 /// A parsed view of a message. Never authoritative — the raw bytes are.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ParsedMessage {

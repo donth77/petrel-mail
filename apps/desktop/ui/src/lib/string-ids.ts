@@ -678,6 +678,10 @@ export const STRING_IDS = [
   'search-op-subject',
   'search-op-tag',
   'search-op-to',
+  'auth-pass',
+  'auth-pass-tip',
+  'auth-fail',
+  'auth-fail-tip',
 ] as const;
 
 export type StringId = (typeof STRING_IDS)[number];

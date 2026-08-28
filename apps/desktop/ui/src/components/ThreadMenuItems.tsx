@@ -1,7 +1,8 @@
 import { MenuItem, MenuSeparator } from '@ariakit/react';
 import {
-  Archive, Clock, ExternalLink, FolderClosed, Inbox, Mail, MailOpen, Maximize2,
-  Minimize2, ShieldAlert, Star, Tag as TagIcon, Trash2,
+  Archive, Clock, ExternalLink, FolderClosed, Forward as ForwardIcon, Inbox, Mail,
+  MailOpen, Maximize2, Minimize2, Reply as ReplyIcon, ReplyAll, ShieldAlert, Star,
+  Tag as TagIcon, Trash2,
 } from 'lucide-react';
 import type { ActionKind, Thread } from '../lib/api';
 import { Icon } from './Icon';
@@ -30,6 +31,11 @@ export type ThreadMenuProps = {
   /** Shown when the menu was opened on more than one selected conversation, so
    *  it is obvious the next click applies to all of them. */
   count?: number;
+  /** Reply to the conversation. Absent where no composer can open, and hidden
+   *  on a multiple selection: there is no sensible message to reply to when
+   *  the menu is acting on twelve conversations at once. */
+  onReply?: (all: boolean) => void;
+  onForward?: () => void;
 };
 
 /**
@@ -45,7 +51,7 @@ export type ThreadMenuProps = {
  */
 export function ThreadMenuItems({
   thread, view, onAction, onMove, onMoveInbox, onTag, onSnooze, onPopOut, onToggleFull, full,
-  count,
+  count, onReply, onForward,
 }: ThreadMenuProps) {
   const inTrash = view === 'trash';
   const many = (count ?? 1) > 1;
@@ -55,6 +61,37 @@ export function ThreadMenuItems({
       {/* Says what the next click will hit. Right-clicking inside a selection
           acts on all of it, which is right but invisible without this. */}
       {many && <div className="menu-note">{t('menu-applies-to', { count: count ?? 1 })}</div>}
+
+      {/* Reply first, because it is the most common thing anyone does to a
+          conversation and a menu that buries it is a menu people stop opening.
+          Hidden on a multiple selection: replying to twelve conversations is
+          not a thing, and offering it would be offering a wrong answer. */}
+      {(onReply || onForward) && !many && (
+        <>
+          {onReply && (
+            <MenuItem className="menu-item" onClick={() => onReply(false)}>
+              <Icon icon={ReplyIcon} size={14} />
+              <span className="menu-label">{t('reader-reply')}</span>
+              <span className="menu-key">R</span>
+            </MenuItem>
+          )}
+          {onReply && (
+            <MenuItem className="menu-item" onClick={() => onReply(true)}>
+              <Icon icon={ReplyAll} size={14} />
+              <span className="menu-label">{t('reader-reply-all')}</span>
+              <span className="menu-key">A</span>
+            </MenuItem>
+          )}
+          {onForward && (
+            <MenuItem className="menu-item" onClick={onForward}>
+              <Icon icon={ForwardIcon} size={14} />
+              <span className="menu-label">{t('reader-forward')}</span>
+              <span className="menu-key">F</span>
+            </MenuItem>
+          )}
+          <MenuSeparator className="menu-sep" />
+        </>
+      )}
 
       {/* The view group, first and separated: the only items here that change
           nothing about the mail. They live in the menu rather than the header

@@ -684,3 +684,10 @@ search-op-is = 未读 · 已读 · 星标 · 已暂停
 search-op-subject = 仅主题，不含正文
 search-op-tag = 你加过的标签
 search-op-to = 收件人中的任何人
+
+# Sender authentication. Silence is the default: most legitimate mail
+# carries no verdict, so nothing is shown unless DMARC actually decided.
+auth-pass = 已验证
+auth-pass-tip = 你的邮件服务商确认这确实来自 { $domain }。这并不等于邮件是安全的。
+auth-fail = 发件人验证未通过
+auth-fail-tip = { $domain } 表示这封邮件不是他们发出的。请小心其中的链接和附件。

@@ -74,6 +74,23 @@
 .rail[data-collapsed] .rail-scroll .rail-item {
   justify-content: center;
   padding-inline: 2px;
+  /* The 2px accent rail that marks the active row is drawn as a leading
+     border. Expanded it sits in the margin beside a left-aligned label and
+     reads from the edge, which is its job. Collapsed there is no label and the
+     icon is centred in about 24px, so the border was crowding it to the point
+     of touching. Dropped here, uniformly, so every collapsed row keeps the
+     same geometry and nothing shifts by two pixels when a row becomes active.
+     The wash and the accent text colour still say which row it is, and in a
+     rail this narrow they are impossible to miss. */
+  border-inline-start-width: 0;
+  /* The label is zero-width when collapsed but it is still a flex child, and a
+     flex gap is drawn between children whether or not one of them has any
+     size. So `justify-content: center` was centring "icon + 9px of nothing"
+     and leaving the icon about four pixels left of where it looked like it
+     should be — and the + buttons, whose faded heading sits on the other side,
+     four pixels right. The two were eight pixels out of line with each other,
+     which is the misalignment you can see without measuring anything. */
+  gap: 0;
 }
 
 .account {
@@ -246,4 +263,39 @@
 }
 .rail-item[data-insert='after'] {
   box-shadow: inset 0 -2px 0 0 var(--accent);
+}
+
+/* The + that makes a folder or a tag, centred like every other collapsed icon.
+   The heading beside it ("FOLDERS") is faded to nothing but still occupies its
+   own box, so centring the row centres the pair rather than the button, and
+   the + came to rest left of the icons above it. Zeroing the heading's padding
+   as well as its width is what actually lines it up. */
+.rail[data-collapsed] .rail-label.rail-label-row {
+  padding-inline: 2px;
+  gap: 0;
+}
+
+.rail[data-collapsed] .rail-label-row > span {
+  padding: 0;
+  margin: 0;
+}
+
+.rail[data-collapsed] .rail-label-row .rail-add {
+  margin-inline: 0;
+}
+
+/* Collapsed, the label and the unread count are faded out but still occupy
+   their boxes: composer.css sets opacity and pointer-events, not size. A count
+   box a couple of pixels wide is enough to push a centred icon off centre, and
+   it did — the mailbox icons sat two pixels left of the + buttons below them.
+   Zeroed here rather than there because it is only true inside the scrolling
+   list; the account row above wants its own arrangement. */
+.rail[data-collapsed] .rail-scroll .rail-item .rail-text,
+.rail[data-collapsed] .rail-scroll .rail-item .count {
+  inline-size: 0;
+  min-inline-size: 0;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  overflow: hidden;
 }
