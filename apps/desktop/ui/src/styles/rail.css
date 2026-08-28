@@ -22,9 +22,58 @@
   flex: 1 1 auto;
   min-block-size: 0;
   overflow-y: auto;
+  /* Explicit, and load-bearing. `overflow-y: auto` on its own does not leave
+     the other axis alone: a non-visible value on one axis forces `visible` on
+     the other to compute to `auto`. So the rail grew a horizontal scrollbar
+     for text it was deliberately hiding — the collapsed rail's labels are
+     zero-width but their content still overflows, and MAILBOXES alone
+     reported 74px of scrollWidth inside a 20px box. Worse, that bar ate ~15px
+     of height, which is enough to push the list past its limit and summon a
+     vertical scrollbar that was not otherwise needed. */
+  overflow-x: hidden;
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+/* Now that the overflow is hidden rather than scrolled, a name too long for
+   the rail has to end in something. Clipping mid-letter is the one option
+   worse than either scrolling or eliding. */
+.rail-scroll .rail-text,
+.rail-scroll .rail-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* A collapsed rail is 56px. A classic 15px scrollbar takes nearly half the
+   usable width and lands squarely on the icons, so when there is enough to
+   scroll it is drawn thin and the icons centre in what is left. `auto`, not
+   `stable`: reserving the gutter permanently would narrow the rail for
+   everyone whose folder list fits, which is most of the time. */
+.rail[data-collapsed] .rail-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--hair2) transparent;
+}
+
+.rail[data-collapsed] .rail-scroll::-webkit-scrollbar {
+  inline-size: 6px;
+}
+
+.rail[data-collapsed] .rail-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.rail[data-collapsed] .rail-scroll::-webkit-scrollbar-thumb {
+  background: var(--hair2);
+  border-radius: 3px;
+}
+
+/* Centred rather than left-padded: with the label gone there is nothing for
+   an icon to be flush with, and off-centre icons in a narrow rail read as a
+   mistake. */
+.rail[data-collapsed] .rail-scroll .rail-item {
+  justify-content: center;
+  padding-inline: 2px;
 }
 
 .account {

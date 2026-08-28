@@ -18,7 +18,7 @@ mod listing;
 mod maintenance;
 mod search;
 
-pub const SCHEMA_VERSION: i64 = 21;
+pub const SCHEMA_VERSION: i64 = 22;
 /// Bumped whenever text extraction changes; a mismatch forces reindexing.
 pub const EXTRACTOR_VERSION: i64 = 1;
 
@@ -1033,6 +1033,9 @@ impl Store {
         }
         if ver < 21 {
             conn.execute_batch(include_str!("migrations/0021-count-view-index.sql"))?;
+        }
+        if ver < 22 {
+            conn.execute_batch(include_str!("migrations/0022-tag-origin.sql"))?;
         }
         if ver < SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;

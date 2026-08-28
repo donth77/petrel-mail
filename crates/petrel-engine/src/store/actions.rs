@@ -463,16 +463,65 @@ impl Store {
 
     /// Creates a tag if it is new, returning its id either way. Names are the
     /// provider's own (IMAP keyword, Gmail label), so they are matched exactly.
+    /// A tag somebody asked for. Never removed on its own, empty or not.
     pub fn ensure_tag(&self, account_id: i64, name: &str, colour: Option<&str>) -> Result<i64> {
+        self.ensure_tag_from(account_id, name, colour, "user")
+    }
+
+    /// A tag that exists only because a keyword arrived on a message.
+    ///
+    /// Recorded as the server's so `forget_abandoned_server_tags` can clear it
+    /// up once nothing carries the keyword any more. A tag somebody applies by
+    /// hand here afterwards is promoted to theirs by `ensure_tag`, because the
+    /// ON CONFLICT below writes the origin again.
+    pub fn ensure_server_tag(&self, account_id: i64, name: &str) -> Result<i64> {
+        self.ensure_tag_from(account_id, name, None, "server")
+    }
+
+    fn ensure_tag_from(
+        &self,
+        account_id: i64,
+        name: &str,
+        colour: Option<&str>,
+        origin: &str,
+    ) -> Result<i64> {
         self.conn.execute(
-            "INSERT INTO tags(account_id, name, colour) VALUES (?1, ?2, ?3)
-             ON CONFLICT(account_id, name) DO UPDATE SET colour = coalesce(excluded.colour, colour)",
-            params![account_id, name, colour],
+            "INSERT INTO tags(account_id, name, colour, origin) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(account_id, name) DO UPDATE SET
+                 colour = coalesce(excluded.colour, colour),
+                 -- Only ever upgrades. A tag the server introduced and a person
+                 -- then used is theirs; the reverse is not true, or every sync
+                 -- would hand their tags back to the server.
+                 origin = CASE WHEN excluded.origin = 'user' THEN 'user' ELSE origin END",
+            params![account_id, name, colour, origin],
         )?;
         Ok(self.conn.query_row(
             "SELECT id FROM tags WHERE account_id = ?1 AND name = ?2",
             params![account_id, name],
             |r| r.get(0),
+        )?)
+    }
+
+    /// Drops tags that only ever existed because the server mentioned them and
+    /// that now label nothing.
+    ///
+    /// The other half of promoting a keyword into a sidebar entry. Without it,
+    /// a keyword that arrives once and later goes — the message deleted, or
+    /// untagged in another client — leaves a tag behind for good. That is how
+    /// a live account ended up with an empty "Followup" nobody had made.
+    ///
+    /// Deliberately narrow. Only `origin = 'server'` rows are eligible, so a
+    /// tag somebody created, or one they adopted by applying it themselves, is
+    /// never touched however empty it is: an empty tag of your own is a
+    /// waiting label, not litter. Tags predating the origin column count as
+    /// theirs, which is the answer that cannot delete something wanted.
+    pub fn forget_abandoned_server_tags(&self, account_id: i64) -> Result<usize> {
+        Ok(self.conn.execute(
+            "DELETE FROM tags
+             WHERE account_id = ?1
+               AND origin = 'server'
+               AND id NOT IN (SELECT tag_id FROM message_tags)",
+            params![account_id],
         )?)
     }
 
@@ -675,7 +724,7 @@ impl Store {
                     // stay flags rather than becoming sidebar entries; see
                     // keywords::is_system_keyword.
                     None if crate::keywords::is_system_keyword(kw) => continue,
-                    None => self.ensure_tag(account_id, kw, None)?,
+                    None => self.ensure_server_tag(account_id, kw)?,
                 };
                 want.insert(id);
             }
@@ -709,6 +758,11 @@ impl Store {
                 }
             }
         }
+        // Here rather than on a timer: this is the only place a keyword stops
+        // being carried, so it is the only moment a server tag can become
+        // abandoned. Doing it now means the sidebar never shows an orphan, not
+        // even until the next restart.
+        self.forget_abandoned_server_tags(account_id)?;
         Ok(changed)
     }
 

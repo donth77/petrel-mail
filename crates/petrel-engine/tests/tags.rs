@@ -173,3 +173,99 @@ mod inbound_labels {
         );
     }
 }
+
+/// The "Followup" story, start to finish.
+///
+/// A keyword arrives from another client, Petrel promotes it to a sidebar tag,
+/// and then the thing carrying it goes away. Before the origin column, the tag
+/// stayed forever: a live account grew an empty "Followup" nobody remembered
+/// making. What must not happen while fixing that is losing a tag somebody
+/// created themselves, which is why the last third of this test exists.
+#[test]
+fn a_server_keyword_that_stops_arriving_stops_being_a_tag() {
+    use petrel_engine::store::Store;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut store = Store::open(&dir.path().join("p.db")).expect("store");
+    let blobs = petrel_engine::blob::BlobStore::open(&dir.path().join("blobs")).expect("blobs");
+    let account = store.ensure_test_account().expect("account");
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").expect("f");
+    let raw = b"From: a@example.com\r\nTo: me@example.com\r\nSubject: hi\r\n\
+                Date: Tue, 18 Aug 2026 14:02:00 +0000\r\nMessage-ID: <fu1@x>\r\n\
+                MIME-Version: 1.0\r\nContent-Type: text/plain\r\n\r\nbody\r\n";
+    store
+        .ingest_raw(&blobs, account, Some(inbox), Some(11), raw)
+        .expect("ingest");
+
+    let names = |s: &Store| -> Vec<String> {
+        s.tags_for_account(account)
+            .expect("tags")
+            .into_iter()
+            .map(|t| t.name)
+            .collect()
+    };
+
+    // Another client flags it. The keyword is not machine-shaped, so it earns
+    // a sidebar entry.
+    store
+        .apply_keywords(account, inbox, &[(11, vec!["Followup".into()])])
+        .expect("apply");
+    assert!(names(&store).contains(&"Followup".to_string()));
+
+    // A person makes one of their own, and never puts it on anything.
+    store.ensure_tag(account, "Waiting on", None).expect("tag");
+
+    // The flag is cleared elsewhere. The keyword simply stops arriving.
+    store
+        .apply_keywords(account, inbox, &[(11, vec![])])
+        .expect("apply");
+
+    let after = names(&store);
+    assert!(
+        !after.contains(&"Followup".to_string()),
+        "a server tag nothing carries should not stay in the sidebar: {after:?}"
+    );
+    assert!(
+        after.contains(&"Waiting on".to_string()),
+        "an empty tag somebody made is theirs to keep: {after:?}"
+    );
+}
+
+/// Applying a server-introduced tag by hand adopts it.
+#[test]
+fn a_server_tag_you_use_yourself_becomes_yours() {
+    use petrel_engine::store::Store;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut store = Store::open(&dir.path().join("p.db")).expect("store");
+    let blobs = petrel_engine::blob::BlobStore::open(&dir.path().join("blobs")).expect("blobs");
+    let account = store.ensure_test_account().expect("account");
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").expect("f");
+    let raw = b"From: a@example.com\r\nTo: me@example.com\r\nSubject: hi\r\n\
+                Date: Tue, 18 Aug 2026 14:02:00 +0000\r\nMessage-ID: <fu2@x>\r\n\
+                MIME-Version: 1.0\r\nContent-Type: text/plain\r\n\r\nbody\r\n";
+    store
+        .ingest_raw(&blobs, account, Some(inbox), Some(12), raw)
+        .expect("ingest");
+    store
+        .apply_keywords(account, inbox, &[(12, vec!["Followup".into()])])
+        .expect("apply");
+
+    // The same name, now asked for by a person rather than found on a message.
+    store.ensure_tag(account, "Followup", None).expect("adopt");
+
+    store
+        .apply_keywords(account, inbox, &[(12, vec![])])
+        .expect("apply");
+
+    let after: Vec<String> = store
+        .tags_for_account(account)
+        .expect("tags")
+        .into_iter()
+        .map(|t| t.name)
+        .collect();
+    assert!(
+        after.contains(&"Followup".to_string()),
+        "once somebody uses a tag it is theirs, empty or not: {after:?}"
+    );
+}
