@@ -97,14 +97,63 @@
   font-weight: 600;
 }
 
+/* One row: Settings and Help at the left end, the collapse control at the
+   right. `space-between` rather than a spacer element, so the two ends stay
+   pinned to the two edges at any rail width the drag handle produces.
+
+   No margin-block-start:auto — .rail-scroll takes the slack, and an auto
+   margin here would fight it for the leftover space. */
 .rail-foot {
-  /* No margin-block-start:auto any more — .rail-scroll takes the slack, and
-     an auto margin here would fight it for the leftover space. */
   flex: 0 0 auto;
   padding-block-start: 10px;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
   gap: 2px;
+}
+
+.rail-foot-go {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* A collapsed rail is 56px (RAIL_COLLAPSED). Three icon buttons do not fit
+   across that, so it goes back to a stack — which is also what the rest of a
+   collapsed rail looks like. */
+.rail[data-collapsed] .rail-foot,
+.rail[data-collapsed] .rail-foot-go {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+/* Icon-only. Elsewhere .rail-item is a full-width row with a label beside the
+   icon; here it is a square target. */
+.rail-foot .rail-item {
+  inline-size: auto;
+  justify-content: center;
+  gap: 0;
+  padding: 6px;
+}
+
+.rail[data-collapsed] .rail-foot .rail-item {
+  inline-size: 100%;
+}
+
+/* The label still exists — a screen reader reads it, and it is what names the
+   button — it simply takes no room. Not display:none, which would take the
+   name away with the pixels. */
+.rail-foot .rail-text {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* A tag's colour, occupying exactly as much room as a mailbox icon.

@@ -704,26 +704,33 @@ export function Rail({
 
       </div>
 
-      {/* Help and Settings sit at the foot of the rail, out of the triage path
-          but always in the same place — not hidden behind a menu. */}
+      {/* One row at the foot of the rail: the two things you go *to* on the
+          left, the thing that changes the rail itself on the right. Out of the
+          triage path but always in the same place, not hidden behind a menu.
+
+          Icon-only, so the labels are carried by the tooltips and by the
+          .rail-text spans, which are still in the DOM for a screen reader —
+          dropping them would leave three unnamed buttons, which is the exact
+          defect the a11y pass went through 51 tab stops to remove.
+
+          Tooltips are unconditional here, not `when={collapsed}` as they were
+          while an expanded rail still showed the words. */}
       <div className="rail-foot">
-        <Tip label={t('rail-help')} placement="right" when={collapsed}>
-          <button type="button" className="rail-item" onClick={() => onView('help')}>
-            <Icon icon={CircleHelp} />
-            <span className="rail-text">{t('rail-help')}</span>
-          </button>
-        </Tip>
-        <Tip label={t('rail-settings')} placement="right" when={collapsed}>
-          <button type="button" className="rail-item" onClick={() => onView('settings')}>
-            <Icon icon={Settings} />
-            <span className="rail-text">{t('rail-settings')}</span>
-          </button>
-        </Tip>
-        <Tip
-          label={collapsed ? t('rail-expand') : t('rail-collapse')}
-          placement="right"
-          when={collapsed}
-        >
+        <div className="rail-foot-go">
+          <Tip label={t('rail-settings')} placement="top">
+            <button type="button" className="rail-item" onClick={() => onView('settings')}>
+              <Icon icon={Settings} />
+              <span className="rail-text">{t('rail-settings')}</span>
+            </button>
+          </Tip>
+          <Tip label={t('rail-help')} placement="top">
+            <button type="button" className="rail-item" onClick={() => onView('help')}>
+              <Icon icon={CircleHelp} />
+              <span className="rail-text">{t('rail-help')}</span>
+            </button>
+          </Tip>
+        </div>
+        <Tip label={collapsed ? t('rail-expand') : t('rail-collapse')} placement="top">
           <button
             type="button"
             className="rail-item"
