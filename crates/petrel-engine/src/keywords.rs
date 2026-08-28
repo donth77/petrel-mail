@@ -69,7 +69,14 @@ mod tests {
         // RFC 5788's registered ones, and the kind clients invent. $purchases
         // is a real example: it arrived on a live account from another client
         // and turned into a sidebar entry nobody had made.
-        for kw in ["$Forwarded", "$MDNSent", "$Junk", "$NotJunk", "$Phishing", "$purchases"] {
+        for kw in [
+            "$Forwarded",
+            "$MDNSent",
+            "$Junk",
+            "$NotJunk",
+            "$Phishing",
+            "$purchases",
+        ] {
             assert!(is_system_keyword(kw), "{kw} should be the machine's");
         }
         for kw in ["\\Seen", "\\Flagged", "\\Draft"] {
@@ -79,7 +86,14 @@ mod tests {
 
     #[test]
     fn a_persons_tags_are_left_alone() {
-        for kw in ["Urgent", "Waiting_on", "Receipts", "_thing", "2026", "a.b-c+d=e"] {
+        for kw in [
+            "Urgent",
+            "Waiting_on",
+            "Receipts",
+            "_thing",
+            "2026",
+            "a.b-c+d=e",
+        ] {
             assert!(!is_system_keyword(kw), "{kw} is somebody's tag");
         }
     }
