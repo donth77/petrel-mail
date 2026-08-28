@@ -1,0 +1,88 @@
+name: package
+
+# Builds installable packages for Linux and Windows.
+#
+# Run by hand rather than on every push: it is minutes of work per platform
+# and nothing downstream reads the artifacts yet. macOS is deliberately
+# absent — scripts/release.sh owns that path, because signing, notarisation
+# and stapling need Apple credentials that do not belong in CI.
+#
+# The artifacts are uploaded, not published. Turning one into a release is a
+# separate, deliberate act.
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'What is this build for?'
+        required: false
+        default: 'checking the packaging still works'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            bundles: deb,appimage
+          - os: windows-latest
+            platform: windows
+            bundles: msi,nsis
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # Tauri on Linux draws with WebKitGTK, and none of it is on the runner.
+      - name: Linux build dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
+            patchelf libssl-dev build-essential curl wget file libxdo-dev
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.96.1
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install the Tauri CLI
+        run: cargo install tauri-cli --version '^2' --locked
+
+      # tauri build runs beforeBuildCommand, which builds the UI, and then
+      # compiles with custom-protocol — the feature that decides whether the
+      # webview loads the embedded assets or goes looking for a dev server.
+      - name: Build and package
+        working-directory: apps/desktop/src-tauri
+        run: cargo tauri build --bundles ${{ matrix.bundles }}
+
+      # Named so a download says what it is without being opened.
+      - name: Collect the packages
+        shell: bash
+        run: |
+          mkdir -p dist
+          find target/release/bundle -type f \
+            \( -name '*.deb' -o -name '*.AppImage' -o -name '*.msi' -o -name '*.exe' \) \
+            -exec cp {} dist/ \;
+          echo "--- packaged ---"
+          ls -la dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: petrel-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
