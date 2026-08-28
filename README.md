@@ -148,5 +148,5 @@ on purpose.
 
 Your mail and your passwords are the two things worth attacking here. If you
 find a way at either, please report it privately rather than opening an issue:
-[SECURITY.md](SECURITY.md) explains how, what is in scope, and how Petrel is
-built to fail safely.
+[SECURITY.md](SECURITY.md) explains how, what is in scope, and what stands
+between a stranger's message and your mail.
