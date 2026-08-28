@@ -622,6 +622,10 @@ export const STRING_IDS = [
   'menubar-window',
   'menubar-minimize',
   'menubar-zoom',
+  'menubar-help',
+  'menubar-petrel-help',
+  'menubar-report-issue',
+  'menubar-view-source',
   'menubar-fullscreen',
 ] as const;
 

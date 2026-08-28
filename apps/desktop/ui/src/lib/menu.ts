@@ -34,6 +34,7 @@ import type {
 import { api } from './api';
 import { t, type StringId } from './strings';
 import type { Settings } from './settings';
+import { ISSUES_URL, SOURCE_URL } from './project';
 
 /** The items macOS implements itself. Their accelerators, their behavior and
  *  their place in the responder chain come with them: an Edit menu of these is
@@ -43,7 +44,7 @@ type NativeItem = Extract<PredefinedMenuItemOptions['item'], string>;
 /** A command Petrel answers itself. Adding a name here forces the hook below
  *  to provide a handler for it — the compiler, not a code review, is what
  *  stops a menu item that does nothing. */
-export const MENU_COMMANDS = ['new-message', 'settings'] as const;
+export const MENU_COMMANDS = ['new-message', 'settings', 'help'] as const;
 export type MenuCommand = (typeof MENU_COMMANDS)[number];
 
 /** The settings the View menu drives. Both already exist in Settings ›
@@ -58,7 +59,17 @@ export type MenuNode =
   | { role: 'about'; label: StringId }
   | { role: 'command'; command: MenuCommand; label: StringId; accelerator?: string }
   | ({ role: 'choice'; label: StringId } & Choice)
-  | { role: 'submenu'; label: StringId; items: MenuNode[]; windowMenu?: true };
+  /** Opens an address in the browser. Not a command: there is no state to
+   *  change and nothing for the window to do, so routing it through the
+   *  command table would add a hop that carries nothing. */
+  | { role: 'link'; label: StringId; url: string }
+  | {
+      role: 'submenu';
+      label: StringId;
+      items: MenuNode[];
+      windowMenu?: true;
+      helpMenu?: true;
+    };
 
 /**
  * The menu, as data.
@@ -156,6 +167,26 @@ export const MENU: MenuNode[] = [
       { role: 'separator' },
     ],
   },
+  {
+    // Last, which is where macOS expects it, and marked so AppKit takes it:
+    // a Help menu it owns gets the search box that walks the menus for you.
+    // Tauri's default menu had an empty Help submenu, so replacing that menu
+    // took the search box away; this puts it back and gives it something to
+    // hold.
+    role: 'submenu',
+    label: 'menubar-help',
+    helpMenu: true,
+    items: [
+      // No accelerator, deliberately. ? already opens this pane, and a menu
+      // item claiming that key would take it from every text field in the app
+      // — menus get first refusal on their key equivalents, which is the same
+      // mechanism that nearly cost Toggle Full Screen, running the other way.
+      { role: 'command', command: 'help', label: 'menubar-petrel-help' },
+      { role: 'separator' },
+      { role: 'link', label: 'menubar-report-issue', url: ISSUES_URL },
+      { role: 'link', label: 'menubar-view-source', url: SOURCE_URL },
+    ],
+  },
 ];
 
 /** What the window has to supply for the menu to mean anything. The two
@@ -166,6 +197,8 @@ export type MenuBindings = {
   newMessage: () => void;
   /** The same pane ⌘, opens. */
   openSettings: () => void;
+  /** The same pane ? opens. */
+  openHelp: () => void;
   theme: Settings['theme'];
   density: Settings['density'];
   setTheme: (value: Settings['theme']) => void;
@@ -187,6 +220,8 @@ type BuildContext = {
   checks: Map<string, CheckMenuItem>;
   /** The submenu AppKit should own, once the menu is installed. */
   windowMenu: Submenu | null;
+  /** Likewise, the one it should treat as Help. */
+  helpMenu: Submenu | null;
 };
 
 async function build(node: MenuNode, ctx: BuildContext): Promise<Built> {
@@ -206,6 +241,14 @@ async function build(node: MenuNode, ctx: BuildContext): Promise<Built> {
         accelerator: node.accelerator,
         action: () => ctx.run(node.command),
       };
+    case 'link':
+      return {
+        text: t(node.label),
+        action: () => {
+          void api.log(JSON.stringify({ kind: 'menu', command: `open:${node.url}` }));
+          void api.openExternal(node.url);
+        },
+      };
     case 'choice': {
       const key = `${node.setting}:${node.value}`;
       const options: CheckMenuItemOptions = {
@@ -220,10 +263,11 @@ async function build(node: MenuNode, ctx: BuildContext): Promise<Built> {
     case 'submenu': {
       const items: Built[] = [];
       for (const child of node.items) items.push(await build(child, ctx));
-      if (!node.windowMenu) return { text: t(node.label), items };
+      if (!node.windowMenu && !node.helpMenu) return { text: t(node.label), items };
       // AppKit needs the real object, not a description of one.
       const submenu = await ctx.tauri.Submenu.new({ text: t(node.label), items });
-      ctx.windowMenu = submenu;
+      if (node.windowMenu) ctx.windowMenu = submenu;
+      else ctx.helpMenu = submenu;
       return submenu;
     }
   }
@@ -259,6 +303,10 @@ async function install(ctx: BuildContext): Promise<Map<string, CheckMenuItem>> {
   // Told to AppKit after the menu is in place; before, and there is no menu
   // bar for it to attach the window list to.
   await ctx.windowMenu?.setAsWindowsMenuForNSApp();
+  // Without this macOS falls back to matching the *localized* word "Help",
+  // which is exactly the guess that stops working in the six languages this
+  // app now speaks. Saying which submenu it is does not depend on the title.
+  await ctx.helpMenu?.setAsHelpMenuForNSApp();
   const replaced = previous ? await describe(previous) : [];
   void api.log(JSON.stringify({ kind: 'menu-installed', menu: await describe(menu), replaced }));
   // The old menu is nobody's now. Left alive it holds a resource per item for
@@ -309,8 +357,21 @@ export function useAppMenu(bindings: MenuBindings): void {
             // click leaves no other trace: nothing changes in the DOM to say
             // where an action came from.
             void api.log(JSON.stringify({ kind: 'menu', command }));
-            if (command === 'new-message') ref.current.newMessage();
-            else ref.current.openSettings();
+            // A switch rather than an if/else chain so the compiler is the
+            // thing that notices a new MENU_COMMAND with nowhere to go. The
+            // chain this replaced ended in `else openSettings()`, which meant
+            // any command it did not know about quietly opened Settings —
+            // the exact silent-wrong-action the header claims cannot happen.
+            switch (command) {
+              case 'new-message':
+                return ref.current.newMessage();
+              case 'settings':
+                return ref.current.openSettings();
+              case 'help':
+                return ref.current.openHelp();
+              default:
+                return ((x: never) => x)(command);
+            }
           },
           choose: (setting, value) => {
             void api.log(JSON.stringify({ kind: 'menu', command: `${setting}:${value}` }));
@@ -328,6 +389,7 @@ export function useAppMenu(bindings: MenuBindings): void {
           },
           checks: new Map(),
           windowMenu: null,
+          helpMenu: null,
         };
         checks.current = await install(ctx);
       } catch (e) {

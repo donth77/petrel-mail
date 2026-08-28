@@ -419,6 +419,7 @@ export function App() {
   useAppMenu({
     newMessage: startCompose,
     openSettings: () => setSettingsOpen('appearance'),
+    openHelp: () => setHelpOpen(true),
     theme: settings.theme,
     density: settings.density,
     setTheme: (v) => set('theme', v),

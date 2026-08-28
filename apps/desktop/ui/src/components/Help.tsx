@@ -7,6 +7,7 @@ import { GithubMark } from './GithubMark';
 import { api } from '../lib/api';
 import { clickAway } from '../lib/dialog';
 import { t } from '../lib/strings';
+import { ISSUES_URL, SOURCE_URL } from '../lib/project';
 
 export function Help({ open, onClose }: { open: boolean; onClose: () => void }) {
   const tabs = useTabStore({ defaultSelectedId: 'shortcuts' });
@@ -141,7 +142,7 @@ export function Help({ open, onClose }: { open: boolean; onClose: () => void }) 
           <button
             type="button"
             className="fbtn"
-            onClick={() => void api.openExternal('https://github.com/donth77/petrel-mail/issues')}
+            onClick={() => void api.openExternal(ISSUES_URL)}
           >
             <GithubMark size={13} />
             {t('help-report')}
@@ -149,7 +150,7 @@ export function Help({ open, onClose }: { open: boolean; onClose: () => void }) 
           <button
             type="button"
             className="linkish help-source"
-            onClick={() => void api.openExternal('https://github.com/donth77/petrel-mail#petrel')}
+            onClick={() => void api.openExternal(SOURCE_URL)}
           >
             {t('help-source')}
           </button>

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { MENU, MENU_COMMANDS, type MenuNode } from './menu';
+import { REPO_URL } from './project';
 import { STRING_IDS } from './string-ids';
 import { t } from './strings';
 
@@ -86,14 +87,48 @@ describe('the menu bar', () => {
     expect(natives).toContain('Fullscreen');
   });
 
-  it('puts the app menu first and Window last, as macOS expects', () => {
+  it('puts the app menu first and Help last, as macOS expects', () => {
     const titles = MENU.map((n) => (n.role === 'submenu' ? n.label : null));
     expect(titles[0]).toBe('app-name');
-    expect(titles[titles.length - 1]).toBe('menubar-window');
+    expect(titles[titles.length - 1]).toBe('menubar-help');
+    expect(titles[titles.length - 2]).toBe('menubar-window');
     // Only AppKit can draw the window list, and it draws it into whichever
-    // submenu is handed to it. Exactly one, or the list lands nowhere.
-    const owned = MENU.filter((n) => n.role === 'submenu' && n.windowMenu);
-    expect(owned.length).toBe(1);
+    // submenu is handed to it. Exactly one, or the list lands nowhere. The
+    // same holds for Help and its search box.
+    const windows = MENU.filter((n) => n.role === 'submenu' && n.windowMenu);
+    const helps = MENU.filter((n) => n.role === 'submenu' && n.helpMenu);
+    expect(windows.length).toBe(1);
+    expect(helps.length).toBe(1);
+    // Two flags on one submenu would hand the same object to AppKit twice for
+    // two different jobs, and the second claim wins silently.
+    expect(MENU.some((n) => n.role === 'submenu' && n.windowMenu && n.helpMenu)).toBe(false);
+  });
+
+  it('points its links at the project, over https', () => {
+    const links = all
+      .map(({ node }) => (node.role === 'link' ? node.url : null))
+      .filter((u): u is string => u !== null);
+    expect(links.length).toBeGreaterThan(0);
+    for (const url of links) {
+      // A menu item is a click straight out of the app. http here would be a
+      // downgrade nobody sees coming, and a host typo is a link that looks
+      // right and lands somewhere else entirely.
+      expect(url.startsWith(`${REPO_URL}/`) || url.startsWith(`${REPO_URL}#`)).toBe(true);
+    }
+    expect(new Set(links).size).toBe(links.length);
+    expect(REPO_URL.startsWith('https://github.com/')).toBe(true);
+  });
+
+  it('gives the Help menu no key equivalent', () => {
+    const help = MENU.find((n) => n.role === 'submenu' && n.helpMenu);
+    const items = help?.role === 'submenu' ? help.items : [];
+    // ? opens the Help pane from the window. A menu accelerator would get
+    // first refusal on that key and take it away from every text field, which
+    // is the Toggle Full Screen lesson running in the other direction.
+    for (const item of items) {
+      if (item.role === 'command') expect(item.accelerator).toBeUndefined();
+    }
+    expect(items.some((i) => i.role === 'command' && i.command === 'help')).toBe(true);
   });
 
   it('offers every value each setting can take', () => {
