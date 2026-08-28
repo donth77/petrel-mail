@@ -671,6 +671,10 @@ impl Store {
                     .map(|(_, id)| *id);
                 let id = match existing {
                     Some(id) => id,
+                    // A keyword nobody here made a tag for. Machine keywords
+                    // stay flags rather than becoming sidebar entries; see
+                    // keywords::is_system_keyword.
+                    None if crate::keywords::is_system_keyword(kw) => continue,
                     None => self.ensure_tag(account_id, kw, None)?,
                 };
                 want.insert(id);
