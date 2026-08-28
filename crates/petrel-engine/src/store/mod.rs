@@ -18,7 +18,7 @@ mod listing;
 mod maintenance;
 mod search;
 
-pub const SCHEMA_VERSION: i64 = 19;
+pub const SCHEMA_VERSION: i64 = 20;
 /// Bumped whenever text extraction changes; a mismatch forces reindexing.
 pub const EXTRACTOR_VERSION: i64 = 1;
 
@@ -1027,6 +1027,9 @@ impl Store {
         }
         if ver < 19 {
             conn.execute_batch(include_str!("migrations/0019-trashed-at.sql"))?;
+        }
+        if ver < 20 {
+            conn.execute_batch(include_str!("migrations/0020-sidebar-order.sql"))?;
         }
         if ver < SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;

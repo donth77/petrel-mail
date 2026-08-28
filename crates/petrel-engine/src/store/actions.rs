@@ -558,7 +558,8 @@ impl Store {
              LEFT JOIN message_tags mt ON mt.tag_id = t.id
              LEFT JOIN messages m ON m.id = mt.message_id AND m.deleted_at_ms IS NULL
              WHERE t.account_id = ?1
-             GROUP BY t.id ORDER BY t.name",
+             GROUP BY t.id
+             ORDER BY (t.sort_order IS NULL), t.sort_order, t.name COLLATE NOCASE",
         )?;
         let rows = stmt.query_map(params![account_id], |row| {
             Ok(TagSummary {

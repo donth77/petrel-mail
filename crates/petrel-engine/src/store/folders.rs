@@ -42,7 +42,13 @@ impl Store {
         let mut stmt = self.conn.prepare_cached(
             "SELECT id, coalesce(role,''), path FROM folders
              WHERE account_id = ?1
-             ORDER BY (role IS NOT NULL AND role <> ''), path COLLATE NOCASE",
+             -- sort_order IS NULL sorts first in SQLite, which would put every
+             -- folder nobody has dragged above the ones somebody arranged on
+             -- purpose. The leading term flips that: arranged folders in the
+             -- order chosen, then the untouched ones, still alphabetical.
+             ORDER BY (role IS NOT NULL AND role <> ''),
+                      (sort_order IS NULL), sort_order,
+                      path COLLATE NOCASE",
         )?;
         let rows = stmt.query_map(params![account_id], |r| {
             Ok(FolderSummary {
@@ -855,5 +861,41 @@ impl Store {
                 |r| r.get(0),
             )
             .optional()?)
+    }
+
+    /// Records the order somebody dragged a set of rows into.
+    ///
+    /// Takes the ids in their new order and numbers them from zero. Renumbering
+    /// the whole visible set rather than patching one row is what makes this
+    /// safe to repeat: there are no gaps to run out of, no fractional indices
+    /// to converge on a float, and a half-applied reorder cannot leave two rows
+    /// claiming the same position.
+    ///
+    /// Rows not in the list keep whatever they had, so ordering one account's
+    /// folders does not disturb another's, and a row that arrives from the
+    /// server mid-drag simply stays unarranged until it is dragged too.
+    ///
+    /// `table` is not user input: the two callers pass a literal.
+    fn set_order(&mut self, table: &'static str, ids: &[i64]) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        {
+            let sql = format!("UPDATE {table} SET sort_order = ?1 WHERE id = ?2");
+            let mut stmt = tx.prepare(&sql)?;
+            for (position, id) in ids.iter().enumerate() {
+                stmt.execute(params![position as i64, id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The sidebar's folder order, as dragged.
+    pub fn reorder_folders(&mut self, ids: &[i64]) -> Result<()> {
+        self.set_order("folders", ids)
+    }
+
+    /// The sidebar's tag order, as dragged.
+    pub fn reorder_tags(&mut self, ids: &[i64]) -> Result<()> {
+        self.set_order("tags", ids)
     }
 }
