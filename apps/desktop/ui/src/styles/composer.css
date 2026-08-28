@@ -425,10 +425,16 @@ body.resizing {
   max-inline-size: 100%;
 }
 
-/* One row of export buttons per account, when there is more than one. */
+/* One row per account, when there is more than one.
+   A grid rather than a flex row, so the columns line up down the list: with
+   flex the account column was as wide as each address, which put every row's
+   field at its own indent and every row's button somewhere else again. Two
+   fixed columns mean the fields form a column and the buttons form a column,
+   whatever the addresses are. `minmax(0, …)` rather than a flat width so a
+   long address can elide instead of pushing the field off the pane. */
 .storage-export-row {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(0, 24ch) max-content;
   align-items: center;
   gap: 8px 14px;
   margin-block-start: 10px;
@@ -436,7 +442,10 @@ body.resizing {
 
 .storage-export-row .storage-account {
   font-size: 12.5px;
-  min-inline-size: 18ch;
+  /* Overrides the inline-flex default of `min-content`, which is what stops a
+     flex or grid item shrinking below its contents — without it the address
+     sets the column width and `.clip` never gets to elide anything. */
+  min-inline-size: 0;
 }
 
 .storage-export-row .storage-actions {
@@ -688,4 +697,35 @@ body.resizing {
 }
 .compose-head button {
   cursor: pointer;
+}
+
+/* The export scope field and its button, made one shape.
+   `.picker-field` and `.fbtn` were written for different places and it shows
+   when they sit side by side: 7px of block padding against 6px, 13px text
+   against 12.5px, an 8px radius against 7px. Each difference is invisible
+   alone and all three together read as a control and a button that were not
+   meant to go next to each other. The button's geometry wins, because it is
+   the one that cannot change — `.fbtn` is used across every settings pane.
+
+   The field also drops its `inline-size: min(280px, 100%)`: in a form column
+   that fills the width, but on a row beside a button it is a control that
+   should be as wide as its longest folder path and no wider. */
+.storage-actions {
+  align-items: center;
+}
+
+.storage-actions .picker-field,
+.storage-actions .fbtn {
+  margin-block-start: 0;
+  padding-block: 6px;
+  border-radius: 7px;
+  font-size: 12.5px;
+}
+
+/* One width, not a range: a field that sized to its own longest folder path
+   would put each row's button at a different place, which is the misalignment
+   this is here to remove. Long paths elide, as they do in the rules pane. */
+.storage-actions .picker-field {
+  inline-size: 24ch;
+  flex: none;
 }

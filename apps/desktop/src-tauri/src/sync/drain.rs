@@ -7,6 +7,33 @@ use petrel_providers::imap::ImapConfig;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+/// How many times a permanently-refused action is asked again before it is
+/// put out of the queue.
+///
+/// Not once: a single odd answer should not discard work somebody did, and a
+/// folder deleted by accident can come back. Not indefinitely: that is the
+/// behaviour this replaces, where one action failed on every cycle for days
+/// and the change it carried was never made and never abandoned either.
+const GIVE_UP_AFTER: i64 = 5;
+
+/// Whether the server's refusal is one that asking again cannot fix.
+///
+/// A mailbox that does not exist will not start existing on the two hundredth
+/// try — that is a folder renamed or deleted out from under a queued change.
+/// A broken pipe is the opposite kind of failure and must not count.
+///
+/// Anything unrecognised is treated as temporary, so a wrong guess costs a
+/// retry rather than somebody's change.
+fn permanent_refusal(error: &str) -> bool {
+    let low = error.to_lowercase();
+    low.contains("nonexistent")
+        || low.contains("trycreate")
+        || low.contains("doesn't exist")
+        || low.contains("does not exist")
+        || low.contains("no such mailbox")
+        || low.contains("unknown mailbox")
+}
+
 /// Delivers queued triage as soon as there is any, rather than when the next
 /// sync happens to run.
 ///
@@ -104,6 +131,10 @@ pub(crate) async fn drain_actions(
     let mut delivered = 0usize;
     let mut stuck = 0usize;
     let mut undeliverable = 0usize;
+    // An action can carry several messages and arrives here once per message,
+    // so a failing thread of ten would otherwise spend ten tries in a single
+    // cycle. One count per action per pass.
+    let mut counted: std::collections::HashSet<i64> = std::collections::HashSet::new();
     for item in pending {
         let Ok(kind) = serde_json::from_str::<ActionKind>(&item.kind_json) else {
             continue;
@@ -322,11 +353,39 @@ pub(crate) async fn drain_actions(
                 }
             }
             Err(e) => {
-                stuck += 1;
-                log_sync(&format!(
-                    "action {} could not be delivered: {e}",
-                    item.action_id
-                ));
+                let text = e.to_string();
+                // A refusal retrying cannot fix is counted, and after enough
+                // of them the action leaves the queue. Anything else — a
+                // broken pipe, a sleeping laptop — is not counted at all:
+                // the network comes back, and discarding somebody's change
+                // because it went away would be the worse bug.
+                let spent = permanent_refusal(&text) && counted.insert(item.action_id) && {
+                    match state.store.lock() {
+                        Ok(store) => {
+                            let n = store.record_attempt(item.action_id).unwrap_or(0);
+                            if n >= GIVE_UP_AFTER {
+                                let _ = store.mark_action_state(item.action_id, "undeliverable");
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                        Err(_) => false,
+                    }
+                };
+                if spent {
+                    undeliverable += 1;
+                    log_sync(&format!(
+                        "action {}: {text}; asked {GIVE_UP_AFTER} times, marked undeliverable",
+                        item.action_id
+                    ));
+                } else {
+                    stuck += 1;
+                    log_sync(&format!(
+                        "action {} could not be delivered: {text}",
+                        item.action_id
+                    ));
+                }
             }
         }
     }
@@ -339,4 +398,32 @@ pub(crate) async fn drain_actions(
         "drained {delivered} change(s), {stuck} still queued{tail}"
     ));
     true
+}
+
+#[cfg(test)]
+mod refusal_tests {
+    use super::permanent_refusal;
+
+    #[test]
+    fn a_missing_mailbox_is_permanent() {
+        // The exact words a real account produced, 112 times.
+        assert!(permanent_refusal(
+            "imap: no response: code: None, info: Some(\"Mailbox doesn't exist: glassdoor+3022026 (0.002 secs).\")"
+        ));
+        assert!(permanent_refusal("[NONEXISTENT] Mailbox does not exist"));
+        assert!(permanent_refusal("[TRYCREATE] No such mailbox"));
+    }
+
+    #[test]
+    fn a_network_failure_is_not() {
+        // Counting these would discard a change because a laptop slept.
+        assert!(!permanent_refusal("imap: io: Broken pipe (os error 32)"));
+        assert!(!permanent_refusal("connection reset by peer"));
+        assert!(!permanent_refusal("operation timed out"));
+    }
+
+    #[test]
+    fn anything_unrecognised_is_retried_rather_than_discarded() {
+        assert!(!permanent_refusal("server said something new and strange"));
+    }
 }

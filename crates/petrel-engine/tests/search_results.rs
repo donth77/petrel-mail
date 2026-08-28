@@ -506,3 +506,50 @@ mod in_user_folders {
         assert_eq!(store.search_threads("in:inbox annex", 20).unwrap().len(), 1);
     }
 }
+
+/// The inbox means the same thing to a search as it does to the badge.
+///
+/// Snoozing takes a message out of the inbox until it comes back — that is
+/// what the Inbox view's predicate says and what its unread badge counts.
+/// Search said otherwise: `in:inbox is:unread` returned the snoozed ones too,
+/// so the list and the number beside the mailbox disagreed by exactly the mail
+/// somebody had put off until later.
+#[test]
+fn snoozed_mail_is_out_of_the_inbox_for_a_search_too() {
+    use petrel_engine::actions::{ActionKind, PlacementPolicy};
+    use petrel_engine::store::ListView;
+
+    let (store, ids) = seeded();
+    let account = store.active_account().unwrap().unwrap();
+    let later = 1_900_000_000_000i64; // comfortably in the future
+
+    let thread = store.thread_of(ids[0]).unwrap().unwrap_or(-ids[0]);
+    store
+        .apply_thread_action(
+            account,
+            thread,
+            ActionKind::Snooze,
+            Some(later),
+            PlacementPolicy::Exclusive,
+        )
+        .unwrap();
+
+    // The badge's own answer: the snoozed conversation is not in the inbox.
+    let in_inbox = store.conversations_in(&ListView::Inbox).unwrap();
+
+    // And the search agrees.
+    let hits = store.search_threads("in:inbox contracts", 20).unwrap();
+    assert!(
+        !hits.iter().any(|h| h.subject.contains("Q3 vendor")),
+        "a snoozed conversation is not in the inbox, so a search of the inbox \
+         must not return it — the badge says {in_inbox}"
+    );
+
+    // Asked for by name, it is findable — snoozing hides mail, it does not
+    // bury it.
+    let asked = store.search_threads("is:snoozed contracts", 20).unwrap();
+    assert!(
+        asked.iter().any(|h| h.subject.contains("Q3 vendor")),
+        "is:snoozed must still find what was snoozed"
+    );
+}

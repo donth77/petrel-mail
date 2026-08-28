@@ -70,6 +70,45 @@ impl Envelope {
             list_id: list_id.to_lowercase(),
         }
     }
+
+    /// The envelope as a rule sees a real message.
+    ///
+    /// Here rather than at the sync loop's call site for the reason
+    /// `planned_actions` is: what a condition can see is part of what a rule
+    /// *means*, and it wants testing without an IMAP pass wrapped around it.
+    ///
+    /// Both sides carry display names. `from` always did and `to` did not, so
+    /// "To contains Dana" could never match `Dana Wu <dana@example.com>` — nor
+    /// anything else, ever — while the rule sat in the list looking enabled.
+    /// Matching a recipient by name is what every mail client does; being
+    /// unable to was this one's own quiet invention.
+    ///
+    /// Cc is deliberately absent. Clients keep To and Cc as separate
+    /// conditions and offer "To or Cc" as a third, rather than quietly
+    /// widening one of them, because a condition that says To and means more
+    /// than To cannot be reasoned about.
+    pub fn from_message(parsed: &petrel_mime::ParsedMessage) -> Self {
+        fn named(display: Option<&str>, addr: &str) -> String {
+            match display {
+                Some(d) if !d.is_empty() => format!("{d} {addr}"),
+                _ => addr.to_string(),
+            }
+        }
+        Envelope::new(
+            &named(
+                parsed.from_display.as_deref(),
+                parsed.from_addr.as_deref().unwrap_or(""),
+            ),
+            &parsed
+                .to
+                .iter()
+                .map(|(display, addr)| named(display.as_deref(), addr))
+                .collect::<Vec<_>>()
+                .join(", "),
+            parsed.subject.as_deref().unwrap_or(""),
+            parsed.list_id.as_deref().unwrap_or(""),
+        )
+    }
 }
 
 /// Whether every condition holds. A rule with no conditions matches nothing:
@@ -215,6 +254,46 @@ mod tests {
             ]
         );
         assert!(planned_actions(&Actions::default()).is_empty());
+    }
+
+    /// The bug: a recipient condition could only ever see the address, so
+    /// "To contains Dana" matched nothing at all — not this message, not any
+    /// message — while the rule sat in the list looking enabled.
+    ///
+    /// `from` was built from the display name *and* the address; `to` threw
+    /// the display names away. Nothing said so, and a rule that never fires
+    /// looks exactly like a rule whose mail has not arrived yet.
+    #[test]
+    fn a_recipient_is_matched_by_name_as_well_as_by_address() {
+        let raw = b"From: Dana Wu <dana@vendorco.example>\r\n\
+                    To: Sam Okafor <sam@example.com>, billing@example.com\r\n\
+                    Cc: Ada Chen <ada@example.com>\r\n\
+                    Subject: Q3 Invoice attached\r\n\
+                    Date: Tue, 18 Aug 2026 14:02:00 +0000\r\n\
+                    Message-ID: <inv1@x>\r\nMIME-Version: 1.0\r\n\
+                    Content-Type: text/plain\r\n\r\nbody\r\n";
+        let parsed = petrel_mime::parse_message(raw).expect("parses");
+        let env = Envelope::from_message(&parsed);
+
+        assert!(matches(&rule(&[("to", "Sam Okafor")]), &env), "by name");
+        assert!(matches(&rule(&[("to", "sam@example")]), &env), "by address");
+        assert!(
+            matches(&rule(&[("to", "billing@")]), &env),
+            "second recipient"
+        );
+        // The half that always worked, still working the same way.
+        assert!(matches(&rule(&[("from", "Dana Wu")]), &env));
+        assert!(matches(&rule(&[("from", "dana@vendorco")]), &env));
+        assert!(
+            !matches(&rule(&[("to", "dana")]), &env),
+            "the sender is not a recipient"
+        );
+
+        // Cc is not silently folded into `to`. Every client keeps them apart
+        // and offers "To or Cc" as its own condition; a To that quietly meant
+        // more than To could not be reasoned about.
+        assert!(!matches(&rule(&[("to", "Ada Chen")]), &env));
+        assert!(!matches(&rule(&[("to", "ada@example")]), &env));
     }
 
     #[test]

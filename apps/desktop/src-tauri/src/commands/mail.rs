@@ -137,7 +137,10 @@ pub fn print_message(
         .map_err(|e| format!("{e}"))?;
     WebviewWindowBuilder::new(&app, &label, WebviewUrl::External(url))
         .title("Print")
-        .inner_size(700.0, 880.0)
+        // Wide enough for the sheet the print document draws — a 174mm column
+        // plus its padding — rather than exactly the old 700px, which left the
+        // preview with no margin at all and measured a page wider than paper.
+        .inner_size(772.0, 900.0)
         .build()
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -146,10 +149,19 @@ pub fn print_message(
 /// Tags for the rail. Comes from the account, not from whatever rows happen to
 /// be loaded — a tag with no conversation in the current page still exists.
 #[tauri::command]
-pub fn list_tags(state: State<Arc<AppState>>) -> Result<Vec<TagSummary>, String> {
+/// `account` names one explicitly; absent it means the account on screen. See
+/// the note on `list_folders`.
+pub fn list_tags(
+    account: Option<i64>,
+    state: State<Arc<AppState>>,
+) -> Result<Vec<TagSummary>, String> {
     let store = state.store()?;
-    let Some(account) = store.active_account().map_err(|e| e.to_string())? else {
-        return Ok(Vec::new());
+    let account = match account {
+        Some(id) => id,
+        None => match store.active_account().map_err(|e| e.to_string())? {
+            Some(id) => id,
+            None => return Ok(Vec::new()),
+        },
     };
     store.tags_for_account(account).map_err(|e| e.to_string())
 }

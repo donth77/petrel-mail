@@ -292,3 +292,98 @@ fn export_is_of_the_account_asked_for_not_the_one_on_screen() {
         .unwrap();
     assert_eq!(written, 2);
 }
+
+/// Where a message sat, and what it wore, written into the file.
+///
+/// mbox has no hierarchy, so an archive of a mailbox that files its history
+/// under `Archive/2023` arrives as one flat heap and the filing is gone unless
+/// the export says so per message. `X-Gmail-Labels` is the same answer to the
+/// same problem, which is what makes this readable by anything that already
+/// understands a Takeout archive.
+#[test]
+fn the_export_records_the_folders_and_tags_each_message_had() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut store, blobs, account) = seeded(dir.path());
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+    let raw =
+        b"From: Sam <sam@example.com>\r\nTo: me@example.com\r\nSubject: Test\r\n\r\nfiled\r\n";
+    let id = store
+        .ingest_raw(&blobs, account, Some(inbox), None, raw)
+        .unwrap()
+        .message_id;
+
+    // File it under a second folder as well, the way a Gmail message wears
+    // several labels at once.
+    let filed = store.ensure_folder(account, "", "Archive/2023").unwrap();
+    store.place_message(id, filed).unwrap();
+    let tag = store.ensure_tag(account, "urgent", None).unwrap();
+    store.tag_message(id, tag).unwrap();
+
+    let out = dir.path().join("out.mbox");
+    store
+        .export_mbox(&blobs, account, &ListView::Inbox, &out)
+        .unwrap();
+    let text = std::fs::read_to_string(&out).unwrap();
+
+    assert!(text.contains("X-Petrel-Folders:"), "{text}");
+    assert!(text.contains("Archive/2023"), "{text}");
+    assert!(text.contains("X-Petrel-Tags: urgent"), "{text}");
+    // Ahead of the message's own headers, and after the separator — that is
+    // where a reader looks for headers, and where Takeout puts its own.
+    let sep = text.find("From ").unwrap();
+    let ours = text.find("X-Petrel-Folders:").unwrap();
+    let theirs = text.find("Subject: Test").unwrap();
+    assert!(sep < ours && ours < theirs, "headers out of order:\n{text}");
+}
+
+/// A message with no tags gets no tag header, rather than an empty one.
+#[test]
+fn a_header_with_nothing_to_say_is_left_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut store, blobs, account) = seeded(dir.path());
+    ingest(&mut store, &blobs, account, "plain\r\n");
+
+    let out = dir.path().join("out.mbox");
+    store
+        .export_mbox(&blobs, account, &ListView::Inbox, &out)
+        .unwrap();
+    let text = std::fs::read_to_string(&out).unwrap();
+    assert!(text.contains("X-Petrel-Folders: INBOX"), "{text}");
+    assert!(!text.contains("X-Petrel-Tags"), "{text}");
+}
+
+/// "Everything" means everything, bins included.
+///
+/// An export that quietly left out the trash would be the wrong promise: the
+/// folder header says what each message is, so whoever reads the file can
+/// leave out whatever they like — which is not a decision to make for them.
+#[test]
+fn the_all_view_exports_every_message_wherever_it_sits() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut store, blobs, account) = seeded(dir.path());
+    ingest(&mut store, &blobs, account, "in the inbox\r\n");
+
+    // A second message that lives only in the bin, so it is outside every
+    // view the Storage pane used to offer.
+    let bin = store.ensure_folder(account, "trash", "Trash").unwrap();
+    let raw =
+        b"From: Sam <sam@example.com>\r\nTo: me@example.com\r\nSubject: Binned\r\n\r\ngone\r\n";
+    store
+        .ingest_raw(&blobs, account, Some(bin), None, raw)
+        .unwrap();
+
+    let inbox_only = dir.path().join("inbox.mbox");
+    let (n_inbox, _) = store
+        .export_mbox(&blobs, account, &ListView::Inbox, &inbox_only)
+        .unwrap();
+    let everything = dir.path().join("all.mbox");
+    let (n_all, _) = store
+        .export_mbox(&blobs, account, &ListView::All, &everything)
+        .unwrap();
+
+    assert_eq!(n_inbox, 1, "the inbox export should hold only the inbox");
+    assert_eq!(n_all, 2, "everything should hold the binned message too");
+    let text = std::fs::read_to_string(&everything).unwrap();
+    assert!(text.contains("Subject: Binned"), "{text}");
+    assert!(text.contains("Subject: Test"), "{text}");
+}

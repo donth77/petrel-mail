@@ -56,6 +56,13 @@ export function Updates({ onMessage }: { onMessage: (text: string) => void }) {
             ? t('update-found', { version: s.available })
             : t('update-none'),
       );
+    } catch (e) {
+      // The command itself failing, as opposed to reporting an error status:
+      // no network, or the IPC call refused. `try/finally` alone cleared the
+      // busy flag and let the rejection go nowhere, so pressing Check while
+      // offline was indistinguishable from pressing a dead button — and the
+      // string written for exactly this had never been wired to anything.
+      onMessage(t('update-check-failed', { error: String(e) }));
     } finally {
       setBusy(false);
     }
@@ -83,6 +90,14 @@ export function Updates({ onMessage }: { onMessage: (text: string) => void }) {
         <p className="fhelp">
           {status ? t('update-running', { version: status.current }) : t('update-reading')}
         </p>
+        {/* What changed in the build you are running. Compiled in rather than
+            fetched, so it is here offline and cannot be a spinner. A dev build
+            has none, and shows none. The box is the same fixed, scrollable one
+            an available update's notes get — long notes must not stretch the
+            pane. */}
+        {status?.current_notes && (
+          <p className="fhelp update-notes">{status.current_notes}</p>
+        )}
         <div className="storage-actions">
           <button type="button" className="fbtn" disabled={busy} onClick={() => void check()}>
             <Icon icon={RefreshCw} size={13} />

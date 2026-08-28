@@ -159,3 +159,115 @@ fn keywords_come_home_as_the_tags_that_sent_them() {
         0
     );
 }
+
+/// The bug: a rule that files mail into a folder the user has since deleted
+/// made the mail disappear.
+///
+/// A move clears every placement and then files the message at the
+/// destination, with no transaction around the pair. Against a folder that no
+/// longer exists the second half failed on the foreign key with the first half
+/// already committed, and the message was left placed nowhere at all — gone
+/// from the inbox, gone from the folder, gone from every view, and not in the
+/// trash either. Proven against a real store before the fix: placements went
+/// from [inbox] to [].
+///
+/// A rule keeps naming a folder long after the folder has gone, so it did this
+/// silently to every message it matched, once per arrival.
+#[test]
+fn an_action_naming_a_deleted_folder_leaves_the_mail_where_it_was() {
+    use petrel_engine::actions::ActionKind;
+    use petrel_engine::blob::BlobStore;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&dir.path().join("t.db")).unwrap();
+    let blobs = BlobStore::open(&dir.path().join("blobs")).unwrap();
+    let account = store.ensure_test_account().unwrap();
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+    let marketing = store.ensure_named_folder(account, "Marketing").unwrap();
+    let tag = store.ensure_tag(account, "Invoices", None).unwrap();
+    let raw = b"From: Dana Wu <dana@vendorco.example>\r\nTo: me@example.com\r\n\
+                Subject: Q3 Invoice\r\nDate: Tue, 18 Aug 2026 14:02:00 +0000\r\n\
+                Message-ID: <inv1@x>\r\nMIME-Version: 1.0\r\n\
+                Content-Type: text/plain\r\n\r\nbody\r\n";
+    let m = store
+        .ingest_raw(&blobs, account, Some(inbox), Some(1), raw)
+        .unwrap();
+    let policy = store.placement_policy(account).unwrap();
+    let thread = store.thread_of(m.message_id).unwrap().unwrap();
+
+    // The rule still says "move to Marketing, tag Invoices". Both are gone.
+    store.remove_folder(marketing).unwrap();
+    store.delete_tag(tag).unwrap();
+
+    for (kind, target) in [
+        (ActionKind::Move, marketing),
+        (ActionKind::Tag, tag),
+        (ActionKind::Untag, tag),
+    ] {
+        let err = store
+            .apply_thread_action(account, thread, kind, Some(target), policy)
+            .expect_err("a target that is gone is refused, not attempted");
+        assert!(err.to_string().contains("does not have"), "{kind:?}: {err}");
+        assert_eq!(
+            store.folders_of(m.message_id).unwrap(),
+            vec![inbox],
+            "{kind:?} left the message where it was"
+        );
+    }
+
+    // Nothing was queued for a server that would have been told nonsense.
+    assert!(store.pending_actions(account).unwrap().is_empty());
+}
+
+/// The other way a target can be wrong: it exists, but next door.
+///
+/// A folder id from another account is the deleted case wearing a plausible
+/// disguise — the insert succeeds, and the mail is quietly filed in a folder
+/// belonging to a different address. Nothing offers such an id today, because
+/// every folder and tag list is scoped to the account already. This is the
+/// floor under that: the day something offers one account's folders while
+/// another is on screen, it is a refused action rather than mail that has
+/// wandered off.
+#[test]
+fn an_action_naming_another_accounts_folder_is_refused() {
+    use petrel_engine::actions::ActionKind;
+    use petrel_engine::blob::BlobStore;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&dir.path().join("t.db")).unwrap();
+    let blobs = BlobStore::open(&dir.path().join("blobs")).unwrap();
+    let mine = store.ensure_test_account().unwrap();
+    let theirs = store
+        .add_account(
+            "imap",
+            "other@example.com",
+            "Other",
+            &petrel_engine::store::AccountServers::default(),
+        )
+        .unwrap();
+
+    let inbox = store.ensure_folder(mine, "inbox", "INBOX").unwrap();
+    let next_door = store.ensure_named_folder(theirs, "Theirs").unwrap();
+    let their_tag = store.ensure_tag(theirs, "Theirs", None).unwrap();
+    let raw = b"From: Dana Wu <dana@vendorco.example>\r\nTo: me@example.com\r\n\
+                Subject: Q3 Invoice\r\nDate: Tue, 18 Aug 2026 14:02:00 +0000\r\n\
+                Message-ID: <inv2@x>\r\nMIME-Version: 1.0\r\n\
+                Content-Type: text/plain\r\n\r\nbody\r\n";
+    let m = store
+        .ingest_raw(&blobs, mine, Some(inbox), Some(1), raw)
+        .unwrap();
+    let policy = store.placement_policy(mine).unwrap();
+    let thread = store.thread_of(m.message_id).unwrap().unwrap();
+
+    for (kind, target) in [(ActionKind::Move, next_door), (ActionKind::Tag, their_tag)] {
+        store
+            .apply_thread_action(mine, thread, kind, Some(target), policy)
+            .expect_err("one account cannot file into another's");
+        assert_eq!(
+            store.folders_of(m.message_id).unwrap(),
+            vec![inbox],
+            "{kind:?} left the message where it was"
+        );
+    }
+    assert!(store.pending_actions(mine).unwrap().is_empty());
+}

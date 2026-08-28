@@ -227,6 +227,20 @@ impl Store {
             for _ in 0..4 {
                 args.push(Box::new(name.clone()));
             }
+            // Snoozing takes a message out of the inbox until it comes back.
+            // That is what the Inbox view's predicate says and what its unread
+            // badge counts, and search used to disagree: `in:inbox is:unread`
+            // returned the snoozed ones too, so the list and the number beside
+            // the mailbox differed by exactly the mail somebody had put off.
+            //
+            // Only the inbox, because that is the only view snoozing hides
+            // from — and not when `is:snoozed` asked for them by name, since
+            // snoozing hides mail rather than burying it.
+            if name == "inbox" && !q.snoozed {
+                sql.push_str(
+                    " AND coalesce(m.snoozed_until_ms, 0) <= (strftime('%s','now') * 1000)",
+                );
+            }
         }
         if let Some(after) = q.after_ms {
             sql.push_str(" AND m.date_ms >= ?");

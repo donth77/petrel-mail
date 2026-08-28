@@ -56,3 +56,8 @@
   align-items: center;
   gap: 8px;
 }
+/* An action the rule cannot carry out as written: a destination already takes
+   the mail out of the inbox, so skipping it is not a second instruction. */
+.rule-acts label.is-moot {
+  color: var(--ink3);
+}

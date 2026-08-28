@@ -24,6 +24,15 @@ pub struct UpdateStatus {
     pub available: Option<String>,
     /// The release notes that came with it, if any.
     pub notes: Option<String>,
+    /// What changed in the version now running.
+    ///
+    /// Compiled in from `PETREL_RELEASE_NOTES` at build time rather than
+    /// fetched from GitHub when the pane opens. Asking a host for them would
+    /// put a network call — and an outage, and a rate limit — between a
+    /// person and a question about the program already on their machine, in
+    /// the one pane whose whole design is that nothing phones home unasked.
+    /// Embedded, they are as available offline as the app is.
+    pub current_notes: Option<String>,
     /// Set when the check could not be made: offline, no endpoint configured,
     /// a host that answered with rubbish. Reported rather than swallowed,
     /// because "no update" and "could not ask" are different answers and a
@@ -37,6 +46,17 @@ pub struct UpdateStatus {
     /// sync.log, where it is useful to whoever is debugging rather than to
     /// whoever is trying to update.
     pub error: Option<&'static str>,
+}
+
+/// The notes for the build that is running, as they were at compile time.
+///
+/// Absent in a dev build, which is correct: an unreleased binary has no
+/// release notes, and inventing some would be worse than showing none.
+fn current_notes() -> Option<String> {
+    option_env!("PETREL_RELEASE_NOTES")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 /// Sorts an updater failure into something the pane can phrase.
@@ -105,6 +125,7 @@ pub async fn check_update(app: tauri::AppHandle) -> Result<UpdateStatus, String>
                 current,
                 available: None,
                 notes: None,
+                current_notes: current_notes(),
                 error: Some("not-configured"),
             });
         }
@@ -114,12 +135,14 @@ pub async fn check_update(app: tauri::AppHandle) -> Result<UpdateStatus, String>
             current,
             available: Some(update.version.clone()),
             notes: update.body.clone(),
+            current_notes: current_notes(),
             error: None,
         }),
         Ok(None) => Ok(UpdateStatus {
             current,
             available: None,
             notes: None,
+            current_notes: current_notes(),
             error: None,
         }),
         Err(e) => {
@@ -129,6 +152,7 @@ pub async fn check_update(app: tauri::AppHandle) -> Result<UpdateStatus, String>
                 current,
                 available: None,
                 notes: None,
+                current_notes: current_notes(),
                 error: Some(classify(&e.to_string())),
             })
         }

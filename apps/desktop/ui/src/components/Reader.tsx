@@ -467,10 +467,12 @@ export function Reader({
                 one long message wants the width this window can give it, and
                 a message you are working *from* wants to stay open while you
                 do something else in the app. */}
-            {/* onReply and onForward target the newest message, which is what
-                replying to a conversation means and what the R key already
-                does. Replying to the middle of a thread is the per-message
-                menu's job, and it has its own. */}
+            {/* No reply, reply all or forward here. This pane already offers
+                all three as buttons along the bottom, again on the R, A and F
+                keys, and once more in each message's own menu — a fourth
+                route to the same three actions, in the same pane, is a longer
+                menu and nothing else. They belong on the list row's menu,
+                which had no way to reply at all, and that is where they went. */}
             <MoreMenu
               thread={thread}
               view={view}
@@ -482,8 +484,6 @@ export function Reader({
               onMoveInbox={onMoveInbox}
               onTag={onTag}
               onSnooze={onSnooze}
-              onReply={newest && onReplyTo ? (all) => onReplyTo(newest.id, all) : undefined}
-              onForward={newest && onForwardFrom ? () => onForwardFrom(newest.id) : undefined}
             />
           </div>
         </div>

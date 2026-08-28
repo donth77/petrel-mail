@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, type Identity } from '../../lib/api';
+import { AccountNote } from './AccountNote';
 import { t } from '../../lib/strings';
 
 /**
@@ -37,6 +38,7 @@ export function Identities({ onMessage }: { onMessage: (text: string) => void })
     return (
       <div className="pane-body">
         <h1 className="pane-title">{t('settings-identities')}</h1>
+        <AccountNote />
         <p className="fhelp">{error}</p>
       </div>
     );
@@ -46,6 +48,7 @@ export function Identities({ onMessage }: { onMessage: (text: string) => void })
   return (
     <div className="pane-body">
       <h1 className="pane-title">{t('settings-identities')}</h1>
+      <AccountNote />
 
       <section className="field">
         <div className="flabel">{t('identity-sending-as')}</div>

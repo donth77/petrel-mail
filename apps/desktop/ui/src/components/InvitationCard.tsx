@@ -2,7 +2,25 @@ import { useEffect, useState } from 'react';
 import { CalendarDays, Check, HelpCircle, X } from 'lucide-react';
 import { api, type InvitationTime, type InvitationView } from '../lib/api';
 import { Icon } from './Icon';
-import { t } from '../lib/strings';
+import { t, type StringId } from '../lib/strings';
+
+/** What you answered, said back to you.
+ *
+ * A record rather than `invite-${response}`, because the button labels and the
+ * answer labels are different sentences and only two of the three happened to
+ * line up. "Tentative" built `invite-tentative` — the *button*, which reads
+ * "Maybe" — so replying tentatively confirmed with "Maybe" while the string
+ * written for the job, `invite-tentative-answer` ("Tentatively accepted"), was
+ * never reachable. The cast to `never` at the call site is what let a
+ * concatenated id go unchecked; a typed map cannot miss one.
+ */
+const ANSWER: Record<Response, StringId> = {
+  accepted: 'invite-accepted',
+  tentative: 'invite-tentative-answer',
+  declined: 'invite-declined',
+};
+
+type Response = 'accepted' | 'tentative' | 'declined';
 
 /** "Wed, Sep 2, 14:00–15:00" — as honestly as the invitation said it. */
 function timeText(start: InvitationTime | null, end: InvitationTime | null): string | null {
@@ -53,7 +71,7 @@ export function InvitationCard({
   onToast: (text: string) => void;
 }) {
   const [inv, setInv] = useState<InvitationView | null>(null);
-  const [answered, setAnswered] = useState<string | null>(null);
+  const [answered, setAnswered] = useState<Response | null>(null);
   const [changing, setChanging] = useState(false);
   const [busy, setBusy] = useState(false);
   useEffect(() => {
@@ -74,7 +92,15 @@ export function InvitationCard({
                 : v?.my_partstat === 'DECLINED'
                   ? 'declined'
                   : null;
-          setAnswered(v?.responded ?? fromWire);
+          // The server's word is a plain string. Narrowed here, so an
+          // unexpected value shows as unanswered rather than indexing the
+          // label map with something that is not a response.
+          const recorded = v?.responded;
+          setAnswered(
+            recorded === 'accepted' || recorded === 'tentative' || recorded === 'declined'
+              ? recorded
+              : fromWire,
+          );
         }
       })
       .catch(() => {});
@@ -86,14 +112,14 @@ export function InvitationCard({
 
   const cancelled = inv.method === 'CANCEL' || inv.status === 'CANCELLED';
   const when = timeText(inv.start, inv.end);
-  const answer = (response: string) => {
+  const answer = (response: Response) => {
     setBusy(true);
     void api
       .respondInvitation(messageId, response)
       .then(() => {
         setAnswered(response);
         setChanging(false);
-        onToast(t('invite-answered', { response: t(`invite-${response}` as never) }));
+        onToast(t('invite-answered', { response: t(ANSWER[response]) }));
       })
       .catch((e) => onToast(t('invite-failed', { error: String(e) })))
       .finally(() => setBusy(false));
@@ -133,7 +159,7 @@ export function InvitationCard({
             <>
               <span className={`invite-answer ${answered}`}>
                 <Icon icon={answered === 'declined' ? X : Check} size={13} />
-                {t(`invite-${answered}` as never)}
+                {t(ANSWER[answered])}
               </span>
               {/* Minds change; a later REPLY simply supersedes the last. */}
               <button type="button" className="reply invite-change" onClick={() => setChanging(true)}>

@@ -80,12 +80,24 @@ pub fn delete_tag(tag_id: i64, state: State<Arc<AppState>>) -> Result<(), String
 }
 
 /// Folders for the move picker (V).
+///
+/// `account` names one explicitly. Absent it means the account on screen,
+/// which is what every list in the window wants — but the export pane offers
+/// a row per account, and a folder list borrowed from whichever one happens
+/// to be active would name places that account's export cannot find.
 #[tauri::command]
-pub fn list_folders(state: State<Arc<AppState>>) -> Result<Vec<FolderSummary>, String> {
+pub fn list_folders(
+    account: Option<i64>,
+    state: State<Arc<AppState>>,
+) -> Result<Vec<FolderSummary>, String> {
     note_ui_touch(&state);
     let store = state.store()?;
-    let Some(account) = store.active_account().map_err(|e| e.to_string())? else {
-        return Ok(Vec::new());
+    let account = match account {
+        Some(id) => id,
+        None => match store.active_account().map_err(|e| e.to_string())? {
+            Some(id) => id,
+            None => return Ok(Vec::new()),
+        },
     };
     store.folders(account).map_err(|e| e.to_string())
 }

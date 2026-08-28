@@ -31,6 +31,27 @@ describe('toggleToken', () => {
     expect(on).toContain('report');
     expect(toggleToken(on, 'is:starred')).toBe('quarterly report');
   });
+
+  /* `is:` conditions are separate booleans in the engine, so they narrow
+     together — unlike from:/in:/after:, where a second token overwrites the
+     first. Treating them all as one-value operators made a chip in the
+     Snoozed view throw the view away. */
+  it('keeps the states that narrow together', () => {
+    expect(toggleToken('is:snoozed', 'is:unread')).toBe('is:snoozed is:unread');
+    expect(toggleToken('is:starred', 'is:unread')).toBe('is:starred is:unread');
+    expect(toggleToken('is:unread', 'has:attachment')).toBe('is:unread has:attachment');
+  });
+
+  it('never drops the scope the search started from', () => {
+    expect(toggleToken('in:Receipts', 'is:unread')).toBe('in:Receipts is:unread');
+    expect(toggleToken('in:Receipts', 'has:attachment')).toBe('in:Receipts has:attachment');
+    expect(toggleToken('is:snoozed', 'has:attachment')).toBe('is:snoozed has:attachment');
+  });
+
+  it('still replaces the operators the engine reads as one value', () => {
+    expect(toggleToken('in:inbox', 'in:sent')).toBe('in:sent');
+    expect(toggleToken('after:2025 annex', 'after:2026')).toBe('annex after:2026');
+  });
 });
 
 describe('hasToken', () => {
@@ -101,6 +122,40 @@ describe('the scope chip', () => {
   });
 });
 
+/* What is on gathers at the left. A row that reads lit, unlit, lit, unlit
+   makes the reader scan for the answer to "what am I filtering by"; grouped,
+   the answer is the first run of chips. */
+describe('the order applied chips take', () => {
+  it('puts what is on before what is off', () => {
+    const ids = chips(null, 2026, 'inbox', null, 'in:inbox is:starred').map((c) => c.id);
+    expect(ids.slice(0, 2)).toEqual(['scope', 'starred']);
+  });
+
+  it('lifts a chip out of the middle rather than leaving a gap', () => {
+    // `unread` sits third in the built row; applied, it comes second.
+    const ids = chips(null, 2026, 'inbox', null, 'in:inbox is:unread').map((c) => c.id);
+    expect(ids).toEqual(['scope', 'unread', 'attachment', 'starred', 'year']);
+  });
+
+  it('keeps the built order inside each group', () => {
+    const ids = chips('Sam', 2026, 'sent', null, 'has:attachment after:2026').map((c) => c.id);
+    // Applied, in the order they were built; then the rest, likewise.
+    expect(ids).toEqual(['attachment', 'year', 'scope', 'from', 'unread', 'starred']);
+  });
+
+  it('leads with an applied chip even when the scope was deleted', () => {
+    // Deleting the scope token is how a search goes global; the row must not
+    // keep a dark chip at the front while a lit one sits behind it.
+    const ids = chips(null, 2026, 'inbox', null, 'is:unread').map((c) => c.id);
+    expect(ids[0]).toBe('unread');
+  });
+
+  it('changes nothing while the row is empty', () => {
+    const ids = chips('Sam', 2026, 'sent', null, '').map((c) => c.id);
+    expect(ids).toEqual(['scope', 'from', 'attachment', 'unread', 'starred', 'year']);
+  });
+});
+
 describe('scopedQuery', () => {
   it('scopes a beginning search to wherever you stand', () => {
     expect(scopedQuery('a', '', 'in:spam')).toBe('in:spam a');
@@ -123,5 +178,63 @@ describe('scopedQuery', () => {
   it('does nothing when the field is being cleared', () => {
     expect(scopedQuery('', 'refund', 'spam')).toBe('');
     expect(scopedQuery('   ', '', 'spam')).toBe('   ');
+  });
+});
+
+/* A filter in the query must always have a pill. Without one there is no way
+   to see what is narrowing the list, and no way to take it off. */
+describe('a filter that is applied always has its chip', () => {
+  it('keeps the From chip when the search changed what is open', () => {
+    // The From chip was built from the open conversation, so running the
+    // search — which empties the selection — took the pill away while
+    // `from:Slack` went on filtering.
+    const ids = chips(null, 2026, 'inbox', null, 'in:inbox from:Slack is:unread').map((c) => c.id);
+    expect(ids).toContain('from');
+  });
+
+  it('names that chip after the query, not after whatever is open now', () => {
+    const from = chips('Someone Else', 2026, 'inbox', null, 'from:Slack').find(
+      (c) => c.id === 'from',
+    );
+    expect(from?.token).toBe('from:Slack');
+    expect(from?.label).toBe('From Slack');
+  });
+
+  it('lights a chip whose value is quoted', () => {
+    expect(hasToken('in:"Client contact" is:unread', 'in:"Client contact"')).toBe(true);
+    expect(hasToken('from:"Dana Wu"', 'from:"Dana Wu"')).toBe(true);
+  });
+
+  it('does not lose the quotes when another chip is toggled', () => {
+    // Splitting the query and joining it back turned `in:"Client contact"`
+    // into two words, and the search then meant something else entirely.
+    expect(toggleToken('in:"Client contact"', 'is:unread')).toBe(
+      'in:"Client contact" is:unread',
+    );
+  });
+
+  it('can take a quoted chip off again', () => {
+    expect(toggleToken('in:"Client contact" is:unread', 'in:"Client contact"')).toBe('is:unread');
+  });
+
+  it('names the scope chip after the mailbox being searched, not the one on screen', () => {
+    // Standing in the Inbox with `in:Receipts` typed, the row used to offer
+    // "In Inbox" unlit while `in:Receipts` narrowed the list with no pill.
+    const scope = chips(null, 2026, 'inbox', null, 'in:Receipts is:unread').find(
+      (c) => c.id === 'scope',
+    );
+    expect(scope?.token).toBe('in:Receipts');
+    expect(scope?.label).toBe('In Receipts');
+  });
+
+  it('still offers the open mailbox when nothing scopes the query', () => {
+    const scope = chips(null, 2026, 'inbox', null, 'is:unread').find((c) => c.id === 'scope');
+    expect(scope?.token).toBe('in:inbox');
+    expect(scope?.label).toBe('In Inbox');
+  });
+
+  it('keeps the friendly name when the query scopes where you already are', () => {
+    const scope = chips(null, 2026, 'inbox', null, 'in:inbox').find((c) => c.id === 'scope');
+    expect(scope?.label).toBe('In Inbox');
   });
 });

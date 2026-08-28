@@ -269,3 +269,42 @@ fn a_server_tag_you_use_yourself_becomes_yours() {
         "once somebody uses a tag it is theirs, empty or not: {after:?}"
     );
 }
+
+/// What renaming refuses, creating must refuse too.
+///
+/// `rename_tag` compares names case-insensitively — "case is not a difference"
+/// is the rule the test above pins. The UNIQUE(account_id, name) constraint
+/// creating goes through does not: SQLite's default collation is BINARY, so
+/// `Urgent` and `urgent` were two rows. That is a state the rail cannot show
+/// apart, `tag:urgent` cannot pick between, and the server cannot hold at all
+/// — IMAP keywords are case-insensitive, so both travel as one keyword and
+/// each sync hands the pair the other's messages.
+#[test]
+fn a_tag_that_differs_only_in_case_is_the_same_tag() {
+    let (store, account, _ids) = seeded();
+    let made = store.ensure_tag(account, "Urgent", None).unwrap();
+    let again = store.ensure_tag(account, "urgent", None).unwrap();
+
+    assert_eq!(again, made, "the same tag, however it was typed");
+    let names: Vec<String> = store
+        .tags_for_account(account)
+        .unwrap()
+        .into_iter()
+        .map(|t| t.name)
+        .collect();
+    assert_eq!(names, vec!["Urgent".to_string()], "and only one row for it");
+}
+
+/// The same rule where the names arrive from the server rather than a person.
+///
+/// A keyword comes back in whatever case the server or another client felt
+/// like, and each spelling used to introduce a tag of its own.
+#[test]
+fn a_keyword_in_another_case_does_not_introduce_a_second_tag() {
+    let (store, account, _ids) = seeded();
+    let mine = store.ensure_tag(account, "Waiting on", None).unwrap();
+    let from_server = store.ensure_server_tag(account, "WAITING ON").unwrap();
+
+    assert_eq!(from_server, mine);
+    assert_eq!(store.tags_for_account(account).unwrap().len(), 1);
+}

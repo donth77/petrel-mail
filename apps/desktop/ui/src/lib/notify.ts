@@ -32,27 +32,54 @@ export function notifiable(settings: Settings, arrivals: Thread[], now: number):
   return settings.notifyLevel === 'priority' ? unread.filter(isPriority) : unread;
 }
 
+/** What became of a notification. `reason` is for a person to read. */
+export type NotifyResult = { ok: boolean; reason?: string };
+
 /**
  * Posts an OS notification, if the user allows it and the OS agrees.
  *
  * Every failure here is non-fatal by design: notification permission can be
- * refused, revoked, or unavailable entirely (an unsigned build on macOS is a
- * real case). The in-app toast has already been shown by the time this runs,
- * so a refusal costs the user nothing.
+ * refused, revoked, or unavailable entirely (an unbundled build is a real
+ * case). The in-app toast has already been shown by the time this runs, so a
+ * refusal costs the user nothing.
+ *
+ * macOS goes through our own command rather than the plugin. The plugin's
+ * macOS path ends at NSUserNotification, which macOS 26 no longer delivers,
+ * and which reports success regardless — so the plugin cannot tell us anything
+ * true there. See `src-tauri/src/notify.rs`. Windows and Linux keep the
+ * plugin, where the OS story is sound.
+ *
+ * The result is returned rather than swallowed so that a caller which needs to
+ * tell the user something — the settings pane's test button — has something
+ * true to say.
  */
-export async function postDesktopNotification(title: string, body: string): Promise<boolean> {
+export async function postDesktopNotification(
+  title: string,
+  body: string,
+): Promise<NotifyResult> {
+  const isMac =
+    typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || '');
+  if (isMac) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('post_notification', { title, body });
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, reason: String(e) };
+    }
+  }
   try {
     const mod = await import('@tauri-apps/plugin-notification');
     let granted = await mod.isPermissionGranted();
     if (!granted) {
       granted = (await mod.requestPermission()) === 'granted';
     }
-    if (!granted) return false;
+    if (!granted) return { ok: false, reason: 'permission-denied' };
     mod.sendNotification({ title, body });
-    return true;
-  } catch {
+    return { ok: true };
+  } catch (e) {
     // Not running under Tauri, or the plugin is unavailable. Silence is the
-    // right outcome; the toast already happened.
-    return false;
+    // right outcome for an arrival; the toast already happened.
+    return { ok: false, reason: String(e) };
   }
 }

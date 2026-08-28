@@ -9,8 +9,10 @@ use crate::send::{send_due, spawn_outbox_clock};
 use crate::state::{AppState, now_ms};
 use crate::sync::backfill::spawn_backfill;
 use crate::sync::drain::{drain_actions, spawn_drain_worker};
+use petrel_engine::actions::ActionKind;
 use petrel_engine::store::Store;
 use petrel_providers::imap::ImapConfig;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -321,7 +323,15 @@ async fn run_sync_cycle(
         let arriving: Vec<bool> = passes
             .iter()
             .zip(&ids)
-            .map(|(p, fid)| p.since_uid > 0 && Some(*fid) == inbox_folder)
+            // Synced before, by either watermark. `since_uid > 0` alone
+            // read as "we hold mail here", so the very first message ever to
+            // land in an inbox that had been empty at seed time was not an
+            // arrival and no rule ever saw it. A recorded UIDNEXT is the
+            // honest signal — a first-ever pass has neither, which is what
+            // keeps rules off the seed.
+            .map(|(p, fid)| {
+                (p.since_uid > 0 || p.since_uidnext.is_some()) && Some(*fid) == inbox_folder
+            })
             .collect();
         let arrivals = &mut arrivals;
         // Gmail's custom flags are labels, and the label sweep owns them.
@@ -710,78 +720,112 @@ fn account_is_gmail(cfg: &ImapConfig) -> bool {
 /// Every enabled rule that matches contributes, in the user's order, and
 /// each action goes through the ordinary triage path — locally at once,
 /// queued to the server like a hand-made change, drained promptly.
+///
+/// Three phases, and the shape is the point. Reading a message means pulling
+/// its bytes off disk and parsing the MIME, and doing that under the store
+/// lock froze every click and count in the app for as long as the batch took
+/// — the same trap that moved blob compression out of the ingest lock a few
+/// hundred lines up. So: collect addresses under the lock, read and parse
+/// with the lock released, and take it again only to apply what matched.
 fn apply_rules_to(state: &Arc<AppState>, account: i64, arrivals: &[i64]) {
-    let Ok(store) = state.store.lock() else {
-        return;
-    };
-    let Ok(rules) = store.rules_for_account(account) else {
-        return;
-    };
-    if rules.iter().all(|r| !r.enabled || r.conditions.is_empty()) {
-        return;
-    }
-    let Ok(policy) = store.placement_policy(account) else {
-        return;
-    };
-    let mut applied = 0usize;
-    for &message_id in arrivals {
-        let Ok(Some(hash)) = store.blob_hash_for(message_id) else {
-            continue;
+    // ---- what the rules are, and where the mail is ------------------------
+    let (rules, policy, located) = {
+        let Ok(store) = state.store.lock() else {
+            return;
         };
+        let Ok(rules) = store.rules_for_account(account) else {
+            return;
+        };
+        if rules.iter().all(|r| !r.enabled || r.conditions.is_empty()) {
+            return;
+        }
+        let Ok(policy) = store.placement_policy(account) else {
+            return;
+        };
+        let located: Vec<(i64, String, i64)> = arrivals
+            .iter()
+            .filter_map(|&id| {
+                let hash = store.blob_hash_for(id).ok().flatten()?;
+                let thread = store.thread_of(id).ok().flatten()?;
+                Some((id, hash, thread))
+            })
+            .collect();
+        (rules, policy, located)
+    };
+
+    // ---- read, parse and match, with the store free ------------------------
+    // What each matching rule wants done, in the order it must happen.
+    let mut work: Vec<(i64, ActionKind, Option<i64>, String)> = Vec::new();
+    let mut announce: Vec<(String, String)> = Vec::new();
+    // One conversation, one action per rule. Two messages of the same thread
+    // arriving in the same pass each matched, and each queued the whole
+    // thread's move — telling the server twice to do what it had just been
+    // told, and stamping the second action's undo snapshot with the state the
+    // first had already changed.
+    let mut done: HashSet<(i64, i64)> = HashSet::new();
+    for (_message_id, hash, thread) in located {
         let Ok(raw) = state.blobs.read(&hash) else {
             continue;
         };
         let Some(parsed) = petrel_mime::parse_message(&raw) else {
             continue;
         };
-        let to = parsed
-            .to
-            .iter()
-            .map(|(_, a)| a.clone())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let envelope = petrel_engine::rules::Envelope::new(
-            &format!(
-                "{} {}",
-                parsed.from_display.as_deref().unwrap_or(""),
-                parsed.from_addr.as_deref().unwrap_or("")
-            ),
-            &to,
-            parsed.subject.as_deref().unwrap_or(""),
-            parsed.list_id.as_deref().unwrap_or(""),
-        );
-        let Ok(Some(thread)) = store.thread_of(message_id) else {
-            continue;
-        };
+        // What a condition can see belongs with the matching, not here.
+        let envelope = petrel_engine::rules::Envelope::from_message(&parsed);
+        let mut announced = false;
         for rule in &rules {
             if !petrel_engine::rules::matches(rule, &envelope) {
                 continue;
             }
             let a = &rule.actions;
-            // The order, and the move/skip-inbox interaction, belong with the
-            // rules engine where they can be tested without an AppState.
-            let acts = petrel_engine::rules::planned_actions(a);
-            if a.notify {
+            if a.notify && !announced {
                 // Said through the same announcer ordinary arrivals use:
                 // the next status poll carries it out, and the UI applies
                 // its own pause and level rules before saying anything.
+                // Once per message however many rules ask for it — two
+                // rules matching is not two pieces of new mail.
+                announced = true;
                 let who = parsed
                     .from_display
                     .clone()
                     .filter(|d| !d.is_empty())
                     .or_else(|| parsed.from_addr.clone())
                     .unwrap_or_default();
-                let subject = parsed.subject.clone().unwrap_or_default();
-                if let Ok(mut pending) = state.pending_notify.lock() {
-                    pending.push((who, subject));
-                }
+                announce.push((who, parsed.subject.clone().unwrap_or_default()));
             }
-            for (kind, target) in acts {
-                if let Err(e) = store.apply_thread_action(account, thread, kind, target, policy) {
-                    log_sync(&format!("rule \"{}\": {e}", rule.name));
-                } else {
-                    applied += 1;
-                }
+            if !done.insert((rule.id, thread)) {
+                continue;
+            }
+            // The order, and the move/skip-inbox interaction, belong with the
+            // rules engine where they can be tested without an AppState.
+            for (kind, target) in petrel_engine::rules::planned_actions(a) {
+                work.push((thread, kind, target, rule.name.clone()));
+            }
+        }
+    }
+    if work.is_empty() && announce.is_empty() {
+        return;
+    }
+
+    // ---- apply --------------------------------------------------------------
+    if !announce.is_empty()
+        && let Ok(mut pending) = state.pending_notify.lock()
+    {
+        pending.extend(announce);
+    }
+    let mut applied = 0usize;
+    {
+        let Ok(store) = state.store.lock() else {
+            return;
+        };
+        for (thread, kind, target, name) in work {
+            match store.apply_thread_action(account, thread, kind, target, policy) {
+                // A rule naming a folder or tag the user has since deleted is
+                // refused by the store rather than half-performed. Said out
+                // loud here, because the rule will go on being wrong every
+                // time it matches until someone edits it.
+                Err(e) => log_sync(&format!("rule \"{name}\": {e}")),
+                Ok(_) => applied += 1,
             }
         }
     }

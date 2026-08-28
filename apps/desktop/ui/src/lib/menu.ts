@@ -44,7 +44,7 @@ type NativeItem = Extract<PredefinedMenuItemOptions['item'], string>;
 /** A command Petrel answers itself. Adding a name here forces the hook below
  *  to provide a handler for it — the compiler, not a code review, is what
  *  stops a menu item that does nothing. */
-export const MENU_COMMANDS = ['new-message', 'settings', 'help'] as const;
+export const MENU_COMMANDS = ['new-message', 'settings', 'help', 'find'] as const;
 export type MenuCommand = (typeof MENU_COMMANDS)[number];
 
 /** The settings the View menu drives. Both already exist in Settings ›
@@ -113,6 +113,22 @@ export const MENU: MenuNode[] = [
     // Load-bearing beyond the obvious. Without these, macOS has nowhere to send
     // the editing commands dictation and the emoji picker issue, and both
     // misbehave inside the webview.
+    //
+    // They look inert more often than they are. Every one carries the real
+    // AppKit selector with no target, so it travels the responder chain and
+    // works wherever this app has text — the composer, the search field, a
+    // folder being renamed, a selection in the reader — and does nothing
+    // elsewhere. What it will not do is *say* so: the menu library calls
+    // setAutoenablesItems(false) on every menu it builds, which is exactly the
+    // macOS mechanism that would grey them out when nothing can respond. So
+    // they stay black and clickable whether or not they apply. Reaching past
+    // Tauri into the NSMenu to turn validation back on would couple this file
+    // to another library's internals for the sake of some dimming.
+    //
+    // Find is the one item here Petrel implements itself, and it is the reason
+    // this menu is worth opening: ⌘F searches the whole open conversation,
+    // across every message frame in it, and until now existed only for people
+    // who already knew to press it.
     role: 'submenu',
     label: 'menubar-edit',
     items: [
@@ -123,6 +139,8 @@ export const MENU: MenuNode[] = [
       { role: 'native', native: 'Copy', label: 'menubar-copy' },
       { role: 'native', native: 'Paste', label: 'menubar-paste' },
       { role: 'native', native: 'SelectAll', label: 'menubar-select-all' },
+      { role: 'separator' },
+      { role: 'command', command: 'find', label: 'menubar-find', accelerator: 'CmdOrCtrl+F' },
     ],
   },
   {
@@ -199,6 +217,9 @@ export type MenuBindings = {
   openSettings: () => void;
   /** The same pane ? opens. */
   openHelp: () => void;
+  /** The same bar ⌘F opens, with the same rule about when there is anything
+   *  to find in. */
+  find: () => void;
   theme: Settings['theme'];
   density: Settings['density'];
   setTheme: (value: Settings['theme']) => void;
@@ -369,6 +390,8 @@ export function useAppMenu(bindings: MenuBindings): void {
                 return ref.current.openSettings();
               case 'help':
                 return ref.current.openHelp();
+              case 'find':
+                return ref.current.find();
               default:
                 return ((x: never) => x)(command);
             }

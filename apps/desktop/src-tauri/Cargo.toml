@@ -34,6 +34,9 @@ tauri-plugin-notification = "2"
 # A save panel for the mbox export. The OS owns the file picker; asking it is
 # the only way the export lands where the user actually wants it.
 tauri-plugin-dialog = "2"
+# Handing a file to whatever opens it, without going through a shell. Used
+# from Rust only, so it needs no capability entry.
+tauri-plugin-opener = "2"
 # Signed updates. The check is deliberately manual — see commands/updates.rs.
 tauri-plugin-updater = "2"
 serde.workspace = true
@@ -53,6 +56,30 @@ petrel-providers = { path = "../../../crates/petrel-providers" }
 petrel-mime = { path = "../../../crates/petrel-mime" }
 # Demo-mode seeding only; used when no account is configured.
 petrel-testkit = { path = "../../../crates/petrel-testkit" }
+
+# macOS notifications, natively.
+#
+# The notification plugin's macOS path goes through notify-rust and
+# mac-notification-sys, which still speak NSUserNotification — deprecated in
+# macOS 11 and no longer delivering anything on macOS 26. It reports success
+# either way, so nothing above it can tell. UserNotifications.framework is the
+# API Apple replaced it with, and the only one that still works.
+#
+# objc2, objc2-foundation and block2 are already in the tree via Tauri; this
+# adds the one framework binding they do not cover.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-user-notifications = { version = "0.3", features = [
+    "UNUserNotificationCenter",
+    "UNNotificationContent",
+    "UNNotificationRequest",
+    "UNNotificationTrigger",
+    "UNNotificationSettings",
+    "UNError",
+    "block2",
+] }
+block2 = "0.6"
 
 [dev-dependencies]
 http = "1"

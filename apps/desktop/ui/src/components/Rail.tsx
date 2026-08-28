@@ -11,8 +11,9 @@ import { FolderMenu } from './FolderMenu';
 import { NameDialog } from './NameDialog';
 import { acceptsDrop } from '../lib/dnd';
 import type { InsertPoint } from '../lib/useDrag';
-import { nestableRolePath, underAnchor } from '../lib/folders';
+import { buildFolderTree, type FolderNode, nestableRolePath, underAnchor } from '../lib/folders';
 import { AccountMenu } from './AccountMenu';
+import { RailFlyout } from './RailFlyout';
 import { Tip } from './Tip';
 
 const MAILBOXES: { id: StringId; key: string; glyph: LucideIcon }[] = [
@@ -148,8 +149,9 @@ export function Rail({
   const [namingFolder, setNamingFolder] = useState(false);
   /** What the naming field starts holding — "Parent/" for a subfolder. */
   const [folderPrefill, setFolderPrefill] = useState('');
-  /** Paths whose children are folded away. */
-  const [closedNodes, setClosedNodes] = useState<Set<string>>(new Set());
+  /** Rows folded shut by hand (true) or opened by hand (false). A path that is
+   *  absent takes the default — see foldedByDefault. */
+  const [folded, setFolded] = useState<Record<string, boolean>>({});
   const [renamingFolder, setRenamingFolder] = useState<number | null>(null);
   // Which naming dialog is up — the collapsed rail's way of asking for a
   // name without forcing itself open.
@@ -183,74 +185,76 @@ export function Rail({
      Containers that are not themselves folders still get a row, for the
      chevron. Archived folders are kept apart: they render under the
      Archive mailbox row, not as a second Archive in the Folders section. */
-  type FNode = {
-    label: string;
-    path: string;
-    folder?: (typeof folders)[number];
-    children: FNode[];
-  };
+  type FNode = FolderNode;
   const archivePath = archiveRolePath;
   const trashPath = nestableRolePath(folders, 'trash');
-  const roots: FNode[] = [];
-  const archiveChildren: FNode[] = [];
-  const trashChildren: FNode[] = [];
-  const attach = (path: string, level: FNode[], consumed: number): FNode => {
-    let prefix = consumed > 0 ? path.slice(0, consumed) : '';
-    const segs = path.slice(consumed > 0 ? consumed + 1 : 0).split(/[/.]/);
-    let node: FNode | undefined;
-    for (const seg of segs) {
-      prefix = prefix ? `${prefix}${path[prefix.length]}${seg}` : seg;
-      node = level.find((n) => n.path === prefix);
-      if (!node) {
-        node = { label: seg, path: prefix, children: [] };
-        // Appended in the order the folders arrive, which is the order the
-        // engine sorted them into: anything dragged first, in the arrangement
-        // chosen, then everything untouched, still alphabetical.
-        //
-        // This used to sort alphabetically on every insert, which is where a
-        // drag went to die — the engine stored the new order faithfully and
-        // the tree threw it away on the way to the screen.
-        level.push(node);
-      }
-      level = node.children;
-    }
-    return node!;
-  };
-  for (const f of folders.filter((x) => !x.role)) {
-    // The rows wearing the anchors' own names are the mailbox rows' business
-    // — a second row saying Archive or Trash is the duplicate this avoids.
-    if (underAnchor(f.path, archivePath)) {
-      if (f.path !== archivePath) {
-        attach(f.path, archiveChildren, archivePath!.length).folder = f;
-      }
-    } else if (underAnchor(f.path, trashPath)) {
-      if (f.path !== trashPath) {
-        attach(f.path, trashChildren, trashPath!.length).folder = f;
-      }
-    } else {
-      attach(f.path, roots, 0).folder = f;
-    }
-  }
-  const prune = (ns: FNode[]): FNode[] =>
-    ns
-      .map((n) => ({ ...n, children: prune(n.children) }))
-      .filter((n) => n.folder || n.children.length > 0);
-  const tree = prune(roots);
-  const archiveTree = prune(archiveChildren);
-  const trashTree = prune(trashChildren);
-  const archiveOpen = archivePath !== undefined && !closedNodes.has(archivePath);
-  const trashOpen = trashPath !== undefined && !closedNodes.has(trashPath);
+  // Three trees, because two of them hang under a mailbox row rather than at
+  // the top level. The rows wearing the anchors' own names are those mailbox
+  // rows' business — a second row saying Archive or Trash is the duplicate
+  // this partition avoids. Order within each bucket is the order the engine
+  // gave, which is the order a drag rearranged; buildFolderTree keeps it.
+  const own = folders.filter((x) => !x.role);
+  const under = (f: (typeof own)[number], anchor: string | undefined) =>
+    underAnchor(f.path, anchor) && f.path !== anchor;
+  const tree = buildFolderTree(
+    own.filter((f) => !underAnchor(f.path, archivePath) && !underAnchor(f.path, trashPath)),
+  );
+  const archiveTree = buildFolderTree(
+    own.filter((f) => under(f, archivePath)),
+    archivePath?.length ?? 0,
+  );
+  const trashTree = buildFolderTree(
+    own.filter((f) => under(f, trashPath)),
+    trashPath?.length ?? 0,
+  );
+  /* Archive and Trash start folded. What hangs off them is mail already dealt
+     with, and a rail that opens with forty archived years unrolled pushes the
+     folders you actually work in off the bottom of the screen. Only the two
+     anchors default this way: once one is open, the rows inside it fold and
+     unfold like every other row. */
+  const foldedByDefault = (path: string) => path === archivePath || path === trashPath;
+  const isOpen = (path: string) => !(folded[path] ?? foldedByDefault(path));
+  const archiveOpen = archivePath !== undefined && isOpen(archivePath);
+  const trashOpen = trashPath !== undefined && isOpen(trashPath);
 
   const toggle = (path: string) =>
-    setClosedNodes((prev) => {
-      const next = new Set(prev);
-      if (next.has(path)) next.delete(path);
-      else next.add(path);
-      return next;
-    });
+    setFolded((prev) => ({ ...prev, [path]: !(prev[path] ?? foldedByDefault(path)) }));
 
-  const renderNode = (n: FNode, depth: number): React.ReactNode => {
-    const open = !closedNodes.has(n.path);
+  const dragging = dragActive || folderDragPath !== null;
+
+  /* Which flyout a drag was picked up in, so the one you are working inside
+     can stay open while the rest shut.
+
+     A card opens beside the rail, over the message list, so it never covers
+     the rail rows a drag is aiming at — the reason to shut the others is that
+     a card blooming under a travelling pointer is one more surface for the
+     drag to land on by accident, not that it hides anything.
+
+     Keeping the owning card is what makes the collapsed rail reorganisable at
+     all. Its rows already carry data-folder-drop and data-reorder, so a
+     subtree in a card can be nested and reordered within itself — drag 2023
+     onto Yearly, or into the gap above it — and those are most of what folder
+     rearranging is. Shutting the card the instant the drag began took both
+     away and pulled the siblings out from under the pointer.
+
+     Only a folder drag gets the exemption. That keeps a stale origin — set by
+     a press that turned out to be a click — from ever mattering: a folder drag
+     is always preceded by a press on the row it carries, which sets this. */
+  const [dragOrigin, setDragOrigin] = useState<string | null>(null);
+  const cardSuppressed = (card: string) =>
+    dragging && !(folderDragPath !== null && dragOrigin === card);
+
+  /** `owner` is the flyout a row is being drawn inside, absent in the rail. */
+  const renderNode = (n: FNode, depth: number, owner?: string): React.ReactNode => {
+    // Inside a flyout a row is an ordinary expanded row: the card is portalled
+    // out of the rail, so none of the [data-collapsed] rules reach it, and it
+    // has the width for a label and an indent. `dense` is therefore "drawn as
+    // an icon", which is not the same question as "is the rail collapsed".
+    const dense = collapsed && owner === undefined;
+    // Collapsed, the rail draws roots and nothing else — the descendants are
+    // the flyout's job. Expanded, the fold state decides. Inside the card
+    // everything is open; see RailFlyout.
+    const open = owner !== undefined || (!collapsed && isOpen(n.path));
     // The chevron hangs in the row's left padding, so the icon holds the
     // same column whether a row can fold or not — a chevron that pushed the
     // icon right made every folding root read as its neighbour's child.
@@ -273,88 +277,88 @@ export function Rail({
     // Depth is meaningless in a collapsed rail: an indented icon leaves the
     // one column everything else lines up in, so the padding only applies
     // when there is text to indent.
-    const indent = collapsed ? undefined : ({ paddingLeft: 10 + depth * 14 } as const);
+    const indent = dense ? undefined : ({ paddingLeft: 10 + depth * 14 } as const);
     const f = n.folder;
-    const row = f ? (
-      <Tip key={f.id} label={f.path} placement="right" when={collapsed}>
-        {renamingFolder === f.id ? (
-          <input
-            key={`rename-folder-${f.id}`}
-            className="rail-new-tag"
-            defaultValue={f.path}
-            aria-label={t('folder-rename')}
-            autoComplete="off"
-            autoFocus
-            onFocus={(e) => e.currentTarget.select()}
-            onBlur={(e) => {
-              const next = e.currentTarget.value.trim();
+    const inner = f ? (
+      renamingFolder === f.id ? (
+        <input
+          key={`rename-folder-${f.id}`}
+          className="rail-new-tag"
+          defaultValue={f.path}
+          aria-label={t('folder-rename')}
+          autoComplete="off"
+          autoFocus
+          onFocus={(e) => e.currentTarget.select()}
+          onBlur={(e) => {
+            const next = e.currentTarget.value.trim();
+            setRenamingFolder(null);
+            if (next && next !== f.path) void onRenameFolder(f.id, next);
+          }}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key === 'Escape') {
+              e.currentTarget.value = f.path;
               setRenamingFolder(null);
-              if (next && next !== f.path) void onRenameFolder(f.id, next);
-            }}
-            onKeyDown={(e) => {
-              e.stopPropagation();
-              if (e.key === 'Escape') {
-                e.currentTarget.value = f.path;
-                setRenamingFolder(null);
-                return;
-              }
-              if (e.key === 'Enter') e.currentTarget.blur();
-            }}
-          />
-        ) : (
-          <button
-            type="button"
-            className="rail-item"
-            style={indent}
-            aria-current={view === `folder:${f.id}` ? 'page' : undefined}
-            onClick={() => onView(`folder:${f.id}`)}
-            onPointerDown={(e) => onDragFolder(e, f.id, n.label)}
-            {...dropTarget(`folder:${f.id}`, view, dropOver)}
-            data-folder-drop={f.path}
-            data-reorder={f.id}
-            // Which edge to draw the line against. CSS puts it there; keeping
-            // the decision in one attribute means the line cannot appear on
-            // two rows at once.
-            data-insert={insertAt?.key === String(f.id) ? insertAt.edge : undefined}
-            // One merged answer, written after the spread: dropTarget only
-            // knows mail drags, and its undefined used to land last and wipe
-            // the folder-drag highlight off every folder row.
-            data-drop-over={
-              dropOver === `fdrop:${f.path}` || dropOver === `folder:${f.id}` || undefined
+              return;
             }
-            data-drop-ok={
-              (dragActive && acceptsDrop(`folder:${f.id}`, view)) ||
-              (folderDragPath !== null &&
-                f.path !== folderDragPath &&
-                !f.path.startsWith(`${folderDragPath}/`))
-                ? true
-                : undefined
-            }
-          >
-            {chevron}
-            <Icon icon={FolderClosed} />
-            <span className="rail-text">{n.label}</span>
-            {!collapsed && counts[`folder:${f.id}`] > 0 && (
-              <span className="count">{counts[`folder:${f.id}`]}</span>
-            )}
-            {!collapsed && (
-              <FolderMenu
-                path={f.path}
-                onRename={() => setRenamingFolder(f.id)}
-                onNewChild={() => {
-                  setFolderPrefill(`${f.path}/`);
-                  setNamingFolder(true);
-                }}
-                onMove={() => onMoveFolder(f)}
-                onDelete={() => onDeleteFolder(f)}
-              />
-            )}
-          </button>
-        )}
-      </Tip>
+            if (e.key === 'Enter') e.currentTarget.blur();
+          }}
+        />
+      ) : (
+        <button
+          type="button"
+          className="rail-item"
+          style={indent}
+          aria-current={view === `folder:${f.id}` ? 'page' : undefined}
+          onClick={() => onView(`folder:${f.id}`)}
+          onPointerDown={(e) => {
+            setDragOrigin(owner ?? null);
+            onDragFolder(e, f.id, n.label);
+          }}
+          {...dropTarget(`folder:${f.id}`, view, dropOver)}
+          data-folder-drop={f.path}
+          data-reorder={f.id}
+          // Which edge to draw the line against. CSS puts it there; keeping
+          // the decision in one attribute means the line cannot appear on
+          // two rows at once.
+          data-insert={insertAt?.key === String(f.id) ? insertAt.edge : undefined}
+          // One merged answer, written after the spread: dropTarget only
+          // knows mail drags, and its undefined used to land last and wipe
+          // the folder-drag highlight off every folder row.
+          data-drop-over={
+            dropOver === `fdrop:${f.path}` || dropOver === `folder:${f.id}` || undefined
+          }
+          data-drop-ok={
+            (dragActive && acceptsDrop(`folder:${f.id}`, view)) ||
+            (folderDragPath !== null &&
+              f.path !== folderDragPath &&
+              !f.path.startsWith(`${folderDragPath}/`))
+              ? true
+              : undefined
+          }
+        >
+          {chevron}
+          <Icon icon={FolderClosed} />
+          <span className="rail-text">{n.label}</span>
+          {!dense && counts[`folder:${f.id}`] > 0 && (
+            <span className="count">{counts[`folder:${f.id}`]}</span>
+          )}
+          {!collapsed && (
+            <FolderMenu
+              path={f.path}
+              onRename={() => setRenamingFolder(f.id)}
+              onNewChild={() => {
+                setFolderPrefill(`${f.path}/`);
+                setNamingFolder(true);
+              }}
+              onMove={() => onMoveFolder(f)}
+              onDelete={() => onDeleteFolder(f)}
+            />
+          )}
+        </button>
+      )
     ) : (
       <button
-        key={n.path}
         type="button"
         className="rail-item tree-container"
         style={indent}
@@ -365,10 +369,31 @@ export function Rail({
         <span className="rail-text">{n.label}</span>
       </button>
     );
+    // A collapsed row with children hands them to a flyout instead of a
+    // tooltip: the path a tooltip would print is the thing the card draws
+    // properly, and two hover surfaces on one icon would race each other.
+    const card = `folder:${n.path}`;
+    const row =
+      dense && n.children.length > 0 ? (
+        <RailFlyout
+          key={n.path}
+          label={f?.path ?? n.path}
+          suppressed={cardSuppressed(card)}
+          anchor={inner}
+        >
+          {n.children.map((c) => renderNode(c, 0, card))}
+        </RailFlyout>
+      ) : f ? (
+        <Tip key={f.id} label={f.path} placement="right" when={dense}>
+          {inner}
+        </Tip>
+      ) : (
+        inner
+      );
     return (
       <div key={n.path}>
         {row}
-        {open && n.children.map((c) => renderNode(c, depth + 1))}
+        {open && n.children.map((c) => renderNode(c, depth + 1, owner))}
       </div>
     );
   };
@@ -415,8 +440,8 @@ export function Rail({
       <div className="rail-scroll">
       <div className="rail-label">{t('rail-mailboxes')}</div>
       {MAILBOXES.map((m) => {
-        const row = (
-        <Tip key={m.key} label={t(m.id)} placement="right" when={collapsed}>
+        const subtree = m.key === 'archive' ? archiveTree : m.key === 'trash' ? trashTree : [];
+        const anchor = (
           <button
             type="button"
             className="rail-item"
@@ -503,13 +528,30 @@ export function Rail({
               <FolderMenu path={trashPath ?? 'Trash'} onEmpty={onEmptyTrash} />
             )}
           </button>
-        </Tip>
         );
+        // Archive and Trash wear their trees. Collapsed, that tree is in a
+        // flyout and the tooltip would be a second hover surface on the same
+        // icon saying less, so the card replaces it rather than joining it.
+        const row =
+          collapsed && subtree.length > 0 ? (
+            <RailFlyout
+              key={m.key}
+              label={t(m.id)}
+              suppressed={cardSuppressed(`mailbox:${m.key}`)}
+              anchor={anchor}
+            >
+              {subtree.map((c) => renderNode(c, 0, `mailbox:${m.key}`))}
+            </RailFlyout>
+          ) : (
+            <Tip key={m.key} label={t(m.id)} placement="right" when={collapsed}>
+              {anchor}
+            </Tip>
+          );
         if (m.key === 'archive' && archiveTree.length > 0) {
           return (
             <div key={m.key}>
               {row}
-              {archiveOpen && archiveTree.map((c) => renderNode(c, 1))}
+              {!collapsed && archiveOpen && archiveTree.map((c) => renderNode(c, 1))}
             </div>
           );
         }
@@ -517,7 +559,7 @@ export function Rail({
           return (
             <div key={m.key}>
               {row}
-              {trashOpen && trashTree.map((c) => renderNode(c, 1))}
+              {!collapsed && trashOpen && trashTree.map((c) => renderNode(c, 1))}
             </div>
           );
         }

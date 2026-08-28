@@ -6,6 +6,83 @@
 //! this split possible. Behavior lives in the tests, which did not move.
 use super::*;
 
+/// A literal string, made safe to use as the left side of a LIKE pattern.
+///
+/// SQLite's LIKE reads `%` and `_` as wildcards, and folder names contain
+/// both — `glassdoor+102025_2` is an ordinary mailbox. Escaping with a
+/// backslash, declared by `ESCAPE '\\'` at the call site, makes the pattern
+/// mean the name.
+fn like_escape(literal: &str) -> String {
+    let mut out = String::with_capacity(literal.len());
+    for c in literal.chars() {
+        if matches!(c, '\\' | '%' | '_') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Points the queue at a folder's new name.
+///
+/// A queued action carries the path its message sat at, captured when the
+/// action was made so the change can still be delivered after a move has
+/// deleted the placement that held the address. A rename turns that captured
+/// path into a name the server no longer has, and the drain then fails with
+/// `Mailbox doesn't exist` on every cycle, forever, carrying a change nobody
+/// ever sees made — one such action had been retrying in a real mailbox since
+/// the folder it named was moved to the Trash.
+///
+/// Renaming a folder renames the queue with it. Descendants come too, for the
+/// same reason their folder rows do.
+fn repoint_queued_actions(
+    tx: &rusqlite::Transaction<'_>,
+    account_id: i64,
+    old_path: &str,
+    new_path: &str,
+) -> Result<()> {
+    let rows: Vec<(i64, String)> = {
+        let mut stmt = tx.prepare(
+            "SELECT id, payload_json FROM actions
+             WHERE account_id = ?1 AND state = 'queued'",
+        )?;
+        let rows = stmt.query_map(params![account_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()?
+    };
+    for (id, json) in rows {
+        // A payload this version cannot read is left exactly as it is: the
+        // queue holds work, and dropping work to tidy a path would be the
+        // worse bug.
+        let Ok(mut payload) = serde_json::from_str::<crate::actions::ActionPayload>(&json) else {
+            continue;
+        };
+        let mut touched = false;
+        for prior in &mut payload.prior {
+            let Some(path) = prior.source_path.as_deref() else {
+                continue;
+            };
+            let moved = if path == old_path {
+                Some(new_path.to_string())
+            } else {
+                path.strip_prefix(old_path)
+                    .filter(|rest| rest.starts_with(['/', '.']))
+                    .map(|rest| format!("{new_path}{rest}"))
+            };
+            if let Some(moved) = moved {
+                prior.source_path = Some(moved);
+                touched = true;
+            }
+        }
+        if touched && let Ok(next) = serde_json::to_string(&payload) {
+            tx.execute(
+                "UPDATE actions SET payload_json = ?2 WHERE id = ?1",
+                params![id, next],
+            )?;
+        }
+    }
+    Ok(())
+}
+
 impl Store {
     /// The folder holding a role for this account, if one is mapped.
     pub fn folder_for_role(&self, account_id: i64, role: &str) -> Result<Option<i64>> {
@@ -24,6 +101,34 @@ impl Store {
     /// synced and for tests, so triage has somewhere to move mail to.
     pub fn ensure_folder(&self, account_id: i64, role: &str, path: &str) -> Result<i64> {
         if let Some(id) = self.folder_for_role(account_id, role)? {
+            return Ok(id);
+        }
+        // Nothing wears the role, so a folder already called by the role's own
+        // name is adopted before one is invented. Namecheap marks no \Archive,
+        // and the plain `Archive` sitting there is the archive by every
+        // convention — it is what the rail already draws under the Archive
+        // mailbox row, and where a decade of mail is filed.
+        //
+        // Inventing instead was silent data loss. `ensure_folder(_, "archive",
+        // "archive")` made a local folder no server would ever list, the
+        // archived message was placed only there, and the next folder survey
+        // pruned it as a stranger — taking the message with it, out of every
+        // view and out of search. One keystroke and a sync tick.
+        let adopted: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT id FROM folders
+                  WHERE account_id = ?1 AND coalesce(role,'') = ''
+                    AND path = ?2 COLLATE NOCASE",
+                params![account_id, path],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(id) = adopted {
+            self.conn.execute(
+                "UPDATE folders SET role = ?2 WHERE id = ?1",
+                params![id, role],
+            )?;
             return Ok(id);
         }
         self.conn.execute(
@@ -83,8 +188,12 @@ impl Store {
                 .optional()?;
             match existing {
                 Some(id) => {
+                    // The server may set a role; it does not get to unset one.
+                    // A survey reporting no special-use flag was wiping the
+                    // role this app had assigned, one tick after assigning it.
                     self.conn.execute(
-                        "UPDATE folders SET role = ?2, name = ?3 WHERE id = ?1",
+                        "UPDATE folders SET role = coalesce(?2, role), name = ?3
+                          WHERE id = ?1",
                         params![id, role, name],
                     )?;
                 }
@@ -97,6 +206,29 @@ impl Store {
             }
             n += 1;
         }
+        // The roles a server may simply never mark. Namecheap flags \Sent,
+        // \Trash, \Drafts and \Junk but no \Archive, so the engine believed
+        // the account had no archive at all: the Archive mailbox listed
+        // nothing while ten thousand messages sat in the plain `Archive`
+        // folder below it, and archiving invented a local folder rather than
+        // filing into the real one.
+        //
+        // A top-level folder by the role's own name is that role by every
+        // convention, and it is already what the rail draws and what the move
+        // picker files into. Adopting it here is what makes the view, the
+        // action and the drain agree with what the person can see.
+        for (role, conventional) in [("archive", "Archive"), ("trash", "Trash")] {
+            if self.folder_for_role(account_id, role)?.is_some() {
+                continue;
+            }
+            self.conn.execute(
+                "UPDATE folders SET role = ?3
+                  WHERE account_id = ?1 AND coalesce(role,'') = ''
+                    AND path = ?2 COLLATE NOCASE",
+                params![account_id, conventional, role],
+            )?;
+        }
+
         // Folders the server no longer lists are gone — renamed elsewhere,
         // deleted elsewhere, or (the day this was written) a \Noselect
         // container that stopped being reported as a mailbox. Their rows and
@@ -117,6 +249,22 @@ impl Store {
                 // imported mail lives in one, and pruning it would delete the
                 // only placements that mail has.
                 .filter(|id| !self.folder_is_local(*id).unwrap_or(false))
+                // Nor a folder wearing a role. Those are the app's own
+                // structure rather than the server's listing, and one can
+                // legitimately exist here before the server has been told —
+                // an Archive created a moment ago, its message already in it,
+                // the drain still queued. Pruning it there destroys the mail
+                // in the gap between the two.
+                .filter(|id| {
+                    !self
+                        .conn
+                        .query_row(
+                            "SELECT coalesce(role,'') <> '' FROM folders WHERE id = ?1",
+                            params![id],
+                            |r| r.get::<_, bool>(0),
+                        )
+                        .unwrap_or(false)
+                })
                 .collect()
         };
         for id in stale {
@@ -175,14 +323,22 @@ impl Store {
         // The server renames a subtree in one RENAME (RFC 3501); the local
         // tree follows suit, or every descendant's path goes quietly stale
         // and the next survey prunes real folders as strangers.
+        //
+        // The pattern is escaped because a folder name is not a LIKE pattern.
+        // An underscore matches any single character, so binning `a_b` also
+        // matched `axb/child` and rewrote it to `Trash/a_b/child` — an
+        // unrelated subtree dragged into the bin, onto a path the real child
+        // already held. Mailboxes named `glassdoor+102025_2` are ordinary.
+        let pattern = like_escape(&old_path);
         for delim in ['/', '.'] {
             tx.execute(
                 "UPDATE folders
                  SET path = ?3 || substr(path, length(?2) + 1)
-                 WHERE account_id = ?1 AND path LIKE ?2 || ?4",
-                params![account, old_path, new_path, format!("{delim}%")],
+                 WHERE account_id = ?1 AND path LIKE ?5 || ?4 ESCAPE '\\'",
+                params![account, old_path, new_path, format!("{delim}%"), pattern],
             )?;
         }
+        repoint_queued_actions(&tx, account, &old_path, new_path)?;
         tx.commit()?;
         Ok(())
     }
@@ -650,6 +806,31 @@ impl Store {
             params![folder_id, v.to_string()],
         )?;
         Ok(())
+    }
+
+    /// Whether this account has that folder — still there, and its own.
+    ///
+    /// Rules and queued actions carry folder ids that outlive the folder: the
+    /// user deletes it, the id stays written down. So anything about to file
+    /// mail asks first.
+    ///
+    /// Ownership rather than bare existence because the id alone cannot tell
+    /// the two apart, and the consequences differ only in how strange they
+    /// look — a deleted folder strands the message, another account's folder
+    /// files it next door. Every path that reaches here today scopes its
+    /// folder list to the account already, so this is a floor rather than a
+    /// fix: it is what makes offering one account's folders while another is
+    /// on screen a bug that gets caught rather than mail that goes missing.
+    pub fn account_owns_folder(&self, account_id: i64, folder_id: i64) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT 1 FROM folders WHERE id = ?1 AND account_id = ?2",
+                params![folder_id, account_id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
     }
 
     pub fn folder_is_local(&self, folder_id: i64) -> Result<bool> {

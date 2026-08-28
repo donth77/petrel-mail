@@ -147,6 +147,8 @@ export type UpdateStatus = {
   current: string;
   available: string | null;
   notes: string | null;
+  /** What changed in the version running now, compiled into the build. */
+  current_notes: string | null;
   error: string | null;
 };
 
@@ -380,7 +382,7 @@ const mock = {
         delete_forever: 'Deleted' }[kind],
   }),
   undoTriage: async () => true,
-  folders: async (): Promise<Folder[]> => [
+  folders: async (_account?: number): Promise<Folder[]> => [
     { id: 101, role: '', path: 'Contracts' },
     { id: 102, role: '', path: 'Contracts/2026' },
     { id: 103, role: '', path: 'Client contact' },
@@ -434,7 +436,7 @@ const mock = {
   },
   getSettings: async (): Promise<Record<string, string>> => ({}),
   setSetting: async () => {},
-  tags: async (): Promise<Tag[]> => [
+  tags: async (_account?: number): Promise<Tag[]> => [
     { id: 1, name: 'read later', colour: '#9A6B1F', thread_count: 12 },
     { id: 2, name: 'receipts', colour: '#5E7C4A', thread_count: 31 },
     { id: 3, name: 'urgent', colour: '#B0524A', thread_count: 4 },
@@ -450,6 +452,7 @@ const mock = {
     current: '0.0.1',
     available: null,
     notes: null,
+    current_notes: null,
     error: 'updates are not configured in the browser harness',
   }),
   installUpdate: async () => {},
@@ -608,7 +611,8 @@ const real = {
   outboxCheck: (id: number) => invoke<string>('outbox_check', { id }),
   stageAttachment: (name: string, bytes: Uint8Array) =>
     invoke<{ path: string; name: string; size: number }>('stage_attachment', { name, bytes }),
-  tags: () => invoke<Tag[]>('list_tags'),
+  /** Absent `account` means the one on screen — see the Rust command. */
+  tags: (account?: number) => invoke<Tag[]>('list_tags', { account: account ?? null }),
   viewCounts: (mode: string) => invoke<[string, number][]>('view_counts', { mode }),
   draftConflict: (id: number) => invoke<{ other_id: number } | null>('draft_conflict', { id }),
   resolveDraftConflict: (id: number, otherId: number, takeServer: boolean) =>
@@ -637,7 +641,8 @@ const real = {
   triage: (threadId: number, kind: ActionKind, target?: number) =>
     invoke<ActionReceipt>('triage', { threadId, kind, target: target ?? null }),
   undoTriage: (actionId: number) => invoke<boolean>('undo_triage', { actionId }),
-  folders: () => invoke<Folder[]>('list_folders'),
+  /** Absent `account` means the one on screen — see the Rust command. */
+  folders: (account?: number) => invoke<Folder[]>('list_folders', { account: account ?? null }),
   createFolder: (path: string) => invoke<number>('create_folder', { path }),
   /** The view's true conversation count — the list itself is a 500-row window. */
   viewCount: (view: string) => invoke<number>('view_count', { view }),

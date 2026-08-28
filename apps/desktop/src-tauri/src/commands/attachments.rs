@@ -77,13 +77,7 @@ pub fn open_attachment(
     state: State<Arc<AppState>>,
 ) -> Result<(), String> {
     let (meta, bytes) = attachment_bytes(&state, message_id, part)?;
-    let name = meta
-        .filename
-        .as_deref()
-        .and_then(|f| std::path::Path::new(f).file_name())
-        .map(|n| n.to_string_lossy().into_owned())
-        .filter(|n| !n.is_empty() && n != "." && n != "..")
-        .unwrap_or_else(|| "attachment".to_string());
+    let name = safe_filename(meta.filename.as_deref());
     let dir = std::env::temp_dir().join(format!("petrel-open-{}", std::process::id()));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     // A subdirectory per message and part, so two attachments that share a
@@ -103,22 +97,79 @@ pub fn open_attachment(
             .arg("0083;00000000;Petrel;")
             .arg(&path)
             .status();
-        std::process::Command::new("open")
-            .arg(&path)
-            .spawn()
-            .map_err(|e| e.to_string())?;
     }
-    #[cfg(target_os = "linux")]
-    std::process::Command::new("xdg-open")
-        .arg(&path)
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    #[cfg(target_os = "windows")]
-    std::process::Command::new("cmd")
-        .args(["/C", "start", "", &path.to_string_lossy()])
-        .spawn()
-        .map_err(|e| e.to_string())?;
+    // One opener for all three platforms, and pointedly not a shell.
+    //
+    // The Windows branch used to be `cmd /C start "" <path>`, which hands an
+    // attacker-named file to a command interpreter: cmd re-parses its command
+    // line after Rust's quoting, and expands %VARIABLES% even inside quotes,
+    // so an attachment called `report %USERNAME%.pdf` opened something else or
+    // nothing at all. The plugin calls ShellExecuteW directly — the same
+    // reasoning as `open_external`, which says in as many words that the
+    // opener is handed one argument and never a shell.
+    tauri_plugin_opener::open_path(&path, None::<&str>).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// An attachment's name, made safe to write to disk on any of the three
+/// platforms.
+///
+/// A MIME filename is whatever the sender wrote. Taking the basename keeps it
+/// from escaping the directory; that much was already here. What was missing
+/// is that Windows refuses a further nine characters outright — `\\ / : * ? "
+/// < > |` — and reserves a list of device names, so an attachment called
+/// `Re: quarterly.pdf`, which is an ordinary thing for a person to send,
+/// could not be written at all. The failure was a raw `fs::write` error at
+/// the moment of opening, on Windows only.
+///
+/// Sanitised on every platform rather than behind a `cfg`, so the same name
+/// produces the same file everywhere and the rule is testable on the machine
+/// the developer happens to have.
+pub(crate) fn safe_filename(raw: Option<&str>) -> String {
+    const FALLBACK: &str = "attachment";
+    // Reserved by DOS, still reserved by Windows, with or without extension.
+    const DEVICES: [&str; 22] = [
+        "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+        "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+    ];
+
+    let base = raw
+        .and_then(|f| {
+            // Both separators, because the name came off the wire and a
+            // Windows-shaped path means nothing to `file_name` on Unix.
+            f.rsplit(['/', '\\']).next()
+        })
+        .map(|n| n.trim())
+        .filter(|n| !n.is_empty() && *n != "." && *n != "..")
+        .unwrap_or(FALLBACK);
+
+    let mut out: String = base
+        .chars()
+        .map(|c| match c {
+            '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            // Control characters are illegal in a Windows filename and a
+            // nuisance in a Unix one.
+            c if (c as u32) < 0x20 => '_',
+            c => c,
+        })
+        .collect();
+
+    // Windows silently strips trailing dots and spaces, which turns "a. " into
+    // "a" and two attachments into one. Do it here, visibly, instead.
+    let trimmed = out.trim_end_matches([' ', '.']);
+    if trimmed.len() != out.len() {
+        out = trimmed.to_string();
+    }
+    if out.is_empty() {
+        return FALLBACK.to_string();
+    }
+
+    // `nul.txt` is as reserved as `nul`.
+    let stem = out.split('.').next().unwrap_or("").to_ascii_lowercase();
+    if DEVICES.contains(&stem.as_str()) {
+        out.insert(0, '_');
+    }
+    out
 }
 
 /// A one-use URL for previewing an attachment in the reading pane, over the
@@ -129,4 +180,53 @@ pub fn attachment_url(message_id: i64, part: usize, state: State<Arc<AppState>>)
         "petrel-msg://localhost/attachment/{}/{part}",
         state.tokens.issue(message_id)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::safe_filename;
+
+    /// The filename on an attachment is whatever the sender typed, and it has
+    /// to survive being written to disk on all three platforms.
+    #[test]
+    fn a_senders_filename_is_made_safe_to_write() {
+        // Unremarkable names are left exactly alone.
+        assert_eq!(safe_filename(Some("Q3 Invoice.pdf")), "Q3 Invoice.pdf");
+        assert_eq!(safe_filename(Some("réunion.ics")), "réunion.ics");
+
+        // The bug: legal in a mail header, refused by Windows. A colon in a
+        // subject-shaped filename is an ordinary thing for a person to send,
+        // and `fs::write` failed outright on it.
+        assert_eq!(
+            safe_filename(Some("Re: quarterly.pdf")),
+            "Re_ quarterly.pdf"
+        );
+        assert_eq!(
+            safe_filename(Some(r#"a*b?c<d>e|f"g.txt"#)),
+            "a_b_c_d_e_f_g.txt"
+        );
+
+        // Directory traversal, both separators — the name came off the wire,
+        // so a Windows-shaped path has to be understood on Unix too.
+        assert_eq!(safe_filename(Some("../../etc/passwd")), "passwd");
+        assert_eq!(
+            safe_filename(Some(r"..\..\Windows\System32\evil.dll")),
+            "evil.dll"
+        );
+
+        // Windows strips trailing dots and spaces silently, which quietly
+        // turns two attachments into one file.
+        assert_eq!(safe_filename(Some("report. . ")), "report");
+
+        // Reserved device names, with or without an extension.
+        assert_eq!(safe_filename(Some("NUL")), "_NUL");
+        assert_eq!(safe_filename(Some("con.txt")), "_con.txt");
+        assert_eq!(safe_filename(Some("console.txt")), "console.txt");
+
+        // Nothing usable left, or nothing to begin with.
+        assert_eq!(safe_filename(None), "attachment");
+        assert_eq!(safe_filename(Some("   ")), "attachment");
+        assert_eq!(safe_filename(Some("..")), "attachment");
+        assert_eq!(safe_filename(Some("/")), "attachment");
+    }
 }

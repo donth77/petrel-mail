@@ -168,6 +168,41 @@ impl Store {
             )));
         }
 
+        // And refused *before* anything is touched if the target is not this
+        // account's to file into.
+        //
+        // Move clears every placement and then files the message in the
+        // destination. There is no transaction around the pair, so a
+        // destination that no longer exists failed on the insert with the
+        // clearing already committed — leaving the message placed nowhere at
+        // all: out of the inbox, out of the folder, out of every view, and
+        // not in the trash either. A filter rule still naming a folder the
+        // user has since deleted did this silently, to every message it
+        // matched.
+        //
+        // Another account's folder is the same instruction wearing a
+        // plausible id: it exists, the insert succeeds, and the mail is filed
+        // next door. Ownership is the question worth asking, and it answers
+        // the deleted case on the way past.
+        //
+        // Checked here rather than mended in the branch because the same
+        // hazard belongs to every caller, and a target this account does not
+        // have is not a move to fix up — it is a move that cannot be
+        // performed.
+        if let Some(id) = target {
+            let unavailable = match kind {
+                ActionKind::Move => !self.account_owns_folder(account_id, id)?,
+                ActionKind::Tag | ActionKind::Untag => !self.account_owns_tag(account_id, id)?,
+                // Snooze's target is an instant, not a row.
+                _ => false,
+            };
+            if unavailable {
+                return Err(StoreError::Rejected(format!(
+                    "{kind:?} names a folder or tag this account does not have"
+                )));
+            }
+        }
+
         let ids: Vec<i64> = {
             let mut stmt = self.conn.prepare_cached(
                 "SELECT id FROM messages
@@ -417,6 +452,24 @@ impl Store {
 
     /// Moves a queued action along. The dispatcher owns this; it is here so
     /// tests can reach the state where undo must refuse.
+    /// Counts one failed delivery, and reports how many there have been.
+    ///
+    /// The column existed and nothing ever wrote to it, so an action that
+    /// could never be delivered was retried on every sync cycle for as long as
+    /// the app ran — one in a real mailbox had failed 112 times and was still
+    /// going. Counting is what lets the drain decide it has asked enough.
+    pub fn record_attempt(&self, action_id: i64) -> Result<i64> {
+        self.conn.execute(
+            "UPDATE actions SET attempts = attempts + 1 WHERE id = ?1",
+            params![action_id],
+        )?;
+        Ok(self.conn.query_row(
+            "SELECT attempts FROM actions WHERE id = ?1",
+            params![action_id],
+            |r| r.get(0),
+        )?)
+    }
+
     pub fn mark_action_state(&self, action_id: i64, state: &str) -> Result<()> {
         self.conn.execute(
             "UPDATE actions SET state = ?2 WHERE id = ?1",
@@ -485,13 +538,42 @@ impl Store {
         colour: Option<&str>,
         origin: &str,
     ) -> Result<i64> {
+        // Matched without regard to case, because that is what a tag is here.
+        // `rename_tag` already refuses a name that differs only in case, and
+        // the UNIQUE(account_id, name) constraint this leant on compares with
+        // SQLite's BINARY collation — so `Urgent` and `urgent` were two rows:
+        // a state reachable by creating one, unreachable by renaming one, and
+        // impossible for the server to hold at all, since IMAP keywords are
+        // case-insensitive and both travel as the same keyword.
+        //
+        // The spelling already stored wins. A keyword coming back as `URGENT`
+        // from another client is the tag you named `Urgent`, not an
+        // instruction to relabel it.
+        let existing: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT id FROM tags WHERE account_id = ?1 AND lower(name) = lower(?2)",
+                params![account_id, name],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(id) = existing {
+            self.conn.execute(
+                "UPDATE tags SET
+                     colour = coalesce(?2, colour),
+                     -- Only ever upgrades. A tag the server introduced and a
+                     -- person then used is theirs; the reverse is not true, or
+                     -- every sync would hand their tags back to the server.
+                     origin = CASE WHEN ?3 = 'user' THEN 'user' ELSE origin END
+                 WHERE id = ?1",
+                params![id, colour, origin],
+            )?;
+            return Ok(id);
+        }
         self.conn.execute(
             "INSERT INTO tags(account_id, name, colour, origin) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(account_id, name) DO UPDATE SET
                  colour = coalesce(excluded.colour, colour),
-                 -- Only ever upgrades. A tag the server introduced and a person
-                 -- then used is theirs; the reverse is not true, or every sync
-                 -- would hand their tags back to the server.
                  origin = CASE WHEN excluded.origin = 'user' THEN 'user' ELSE origin END",
             params![account_id, name, colour, origin],
         )?;
@@ -591,6 +673,21 @@ impl Store {
     /// The rows in `message_tags` go with it rather than being left orphaned:
     /// a tag id pointing at nothing would show as a blank chip on the rows that
     /// still referenced it.
+    /// Whether this account has that tag. The same story as
+    /// `account_owns_folder`: a rule keeps naming a tag long after the tag
+    /// has gone, and an id says nothing about whose it was.
+    pub fn account_owns_tag(&self, account_id: i64, tag_id: i64) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT 1 FROM tags WHERE id = ?1 AND account_id = ?2",
+                params![tag_id, account_id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
     pub fn delete_tag(&self, tag_id: i64) -> Result<()> {
         self.conn
             .execute("DELETE FROM message_tags WHERE tag_id = ?1", [tag_id])?;

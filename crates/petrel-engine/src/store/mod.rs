@@ -783,6 +783,12 @@ pub enum ListView {
     /// Written and waiting to go.
     Outbox,
     Tag(String),
+    /// Every message in the account, wherever it sits — the export's scope,
+    /// not a view anyone navigates to. Trash and Spam are in it deliberately:
+    /// "everything" that quietly left some of it out would be the wrong
+    /// promise, and the exported folder header says what each message is, so
+    /// whoever reads the file can leave out whatever they like.
+    All,
 }
 
 /// What the numbers beside the rail's mailboxes count.
@@ -832,6 +838,7 @@ impl ListView {
             "archive" | "sent" | "drafts" | "spam" | "trash" => ListView::Folder(key.to_string()),
             "snoozed" => ListView::Snoozed,
             "outbox" => ListView::Outbox,
+            "all" => ListView::All,
             other if other.starts_with("folder:") => {
                 match other["folder:".len()..].parse::<i64>() {
                     Ok(id) => ListView::UserFolder(id),
@@ -916,6 +923,10 @@ impl ListView {
                 "EXISTS (SELECT 1 FROM placements p
                          WHERE p.message_id = {alias}.id AND p.folder_id = {id})"
             ),
+            // No condition at all, which is the point: this is the only view
+            // that does not ask where a message sits. The account filter the
+            // surrounding query applies is the whole of the selection.
+            ListView::All => "1=1".to_string(),
             // Excluding the bins, exactly as Starred does. A tag is a thing
             // you meant; the bin is where things go to stop mattering, and a
             // conversation in it is not still Urgent. Without this, trashing

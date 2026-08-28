@@ -2,7 +2,17 @@ import type { Dispatch, SetStateAction } from 'react';
 import { api, type ActionKind, type Folder, type OutboxRow, type Thread } from '../lib/api';
 import { count as fmtCount } from '../lib/format';
 import { t } from '../lib/strings';
-import { nestableRolePath, underAnchor } from '../lib/folders';
+import {
+  binDestination,
+  binTakesFolders,
+  foldersAreLabels,
+  folderDelimiter,
+  folderLeaf,
+  movedFolderPath,
+  nameIsTaken,
+  nestableRolePath,
+  underAnchor,
+} from '../lib/folders';
 import { Archive as ArchiveIcon, Trash2 } from 'lucide-react';
 import { Confirm } from './Confirm';
 import { Dialog } from '@ariakit/react';
@@ -80,6 +90,16 @@ export function AppDialogs({
    *  it mean deletion rather than a move. */
   const binned = (f: Folder | null) =>
     f !== null && underAnchor(f.path, nestableRolePath(folders, 'trash'));
+
+  /** Where Delete would put this folder, or nothing when Delete means delete.
+   *
+   *  One answer for the wording and the act, because they must not disagree.
+   *  An account with no trash folder at all has nowhere to move to, and the
+   *  dialog used to offer "Move to Trash" and then delete the folder outright
+   *  — the one place in the app where a confirmation could say the opposite
+   *  of what the button did. */
+  const binFor = (f: Folder | null) =>
+    f !== null && !binned(f) ? binDestination(folders, f) : undefined;
 
   return (
     <>
@@ -163,7 +183,15 @@ export function AppDialogs({
             out.push({ id: archive.id, label: t('mailbox-archive'), icon: ArchiveIcon });
           }
           const trash = anchorRow(trashAnchor, 'trash');
-          if (trash && trashAnchor && !within(movingFolder.path, trashAnchor)) {
+          // Not offered where the bin cannot hold a folder — Gmail's takes no
+          // children, and a destination that silently is not one is worse
+          // than a shorter list. Delete is still on the folder's own menu.
+          if (
+            trash &&
+            trashAnchor &&
+            binTakesFolders(folders) &&
+            !within(movingFolder.path, trashAnchor)
+          ) {
             out.push({ id: trash.id, label: t('mailbox-trash'), icon: Trash2 });
           }
           return out;
@@ -173,7 +201,7 @@ export function AppDialogs({
           const f = movingFolder;
           setMovingFolder(null);
           if (!f) return;
-          const leaf = f.path.split(/[/.]/).pop() ?? f.path;
+          const leaf = folderLeaf(f.path, folderDelimiter(folders));
           // The pinned rows carry the role folders' ids, but the rename goes
           // to the nestable anchor — on Gmail an ordinary Archive or Trash
           // label, never the reserved [Gmail] names.
@@ -184,8 +212,13 @@ export function AppDialogs({
               : chosen?.role === 'archive' || chosen?.role === 'trash'
                 ? (nestableRolePath(folders, chosen.role) ?? '')
                 : (chosen?.path ?? '');
-          const next = targetPath ? `${targetPath}/${leaf}` : leaf;
-          if (next === f.path) return;
+          // The bin numbers a name it already holds; every other destination
+          // keeps the name and says so when the server refuses.
+          const next =
+            chosen?.role === 'trash'
+              ? binDestination(folders, f)
+              : movedFolderPath(folders, f, targetPath);
+          if (!next || next === f.path) return;
           void api
             .renameFolder(f.id, next)
             .then(() => api.folders().then(setFolders))
@@ -196,7 +229,13 @@ export function AppDialogs({
                   : t('folder-moved', { name: leaf, to: targetPath || t('rail-folders') }),
               ),
             )
-            .catch((e) => setToast(t('folder-failed', { error: String(e) })));
+            .catch((e) =>
+              setToast(
+                nameIsTaken(e)
+                  ? t('folder-name-taken', { name: leaf })
+                  : t('folder-failed', { error: String(e) }),
+              ),
+            );
         }}
         onCreate={() => {}}
       />
@@ -208,30 +247,48 @@ export function AppDialogs({
       <Confirm
         open={deletingFolder !== null}
         title={
-          binned(deletingFolder)
-            ? t('folder-delete-confirm', { name: deletingFolder?.path ?? '' })
-            : t('folder-trash-confirm', { name: deletingFolder?.path ?? '' })
+          binFor(deletingFolder)
+            ? t('folder-trash-confirm', { name: deletingFolder?.path ?? '' })
+            : t('folder-delete-confirm', { name: deletingFolder?.path ?? '' })
         }
-        detail={binned(deletingFolder) ? t('folder-delete-body') : t('folder-trash-body')}
-        confirmLabel={binned(deletingFolder) ? t('folder-delete') : t('folder-trash-do')}
+        detail={
+          binFor(deletingFolder)
+            ? t('folder-trash-body')
+            : // What deleting costs is not the same on both kinds of account,
+              // and this is the sentence somebody reads before an action they
+              // cannot take back. On a plain server the folder's mail goes
+              // with it; on Gmail a label comes off and the mail stays, in
+              // All Mail and under whatever else it carries. Saying the first
+              // on an account that means the second is how a safe action gets
+              // a frightening dialog — and would have been a plain lie now
+              // that Gmail has no other way to delete a folder.
+              t(foldersAreLabels(folders) ? 'folder-delete-body-label' : 'folder-delete-body')
+        }
+        confirmLabel={binFor(deletingFolder) ? t('folder-trash-do') : t('folder-delete')}
         onClose={() => setDeletingFolder(null)}
         onConfirm={() => {
           const folder = deletingFolder;
           setDeletingFolder(null);
           if (!folder) return;
           if (view === `folder:${folder.id}`) setView('inbox');
-          const leaf = folder.path.split(/[/.]/).pop() ?? folder.path;
-          const trash = nestableRolePath(folders, 'trash');
-          const act =
-            binned(folder) || !trash
-              ? api.deleteFolder(folder.id).then(() => t('folder-deleted', { name: folder.path }))
-              : api
-                  .renameFolder(folder.id, `${trash}/${leaf}`)
-                  .then(() => t('folder-trashed', { name: leaf }));
+          const leaf = folderLeaf(folder.path, folderDelimiter(folders));
+          // The same answer the wording was written from — numbered when the
+          // bin already holds that name, because the server refuses a RENAME
+          // onto an occupied one and the folder would simply stay put.
+          const bin = binFor(folder);
+          const act = bin
+            ? api.renameFolder(folder.id, bin).then(() => t('folder-trashed', { name: leaf }))
+            : api.deleteFolder(folder.id).then(() => t('folder-deleted', { name: folder.path }));
           void act
             .then((message) => api.folders().then(setFolders).then(() => message))
             .then((message) => setToast(message))
-            .catch((e) => setToast(t('folder-failed', { error: String(e) })));
+            .catch((e) =>
+              setToast(
+                nameIsTaken(e)
+                  ? t('folder-name-taken', { name: leaf })
+                  : t('folder-failed', { error: String(e) }),
+              ),
+            );
         }}
       />
 

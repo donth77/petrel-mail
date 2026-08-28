@@ -159,8 +159,46 @@
 .rail-item[aria-current='page'] {
   background: var(--accent-wash);
   color: var(--accent-ink);
-  border-inline-start-color: var(--accent);
   font-weight: 600;
+}
+
+/* The active marker, drawn in the rail's own padding rather than on the row's
+   leading border.
+
+   It was that border, and the border ran directly underneath the fold
+   chevrons: those hang outside the row on a negative inset (-6px on Archive
+   and Trash, -5px on a top-level folder) precisely so that folding a row does
+   not shift its icon, and that is the same 2px the border occupied. An accent
+   line threaded through a chevron reads as a rendering fault.
+
+   Moving it out to the window edge separates the two — the marker takes 0..2px
+   of the rail, the chevrons start 4px later — and puts it where the eye
+   scanning a sidebar already is, which is what the border was reaching for.
+
+   -12px is the row's 2px border plus the rail's 10px padding, so the bar lands
+   flush against the rail's edge. The card overrides it with its own padding.
+   The transparent border stays exactly as it was: it is a spacer, and it is
+   what keeps every row's contents in one column, current or not. */
+.rail-item[aria-current='page']::before {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: var(--marker-inset, -12px);
+  inline-size: 2px;
+  border-start-end-radius: 2px;
+  border-end-end-radius: 2px;
+  background: var(--accent);
+}
+
+.rail-flyout .rail-item[aria-current='page'] {
+  --marker-inset: -7px;
+}
+
+/* Collapsed, the marker stays dropped, as it was before it moved: in a rail
+   this narrow the wash and the accent text colour are impossible to miss, and
+   a bar at the window edge beside a centred icon reads as a stray line. */
+.rail[data-collapsed] .rail-scroll .rail-item[aria-current='page']::before {
+  display: none;
 }
 
 /* One row: Settings and Help at the left end, the collapse control at the
@@ -171,6 +209,17 @@
    margin here would fight it for the leftover space. */
 .rail-foot {
   flex: 0 0 auto;
+  /* A hairline off the scrolling middle. Settings and Help are not more
+     mailboxes — they leave the list you are triaging — and without a rule the
+     last tag and the Settings icon read as one continuous column. --hair2, the
+     fainter of the two line tokens, because this separates two parts of one
+     surface; --hair is for edges between surfaces, like the rail's own.
+
+     8px on top of the parent's 2px gap makes 10px above the line, matching the
+     10px below it, so the rule sits centred in its own space rather than
+     glued to whatever the list happens to end with. */
+  margin-block-start: 8px;
+  border-block-start: 1px solid var(--hair2);
   padding-block-start: 10px;
   display: flex;
   flex-direction: row;
@@ -298,4 +347,48 @@
   margin: 0;
   border: 0;
   overflow: hidden;
+}
+
+/* ------------------------------------------------- collapsed rail flyout */
+
+/* The subtree a collapsed rail cannot draw, opened beside the icon. The same
+   surface as a menu, because it is the same kind of thing — a transient layer
+   the app puts over itself — but its contents are rail rows rather than menu
+   items, so it is padded like the rail and sized to fit paths.
+
+   Portalled to the document, which is what makes the rows inside it come out
+   right: every rule that strips a row down to an icon is written under
+   `.rail[data-collapsed]`, and none of them reach out here. A row in the card
+   is an expanded row, with its label and its indent, for free. */
+.rail-flyout {
+  z-index: 50;
+  min-inline-size: 176px;
+  max-inline-size: 320px;
+  /* A deep tree has to end somewhere, and a card taller than the window is a
+     card whose bottom rows cannot be reached. */
+  max-block-size: min(60vh, 460px);
+  overflow-y: auto;
+  padding: 5px;
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 14px 34px rgba(24, 39, 48, 0.16);
+}
+
+/* The name the rail has no room to print beside the icon. Set as a heading
+   rather than a row so it cannot be mistaken for one of the folders — it is
+   what you are pointing at, not somewhere else to go. */
+.rail-flyout-head {
+  padding: 3px 9px 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink3);
+}
+
+.rail-flyout-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }

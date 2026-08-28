@@ -27,6 +27,7 @@ mod diag;
 // Public so the render path can be tested directly. The privacy guarantees
 // live in this module, and they are worth asserting on rather than trusting.
 pub mod message_view;
+mod notify;
 mod send;
 mod spike_s2;
 mod state;
@@ -374,6 +375,7 @@ pub fn run() {
             commands::storage::import_mail,
             commands::mail::print_message,
             commands::mail::view_count,
+            commands::settings::post_notification,
             commands::settings::list_rules,
             commands::settings::save_rule,
             commands::settings::delete_rule,

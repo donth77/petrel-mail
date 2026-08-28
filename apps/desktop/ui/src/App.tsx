@@ -6,7 +6,7 @@ import {
   type Status,
   type Thread,
 } from './lib/api';
-import { chips, hasToken, scopeFor, toggleToken, folderLeaf } from './lib/search-chips';
+import { chips, folderScopeName, hasToken, scopeFor, toggleToken } from './lib/search-chips';
 import { count as fmtCount, fileSize } from './lib/format';
 import { t, type StringId } from './lib/strings';
 import { Search } from 'lucide-react';
@@ -23,7 +23,18 @@ import { promisesMissingAttachment } from './lib/compose-checks';
 import { replyTargets } from './lib/reply';
 import { forwardBody, replyBody } from './lib/quote';
 import { dropMeaning } from './lib/dnd';
-import { nestableRolePath, underAnchor } from './lib/folders';
+import {
+  binDestination,
+  ARCHIVE_VERB,
+  TRASH_VERB,
+  binTakesFolders,
+  filableFolderRows,
+  folderDelimiter,
+  folderLeaf,
+  movedFolderPath,
+  movedFolders,
+  nameIsTaken,
+} from './lib/folders';
 import { useDrag } from './lib/useDrag';
 import { useReferenceData } from './lib/useReferenceData';
 import { useDropGuard } from './lib/useFileDrop';
@@ -216,6 +227,29 @@ export function App() {
       setToast(text);
       setUndoOffer(undo ?? null);
     },
+    // The rail's number, moved at the same moment the chip appears on the row.
+    // Clamped at zero because two untags of the same conversation racing each
+    // other would otherwise show a negative for the 300ms until the recount
+    // corrects it, and a negative count reads as a bug in a way a stale one
+    // does not.
+    onTagCount: (tagId, delta) =>
+      setTags((prev) =>
+        prev.map((x) =>
+          x.id === tagId ? { ...x, thread_count: Math.max(0, x.thread_count + delta) } : x,
+        ),
+      ),
+    // The mailbox numbers, moved the moment the row leaves the list rather
+    // than when the recount catches up. Same clamp, same reason.
+    onViewCount: (deltas) =>
+      setCounts((prev) => {
+        const next = { ...prev };
+        for (const [key, delta] of Object.entries(deltas)) {
+          next[key] = Math.max(0, (next[key] ?? 0) + delta);
+        }
+        return next;
+      }),
+    countMode: settings.badges,
+    folderRole: (id) => folders.find((f) => f.id === id)?.role ?? undefined,
   });
 
   // Which conversations a confirmed delete would remove. Captured when the
@@ -420,6 +454,19 @@ export function App() {
     newMessage: startCompose,
     openSettings: () => setSettingsOpen('appearance'),
     openHelp: () => setHelpOpen(true),
+    // The same call ⌘F makes, guarded the same way: with no reading pane or
+    // nothing open there is nothing to search, and a find bar that could never
+    // match anything is worse than a menu item that declines.
+    //
+    // And only when this window is the one being used. A menu key equivalent
+    // is app-wide on macOS while this handler runs in the main window, so ⌘F
+    // pressed in a compose window would have opened a find bar over a reading
+    // pane nobody was looking at — invisible until the next time they switched
+    // back, which is the quiet wrong action rather than the loud one.
+    find: () => {
+      if (!document.hasFocus()) return;
+      if (settings.layout !== 'off' && activeRef.current) setFinding(true);
+    },
     theme: settings.theme,
     density: settings.density,
     setTheme: (v) => set('theme', v),
@@ -735,35 +782,67 @@ export function App() {
     (folderId, targetPath) => {
       const f = folders.find((x) => x.id === folderId);
       if (!f) return;
-      const leaf = f.path.split(/[/.]/).pop() ?? f.path;
+      const delim = folderDelimiter(folders);
+      const leaf = folderLeaf(f.path, delim);
+      const failed = (e: unknown) =>
+        setToast(
+          nameIsTaken(e)
+            ? t('folder-name-taken', { name: leaf })
+            : t('folder-failed', { error: String(e) }),
+        );
       // Dropping a folder on Trash re-nests it under the trash folder — the
       // Thunderbird semantics: trash is a holding pen, and dragging back out
       // is the restore. Deletion proper stays in the menu, behind its
       // confirm, because a mis-aimed drag must never be the gesture that
       // destroys mail on the server.
+      // The tree redraws on the drop rather than on the server's answer, and
+      // goes back to exactly this if the rename is refused. A folder that
+      // stays put for the length of an IMAP round trip and then jumps reads
+      // as a drag that missed — the one reading of it that is never true.
+      const wasFolders = folders;
+      const undoMove = (e: unknown) => {
+        setFolders(wasFolders);
+        failed(e);
+      };
       if (targetPath === '::trash') {
-        const trash = nestableRolePath(folders, 'trash');
-        if (!trash) return;
+        // Numbered when the bin already holds that name: the server refuses
+        // a RENAME onto an occupied one, and the drag would do nothing but
+        // put a line of protocol on screen.
+        const bin = binDestination(folders, f);
+        // Said rather than swallowed. A bin that cannot hold folders is a
+        // real answer, and a drag that lands with no visible result reads as
+        // the app being broken.
+        if (!bin && !binTakesFolders(folders)) {
+          setToast(t('folder-bin-refuses', { name: leaf }));
+          return;
+        }
+        if (!bin || bin === f.path) return;
+        setFolders(movedFolders(folders, folderId, bin));
         void api
-          .renameFolder(folderId, `${trash}/${leaf}`)
+          .renameFolder(folderId, bin)
           .then(() => api.folders().then(setFolders))
           .then(() => setToast(t('folder-trashed', { name: leaf })))
-          .catch((e) => setToast(t('folder-failed', { error: String(e) })));
+          .catch(undoMove);
         return;
       }
-      const next = targetPath ? `${targetPath}/${leaf}` : leaf;
+      const next = movedFolderPath(folders, f, targetPath);
       if (next === f.path) return; // already there
       // A folder cannot become its own descendant — the rename would eat
       // its target mid-cascade and the tree would swallow itself.
-      if (targetPath === f.path || targetPath.startsWith(`${f.path}/`)) {
+      if (targetPath === f.path || targetPath.startsWith(`${f.path}${delim}`)) {
         setToast(t('folder-into-itself'));
         return;
       }
+      setFolders(movedFolders(folders, folderId, next));
       void api
         .renameFolder(folderId, next)
+        // Re-read even though the tree is already drawn: the server owns the
+        // paths, and a move can normalise one — a delimiter, a case, a name
+        // it quietly numbered. The optimistic tree is the right shape, not
+        // necessarily the right strings.
         .then(() => api.folders().then(setFolders))
         .then(() => setToast(t('folder-moved', { name: leaf, to: targetPath || t('rail-folders') })))
-        .catch((e) => setToast(t('folder-failed', { error: String(e) })));
+        .catch(undoMove);
     },
     // Dropped in the gap between two rows: a reorder, not a move.
     //
@@ -802,16 +881,23 @@ export function App() {
 
       if (payload.kind === 'folder') {
         const byId = new Map(folders.map((f) => [f.id, f]));
+        const wasOrder = folders;
         setFolders(next.map((id) => byId.get(id)!).filter(Boolean));
-        void api
-          .reorderFolders(next)
-          .catch((e) => setToast(t('folder-failed', { error: String(e) })));
+        void api.reorderFolders(next).catch((e) => {
+          // Put the order back. This was optimistic without a way home, so a
+          // refused reorder left the rail showing an arrangement the engine
+          // had never accepted — and looking correct while being wrong.
+          setFolders(wasOrder);
+          setToast(t('folder-failed', { error: String(e) }));
+        });
       } else {
         const byId = new Map(tags.map((x) => [x.id, x]));
+        const wasOrder = tags;
         setTags(next.map((id) => byId.get(id)!).filter(Boolean));
-        void api
-          .reorderTags(next)
-          .catch((e) => setToast(t('tag-rename-failed', { error: String(e) })));
+        void api.reorderTags(next).catch((e) => {
+          setTags(wasOrder);
+          setToast(t('tag-rename-failed', { error: String(e) }));
+        });
       }
     }
   );
@@ -1041,20 +1127,44 @@ export function App() {
     // The Gmail anchor labels (a plain Archive or Trash the first nested
     // folder created) stay out: mail already has Archive and Trash as verbs,
     // and a folder row with the same name is the same place twice.
-    const archiveAnchor = nestableRolePath(folders, 'archive');
-    const trashAnchor = nestableRolePath(folders, 'trash');
-    return folders
-      .filter(
-        (f) =>
-          !f.role &&
-          `folder:${f.id}` !== view &&
-          f.path !== archiveAnchor &&
-          f.path !== trashAnchor &&
-          // Nothing files into a binned folder; fifty deleted alias folders
-          // made the list unreadable before this.
-          !underAnchor(f.path, trashAnchor),
-      )
-      .map((f) => ({ id: f.id, label: f.path }));
+    // As a tree, so the unfiltered list has the shape the sidebar has. The one
+    // exclusion that is about the view rather than the folder: filing mail
+    // where it already is achieves nothing. Everything else — roles, the Gmail
+    // anchors, the bin — is filableFolders, which the rules pane shares.
+    return filableFolderRows(folders)
+      .filter((r) => r.container || `folder:${r.id}` !== view)
+      // Archive and Trash arrive as rungs — a name invented to hold what hangs
+      // under it, greyed out and unchoosable. Here they become the verbs they
+      // actually are, so "move to Archive" is reachable from the list you are
+      // already looking at rather than only from a keystroke. They keep their
+      // chevron: the row archives, the chevron opens what is filed inside it.
+      //
+      .map((r) => {
+        // From the view it would move the conversation to, the verb means
+        // nothing — the same rule the folder rows follow one line above. It
+        // goes back to being an ordinary rung rather than disappearing: it is
+        // still what its children hang from, and taking the row away left
+        // Archive's folders indented under nothing.
+        const moot =
+          (r.anchor === 'archive' && view === 'archive') ||
+          (r.anchor === 'trash' && view === 'trash');
+        const verb = moot
+          ? undefined
+          : r.anchor === 'archive'
+            ? ARCHIVE_VERB
+            : r.anchor === 'trash'
+              ? TRASH_VERB
+              : undefined;
+        return {
+          id: verb ?? r.id,
+          label: r.path,
+          depth: r.depth,
+          // A verb row is a choice, whatever the tree thinks of it.
+          container: (r.container && verb === undefined) || undefined,
+          hasChildren: r.hasChildren || undefined,
+          anchor: r.anchor,
+        };
+      });
   }, [picker, folders, tags, active, view]);
   useEffect(() => {
     let live = true;
@@ -1139,12 +1249,30 @@ export function App() {
         .accounts()
         .then((a) => live && setAccounts(a))
         .catch(() => {});
+      // And the rail's tag numbers, for the same reason. Those come off the
+      // tag list rather than viewCounts, and the tag list is reference data —
+      // reloaded at sync boundaries and account switches only. So tagging a
+      // conversation put the chip on the row at once (useTriage patches it)
+      // and left the sidebar's number saying whatever it said before, until
+      // some later sync happened to reload it. Every other number in the rail
+      // moves with the triage that changed it; this one did not.
+      //
+      // Here rather than in useReferenceData, which documents why *that*
+      // effect must not key on the message count: keyed that way it re-ran on
+      // every sync poll and each re-run cancelled the request already in
+      // flight, so the list stayed empty. This tick is debounced, so the
+      // request only starts once the burst has settled and there is nothing
+      // in flight to cancel.
+      api
+        .tags()
+        .then((x) => live && setTags(x))
+        .catch(() => {});
     }, 300);
     return () => {
       live = false;
       window.clearTimeout(t);
     };
-  }, [status?.count, status?.seeding, settings.badges, items, accountEpoch, setAccounts]);
+  }, [status?.count, status?.seeding, settings.badges, items, accountEpoch, setAccounts, setTags]);
 
   // First run: no account can sign in, so there is nothing to show but the
   // way to add one. Decided from the status the app reports, not from an
@@ -1269,14 +1397,22 @@ export function App() {
             .catch((e) => setToast(t('tag-rename-failed', { error: String(e) })));
         }}
         onColourTag={(id, colour) => {
-          // Painted at once and kept if the write succeeds. A colour is a
-          // glance-level thing; waiting a round trip to see it is the whole
-          // cost of the gesture.
+          // Painted at once. A colour is a glance-level thing; waiting a round
+          // trip to see it is the whole cost of the gesture.
+          const was = tags.find((x) => x.id === id)?.colour;
           setTags((prev) => prev.map((x) => (x.id === id ? { ...x, colour } : x)));
           void api
             .setTagColour(id, colour)
             .then(() => api.tags().then(setTags))
-            .catch((e) => setToast(t('tag-rename-failed', { error: String(e) })));
+            .catch((e) => {
+              // And unpainted if the write is refused. This said "kept if the
+              // write succeeds" and then kept it either way, so a failed
+              // colour survived on screen until something reloaded the tags.
+              if (was !== undefined) {
+                setTags((prev) => prev.map((x) => (x.id === id ? { ...x, colour: was } : x)));
+              }
+              setToast(t('tag-rename-failed', { error: String(e) }));
+            });
         }}
         onDeleteTag={(tag) => setDeletingTag(tag)}
         onDragTag={startTag}
@@ -1354,7 +1490,7 @@ export function App() {
               onFocus={() => {
                 setSearching(true);
                 if (query.trim()) return;
-                const leaf = folderLeaf(view, folders);
+                const leaf = folderScopeName(view, folders);
                 const scope = scopeFor(view, leaf);
                 if (scope) setQuery(`${scope.token} `);
               }}
@@ -1373,7 +1509,7 @@ export function App() {
               onBlur={() => {
                 // Leaving with only the pre-applied token means no search was
                 // meant; the field empties rather than staying half-armed.
-                const leaf = folderLeaf(view, folders);
+                const leaf = folderScopeName(view, folders);
                 if (query.trim() === scopeFor(view, leaf)?.token) setQuery('');
                 window.setTimeout(() => setSearching(false), 150);
               }}
@@ -1385,14 +1521,22 @@ export function App() {
           {/* Chips write into the field rather than filtering beside it. Each
               is lit because its token is in the query — type `is:unread` by
               hand and the chip lights, which is the point: there is one place
-              the search lives and it is the one you can see. */}
+              the search lives and it is the one you can see.
+
+              Applied chips gather at the left, and move the instant they are
+              applied: the row must read as sorted at every moment, not settle
+              into it a beat later. The cost is that a chip leaves the spot you
+              clicked, so a second click in the same place lands on whatever
+              slid into it — visible, instantly reversible, and the price of
+              a row that is never briefly wrong. */}
           {(searching || query.trim()) && (
             <div className="chip-row" role="group" aria-label={t('search-filters')}>
               {chips(
                 active?.from_display || active?.from_addr || null,
                 new Date().getFullYear(),
                 view,
-                folderLeaf(view, folders),
+                folderScopeName(view, folders),
+                query,
               )
                 .map((c) => (
                   <button
@@ -1400,6 +1544,15 @@ export function App() {
                     type="button"
                     className={hasToken(query, c.token) ? 'filter-chip on' : 'filter-chip'}
                     aria-pressed={hasToken(query, c.token)}
+                    // The click must not take focus off the field. It fires
+                    // after blur, and blur empties a field holding nothing but
+                    // the pre-applied scope — so clicking Unread in Receipts
+                    // cleared `in:Receipts` and then wrote `is:unread` into an
+                    // empty query, turning a search of this folder into a
+                    // search of everything. Refusing the focus keeps the
+                    // caret in the field too, which is where it wants to be
+                    // after narrowing.
+                    onMouseDown={(e) => e.preventDefault()}
                     onClick={() => setQuery(toggleToken(query, c.token))}
                   >
                     {c.label}
@@ -1785,7 +1938,15 @@ export function App() {
           // screen the whole time.
           const targets = selected.size > 0 ? [...selected] : [undefined];
           if (picker === 'folder') {
-            targets.forEach((t) => void triage.run('move', t, id));
+            // The two rows that are verbs rather than destinations. Reading
+            // them as folder ids would archive by moving the mail into
+            // whatever the server calls its archive, which on Gmail is not
+            // archiving at all.
+            const kind =
+              id === ARCHIVE_VERB ? 'archive' : id === TRASH_VERB ? 'trash' : null;
+            targets.forEach((t) =>
+              void (kind ? triage.run(kind, t) : triage.run('move', t, id)),
+            );
             setPicker(null);
             if (selected.size > 0) setSelected(new Set());
           } else {
@@ -1930,6 +2091,20 @@ export function App() {
               onMove={() => {
                 close();
                 setPicker('folder');
+              }}
+              // Reply, reply all and forward, to the newest message in the
+              // conversation — the same thing the R, A and F keys mean, and
+              // the same call they make. This menu is the one place in the app
+              // a conversation could be acted on without being able to answer
+              // it. ThreadMenuItems drops all three on a multiple selection,
+              // where there is no single message to reply to.
+              onReply={(all) => {
+                close();
+                void startReply(row.id, all);
+              }}
+              onForward={() => {
+                close();
+                void startForward(row.id);
               }}
               onTag={() => {
                 close();

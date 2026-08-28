@@ -411,6 +411,16 @@ impl Store {
     /// this program, and a proprietary export would break that promise while
     /// appearing to honour it.
     ///
+    /// Each message is written with two headers of Petrel's own —
+    /// `X-Petrel-Folders` and `X-Petrel-Tags` — naming where it sat and what it
+    /// wore. mbox is one flat stream with no idea of a hierarchy, so without
+    /// them an archive of a mailbox that files its history under `Archive/2023`
+    /// arrives as an undifferentiated heap and the filing is simply gone. Gmail
+    /// Takeout solves it the same way with `X-Gmail-Labels`, which makes this
+    /// the closest thing to a convention that exists. Unknown `X-` headers are
+    /// ignored by every reader, so the file stays ordinary mbox — and they sit
+    /// outside any DKIM `h=` list, so no signature is disturbed.
+    ///
     /// Returns how many messages were written. Messages whose blob is missing
     /// are skipped and counted separately rather than aborting the export: a
     /// partial archive of 9,000 messages is worth more than an error and none.
@@ -459,7 +469,22 @@ impl Store {
         let mut written = 0usize;
         let mut skipped = 0usize;
 
-        for (_, hash, from, date_ms) in ids {
+        let mut folders_of = self.conn.prepare_cached(
+            "SELECT f.path FROM placements p
+             JOIN folders f ON f.id = p.folder_id
+             WHERE p.message_id = ?1 ORDER BY f.path",
+        )?;
+        let mut tags_of = self.conn.prepare_cached(
+            "SELECT t.name FROM message_tags mt
+             JOIN tags t ON t.id = mt.tag_id
+             WHERE mt.message_id = ?1 ORDER BY t.name COLLATE NOCASE",
+        )?;
+        let strings = |stmt: &mut rusqlite::CachedStatement<'_>, id: i64| -> Result<Vec<String>> {
+            let rows = stmt.query_map(params![id], |r| r.get::<_, String>(0))?;
+            Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        };
+
+        for (id, hash, from, date_ms) in ids {
             let Ok(raw) = blobs.read(&hash) else {
                 skipped += 1;
                 continue;
@@ -474,6 +499,16 @@ impl Store {
                 &from
             };
             writeln!(file, "From {sender} {stamp}")?;
+
+            // Ahead of the message's own headers, which is where a reader
+            // expects to find headers and where Takeout puts its own.
+            if let Some(line) = metadata_header("X-Petrel-Folders", &strings(&mut folders_of, id)?)
+            {
+                writeln!(file, "{line}")?;
+            }
+            if let Some(line) = metadata_header("X-Petrel-Tags", &strings(&mut tags_of, id)?) {
+                writeln!(file, "{line}")?;
+            }
 
             // ">From " escaping: a body line beginning "From " would otherwise
             // start a new message when the file is read back, silently splitting
@@ -796,5 +831,119 @@ impl Store {
         let pages: i64 = self.conn.query_row("PRAGMA page_count", [], |r| r.get(0))?;
         let page_size: i64 = self.conn.query_row("PRAGMA page_size", [], |r| r.get(0))?;
         Ok(pages * page_size)
+    }
+}
+
+/// One `X-Petrel-*` header line, or nothing when there is nothing to say.
+///
+/// Three jobs, all of them about producing a file that is still valid mail.
+///
+/// A value cannot carry a line ending. A folder path is whatever the server
+/// named it and a tag is whatever the user typed, so both are untrusted on
+/// their way into a header — a newline in either would end the header block
+/// early and turn the rest of the name into a forged header, or into body.
+///
+/// A value containing a comma or a quote is quoted, since the list separator
+/// is a comma and `Archive/Invoices, paid` would otherwise read as two names.
+/// This is what `X-Gmail-Labels` does, and matching it means an importer
+/// written for Takeout reads these too.
+///
+/// And the line is folded at 78 columns onto continuation lines, because RFC
+/// 5322 allows 998 and recommends 78, and a mailbox with forty labels on one
+/// message will pass both without folding.
+fn metadata_header(name: &str, values: &[String]) -> Option<String> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut line = format!("{name}:");
+    let mut column = line.len();
+    for (i, raw) in values.iter().enumerate() {
+        let clean: String = raw
+            .chars()
+            .map(|c| if c == '\r' || c == '\n' { ' ' } else { c })
+            .collect();
+        let value = if clean.contains(',') || clean.contains('"') {
+            format!("\"{}\"", clean.replace('"', "\\\""))
+        } else {
+            clean
+        };
+        let token = if i + 1 < values.len() {
+            format!("{value},")
+        } else {
+            value
+        };
+        // Fold before a token that would overrun, never after — a trailing
+        // space at the end of a header line is significant to some parsers.
+        if column + 1 + token.chars().count() > 78 && column > name.len() + 1 {
+            line.push_str("\n ");
+            column = 1;
+        } else {
+            line.push(' ');
+            column += 1;
+        }
+        column += token.chars().count();
+        line.push_str(&token);
+    }
+    Some(line)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::metadata_header;
+
+    #[test]
+    fn nothing_to_say_writes_no_header() {
+        assert_eq!(metadata_header("X-Petrel-Tags", &[]), None);
+    }
+
+    #[test]
+    fn names_are_listed_comma_separated() {
+        let h = metadata_header(
+            "X-Petrel-Folders",
+            &["Archive/2023".into(), "Receipts".into()],
+        );
+        assert_eq!(
+            h.as_deref(),
+            Some("X-Petrel-Folders: Archive/2023, Receipts")
+        );
+    }
+
+    #[test]
+    fn a_name_holding_the_separator_is_quoted() {
+        let h = metadata_header("X-Petrel-Tags", &["urgent, maybe".into()]);
+        assert_eq!(h.as_deref(), Some("X-Petrel-Tags: \"urgent, maybe\""));
+        // And a quote inside one is escaped rather than ending the quoting.
+        let h = metadata_header("X-Petrel-Tags", &["say \"hi\", now".into()]);
+        assert_eq!(h.as_deref(), Some("X-Petrel-Tags: \"say \\\"hi\\\", now\""));
+    }
+
+    /// The one that matters for safety: a header cannot be made to end early.
+    #[test]
+    fn a_line_ending_in_a_name_cannot_forge_a_header() {
+        let h = metadata_header(
+            "X-Petrel-Tags",
+            &["evil\r\nBcc: someone@example.com".into()],
+        );
+        let h = h.unwrap();
+        assert!(!h.contains('\r'), "{h}");
+        assert!(!h.contains("\nBcc:"), "{h}");
+        assert!(h.contains("Bcc: someone@example.com"), "{h}");
+    }
+
+    #[test]
+    fn a_long_list_folds_onto_continuation_lines() {
+        let many: Vec<String> = (0..12)
+            .map(|i| format!("Archive/Year/{i}0000000"))
+            .collect();
+        let h = metadata_header("X-Petrel-Folders", &many).unwrap();
+        assert!(h.contains("\n "), "never folded: {h}");
+        for line in h.split('\n') {
+            assert!(line.chars().count() <= 78, "line too long: {line:?}");
+        }
+        // Folding is whitespace, so unfolding recovers the list exactly.
+        let unfolded = h.replace("\n ", " ");
+        for one in &many {
+            assert!(unfolded.contains(one.as_str()), "lost {one} in {unfolded}");
+        }
     }
 }

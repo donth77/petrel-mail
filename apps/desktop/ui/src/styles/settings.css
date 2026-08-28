@@ -296,3 +296,11 @@
   color: var(--accent-ink);
   cursor: pointer;
 }
+
+/* Which account a per-account pane is showing. Sits under the title, quiet
+   enough to be read once and then ignored. */
+.pane-account {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--ink3);
+}

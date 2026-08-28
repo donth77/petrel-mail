@@ -1,22 +1,90 @@
 import { useEffect, useState } from 'react';
-import { Download, Upload } from 'lucide-react';
-import { api, type Account, type StorageReport } from '../../lib/api';
+import {
+  Archive, Download, Inbox, PencilLine, Send, ShieldAlert, Star, Tag as TagIcon, Trash2, Upload,
+} from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
+import { api, type Account, type Folder, type StorageReport, type Tag } from '../../lib/api';
 import { fileSize } from '../../lib/format';
+import { exportScopes } from '../../lib/export-scopes';
 import { Icon } from '../Icon';
-import { t } from '../../lib/strings';
+import { PickerField, type FieldOption } from '../PickerField';
+import { t, type StringId } from '../../lib/strings';
 import { useSettings } from '../../lib/settings';
 
-/** Views worth exporting, in the order someone would think of them. */
-const SCOPES: { view: string; label: 'mailbox-inbox' | 'mailbox-archive' | 'mailbox-starred' }[] = [
+/**
+ * The mailboxes worth exporting, in the order someone would think of them.
+ *
+ * Everything leads, because it is the one that keeps the promise this pane
+ * makes: the rest are slices, and a client you can only partly leave is not
+ * one you can leave. Sent is in the list for the same reason — mail you wrote
+ * was unreachable here until now, which made "your mail stays yours" untrue of
+ * the half of it you are the author of.
+ *
+ * The rail's order, minus Snoozed and the Outbox: both of those are states a
+ * message passes through rather than places it lives, and both are already
+ * inside Everything. Same order as the sidebar because there is no reason for
+ * a second one — a list of mailboxes that disagrees with the list of mailboxes
+ * is a thing to re-read twice.
+ */
+const SCOPES: { view: string; label: StringId }[] = [
   { view: 'inbox', label: 'mailbox-inbox' },
-  { view: 'archive', label: 'mailbox-archive' },
   { view: 'starred', label: 'mailbox-starred' },
+  { view: 'sent', label: 'mailbox-sent' },
+  { view: 'drafts', label: 'mailbox-drafts' },
+  { view: 'archive', label: 'mailbox-archive' },
+  { view: 'spam', label: 'mailbox-spam' },
+  { view: 'trash', label: 'mailbox-trash' },
 ];
+
+/** A mailbox's own glyph, so a folder icon is not put on the Outbox. */
+const ICONS: Record<string, LucideIcon> = {
+  inbox: Inbox,
+  archive: Archive,
+  sent: Send,
+  starred: Star,
+  drafts: PencilLine,
+  spam: ShieldAlert,
+  trash: Trash2,
+};
+
+/**
+ * One thing that can be exported — a mailbox, a folder, or a tag.
+ *
+ * Everything is not in here: it is the field's empty choice. "Export all of
+ * it" is the absence of a narrowing rather than one more narrowing, which is
+ * exactly what the field's none row already means, and spelling it twice would
+ * put Everything in the list beside itself.
+ */
+type Scope = FieldOption & { view: string };
+
+/**
+ * A file name from a scope's own words.
+ *
+ * The view key cannot be used directly any more: `folder:12` says nothing to
+ * a person and `tag:read later` is not a filename anyone wants back. The label
+ * is what they picked, so the file is named after that.
+ */
+function scopeSlug(label: string): string {
+  const slug = label
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  // Non-Latin labels slug away to nothing — a Japanese tag name has no [a-z0-9]
+  // in it at all — and an export called `petrel--me@x.com.mbox` looks broken.
+  return slug || 'mail';
+}
 
 export function Storage({ onMessage }: { onMessage: (text: string) => void }) {
   const { settings, set } = useSettings();
   const [report, setReport] = useState<StorageReport | null>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
+  // Per account, because the rows are per account: a folder list borrowed
+  // from whichever account happens to be on screen would name places that
+  // account's export cannot find. Both commands take an account for this.
+  const [folders, setFolders] = useState<Record<number, Folder[]>>({});
+  const [tags, setTags] = useState<Record<number, Tag[]>>({});
+  /** The scope each account's row is set to, keyed by account id. */
+  const [chosen, setChosen] = useState<Record<number, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -28,7 +96,23 @@ export function Storage({ onMessage }: { onMessage: (text: string) => void }) {
     // they have no reason to.
     api
       .accounts()
-      .then((a) => live && setAccounts(a))
+      .then((a) => {
+        if (!live) return;
+        setAccounts(a);
+        // Quietly, and per account: one with no folders or tags simply offers
+        // fewer scopes, and a failure here must not take the mailbox scopes
+        // down with it.
+        for (const acc of a) {
+          api
+            .folders(acc.id)
+            .then((f) => live && setFolders((prev) => ({ ...prev, [acc.id]: f })))
+            .catch(() => {});
+          api
+            .tags(acc.id)
+            .then((x) => live && setTags((prev) => ({ ...prev, [acc.id]: x })))
+            .catch(() => {});
+        }
+      })
       .catch((e) => live && setError(String(e)));
     api
       .storage()
@@ -53,7 +137,7 @@ export function Storage({ onMessage }: { onMessage: (text: string) => void }) {
     try {
       const { save } = await import('@tauri-apps/plugin-dialog');
       const path = await save({
-        defaultPath: `petrel-${view}-${account.email}.mbox`,
+        defaultPath: `petrel-${scopeSlug(label)}-${account.email}.mbox`,
         filters: [{ name: 'mbox', extensions: ['mbox'] }],
       });
       // Cancelling is an answer, not a failure.
@@ -170,22 +254,77 @@ export function Storage({ onMessage }: { onMessage: (text: string) => void }) {
     </span>
   );
 
-  const exportButtons = (account: Account | undefined) => (
-    <div className="storage-actions">
-      {SCOPES.map((s) => (
+  /**
+   * Every scope this account can be asked for, in the order they are drawn.
+   *
+   * The list itself is built in lib/export-scopes, which is where the one
+   * interesting decision lives — Archive and Trash are a mailbox *and* a place
+   * folders hang under, and they get one row rather than two. Here we only put
+   * the glyphs on and number the rows.
+   *
+   * The id is the row's position rather than anything from the store. Folder
+   * ids and tag ids are both row ids and would collide the moment they shared
+   * a list; a position cannot.
+   */
+  const scopesFor = (account: Account): Scope[] =>
+    exportScopes(
+      SCOPES.map((sc) => ({ view: sc.view, label: t(sc.label) })),
+      folders[account.id] ?? [],
+      tags[account.id] ?? [],
+    ).map((sc, i) => ({
+      ...sc,
+      id: i,
+      icon: ICONS[sc.view] ?? (sc.view.startsWith('tag:') ? TagIcon : undefined),
+    }));
+
+  /**
+   * One account's scope field and its button.
+   *
+   * A searchable field rather than a button per scope, and rather than the
+   * native list that stood here first: three buttons fitted on a row and three
+   * was the whole problem — a mailbox with forty folders and a dozen tags does
+   * not. A native popup would type-ahead from the start of the option text,
+   * which with full paths means `Archive/Yearly/2023` is reachable only by
+   * typing `Archive/Yea…`. This is the control the rules pane already replaced
+   * a `<select>` with, for that exact reason.
+   */
+  const exportControls = (account: Account | undefined) => {
+    const scopes = account ? scopesFor(account) : [];
+    // Resolved by view key rather than held as an index: the list is rebuilt
+    // whenever folders or tags arrive, and an index into the old one would
+    // quietly point at a different row. A key that no longer resolves falls
+    // back to Everything, which is also what happens if the folder is deleted
+    // from under the choice.
+    const at = scopes.findIndex((sc) => account && sc.view === chosen[account.id]);
+    const scope = at >= 0 ? scopes[at] : null;
+    const view = scope?.view ?? 'all';
+    const label = scope?.label ?? t('storage-export-everything');
+    return (
+      <div className="storage-actions">
+        <PickerField
+          mode="folder"
+          label={t('storage-export-scope')}
+          value={scope ? scope.id : null}
+          options={scopes}
+          noneLabel={t('storage-export-everything')}
+          onChange={(id) => {
+            if (!account) return;
+            const picked = id === null ? null : scopes.find((sc) => sc.id === id);
+            setChosen((prev) => ({ ...prev, [account.id]: picked?.view ?? 'all' }));
+          }}
+        />
         <button
-          key={s.view}
           type="button"
           className="fbtn"
           disabled={busy || !account}
-          onClick={() => account && void exportTo(account, s.view, t(s.label))}
+          onClick={() => account && void exportTo(account, view, label)}
         >
           <Icon icon={Download} size={13} />
-          {t(s.label)}
+          {t('storage-export-button')}
         </button>
-      ))}
-    </div>
-  );
+      </div>
+    );
+  };
 
   return (
     <div className="pane-body">
@@ -240,11 +379,11 @@ export function Storage({ onMessage }: { onMessage: (text: string) => void }) {
           accounts.map((a) => (
             <div key={a.id} className="storage-export-row">
               {accountLabel(a)}
-              {exportButtons(a)}
+              {exportControls(a)}
             </div>
           ))
         ) : (
-          exportButtons(accounts[0])
+          exportControls(accounts[0])
         )}
       </section>
 

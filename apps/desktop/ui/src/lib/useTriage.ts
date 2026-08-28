@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import { api, type ActionKind, type Thread } from './api';
+import { countDeltas, type CountMode } from './counts';
 import { t } from './strings';
 
 /** Whether an action takes a conversation out of the list you are looking at.
@@ -50,6 +51,10 @@ export type UndoOffer = {
   /** Whether this was the conversation being read, so undo knows whether
    *  putting the row back should also put the selection back. */
   wasActive: boolean;
+  /** The sidebar count nudge that went with it, taken back if the undo lands. */
+  tagDelta?: { tagId: number; delta: number };
+  /** The same, for the mailbox numbers. */
+  viewDelta?: Record<string, number>;
 };
 
 /**
@@ -84,6 +89,11 @@ function tagPatch(
   return [...current, { id: targetId, name: tag.name, colour: tag.colour }];
 }
 
+/** The same nudge, pointing the other way — for a failure or an undo. */
+function negated(deltas: Record<string, number>): Record<string, number> {
+  return Object.fromEntries(Object.entries(deltas).map(([k, d]) => [k, -d]));
+}
+
 export function useTriage(opts: {
   items: Thread[];
   setItems: (fn: (prev: Thread[]) => Thread[]) => void;
@@ -94,8 +104,28 @@ export function useTriage(opts: {
   setActiveId: (id: number | null) => void;
   view: string;
   onMessage: (text: string, undo?: UndoOffer) => void;
+  /** Moves a tag's count in the rail while the server catches up. */
+  onTagCount?: (tagId: number, delta: number) => void;
+  /** The same for the mailbox numbers, keyed by rail key. */
+  onViewCount?: (deltas: Record<string, number>) => void;
+  /** What the rail's numbers mean, so a nudge can agree with the recount. */
+  countMode?: CountMode;
+  /** The role of a folder a `move` names, so the inbox's number can move. */
+  folderRole?: (folderId: number) => string | undefined;
 }) {
-  const { items, setItems, activeId, setActiveId, view, onMessage, tagById } = opts;
+  const {
+    items,
+    setItems,
+    activeId,
+    setActiveId,
+    view,
+    onMessage,
+    tagById,
+    onTagCount,
+    onViewCount,
+    countMode = 'unread',
+    folderRole,
+  } = opts;
   const [pending, setPending] = useState(false);
   // The last thing done, so Z has something to reverse without the caller
   // tracking it.
@@ -132,6 +162,35 @@ export function useTriage(opts: {
       const removes = leavesView(kind, view);
       const before = items;
       const atIndex = items.findIndex((m) => m.id === row.id);
+
+      // The rail's tag number, moved with the row rather than a recount behind
+      // it. Read off the same patch the row gets, so it counts only a tag the
+      // conversation was not already wearing — tagging something twice is not
+      // a second conversation. Undone below if the write fails, and again if
+      // the action is undone; either way the debounced recount that follows
+      // every triage is still the authority, so a nudge that gets this wrong
+      // is wrong until that lands and no longer.
+      const bump =
+        targetId != null &&
+        (kind === 'tag' || kind === 'untag') &&
+        tagPatch(row.tags, kind, targetId, tagById) !== row.tags
+          ? { tagId: targetId, delta: kind === 'tag' ? 1 : -1 }
+          : null;
+      if (bump) onTagCount?.(bump.tagId, bump.delta);
+
+      // The mailbox numbers, moved on the same principle and reversed in the
+      // same places. See countDeltas for the rule and for why it is allowed to
+      // be approximate.
+      const moved = countDeltas({
+        kind,
+        view,
+        unread: row.unread,
+        removes,
+        mode: countMode,
+        toRole: kind === 'move' && targetId != null ? folderRole?.(targetId) : undefined,
+      });
+      const movedAny = Object.keys(moved).length > 0;
+      if (movedAny) onViewCount?.(moved);
 
       if (removes) {
         setItems((prev) => prev.filter((m) => m.id !== row.id));
@@ -179,9 +238,13 @@ export function useTriage(opts: {
           atIndex,
           removed: removes,
           wasActive: row.id === activeId,
+          tagDelta: bump ?? undefined,
+          viewDelta: movedAny ? moved : undefined,
         };
         onMessage(receipt.description, lastUndo.current);
       } catch (err) {
+        if (bump) onTagCount?.(bump.tagId, -bump.delta);
+        if (movedAny) onViewCount?.(negated(moved));
         if (quiet) {
           // Nothing was optimistically removed for a quiet action, so there is
           // nothing to roll back; log it and leave the row as it was.
@@ -200,7 +263,19 @@ export function useTriage(opts: {
         setPending(false);
       }
     },
-    [items, activeId, setItems, setActiveId, view, onMessage, tagById],
+    [
+      items,
+      activeId,
+      setItems,
+      setActiveId,
+      view,
+      onMessage,
+      tagById,
+      onTagCount,
+      onViewCount,
+      countMode,
+      folderRole,
+    ],
   );
 
   const undo = useCallback(
@@ -224,11 +299,13 @@ export function useTriage(opts: {
           return [...prev.slice(0, at), target.row, ...prev.slice(at)];
         });
         if (target.removed && target.wasActive) setActiveId(target.row.id);
+        if (target.tagDelta) onTagCount?.(target.tagDelta.tagId, -target.tagDelta.delta);
+        if (target.viewDelta) onViewCount?.(negated(target.viewDelta));
       }
       onMessage(ok ? t('undo-done') : t('undo-too-late'));
       return ok;
     },
-    [setItems, setActiveId, onMessage],
+    [setItems, setActiveId, onMessage, onTagCount, onViewCount],
   );
 
   /** S toggles, as it does everywhere else — one key, not two. */

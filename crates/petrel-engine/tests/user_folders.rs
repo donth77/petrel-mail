@@ -223,3 +223,214 @@ fn renaming_a_parent_carries_its_subtree() {
     // Ids never changed, so the grandchild's mail is untouched.
     assert_eq!(store.max_uid(grand).unwrap(), Some(1));
 }
+
+/// A folder whose name contains an underscore is a LIKE pattern, not a string.
+///
+/// Moving one to the Trash rewrites every descendant path in one statement,
+/// matched with `path LIKE old || '/%'`. Underscore matches any single
+/// character there, so `a_b` also matched `axb/child` — and the cascade
+/// dragged an unrelated folder's subtree into the bin with it. The user's own
+/// mailbox has folders named `glassdoor+102025_2`.
+#[test]
+fn a_name_with_an_underscore_does_not_drag_its_neighbours_along() {
+    let (_dir, mut store, _blobs, account) = setup();
+    let doomed = store.ensure_named_folder(account, "a_b").unwrap();
+    store.ensure_named_folder(account, "axb").unwrap();
+    store.ensure_named_folder(account, "axb/child").unwrap();
+    store.ensure_named_folder(account, "a_b/child").unwrap();
+
+    store.rename_folder(doomed, "Trash/a_b").unwrap();
+
+    let paths: Vec<String> = store
+        .folders(account)
+        .unwrap()
+        .into_iter()
+        .map(|f| f.path)
+        .collect();
+    assert!(paths.contains(&"Trash/a_b".to_string()), "the folder moved");
+    assert!(
+        paths.contains(&"Trash/a_b/child".to_string()),
+        "its own child came with it"
+    );
+    assert!(
+        paths.contains(&"axb/child".to_string()),
+        "the neighbour stayed put, got: {paths:?}"
+    );
+}
+
+/// Moving a folder to the Trash must not strand the changes queued for the
+/// mail inside it.
+///
+/// A queued action carries the path its message sat at, so it can still be
+/// delivered after a move has deleted the placement holding the UID. The
+/// rename made that captured path a name the server no longer had, and the
+/// drain then failed with `Mailbox doesn't exist` on every sync cycle — one
+/// such action had been retrying in a real mailbox for days.
+#[test]
+fn binning_a_folder_repoints_the_changes_still_queued_for_its_mail() {
+    let (_dir, mut store, blobs, account) = setup();
+    let receipts = store.ensure_named_folder(account, "Receipts").unwrap();
+    let elsewhere = store.ensure_named_folder(account, "Elsewhere").unwrap();
+    let ingested = store
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(receipts),
+            Some(41),
+            &fixture("q@x", "queued"),
+        )
+        .unwrap();
+    let thread = store
+        .thread_of(ingested.message_id)
+        .unwrap()
+        .unwrap_or(-ingested.message_id);
+
+    // The move deletes the placement, so delivery has only the captured path.
+    store
+        .apply_thread_action(
+            account,
+            thread,
+            petrel_engine::actions::ActionKind::Move,
+            Some(elsewhere),
+            petrel_engine::actions::PlacementPolicy::Exclusive,
+        )
+        .unwrap();
+    let queued = store.pending_actions(account).unwrap();
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].folder_path, "Receipts");
+    assert_eq!(queued[0].uid, Some(41));
+
+    store.rename_folder(receipts, "Trash/Receipts").unwrap();
+
+    let after = store.pending_actions(account).unwrap();
+    assert_eq!(after.len(), 1);
+    assert_eq!(
+        after[0].folder_path, "Trash/Receipts",
+        "the queue follows the folder, or the change is never delivered"
+    );
+    assert_eq!(after[0].uid, Some(41), "and still knows where to aim");
+}
+
+/// Archiving on an account whose server has no Archive folder.
+///
+/// `ensure_folder(account, "archive", "archive")` invents a local folder when
+/// nothing wears the role — and the next survey prunes every folder the server
+/// did not list, which that one never will. With an exclusive placement policy
+/// the archived message lives *only* there, so pruning tombstones it: gone
+/// from every view and from search, by pressing Archive and waiting.
+///
+/// Namecheap marks no \Archive. The account this was written against has
+/// 10,479 messages filed under a plain `Archive` folder and no archive role.
+#[test]
+fn archiving_without_a_server_archive_folder_does_not_lose_the_mail() {
+    let (_dir, mut store, blobs, account) = setup();
+    // The mailbox as the server reports it: an inbox, and a plain folder the
+    // person files into. No folder wears the archive role.
+    store
+        .sync_folders(account, &[("INBOX".into(), None), ("Archive".into(), None)])
+        .unwrap();
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+    let ingested = store
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(inbox),
+            Some(7),
+            &fixture("a@x", "keep me"),
+        )
+        .unwrap();
+    let thread = store
+        .thread_of(ingested.message_id)
+        .unwrap()
+        .unwrap_or(-ingested.message_id);
+
+    store
+        .apply_thread_action(
+            account,
+            thread,
+            petrel_engine::actions::ActionKind::Archive,
+            None,
+            petrel_engine::actions::PlacementPolicy::Exclusive,
+        )
+        .unwrap();
+
+    // The next survey. The server still reports what it always did.
+    store
+        .sync_folders(account, &[("INBOX".into(), None), ("Archive".into(), None)])
+        .unwrap();
+
+    // Tombstoning drops a message out of search, which is the observable a
+    // person would actually meet: the mail is not anywhere they can look.
+    let hits = store.search("keep", 10).unwrap();
+    assert_eq!(
+        hits.len(),
+        1,
+        "archiving then syncing must not make the message unfindable"
+    );
+}
+
+/// The Archive mailbox on an account whose server marks no \Archive.
+///
+/// Namecheap flags \Sent, \Trash, \Drafts and \Junk and nothing else, so the
+/// archive view's predicate — which asks for `role = 'archive'` — matched
+/// nothing and the mailbox listed zero while the plain `Archive` folder below
+/// it held ten thousand messages.
+#[test]
+fn a_plain_archive_folder_is_the_archive() {
+    let (_dir, mut store, blobs, account) = setup();
+    store
+        .sync_folders(
+            account,
+            &[
+                ("INBOX".into(), Some("inbox".into())),
+                ("Sent".into(), Some("sent".into())),
+                // No role. This is the whole point.
+                ("Archive".into(), None),
+                ("Archive/2026".into(), None),
+            ],
+        )
+        .unwrap();
+
+    let folders = store.folders(account).unwrap();
+    let archive = folders.iter().find(|f| f.path == "Archive").unwrap();
+    assert_eq!(archive.role, "archive", "the plain folder wears the role");
+
+    // And the view built on that role finds what is filed under it.
+    let nested = folders
+        .iter()
+        .find(|f| f.path == "Archive/2026")
+        .unwrap()
+        .id;
+    store
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(nested),
+            Some(3),
+            &fixture("f@x", "filed"),
+        )
+        .unwrap();
+    assert_eq!(
+        store
+            .conversations_in(&ListView::Folder("archive".into()))
+            .unwrap(),
+        1,
+        "the archive mailbox lists what is filed beneath it"
+    );
+
+    // A later survey still reporting no flag must not take the role away.
+    store
+        .sync_folders(
+            account,
+            &[
+                ("INBOX".into(), Some("inbox".into())),
+                ("Sent".into(), Some("sent".into())),
+                ("Archive".into(), None),
+                ("Archive/2026".into(), None),
+            ],
+        )
+        .unwrap();
+    let after = store.folders(account).unwrap();
+    let archive = after.iter().find(|f| f.path == "Archive").unwrap();
+    assert_eq!(archive.role, "archive", "and keeps it across surveys");
+}

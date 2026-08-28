@@ -359,8 +359,24 @@ fn print_document(
 <style>
   :root {{ color-scheme: light; }}
   @page {{ margin: 18mm; }}
-  body {{ margin: 0; background: #fff; color: #182730;
+  /* On screen this window is a preview, so it is laid out as the sheet rather
+     than as raw markup filling a frame: a column the width the paper actually
+     gives us, centred, with room to breathe around it. Text starting hard
+     against the window frame is the thing that reads as unfinished.
+
+     The column width is load-bearing, not decoration. The fitter below
+     measures the box to decide whether a message has to be scaled, and it
+     runs on screen — so if the box is as wide as the window, it measures the
+     window and a message that clears 700px of frame still runs off 658px of
+     paper. 174mm is A4 (210mm) less its two 18mm margins; US Letter is wider,
+     so what fits this fits that.
+
+     None of it survives into the print: there the @page margin is the
+     margin, and a second one here would inset the text twice. */
+  body {{ box-sizing: border-box; max-width: calc(174mm + 56px); margin: 0 auto;
+         padding: 28px; background: #fff; color: #182730;
          font: 12.5px/1.6 -apple-system, system-ui, sans-serif; }}
+  @media print {{ body {{ max-width: none; margin: 0; padding: 0; }} }}
   header {{ border-bottom: 1px solid #d9e1e2; padding-bottom: 10px; margin-bottom: 14px; }}
   h1 {{ font-size: 17px; margin: 0 0 8px; }}
   .line {{ font-size: 12px; color: #54666e; }}
@@ -851,6 +867,39 @@ mod tests {
         assert!(doc.contains("fit.style.height"), "height not reserved");
         // And it still ends in the dialog.
         assert!(doc.contains("window.print()"));
+    }
+
+    /// The preview is laid out as the sheet, which is what makes the fit
+    /// measurement mean anything.
+    ///
+    /// The fitter runs on screen and measures the box it is given. Left to
+    /// fill the window it measured the window — so a message that cleared the
+    /// frame was declared to fit and still ran off the paper, which is
+    /// narrower. Capping the column at the paper's own width makes the two
+    /// the same question. The padding is the visible half of the same change.
+    #[test]
+    fn the_preview_is_laid_out_as_the_sheet_and_the_paper_keeps_its_own_margin() {
+        let doc = super::print_document(
+            "<p>the body</p>",
+            "Subject",
+            "a@example.com",
+            "me@example.com",
+            "",
+            "Tue, 18 Aug 2026",
+            "n0nce",
+        );
+        // A column of the paper's width, centred, with room around it.
+        assert!(doc.contains("max-width: calc(174mm + 56px)"), "{doc}");
+        assert!(doc.contains("margin: 0 auto"), "{doc}");
+        assert!(doc.contains("padding: 28px"), "{doc}");
+        // And none of it on paper, where @page owns the margin. Insetting the
+        // text twice is the failure this guards.
+        assert!(doc.contains("@media print"), "{doc}");
+        assert!(
+            doc.contains("max-width: none; margin: 0; padding: 0;"),
+            "{doc}"
+        );
+        assert!(doc.contains("@page { margin: 18mm; }"), "{doc}");
     }
 
     #[test]

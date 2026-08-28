@@ -75,6 +75,24 @@ describe('the menu bar', () => {
     expect(natives).toEqual(['Undo', 'Redo', 'Cut', 'Copy', 'Paste', 'SelectAll']);
   });
 
+  /* The one item in Edit that Petrel implements itself, and the reason the
+     menu is worth opening. ⌘F searches the whole open conversation, across
+     every message frame in it, and before this it existed only for people who
+     already knew to press it. The natives around it work wherever there is
+     text and cannot be discovered from the menu either way. */
+  it('offers Find in Conversation, on the key macOS apps put it', () => {
+    const edit = MENU.find((n) => n.role === 'submenu' && n.label === 'menubar-edit');
+    const find =
+      edit?.role === 'submenu'
+        ? edit.items.find((i) => i.role === 'command' && i.command === 'find')
+        : undefined;
+    expect(find, 'Find belongs in Edit, where every Mac app keeps it').toBeDefined();
+    if (find?.role === 'command') {
+      expect(find.accelerator).toBe('CmdOrCtrl+F');
+      expect(find.label).toBe('menubar-find');
+    }
+  });
+
   it('keeps the full screen item the menu it replaced had', () => {
     const view = MENU.find((n) => n.role === 'submenu' && n.label === 'menubar-view');
     const natives =

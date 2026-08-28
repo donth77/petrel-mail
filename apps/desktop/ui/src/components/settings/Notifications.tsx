@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useSettings } from '../../lib/settings';
 import { postDesktopNotification } from '../../lib/notify';
 import { t } from '../../lib/strings';
@@ -11,6 +12,10 @@ const PAUSES: { label: string; ms: number }[] = [
 
 export function Notifications() {
   const { settings, set } = useSettings();
+  // What the last test came to. A button called "send a test notification"
+  // that does nothing visible on failure is worse than no button: it cannot
+  // be told apart from a notification the OS quietly dropped.
+  const [tested, setTested] = useState<string | null>(null);
 
   const pausedUntil = Number(settings.notifyPausedUntil) || 0;
   const paused = pausedUntil > Date.now();
@@ -113,14 +118,25 @@ export function Notifications() {
           </button>
         </div>
         {/* The OS has the final say and can refuse silently, so the only honest
-            way to tell someone notifications work is to send one. */}
+            way to tell someone notifications work is to send one — and then to
+            say what came of it. */}
         <button
           type="button"
           className="fbtn"
-          onClick={() => void postDesktopNotification(t('app-name'), t('notify-test-body'))}
+          onClick={() => {
+            setTested(null);
+            void postDesktopNotification(t('app-name'), t('notify-test-body')).then((r) =>
+              setTested(r.ok ? t('notify-test-sent') : t('notify-test-failed', { reason: r.reason ?? '' })),
+            );
+          }}
         >
           {t('notify-test')}
         </button>
+        {tested && (
+          <p className="fhelp" role="status">
+            {tested}
+          </p>
+        )}
       </section>
     </div>
   );

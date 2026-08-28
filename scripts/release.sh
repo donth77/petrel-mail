@@ -98,6 +98,16 @@ echo "commit: $(git rev-parse --short HEAD)"
 
 # ------------------------------------------------------------------- build
 say "build"
+# PETREL_RELEASE_NOTES feeds two things, and both are decided here: the
+# updater manifest written further down, and — compiled into the binary by
+# option_env! — what the Updates pane shows about the version now running.
+# Checked *before* the build rather than beside the manifest, because by then
+# the binary is already made and a warning would come too late to act on.
+# build.rs declares rerun-if-env-changed, so a new value really does rebuild.
+if [ -z "${PETREL_RELEASE_NOTES:-}" ]; then
+  echo "warning: PETREL_RELEASE_NOTES is empty — this build will show no notes" >&2
+  echo "         in Settings > Updates, and the manifest will carry none." >&2
+fi
 (cd apps/desktop/ui && pnpm run build >/dev/null)
 # custom-protocol is what puts Tauri in production mode; without it the
 # webview goes looking for a dev server that is not there.
@@ -198,8 +208,9 @@ if [ -f "$KEY_PATH" ] && command -v cargo-tauri >/dev/null; then
   TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" \
     cargo tauri signer sign "$TARBALL" >/dev/null
   SIGNATURE="$(cat "$TARBALL.sig")"
+  # The same notes the binary was built with, so what the manifest offers and
+  # what the installed app says about itself cannot disagree.
   NOTES="${PETREL_RELEASE_NOTES:-}"
-  [ -n "$NOTES" ] || echo "warning: PETREL_RELEASE_NOTES is empty; the Updates pane will show no notes" >&2
   PUBDATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   URL="https://github.com/donth77/petrel-mail/releases/download/v$VERSION/Petrel-$VERSION.app.tar.gz"
   # Written by a JSON writer rather than a heredoc. Release notes are prose,

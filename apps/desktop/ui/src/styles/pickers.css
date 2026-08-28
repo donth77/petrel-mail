@@ -149,3 +149,128 @@
   color: var(--ink2);
   font-size: 11.5px;
 }
+
+/* ------------------------------------------- the same picker, as a field */
+
+/* The trigger. Deliberately the same shape as the `.select` it replaced, so
+   the rules form keeps its geometry and only its behaviour improves. */
+.picker-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-block-start: 10px;
+  padding: 7px 11px;
+  border: 1px solid var(--hair);
+  border-radius: 8px;
+  background: var(--bg);
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  inline-size: min(280px, 100%);
+  text-align: start;
+  cursor: pointer;
+}
+
+.picker-field:hover {
+  border-color: var(--ink3);
+}
+
+.picker-field .clip {
+  flex-grow: 1;
+  min-inline-size: 0;
+}
+
+/* The chevron sits at the end and does not shrink when the path is long. */
+.picker-field svg {
+  flex: none;
+  color: var(--ink3);
+}
+
+/* The popover. Same surface as the dialog picker — it is the same control —
+   but anchored under the field and sized to it rather than pinned to the
+   viewport. `sameWidth` on the popover keeps the two edges aligned, so the
+   list reads as belonging to the field it came out of. */
+.picker-pop {
+  display: flex;
+  flex-direction: column;
+  max-block-size: min(46vh, 320px);
+  border: 1px solid var(--hair);
+  border-radius: 11px;
+  background: var(--surface);
+  overflow: hidden;
+  box-shadow: 0 16px 40px rgba(24, 39, 48, 0.17);
+  /* Above the settings dialog it opens inside. */
+  z-index: 60;
+}
+
+/* Doing nothing is a choice, but it is not one of the folders — it reads as
+   the absence the field shows when nothing is picked. */
+.picker-none {
+  color: var(--ink3);
+  font-style: italic;
+}
+
+/* The caption beside a picker field. A <div>, deliberately, where the native
+   <select> it replaced sat in a <label>: a label forwards every click inside it
+   to its control, and the popover is inside it, so choosing a row toggled the
+   list back open. The field carries its own aria-label instead. */
+.rule-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* A path row: faint context, then the name. The two are separate boxes so they
+   can shrink at different rates — that is the whole point of splitting them.
+   The parent's shrink factor is enormous next to the leaf's, so a narrow row
+   spends all of its shortfall on the parent and only touches the leaf once the
+   parent has nothing left to give. Both can ellipsise; only one normally does. */
+.path {
+  display: flex;
+  min-inline-size: 0;
+  flex: 1 1 auto;
+}
+
+.path-lead {
+  flex: 0 999 auto;
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink3);
+}
+
+.path-leaf {
+  flex: 0 1 auto;
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The active row tints its text, and the faint half has to come with it or the
+   parent stays grey on the accent wash and reads as disabled. */
+.picker-opt[data-active-item] .path-lead {
+  color: inherit;
+  opacity: 0.62;
+}
+
+/* A rung of a path that is nothing in itself — the Archive under
+   Archive/Old letters, when Archive is the mailbox row's name and not a place
+   you can file into. Quiet, and not a button: it is there so the row beneath
+   it is indented under something rather than under nothing. */
+.picker-opt.tree-container {
+  color: var(--ink3);
+  cursor: default;
+}
+
+/* The chevron sits in the row's flow here rather than hanging in the padding
+   as it does in the rail. A picker row has no accent border to avoid and no
+   fixed icon column to protect, and a row that folds is rare enough in a list
+   this shallow that reserving a column for every row would waste more than it
+   aligns. */
+.picker-opt .tree-toggle {
+  margin-inline-start: -4px;
+  margin-inline-end: -5px;
+  flex: none;
+}

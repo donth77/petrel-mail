@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Dialog, DialogDismiss } from '@ariakit/react';
 import { Filter,
   Bell, Database, Mail, PencilLine, Shield, SunMoon, User, X,
@@ -56,6 +56,20 @@ type Props = {
 export function Settings({ open, pane: requested, onClose, onMessage, onAddAccount }: Props) {
   const [pane, setPane] = useState<PaneId>(requested ?? 'appearance');
 
+  // Elements, not components: building the record costs nine element objects
+  // and renders none of them — only the one looked up below ever mounts.
+  const PANE_VIEWS: Record<PaneId, ReactNode> = {
+    accounts: <Accounts onAddAccount={onAddAccount} />,
+    identities: <Identities onMessage={onMessage} />,
+    composing: <Composing />,
+    notifications: <Notifications />,
+    appearance: <Appearance />,
+    rules: <Rules onMessage={onMessage} />,
+    privacy: <Privacy />,
+    storage: <Storage onMessage={onMessage} />,
+    updates: <Updates onMessage={onMessage} />,
+  };
+
   // Follow the request each time the dialog opens, not once on mount: the
   // component stays mounted between openings, so a value read at mount would
   // be whatever the first caller asked for, forever.
@@ -93,21 +107,20 @@ export function Settings({ open, pane: requested, onClose, onMessage, onAddAccou
             <DialogDismiss className="close-btn settings-esc" aria-label={t('close')}>
               <Icon icon={X} size={15} />
             </DialogDismiss>
-          {pane === 'appearance' && <Appearance />}
-          {pane === 'accounts' && <Accounts onAddAccount={onAddAccount} />}
-          {pane === 'notifications' && <Notifications />}
-          {pane === 'composing' && <Composing />}
-          {pane === 'storage' && <Storage onMessage={onMessage} />}
-          {pane === 'rules' && <Rules onMessage={onMessage} />}
-          {pane === 'privacy' && <Privacy />}
-          {pane === 'identities' && <Identities onMessage={onMessage} />}
-          {pane === 'updates' && <Updates onMessage={onMessage} />}
-          {pane !== 'appearance' && pane !== 'accounts' && pane !== 'notifications' && pane !== 'composing' && pane !== 'storage' && pane !== 'privacy' && pane !== 'identities' && pane !== 'updates' && (
-            <div className="empty">
-              <h2>{t(PANES.find((p) => p.id === pane)!.label)}</h2>
-              <p>{t('settings-not-built')}</p>
-            </div>
-          )}
+          {/* One entry per pane, and the type is what enforces it.
+
+              This was a positive list of nine `pane === …` lines followed by a
+              negative list of eight `pane !== …` ones guarding a "not built
+              yet" placeholder. The two had to be kept in step by hand, and
+              they were not: `rules` was added to the first and forgotten in
+              the second, so opening Rules rendered the pane *and* a notice
+              underneath saying it did not exist. Nothing failed — both
+              branches were true at once.
+
+              `Record<PaneId, ReactNode>` cannot drift: leave a pane out and
+              this stops compiling, which is the only kind of list that stays
+              correct. */}
+          {PANE_VIEWS[pane]}
         </div>
       </div>
     </Dialog>

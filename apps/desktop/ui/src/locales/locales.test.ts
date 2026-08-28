@@ -138,3 +138,53 @@ describe('the runtime serves what the files provide', () => {
     setLocale('en');
   });
 });
+
+/* Ids that are built rather than written.
+ *
+ * `t()` is typed to StringId, which catches a mistyped literal at compile
+ * time — but six call sites assemble an id from a value and cast the result
+ * (`t(`mailbox-${view}` as StringId)`). The cast is the hole: whatever the
+ * expression produces is accepted, and a value with no matching string falls
+ * through to `t()`'s last line, which renders the id itself on screen.
+ *
+ * So the families are enumerated here against the same lists the code uses. A
+ * new mailbox, folder role or condition field that nobody wrote a string for
+ * fails here rather than shipping as `mailbox-scheduled` in the sidebar.
+ */
+describe('ids assembled at runtime', () => {
+  const FAMILIES: Record<string, string[]> = {
+    // Rail.tsx MAILBOXES
+    'mailbox-': ['inbox', 'starred', 'snoozed', 'sent', 'drafts', 'outbox', 'archive', 'spam', 'trash'],
+    // settings/Accounts.tsx ROLES
+    'folder-': ['archive', 'sent', 'drafts', 'spam', 'trash'],
+    // settings/Rules.tsx FIELDS
+    'rule-field-': ['from', 'to', 'subject', 'list_id'],
+  };
+
+  it.each(Object.entries(FAMILIES))('%s resolves for every value', (prefix, values) => {
+    setLocale('en');
+    for (const v of values) {
+      const id = `${prefix}${v}`;
+      // t() returns the id unchanged when nothing matches, which is exactly
+      // what reaches the screen.
+      expect(t(id as Parameters<typeof t>[0])).not.toBe(id);
+    }
+  });
+
+  /* The invitation labels are a map rather than a template, and this is why.
+   *
+   * `invite-${response}` looked like the same pattern, but the button labels
+   * and the answer labels are different sentences: "Maybe" against "Tentatively
+   * accepted". Two of the three collided harmlessly — `invite-accepted` and
+   * `invite-declined` are answer labels — while `tentative` resolved to
+   * `invite-tentative`, the button. So replying tentatively confirmed with
+   * "Maybe", and `invite-tentative-answer` was unreachable. Both existed, so
+   * nothing was missing and nothing threw. */
+  it('answers an invitation in the past tense, not with the button label', () => {
+    setLocale('en');
+    expect(t('invite-accepted')).toBe('Accepted');
+    expect(t('invite-declined')).toBe('Declined');
+    expect(t('invite-tentative-answer')).toBe('Tentatively accepted');
+    expect(t('invite-tentative')).toBe('Maybe');
+  });
+});

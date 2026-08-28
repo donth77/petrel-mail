@@ -68,6 +68,12 @@ nothing while a component is being written and are miserable to retrofit across 
 later. Physical properties are correct only where the thing genuinely is physical — a drop
 shadow's offset, a spinner's rotation.
 
+**Triage gestures are optimistic.** The row leaves, the chip appears and the counts move before
+the engine is asked; the captured prior state goes back on failure; a debounced recount reconciles.
+Route new triage actions through `useTriage.run` rather than calling `api.triage` from a component,
+or the gesture ends up fast in the list and slow in the sidebar. Not everything qualifies — see
+[docs/09 §7c](docs/09-engineering-practices.md) for what stays pessimistic and why.
+
 **User-facing strings are never literals in components.** They come from the Fluent bundle,
 even while English is the only locale. A string committed inline is invisible to translation
 and to the pseudolocale check that catches truncation.

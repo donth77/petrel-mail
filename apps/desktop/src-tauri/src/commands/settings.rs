@@ -377,3 +377,25 @@ mod backup_tests {
         assert_eq!(newer.version, 2);
     }
 }
+
+/// Posts a desktop notification, and reports whether it actually happened.
+///
+/// A separate command rather than the notification plugin's, because on macOS
+/// the plugin's path is a dead end that returns success — see `crate::notify`.
+/// Windows and Linux still go through the plugin, from the frontend, where the
+/// OS-level story is sound.
+///
+/// The return value exists so the settings pane's test button can say
+/// something true. Silence was indistinguishable from success, which is the
+/// one thing a button called "send a test notification" must never be.
+///
+/// Async, and off the UI thread, because the first call is the one that puts
+/// the system's permission prompt on screen. A sync command runs on the main
+/// thread, and waiting there for an answer the user has not given yet freezes
+/// the window behind the very dialog they need to read.
+#[tauri::command]
+pub async fn post_notification(title: String, body: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || crate::notify::post(&title, &body))
+        .await
+        .map_err(|e| e.to_string())?
+}

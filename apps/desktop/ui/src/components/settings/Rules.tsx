@@ -2,12 +2,15 @@ import { useEffect, useState } from 'react';
 import { ArrowDown, ArrowUp, Plus, Trash2 } from 'lucide-react';
 import { api, type Folder, type Rule, type RuleCondition, type Tag } from '../../lib/api';
 import { Icon } from '../Icon';
+import { PickerField } from '../PickerField';
+import { AccountNote } from './AccountNote';
+import { filableFolderRows } from '../../lib/folders';
 import { t } from '../../lib/strings';
 
 const FIELDS = ['from', 'to', 'subject', 'list_id'] as const;
 
 /** A rule summarised in one readable line, so the list explains itself. */
-function summary(rule: Rule, folders: Folder[], tags: Tag[]): string {
+export function summary(rule: Rule, folders: Folder[], tags: Tag[]): string {
   const conds = rule.conditions
     .map((c) => `${t(`rule-field-${c.field}` as 'rule-field-from')} ~ “${c.contains}”`)
     .join(' + ');
@@ -15,12 +18,15 @@ function summary(rule: Rule, folders: Folder[], tags: Tag[]): string {
   const a = rule.actions;
   if (a.move_to != null) {
     const f = folders.find((x) => x.id === a.move_to);
-    acts.push(t('rule-sum-move', { folder: f ? f.path : '?' }));
+    acts.push(f ? t('rule-sum-move', { folder: f.path }) : t('rule-sum-gone'));
   }
-  if (a.skip_inbox) acts.push(t('rule-sum-skip'));
+  // Only when there is nowhere to go: a named destination already takes the
+  // mail out of the inbox, and the engine drops the archive rather than let
+  // it undo the move. Saying both here described something it does not do.
+  if (a.skip_inbox && a.move_to == null) acts.push(t('rule-sum-skip'));
   if (a.tag != null) {
     const tg = tags.find((x) => x.id === a.tag);
-    acts.push(t('rule-sum-tag', { tag: tg ? tg.name : '?' }));
+    acts.push(tg ? t('rule-sum-tag', { tag: tg.name }) : t('rule-sum-gone'));
   }
   if (a.mark_read) acts.push(t('rule-sum-read'));
   if (a.notify) acts.push(t('rule-sum-notify'));
@@ -78,6 +84,7 @@ export function Rules({ onMessage }: { onMessage: (text: string) => void }) {
   return (
     <div className="pane-body">
       <h1 className="pane-title">{t('settings-rules')}</h1>
+      <AccountNote />
 
       <section className="field">
         <div className="flabel">{t('rules-on-arrival')}</div>
@@ -201,52 +208,78 @@ export function Rules({ onMessage }: { onMessage: (text: string) => void }) {
 
           <div className="sublabel">{t('rule-then')}</div>
           <div className="rule-acts">
-            <label>
-              {t('rule-act-move')}
-              <select
-                className="select"
-                value={editing.actions.move_to ?? ''}
-                onChange={(e) =>
-                  setEditing({
-                    ...editing,
-                    actions: {
-                      ...editing.actions,
-                      move_to: e.target.value ? Number(e.target.value) : null,
-                    },
-                  })
+            {/* Destinations, not the raw folder list. What a rule may file
+                into is the same question the move picker answers, and it was
+                being answered differently here — every role mailbox, every
+                `[Gmail]/…` path and every folder sitting in the bin was on
+                offer, and a rule filing mail into a deleted folder is a rule
+                that loses it. */}
+            <div className="rule-field">
+              <span>{t('rule-act-move')}</span>
+              <PickerField
+                mode="folder"
+                label={t('rule-act-move')}
+                value={editing.actions.move_to}
+                options={filableFolderRows(folders).map((r) => ({
+                  id: r.id,
+                  label: r.path,
+                  depth: r.depth,
+                  container: r.container || undefined,
+                  hasChildren: r.hasChildren || undefined,
+                  anchor: r.anchor,
+                }))}
+                noneLabel={t('rule-act-move-none')}
+                onChange={(id) =>
+                  setEditing({ ...editing, actions: { ...editing.actions, move_to: id } })
                 }
-              >
-                <option value="">{t('rule-act-move-none')}</option>
-                {folders.map((f) => (
-                  <option key={f.id} value={f.id}>{f.path}</option>
-                ))}
-              </select>
-            </label>
-            <label>
-              {t('rule-act-tag')}
-              <select
-                className="select"
-                value={editing.actions.tag ?? ''}
-                onChange={(e) =>
-                  setEditing({
-                    ...editing,
-                    actions: {
-                      ...editing.actions,
-                      tag: e.target.value ? Number(e.target.value) : null,
-                    },
-                  })
+                onCreate={(name) => {
+                  void api
+                    .createFolder(name)
+                    .then((id) => {
+                      setEditing((cur) =>
+                        cur ? { ...cur, actions: { ...cur.actions, move_to: id } } : cur,
+                      );
+                      return api.folders().then(setFolders);
+                    })
+                    .catch((e) => onMessage(String(e)));
+                }}
+              />
+            </div>
+            <div className="rule-field">
+              <span>{t('rule-act-tag')}</span>
+              <PickerField
+                mode="tag"
+                label={t('rule-act-tag')}
+                value={editing.actions.tag}
+                options={tags.map((tg) => ({
+                  id: tg.id,
+                  label: tg.name,
+                  colour: tg.colour || undefined,
+                }))}
+                noneLabel={t('rule-act-tag-none')}
+                onChange={(id) =>
+                  setEditing({ ...editing, actions: { ...editing.actions, tag: id } })
                 }
-              >
-                <option value="">{t('rule-act-tag-none')}</option>
-                {tags.map((tg) => (
-                  <option key={tg.id} value={tg.id}>{tg.name}</option>
-                ))}
-              </select>
-            </label>
-            <label>
+                onCreate={(name) => {
+                  void api
+                    .createTag(name)
+                    .then((id) => {
+                      setEditing((cur) =>
+                        cur ? { ...cur, actions: { ...cur.actions, tag: id } } : cur,
+                      );
+                      return api.tags().then(setTags);
+                    })
+                    .catch((e) => onMessage(String(e)));
+                }}
+              />
+            </div>
+            <label className={editing.actions.move_to != null ? 'is-moot' : undefined}>
               <input
                 type="checkbox"
-                checked={editing.actions.skip_inbox}
+                checked={editing.actions.skip_inbox && editing.actions.move_to == null}
+                // Moving the mail is already skipping the inbox, so the box
+                // is not offered as a second, contradictory instruction.
+                disabled={editing.actions.move_to != null}
                 onChange={(e) =>
                   setEditing({
                     ...editing,
@@ -254,7 +287,7 @@ export function Rules({ onMessage }: { onMessage: (text: string) => void }) {
                   })
                 }
               />
-              {t('rule-act-skip')}
+              {editing.actions.move_to != null ? t('rule-act-skip-moot') : t('rule-act-skip')}
             </label>
             <label>
               <input
