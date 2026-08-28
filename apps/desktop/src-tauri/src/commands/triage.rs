@@ -248,3 +248,22 @@ pub(crate) async fn destroy_trashed(
     log_sync(&format!("trash: {gone} removed, {kept} kept"));
     Ok((gone, kept))
 }
+
+/// The order somebody dragged their folders into.
+///
+/// Local only, and it never touches the server: IMAP has no notion of an
+/// order, so there is nothing to push and nothing that can come back to
+/// contradict it. That also makes this the rare folder command that cannot
+/// half-fail, which is why it has no rollback.
+#[tauri::command]
+pub fn reorder_folders(ids: Vec<i64>, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    let mut store = state.store()?;
+    store.reorder_folders(&ids).map_err(|e| e.to_string())
+}
+
+/// The order somebody dragged their tags into. Local, for the same reason.
+#[tauri::command]
+pub fn reorder_tags(ids: Vec<i64>, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    let mut store = state.store()?;
+    store.reorder_tags(&ids).map_err(|e| e.to_string())
+}

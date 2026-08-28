@@ -762,6 +762,55 @@ export function App() {
         .then(() => setToast(t('folder-moved', { name: leaf, to: targetPath || t('rail-folders') })))
         .catch((e) => setToast(t('folder-failed', { error: String(e) })));
     },
+    // Dropped in the gap between two rows: a reorder, not a move.
+    //
+    // The order is taken from the rendered rows rather than from the folders
+    // array, because those are not the same sequence. Folders draw as a tree —
+    // children nested under parents — so the visible order is a depth-first
+    // walk, while the array is whatever the engine's sort returned. Splicing
+    // the array moved folders to places nobody had pointed at.
+    //
+    // Reading the rows means the order saved is literally the order on screen,
+    // and there is no second implementation of the tree to keep in step.
+    (payload, at) => {
+      // Conversations are never reordered, so a threads payload has no
+      // business here and the narrowing says so rather than assuming.
+      if (payload.kind !== 'folder' && payload.kind !== 'tag') return;
+      const moving = payload.kind === 'folder' ? payload.folderId : payload.tagId;
+      const rows = [...document.querySelectorAll<HTMLElement>('.rail [data-reorder]')];
+      const ids = rows.map((r) => Number(r.dataset.reorder)).filter(Number.isFinite);
+
+      // Folders and tags share the attribute but are separate lists, and one
+      // must never be renumbered by a drag in the other.
+      const known = new Set(
+        payload.kind === 'folder' ? folders.map((f) => f.id) : tags.map((x) => x.id),
+      );
+      const list = ids.filter((id) => known.has(id));
+      const from = list.indexOf(moving);
+      if (from < 0) return;
+
+      const next = list.slice();
+      next.splice(from, 1);
+      // Found again after the removal: taking it out shifts everything below.
+      const target = next.indexOf(Number(at.key));
+      if (target < 0) return;
+      next.splice(at.edge === 'before' ? target : target + 1, 0, moving);
+      if (next.join() === list.join()) return;
+
+      if (payload.kind === 'folder') {
+        const byId = new Map(folders.map((f) => [f.id, f]));
+        setFolders(next.map((id) => byId.get(id)!).filter(Boolean));
+        void api
+          .reorderFolders(next)
+          .catch((e) => setToast(t('folder-failed', { error: String(e) })));
+      } else {
+        const byId = new Map(tags.map((x) => [x.id, x]));
+        setTags(next.map((id) => byId.get(id)!).filter(Boolean));
+        void api
+          .reorderTags(next)
+          .catch((e) => setToast(t('tag-rename-failed', { error: String(e) })));
+      }
+    }
   );
 
   /** Files dragged onto the composer from the desktop. */
@@ -1267,6 +1316,7 @@ export function App() {
         onSettings={() => setSettingsOpen('accounts')}
         onAddAccount={() => setAddingAccount(true)}
         dropOver={drag?.over ?? null}
+        insertAt={drag?.insert ?? null}
         // Only while conversations are in flight. A tag being carried can only
         // land on a conversation, so lighting up every mailbox would be
         // offering somewhere it cannot go.

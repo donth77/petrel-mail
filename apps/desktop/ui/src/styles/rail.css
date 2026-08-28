@@ -135,3 +135,17 @@
 .rail-item[aria-current='page'] .count {
   color: var(--accent-ink);
 }
+
+/* The line that says a drop will land between two rows rather than inside one.
+   Drawn with an inset shadow rather than a border so it costs no layout: a
+   border would move every row below it by a pixel at the exact moment the
+   pointer is trying to aim at one, and the list would squirm under the cursor.
+
+   Two pixels, in the accent, because it has to be legible against a row that
+   is also highlighted for hover. */
+.rail-item[data-insert='before'] {
+  box-shadow: inset 0 2px 0 0 var(--accent);
+}
+.rail-item[data-insert='after'] {
+  box-shadow: inset 0 -2px 0 0 var(--accent);
+}

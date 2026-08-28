@@ -390,6 +390,8 @@ pub fn run() {
             commands::windows::popout_compose,
             commands::windows::popout_message,
             commands::windows::set_dock_badge,
+            commands::triage::reorder_folders,
+            commands::triage::reorder_tags,
             commands::compose::complete_addresses,
             commands::compose::quote_message,
             commands::compose::save_draft,

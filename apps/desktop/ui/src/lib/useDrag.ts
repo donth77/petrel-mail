@@ -24,7 +24,39 @@ export type Dragging = {
   over: string | null;
   /** The conversation under the pointer, when a tag is what is being carried. */
   overRow: number | null;
+  /** Where a reorder would land, when the pointer is near the edge of a row
+   *  rather than the middle of it. Null means the drop would go *into*
+   *  whatever is under the pointer instead. */
+  insert: InsertPoint | null;
 };
+
+/** A gap between two rows, named by the row it sits above or below. */
+export type InsertPoint = {
+  /** The `data-reorder` value of the row the line is drawn against. */
+  key: string;
+  edge: 'before' | 'after';
+};
+
+/** How much of a row's height counts as its edge rather than its middle.
+ *
+ *  The middle still means "drop into this folder", so the bands cannot be
+ *  generous: at a third each there is barely any middle left on a 28px row and
+ *  nesting becomes hard to hit on purpose. A quarter leaves half the row
+ *  meaning what it has always meant. */
+const EDGE_BAND = 0.25;
+
+/** The gap a pointer is in, if it is near the edge of a reorderable row. */
+function insertionAt(el: Element | null, y: number): InsertPoint | null {
+  const row = el?.closest<HTMLElement>('[data-reorder]');
+  const key = row?.dataset.reorder;
+  if (!row || key === undefined) return null;
+  const r = row.getBoundingClientRect();
+  if (r.height <= 0) return null;
+  const where = (y - r.top) / r.height;
+  if (where < EDGE_BAND) return { key, edge: 'before' };
+  if (where > 1 - EDGE_BAND) return { key, edge: 'after' };
+  return null;
+}
 
 /**
  * Dragging conversations with the pointer.
@@ -40,6 +72,8 @@ export function useDrag(
   onDrop: (railKey: string, ids: number[]) => void,
   onTagRow: (tagId: number, threadId: number) => void,
   onFolderDrop: (folderId: number, targetPath: string) => void,
+  /** A folder or tag dropped into the gap between two rows. */
+  onReorder: (payload: Payload, at: InsertPoint) => void,
 ) {
   const [drag, setDrag] = useState<Dragging | null>(null);
   // Held in a ref as well: the window listeners below are registered once and
@@ -62,23 +96,47 @@ export function useDrag(
    * conversation, and the two never answer for each other.
    */
   const targetAt = useCallback(
-    (payload: Payload, x: number, y: number): { over: string | null; overRow: number | null } => {
+    (
+      payload: Payload,
+      x: number,
+      y: number,
+    ): { over: string | null; overRow: number | null; insert: InsertPoint | null } => {
       const el = document.elementFromPoint(x, y);
       if (payload.kind === 'folder') {
+        // Near a row's edge the drag means "put it here"; through the middle
+        // it means "put it inside". One gesture, told apart by where in the
+        // row the pointer is, which is why the insertion line has to be drawn:
+        // a few pixels decide between two very different outcomes.
+        const insert = insertionAt(el, y);
+        if (insert) return { over: null, overRow: null, insert };
         // A folder lands on another folder, on the Archive root, or on the
         // section header (which means "the top level").
         const host = el?.closest<HTMLElement>('[data-folder-drop]');
         const path = host?.dataset.folderDrop;
-        return { over: path !== undefined ? `fdrop:${path}` : null, overRow: null };
+        return { over: path !== undefined ? `fdrop:${path}` : null, overRow: null, insert: null };
       }
       if (payload.kind === 'tag') {
+        // Tags are a flat list, so a tag over the tag list is always a
+        // reorder — there is nothing to nest inside. Over a conversation it
+        // still means "apply this tag", which is a different target entirely
+        // and cannot be confused with the first.
+        const insert = insertionAt(el, y);
+        if (insert) return { over: null, overRow: null, insert };
         const row = el?.closest<HTMLElement>('[data-drop-row]');
         const id = Number(row?.dataset.dropRow);
-        return { over: null, overRow: Number.isFinite(id) && id !== 0 ? id : null };
+        return {
+          over: null,
+          overRow: Number.isFinite(id) && id !== 0 ? id : null,
+          insert: null,
+        };
       }
       const host = el?.closest<HTMLElement>('[data-drop-key]');
       const key = host?.dataset.dropKey;
-      return { over: key && acceptsDrop(key, currentView) ? key : null, overRow: null };
+      return {
+        over: key && acceptsDrop(key, currentView) ? key : null,
+        overRow: null,
+        insert: null,
+      };
     },
     [currentView],
   );
@@ -113,7 +171,12 @@ export function useDrag(
       if (!held) return;
       set(null);
       const hit = targetAt(held.payload, e.clientX, e.clientY);
-      if (held.payload.kind === 'tag') {
+      // An insertion point beats everything else: the pointer was in the gap
+      // between two rows, which is the one place the gesture means "reorder"
+      // rather than "file this inside that".
+      if (hit.insert && (held.payload.kind === 'folder' || held.payload.kind === 'tag')) {
+        onReorder(held.payload, hit.insert);
+      } else if (held.payload.kind === 'tag') {
         if (hit.overRow !== null) onTagRow(held.payload.tagId, hit.overRow);
       } else if (held.payload.kind === 'folder') {
         if (hit.over?.startsWith('fdrop:')) {
@@ -144,7 +207,7 @@ export function useDrag(
       window.removeEventListener('pointercancel', up);
       window.removeEventListener('keydown', key);
     };
-  }, [onDrop, onTagRow, onFolderDrop, set, targetAt]);
+  }, [onDrop, onTagRow, onFolderDrop, onReorder, set, targetAt]);
 
   /** Attach to a row: begins a drag once the pointer has travelled far enough. */
   const start = useCallback(

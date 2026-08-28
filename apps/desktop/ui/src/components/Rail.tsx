@@ -10,6 +10,7 @@ import { TagMenu } from './TagMenu';
 import { FolderMenu } from './FolderMenu';
 import { NameDialog } from './NameDialog';
 import { acceptsDrop } from '../lib/dnd';
+import type { InsertPoint } from '../lib/useDrag';
 import { nestableRolePath, underAnchor } from '../lib/folders';
 import { AccountMenu } from './AccountMenu';
 import { Tip } from './Tip';
@@ -60,6 +61,8 @@ type Props = {
       means to the store is the caller's business. */
   /** The destination under the pointer mid-drag, so it can light up. */
   dropOver: string | null;
+  /** Where a reorder would land, so the row can draw the line. */
+  insertAt: InsertPoint | null;
   /** Outbox messages waiting on a decision. Any at all turns the row amber:
       a message that needs a person must not go unnoticed, and this is where
       you find out — the sidebar, not a dialog. */
@@ -130,6 +133,7 @@ export function Rail({
   onSettings,
   onAddAccount,
   dropOver,
+  insertAt,
   dragActive,
   outboxNeedsAttention,
   railRef,
@@ -199,8 +203,14 @@ export function Rail({
       node = level.find((n) => n.path === prefix);
       if (!node) {
         node = { label: seg, path: prefix, children: [] };
+        // Appended in the order the folders arrive, which is the order the
+        // engine sorted them into: anything dragged first, in the arrangement
+        // chosen, then everything untouched, still alphabetical.
+        //
+        // This used to sort alphabetically on every insert, which is where a
+        // drag went to die — the engine stored the new order faithfully and
+        // the tree threw it away on the way to the screen.
         level.push(node);
-        level.sort((a, b) => a.label.localeCompare(b.label));
       }
       level = node.children;
     }
@@ -301,6 +311,11 @@ export function Rail({
             onPointerDown={(e) => onDragFolder(e, f.id, n.label)}
             {...dropTarget(`folder:${f.id}`, view, dropOver)}
             data-folder-drop={f.path}
+            data-reorder={f.id}
+            // Which edge to draw the line against. CSS puts it there; keeping
+            // the decision in one attribute means the line cannot appear on
+            // two rows at once.
+            data-insert={insertAt?.key === String(f.id) ? insertAt.edge : undefined}
             // One merged answer, written after the spread: dropTarget only
             // knows mail drags, and its undefined used to land last and wipe
             // the folder-drag highlight off every folder row.
@@ -661,6 +676,8 @@ export function Rail({
               onPointerDown={(e) => onDragTag(e, tag.id, tag.name)}
               {...dropTarget(`tag:${tag.name}`, view, dropOver)}
               data-drop-ok={dragActive && acceptsDrop(`tag:${tag.name}`, view) ? true : undefined}
+              data-reorder={tag.id}
+              data-insert={insertAt?.key === String(tag.id) ? insertAt.edge : undefined}
             >
               <span
                 className="tag-swatch"
