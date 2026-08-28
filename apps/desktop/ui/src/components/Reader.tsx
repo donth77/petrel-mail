@@ -4,10 +4,13 @@ import {
   Archive,
   ChevronDown,
   CornerUpLeft,
+  Forward as ForwardIcon,
   Mail,
   MailOpen,
   MoreVertical,
+  Printer,
   Reply as ReplyIcon,
+  ReplyAll,
   Star,
 } from 'lucide-react';
 import { api, type ActionKind, type Thread, type ThreadMessage } from '../lib/api';
@@ -127,15 +130,37 @@ function Expanded({
                   <Icon icon={MoreVertical} size={15} />
                 </MenuButton>
               </Tip>
+              {/* Icons and a .menu-label, like every other menu in the app.
+                  These items were bare text, which left this one menu sitting
+                  a few pixels out of line with the ⋮ next to it and made the
+                  three verbs harder to tell apart at a glance than anywhere
+                  else they appear.
+
+                  Reply is here as well as on the button beside the menu. The
+                  duplication is the point: reply, reply all and forward are
+                  one decision with three answers, and offering two of them in
+                  a place the third is missing from is how people conclude the
+                  third does not exist. */}
               <Menu portal gutter={6} className="menu" aria-label={t('msg-actions')}>
                 {onReply && (
+                  <MenuItem className="menu-item" onClick={() => onReply(m.id, false)}>
+                    <Icon icon={ReplyIcon} size={14} />
+                    <span className="menu-label">{t('msg-reply')}</span>
+                    <span className="menu-key">R</span>
+                  </MenuItem>
+                )}
+                {onReply && (
                   <MenuItem className="menu-item" onClick={() => onReply(m.id, true)}>
-                    {t('msg-reply-all')}
+                    <Icon icon={ReplyAll} size={14} />
+                    <span className="menu-label">{t('msg-reply-all')}</span>
+                    <span className="menu-key">A</span>
                   </MenuItem>
                 )}
                 {onForward && (
                   <MenuItem className="menu-item" onClick={() => onForward(m.id)}>
-                    {t('msg-forward')}
+                    <Icon icon={ForwardIcon} size={14} />
+                    <span className="menu-label">{t('msg-forward')}</span>
+                    <span className="menu-key">F</span>
                   </MenuItem>
                 )}
                 <MenuItem
@@ -144,7 +169,8 @@ function Expanded({
                     void api.printMessage(m.id).catch((e) => onToast(String(e)))
                   }
                 >
-                  {t('msg-print')}
+                  <Icon icon={Printer} size={14} />
+                  <span className="menu-label">{t('msg-print')}</span>
                 </MenuItem>
               </Menu>
             </MenuProvider>
