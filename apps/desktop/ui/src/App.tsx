@@ -48,7 +48,7 @@ import { Dialog } from '@ariakit/react';
 import { PaneResize } from './components/PaneResize';
 
 export function App() {
-  const { settings, set } = useSettings();
+  const { settings, locale, set } = useSettings();
   const [status, setStatus] = useState<Status | null>(null);
   // Bumped when the active account changes. Every effect that reads the
   // store keys on it, so a switch reloads the list, the counts, the tags, the
@@ -438,7 +438,9 @@ export function App() {
               return f ? f.path.split(/[/.]/).pop() || f.path : t('rail-folders');
             })()
           : t(`mailbox-${view}` as StringId),
-    [view, folders],
+    // locale: the labels come from t(), which a re-render alone does not
+    // refresh inside a memo.
+    [view, folders, locale],
   );
 
   // An empty list means different things in different views, and saying the
@@ -465,7 +467,7 @@ export function App() {
       : view === 'drafts' ? t('empty-drafts-body')
       : t('empty-view-body');
     return { title: t('empty-view-title', { view: viewName }), body };
-  }, [query, view, viewName, status?.count]);
+  }, [query, view, viewName, status?.count, locale]);
 
   const active = useMemo(() => items.find((m) => m.id === activeId) ?? null, [items, activeId]);
 

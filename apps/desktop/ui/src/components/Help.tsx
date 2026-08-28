@@ -7,13 +7,17 @@ import { GithubMark } from './GithubMark';
 import { api } from '../lib/api';
 import { clickAway } from '../lib/dialog';
 import { t } from '../lib/strings';
+import { useSettings } from '../lib/settings';
 import { ISSUES_URL, SOURCE_URL } from '../lib/project';
 
 export function Help({ open, onClose }: { open: boolean; onClose: () => void }) {
   const tabs = useTabStore({ defaultSelectedId: 'shortcuts' });
   const [filter, setFilter] = useState('');
   const selected = tabs.useState('selectedId');
-  const groups = useMemo(() => shortcutGroups(), []);
+  // The shortcut table is built once per language, not once per mount:
+  // shortcutGroups() resolves every label through t().
+  const { locale } = useSettings();
+  const groups = useMemo(() => shortcutGroups(), [locale]);
 
   const q = filter.trim().toLowerCase();
   const filteredShortcuts = useMemo(
@@ -37,7 +41,7 @@ export function Help({ open, onClose }: { open: boolean; onClose: () => void }) 
             )
           : g.ops,
       })).filter((g) => g.ops.length > 0),
-    [q],
+    [q, locale],
   );
 
   const close = () => {

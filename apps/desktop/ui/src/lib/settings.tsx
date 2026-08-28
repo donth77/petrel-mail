@@ -1,4 +1,4 @@
-import { createContext, Fragment, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { api } from './api';
 import { setFormatPrefs, type ClockPref } from './format';
 import { availableLocales, setLocale } from './strings';
@@ -116,6 +116,11 @@ type Key = keyof Settings;
 
 type Ctx = {
   settings: Settings;
+  /** The locale actually in use, which is not settings.language: that may say
+   *  `system`. Anything that caches a translated value keys its cache on this,
+   *  because t() is a plain function and a useMemo has no other way to know
+   *  the words underneath it changed. */
+  locale: string;
   set: <K extends Key>(key: K, value: Settings[K]) => void;
   reset: (key: Key) => void;
 };
@@ -203,16 +208,20 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
   setLocale(resolved);
 
   return (
-    <SettingsContext.Provider value={{ settings, set, reset }}>
-      {/* Keyed on the language, so changing it remounts the tree. t() is a
-          plain function rather than a hook, so nothing re-renders on its own
-          when the locale changes; without this, half the window would keep the
-          old words until something else happened to redraw it.
+    <SettingsContext.Provider value={{ settings, locale: resolved, set, reset }}>
+      {/* Not keyed on the language any more.
+          It used to be: `<Fragment key={resolved}>`, so changing the language
+          remounted the whole tree and every component re-ran t(). It also
+          threw away all React state below it — including which Settings pane
+          was open, so choosing a language closed the window you chose it in.
 
-          A remount can reset component state that was not worth persisting.
-          That is the trade, and an explicit language change is the one moment
-          it is clearly worth making. */}
-      <Fragment key={resolved}>{children}</Fragment>
+          A remount was never needed to do this. The provider's value is a new
+          object on every render, so every useSettings() consumer re-renders
+          when the language changes, and App is one — which re-renders
+          everything under it, since nothing here is memo()'d. What a re-render
+          does NOT refresh is a useMemo that caches translated text, and those
+          now take `locale` as a dependency. help.test.tsx holds that line. */}
+      {children}
     </SettingsContext.Provider>
   );
 }
