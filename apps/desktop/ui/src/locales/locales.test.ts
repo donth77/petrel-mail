@@ -15,8 +15,9 @@ import deFtl from './de.ftl?raw';
 import ptBrFtl from './pt-BR.ftl?raw';
 import jaFtl from './ja.ftl?raw';
 import zhHansFtl from './zh-Hans.ftl?raw';
+import koFtl from './ko.ftl?raw';
 
-const LOCALES: Record<string, string> = { en: enFtl, es: esFtl, fr: frFtl, de: deFtl, 'pt-BR': ptBrFtl, ja: jaFtl, 'zh-Hans': zhHansFtl };
+const LOCALES: Record<string, string> = { en: enFtl, es: esFtl, fr: frFtl, de: deFtl, 'pt-BR': ptBrFtl, ja: jaFtl, 'zh-Hans': zhHansFtl, ko: koFtl };
 
 function idsIn(source: string): string[] {
   return source

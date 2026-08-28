@@ -218,8 +218,14 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
 }
 
 /** Requested language to one we ship: exact match, then base language, then
- *  English. `system` asks the browser first. */
-function resolveLocale(setting: string): string {
+ *  English. `system` asks the browser first.
+ *
+ *  Exported so the Appearance pane can say which language "System" actually
+ *  resolves to. It used to name that in the string itself — every bundle
+ *  hardcoded its own language, so the English bundle said "System (English)"
+ *  even on a Mac set to French, where System would have given French. Right by
+ *  coincidence whenever the two agreed, and wrong the moment they did not. */
+export function resolveLocale(setting: string): string {
   const have = new Set(availableLocales());
   const wanted =
     setting && setting !== 'system'

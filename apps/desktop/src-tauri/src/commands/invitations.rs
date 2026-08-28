@@ -2,7 +2,7 @@
 
 use crate::diag::{data_dir, log_sync};
 use crate::state::active_account;
-use crate::state::{AppState, note_ui_touch};
+use crate::state::{AppState, note_ui_touch, now_ms};
 use petrel_engine::store::DraftEnvelope;
 use petrel_mime::ical::{IcalTime, Invitation};
 use std::sync::Arc;
@@ -204,7 +204,9 @@ pub fn respond_invitation(
                 account, None, &organizer, "", &subject, &subject, "", &envelope,
             )
             .map_err(|e| e.to_string())?;
-        store.schedule_send(id, None).map_err(|e| e.to_string())?;
+        store
+            .schedule_send(id, reply_send_at(now_ms()))
+            .map_err(|e| e.to_string())?;
         store
             .set_invite_response(message_id, &response)
             .map_err(|e| e.to_string())?;
@@ -215,6 +217,23 @@ pub fn respond_invitation(
         "invitation {message_id} answered {partstat}; reply queued as draft {draft_id}"
     ));
     Ok(())
+}
+
+/// When an invitation reply becomes due.
+///
+/// `Some`, never `None`, and that is the whole point of it having a name.
+/// `schedule_send(_, None)` *clears* a schedule — it is the call the outbox
+/// uses to pull a message back — and `due_sends` only returns rows whose
+/// `send_after_ms IS NOT NULL`. Answering an invitation with `None` therefore
+/// wrote a perfectly good reply into Drafts and left it there, while the
+/// organizer waited for an answer the release notes promised had been sent.
+/// That is what this did until 2026-08-28.
+///
+/// Due immediately rather than after an undo window: the reply is a
+/// consequence of pressing Accept, not a message being composed, and there is
+/// no undo affordance on an invitation to hang a countdown from.
+fn reply_send_at(now_ms: i64) -> Option<i64> {
+    Some(now_ms)
 }
 
 /// The METHOD:REPLY calendar the organizer's system ingests.
@@ -344,6 +363,46 @@ mod tests {
     fn stamps_round_trip_the_parser() {
         // 2026-02-22 23:30:00 UTC — the instant the parser test pins.
         assert_eq!(utc_stamp(1_771_803_000_000), "20260222T233000Z");
+    }
+
+    /// The bug this pins: a reply that is written, queued, and never sent.
+    ///
+    /// Against a real store rather than by inspecting the Option, because the
+    /// failure was never in the value — it was in what `due_sends` does with
+    /// it. `schedule_send(_, None)` leaves `send_after_ms` NULL and the outbox
+    /// only picks up rows where it IS NOT NULL, so the old code's reply sat in
+    /// Drafts forever. Swap `reply_send_at` back to `None` and this fails.
+    #[test]
+    fn an_answered_invitation_is_actually_due_to_send() {
+        use petrel_engine::store::{AccountServers, Store};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Store::open(&dir.path().join("p.db")).expect("store");
+        let account = store
+            .add_account("imap", "you@example.com", "You", &AccountServers::default())
+            .expect("account");
+        let draft = store
+            .save_draft(
+                account,
+                None,
+                "organizer@example.com",
+                "Accepted: Standup",
+                "",
+                "",
+            )
+            .expect("draft");
+
+        let now = 1_771_803_000_000;
+        store
+            .schedule_send(draft, reply_send_at(now))
+            .expect("schedule");
+
+        let due = store.due_sends(account, now).expect("due");
+        assert!(
+            due.iter().any(|d| d.id == draft),
+            "the reply must be due to send; queued with {:?} it was not",
+            reply_send_at(now)
+        );
     }
 
     #[test]

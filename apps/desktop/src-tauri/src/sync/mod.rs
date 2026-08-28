@@ -711,7 +711,6 @@ fn account_is_gmail(cfg: &ImapConfig) -> bool {
 /// each action goes through the ordinary triage path — locally at once,
 /// queued to the server like a hand-made change, drained promptly.
 fn apply_rules_to(state: &Arc<AppState>, account: i64, arrivals: &[i64]) {
-    use petrel_engine::actions::ActionKind;
     let Ok(store) = state.store.lock() else {
         return;
     };
@@ -759,19 +758,9 @@ fn apply_rules_to(state: &Arc<AppState>, account: i64, arrivals: &[i64]) {
                 continue;
             }
             let a = &rule.actions;
-            let mut acts: Vec<(ActionKind, Option<i64>)> = Vec::new();
-            if let Some(folder) = a.move_to {
-                acts.push((ActionKind::Move, Some(folder)));
-            }
-            if a.skip_inbox {
-                acts.push((ActionKind::Archive, None));
-            }
-            if let Some(tag) = a.tag {
-                acts.push((ActionKind::Tag, Some(tag)));
-            }
-            if a.mark_read {
-                acts.push((ActionKind::MarkRead, None));
-            }
+            // The order, and the move/skip-inbox interaction, belong with the
+            // rules engine where they can be tested without an AppState.
+            let acts = petrel_engine::rules::planned_actions(a);
             if a.notify {
                 // Said through the same announcer ordinary arrivals use:
                 // the next status poll carries it out, and the UI applies

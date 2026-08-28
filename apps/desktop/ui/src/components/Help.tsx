@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Dialog, DialogDismiss, Tab, TabList, TabPanel, useTabStore } from '@ariakit/react';
 import { Search, X } from 'lucide-react';
-import { OPERATOR_GROUPS, shortcutGroups } from '../lib/help';
+import { operatorGroups, shortcutGroups } from '../lib/help';
 import { Icon } from './Icon';
 import { GithubMark } from './GithubMark';
 import { api } from '../lib/api';
@@ -28,7 +28,7 @@ export function Help({ open, onClose }: { open: boolean; onClose: () => void }) 
   );
   const filteredOps = useMemo(
     () =>
-      OPERATOR_GROUPS.map((g) => ({
+      operatorGroups().map((g) => ({
         ...g,
         ops: q
           ? g.ops.filter(

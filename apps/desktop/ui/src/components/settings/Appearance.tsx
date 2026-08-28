@@ -1,5 +1,5 @@
 import { Monitor, Moon, Sun, type LucideIcon } from 'lucide-react';
-import { DEFAULTS, useSettings, type Settings } from '../../lib/settings';
+import { resolveLocale, DEFAULTS, useSettings, type Settings } from '../../lib/settings';
 import { Icon } from '../Icon';
 import { availableLocales, t, type StringId } from '../../lib/strings';
 
@@ -74,7 +74,7 @@ export function Appearance() {
               list, so adding a locale really is a data change. Each is named in
               its own language: someone looking for German is looking for
               "Deutsch", not for the English word for it. */}
-          <option value="system">{t('language-system')}</option>
+          <option value="system">{t('language-system', { language: endonym(resolveLocale('system')) })}</option>
           {availableLocales().map((code) => (
             <option key={code} value={code}>
               {endonym(code)}

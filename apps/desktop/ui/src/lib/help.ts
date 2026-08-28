@@ -1,4 +1,5 @@
 import { BINDINGS, displayKeys, GROUP_TITLES, type Binding } from './shortcuts';
+import { t, type StringId } from './strings';
 
 /** A shortcut row: what it does, and the keys that do it. */
 export type Shortcut = { label: string; keys: string[] };
@@ -10,9 +11,9 @@ export function shortcutGroups(): Group[] {
   const order: Binding['group'][] = ['move', 'write', 'act', 'everywhere'];
   return order
     .map((g) => ({
-      title: GROUP_TITLES[g],
+      title: t(GROUP_TITLES[g]),
       rows: BINDINGS.filter((b) => b.group === g && b.available).map((b) => ({
-        label: b.label,
+        label: t(b.label),
         keys: displayKeys(b),
       })),
     }))
@@ -26,41 +27,54 @@ export function shortcutGroups(): Group[] {
  */
 export type Operator = { op: string; means: string; example?: string };
 
-export const OPERATOR_GROUPS: { title: string; ops: Operator[] }[] = [
+/** The table as ids. Read through operatorGroups(), never directly: the
+ *  strings have to be resolved before anything filters on them, or the Help
+ *  dialog's search would be matching string ids instead of words. */
+type OperatorIds = { op: string; means: StringId | ''; example?: string };
+
+const OPERATOR_IDS: { title: StringId; ops: OperatorIds[] }[] = [
   {
-    title: 'Narrow by who and what',
+    title: 'search-op-group-1',
     ops: [
-      { op: 'from:', means: 'sender name or address', example: 'from:sam' },
-      { op: 'to:', means: 'anyone in To' },
-      { op: 'cc:', means: 'anyone copied' },
-      { op: 'subject:', means: 'the subject line only, not the body' },
-      { op: 'tag:', means: 'a tag you applied' },
+      { op: 'from:', means: 'search-op-from', example: 'from:sam' },
+      { op: 'to:', means: 'search-op-to' },
+      { op: 'cc:', means: 'search-op-cc' },
+      { op: 'subject:', means: 'search-op-subject' },
+      { op: 'tag:', means: 'search-op-tag' },
     ],
   },
   {
-    title: 'Narrow by where and how',
+    title: 'search-op-group-2',
     ops: [
-      { op: 'in:', means: 'inbox · archive · sent · drafts · spam · trash, or a folder name' },
-      { op: 'is:', means: 'unread · read · starred · snoozed' },
-      { op: 'has:attachment', means: 'carries a file' },
-      { op: 'filename:', means: "an attached file's name", example: 'filename:.pdf' },
+      { op: 'in:', means: 'search-op-in' },
+      { op: 'is:', means: 'search-op-is' },
+      { op: 'has:attachment', means: 'search-op-has-attachment' },
+      { op: 'filename:', means: 'search-op-filename', example: 'filename:.pdf' },
     ],
   },
   {
-    title: 'Narrow by when',
+    title: 'search-op-group-3',
     ops: [
       { op: 'after:', means: '', example: 'after:2026-06-01' },
-      { op: 'before:', means: 'everything sent earlier' },
-      { op: 'date:', means: 'one particular day' },
+      { op: 'before:', means: 'search-op-before' },
+      { op: 'date:', means: 'search-op-date' },
     ],
   },
   {
-    title: 'Put terms together',
+    title: 'search-op-group-4',
     ops: [
-      { op: 'annex pricing', means: 'both words — several terms all have to match' },
-      { op: '"board pack"', means: 'those words, in that order' },
-      { op: '-draft', means: 'leave these out' },
+      { op: 'annex pricing', means: 'search-op-annex-pricing' },
+      { op: '"board pack"', means: 'search-op-board-pack' },
+      { op: '-draft', means: 'search-op-draft' },
       { op: 'OR', means: '', example: 'from:sam OR from:dana' },
     ],
   },
 ];
+
+/** The operator table in the language the window is speaking. */
+export function operatorGroups(): { title: string; ops: Operator[] }[] {
+  return OPERATOR_IDS.map((g) => ({
+    title: t(g.title),
+    ops: g.ops.map((o) => ({ ...o, means: o.means ? t(o.means) : '' })),
+  }));
+}

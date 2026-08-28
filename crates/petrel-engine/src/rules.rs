@@ -6,6 +6,7 @@
 //! them, every enabled rule that matches, so two rules can each contribute
 //! (one tags, one archives) without a hidden first-match-wins surprise.
 
+use crate::actions::ActionKind;
 use serde::{Deserialize, Serialize};
 
 /// One thing that must be true of the message. All of a rule's conditions
@@ -92,6 +93,37 @@ pub fn matches(rule: &Rule, envelope: &Envelope) -> bool {
     })
 }
 
+/// The triage actions a matching rule queues, in the order they must run.
+///
+/// Here rather than at the call site because the ordering carries a trap that
+/// only shows up once two actions touch the same message. "Skip inbox" is
+/// Archive, and Archive on a folder-style account clears every placement
+/// before filing in archive — so a rule that both moved a message and skipped
+/// the inbox used to queue Move then Archive, and the Archive threw the move
+/// away. "Move to Marketing" plus "Skip inbox" filed the mail in Archive, not
+/// Marketing, and said nothing about it.
+///
+/// A move already takes the message out of the inbox, so the two are not
+/// really separate instructions: when a destination is named, the move *is*
+/// the skip.
+pub fn planned_actions(a: &Actions) -> Vec<(ActionKind, Option<i64>)> {
+    let mut acts = Vec::new();
+    match a.move_to {
+        Some(folder) => acts.push((ActionKind::Move, Some(folder))),
+        // Only meaningful on its own: with nowhere to go, skipping the inbox
+        // is exactly what archiving means.
+        None if a.skip_inbox => acts.push((ActionKind::Archive, None)),
+        None => {}
+    }
+    if let Some(tag) = a.tag {
+        acts.push((ActionKind::Tag, Some(tag)));
+    }
+    if a.mark_read {
+        acts.push((ActionKind::MarkRead, None));
+    }
+    acts
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,6 +164,57 @@ mod tests {
         ));
         assert!(matches(&rule(&[("list_id", "billing.")]), &env));
         assert!(!matches(&rule(&[("to", "someone-else")]), &env));
+    }
+
+    /// The bug: "Move to Marketing" plus "Skip inbox" filed mail in Archive.
+    ///
+    /// Archive clears every placement on a folder-style account before filing,
+    /// so queueing Move then Archive threw the move away. Proven against a
+    /// real store before the fix: Marketing=0, archive=1.
+    #[test]
+    fn a_move_is_not_undone_by_skipping_the_inbox() {
+        let both = Actions {
+            move_to: Some(7),
+            skip_inbox: true,
+            ..Actions::default()
+        };
+        let planned = planned_actions(&both);
+        assert_eq!(
+            planned,
+            vec![(ActionKind::Move, Some(7))],
+            "a named destination is the skip; Archive after it discards the move"
+        );
+
+        // Skipping the inbox with nowhere to go still means archive.
+        let skip_only = Actions {
+            skip_inbox: true,
+            ..Actions::default()
+        };
+        assert_eq!(
+            planned_actions(&skip_only),
+            vec![(ActionKind::Archive, None)]
+        );
+    }
+
+    #[test]
+    fn every_action_a_rule_can_carry_is_queued() {
+        let all = Actions {
+            move_to: Some(3),
+            tag: Some(5),
+            mark_read: true,
+            skip_inbox: true,
+            notify: true,
+        };
+        // notify is not a triage action: it is announced, not applied.
+        assert_eq!(
+            planned_actions(&all),
+            vec![
+                (ActionKind::Move, Some(3)),
+                (ActionKind::Tag, Some(5)),
+                (ActionKind::MarkRead, None),
+            ]
+        );
+        assert!(planned_actions(&Actions::default()).is_empty());
     }
 
     #[test]
