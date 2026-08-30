@@ -3,7 +3,7 @@
 use crate::commands::compose::guess_content_type;
 use crate::config::{imap_config, smtp_config_for};
 use crate::diag::log_sync;
-use crate::state::{AppState, active_account, now_ms};
+use crate::state::{AppState, now_ms};
 use crate::sync::drafts::drop_server_draft_using;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -65,9 +65,19 @@ struct Attempt {
 /// Sends once and reports what happened. Never retries, never files a copy in
 /// Sent on an uncertain outcome — that is the caller's decision to make, with
 /// the state machine's help.
+///
+/// `account` is the account the message was written from, and the only one it
+/// may be sent from. It used to be read from `active_account()` instead —
+/// whichever account happened to be selected in the window when the undo
+/// window ran out. The outbox is per account and `send_due` already knew
+/// which one; this threw that away and asked the UI. With two accounts set
+/// up, a message written from one went out over the other's SMTP server, as
+/// the other's address, carrying the other's signature, and was filed in the
+/// other's Sent folder — with every layer reporting success.
 #[allow(clippy::too_many_arguments)]
 async fn attempt(
     state: &Arc<AppState>,
+    account: i64,
     to: Vec<String>,
     cc: Vec<String>,
     subject: String,
@@ -80,23 +90,14 @@ async fn attempt(
     use petrel_engine::outbox::AttemptOutcome;
     use petrel_providers::smtp::{Attachment, Outgoing, SendResult, SmtpConfig, send_tls};
 
-    let account_id = {
-        let store = state.store()?;
-        store.active_account().ok().flatten()
-    };
-    let cfg = account_id
-        .and_then(|a| imap_config(state, a))
-        .ok_or("no account is configured")?;
+    let cfg = imap_config(state, account).ok_or("no account is configured")?;
     // The SMTP host the account was set up with. Derived from the IMAP host
     // only for the environment-driven account, which has no record of its own.
-    let smtp = account_id
-        .and_then(|a| {
-            state
-                .store
-                .lock()
-                .ok()
-                .and_then(|st| smtp_config_for(&st, a))
-        })
+    let smtp = state
+        .store
+        .lock()
+        .ok()
+        .and_then(|st| smtp_config_for(&st, account))
         .unwrap_or_else(|| SmtpConfig::for_imap_host(&cfg.host, &cfg.user, &cfg.pass));
     let domain = cfg
         .user
@@ -107,11 +108,7 @@ async fn attempt(
 
     let identity = {
         let store = state.store()?;
-        store
-            .active_account()
-            .ok()
-            .flatten()
-            .and_then(|a| store.identity(a).ok())
+        store.identity(account).ok()
     };
     // Read here rather than shuttled through the bridge. A 20MB file becomes a
     // 27MB JSON string on the way across, held twice in memory and slow enough
@@ -182,7 +179,6 @@ async fn attempt(
     // Filed second, and separately: a failure here has not lost the message.
     let sent_path = {
         let store = state.store()?;
-        let account = active_account(&store)?;
         store
             .folder_for_role(account, "sent")
             .ok()
@@ -320,6 +316,7 @@ pub(crate) async fn send_due(state: Arc<AppState>, account: i64) {
         // what was attached to it.
         let result = attempt(
             &state,
+            account,
             to,
             cc,
             d.subject,

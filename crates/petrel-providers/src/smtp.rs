@@ -5,6 +5,7 @@
 //! Where a send fails decides whether a retry is safe, so this reports the
 //! failure point, never a bare error.
 
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
@@ -328,10 +329,11 @@ pub async fn send_plaintext(
     let mut reader = BufReader::new(rx);
 
     // Greeting
-    match read_reply(&mut reader).await {
-        Ok(r) if code_of(&r) == 220 => {}
-        Ok(r) => fail_before!("greeting", r),
-        Err(e) => fail_before!("greeting", e),
+    match tokio::time::timeout(reply_timeout(), read_reply(&mut reader)).await {
+        Ok(Ok(r)) if code_of(&r) == 220 => {}
+        Ok(Ok(r)) => fail_before!("greeting", r),
+        Ok(Err(e)) => fail_before!("greeting", e),
+        Err(_) => fail_before!("greeting", "timed out waiting for the server"),
     }
 
     // Command/response pairs up to the DATA go-ahead.
@@ -344,13 +346,14 @@ pub async fn send_plaintext(
         if let Err(e) = tx.write_all(cmd.as_bytes()).await {
             fail_before!(stage, e);
         }
-        match read_reply(&mut reader).await {
-            Ok(r) if code_of(&r) == expect => {}
-            Ok(r) if (500..600).contains(&code_of(&r)) => {
+        match tokio::time::timeout(reply_timeout(), read_reply(&mut reader)).await {
+            Ok(Ok(r)) if code_of(&r) == expect => {}
+            Ok(Ok(r)) if (500..600).contains(&code_of(&r)) => {
                 return SendResult::RejectedPermanently { response: r };
             }
-            Ok(r) => fail_before!(stage, r),
-            Err(e) => fail_before!(stage, e),
+            Ok(Ok(r)) => fail_before!(stage, r),
+            Ok(Err(e)) => fail_before!(stage, e),
+            Err(_) => fail_before!(stage, "timed out waiting for the server"),
         }
     }
 
@@ -374,7 +377,15 @@ pub async fn send_plaintext(
         };
     }
 
-    match read_reply(&mut reader).await {
+    let acknowledged = match tokio::time::timeout(commit_timeout(), read_reply(&mut reader)).await {
+        Ok(r) => r,
+        Err(_) => {
+            return SendResult::UnknownAfterTransmit {
+                detail: "timed out waiting for the server to confirm".into(),
+            };
+        }
+    };
+    match acknowledged {
         Ok(r) if (200..300).contains(&code_of(&r)) => SendResult::Committed { response: r },
         Ok(r) if (500..600).contains(&code_of(&r)) => {
             SendResult::RejectedPermanently { response: r }
@@ -460,6 +471,48 @@ pub async fn login_check(cfg: &SmtpConfig) -> std::result::Result<(), String> {
 /// from "it failed", and that distinction is what spike S5's reconciliation
 /// rule turns into "ask the server whether it has the message" rather than a
 /// retry that might duplicate it.
+/// How long each phase of an SMTP conversation may take.
+///
+/// Without these the client waited forever. Nothing in the exchange had a
+/// deadline, so a server that accepted the TCP connection and then went quiet
+/// left `read_reply` pending for good — and because sending is awaited inside
+/// the same worker that delivers queued triage, one hung send stopped archives
+/// and moves going out too. A hang is the failure mode with no symptom: no
+/// error, no retry, just a message that never leaves.
+///
+/// The handshake values are deliberately tighter than RFC 5321's recommended
+/// minimums, which are written for relaying MTAs. A submission server that
+/// cannot answer EHLO inside a minute is not slow, it is broken.
+///
+/// The acknowledgement after the final dot keeps the RFC's ten minutes,
+/// because that is the one wait where slowness is legitimate: the server is
+/// scanning and queueing the message, and a large attachment through a spam
+/// filter really can take minutes. Cutting that one short would turn healthy
+/// sends into ambiguous ones, which is the expensive direction to be wrong in.
+/// Overridable so a test can prove the policy on loopback without waiting ten
+/// minutes for it. Same shape as the sync loop's knobs.
+fn phase_timeout(var: &str, default_secs: u64) -> Duration {
+    Duration::from_secs(
+        std::env::var(var)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default_secs),
+    )
+}
+
+fn connect_timeout() -> Duration {
+    phase_timeout("PETREL_SMTP_CONNECT_SECONDS", 30)
+}
+fn reply_timeout() -> Duration {
+    phase_timeout("PETREL_SMTP_REPLY_SECONDS", 60)
+}
+fn body_write_timeout() -> Duration {
+    phase_timeout("PETREL_SMTP_BODY_SECONDS", 120)
+}
+fn commit_timeout() -> Duration {
+    phase_timeout("PETREL_SMTP_COMMIT_SECONDS", 600)
+}
+
 pub async fn send_tls(cfg: &SmtpConfig, msg: &Outgoing, raw: &[u8]) -> SendResult {
     use base64::Engine as _;
     use tokio::io::{AsyncWriteExt, BufReader};
@@ -473,18 +526,25 @@ pub async fn send_tls(cfg: &SmtpConfig, msg: &Outgoing, raw: &[u8]) -> SendResul
         };
     }
 
-    let stream = match crate::imap::tls_stream_for(&cfg.host, cfg.port).await {
-        Ok(s) => s,
-        Err(e) => fail_before!("connect", e),
+    let stream = match tokio::time::timeout(
+        connect_timeout(),
+        crate::imap::tls_stream_for(&cfg.host, cfg.port),
+    )
+    .await
+    {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => fail_before!("connect", e),
+        Err(_) => fail_before!("connect", "timed out"),
     };
     let (rx, mut tx) = tokio::io::split(stream);
     let mut reader = BufReader::new(rx);
 
     macro_rules! expect {
         ($stage:expr, $want:expr) => {{
-            let reply = match read_reply(&mut reader).await {
-                Ok(r) => r,
-                Err(e) => fail_before!($stage, e),
+            let reply = match tokio::time::timeout(reply_timeout(), read_reply(&mut reader)).await {
+                Ok(Ok(r)) => r,
+                Ok(Err(e)) => fail_before!($stage, e),
+                Err(_) => fail_before!($stage, "timed out waiting for the server"),
             };
             let code = code_of(&reply);
             if code / 100 == 5 {
@@ -527,17 +587,44 @@ pub async fn send_tls(cfg: &SmtpConfig, msg: &Outgoing, raw: &[u8]) -> SendResul
     // Past this point a failure is ambiguous rather than safe to retry: the
     // server may have committed the message even if we never hear so.
     let dotted = dot_stuff(raw);
-    if let Err(e) = tx.write_all(&dotted).await {
-        return SendResult::UnknownAfterTransmit {
-            detail: e.to_string(),
-        };
+    match tokio::time::timeout(body_write_timeout(), tx.write_all(&dotted)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            return SendResult::UnknownAfterTransmit {
+                detail: e.to_string(),
+            };
+        }
+        Err(_) => {
+            return SendResult::UnknownAfterTransmit {
+                detail: "timed out sending the message body".into(),
+            };
+        }
     }
-    if let Err(e) = tx.write_all(b"\r\n.\r\n").await {
-        return SendResult::UnknownAfterTransmit {
-            detail: e.to_string(),
-        };
+    match tokio::time::timeout(body_write_timeout(), tx.write_all(b"\r\n.\r\n")).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            return SendResult::UnknownAfterTransmit {
+                detail: e.to_string(),
+            };
+        }
+        Err(_) => {
+            return SendResult::UnknownAfterTransmit {
+                detail: "timed out ending the message".into(),
+            };
+        }
     }
-    match read_reply(&mut reader).await {
+    let acknowledged = match tokio::time::timeout(commit_timeout(), read_reply(&mut reader)).await {
+        Ok(r) => r,
+        // The message went and the answer never came. Exactly the case the
+        // outcome exists for: retrying could duplicate it, so somebody has to
+        // look rather than guess.
+        Err(_) => {
+            return SendResult::UnknownAfterTransmit {
+                detail: "timed out waiting for the server to confirm".into(),
+            };
+        }
+    };
+    match acknowledged {
         Ok(reply) if code_of(&reply) / 100 == 2 => {
             let _ = tx.write_all(b"QUIT\r\n").await;
             SendResult::Committed { response: reply }
