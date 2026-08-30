@@ -13,6 +13,7 @@ import { t, type StringId } from './lib/strings';
 import { Search } from 'lucide-react';
 import { SortMenu } from './components/SortMenu';
 import { DEFAULT_SORT, SEARCH_SORT, effectiveSort, wireSort, type Sort } from './lib/sort';
+import { mergeOrder } from './lib/reorder';
 import { Rail } from './components/Rail';
 import { useKeyboard } from './lib/useKeyboard';
 import { useAppMenu } from './lib/menu';
@@ -889,6 +890,14 @@ export function App() {
     //
     // Reading the rows means the order saved is literally the order on screen,
     // and there is no second implementation of the tree to keep in step.
+    //
+    // What the rows cannot give is the rest of the list. Folded subtrees,
+    // Archive and Trash, a flyout drawn outside the rail — none of those are
+    // in the DOM, and the engine numbers whatever it is handed from zero. So
+    // saving the visible rows alone left the folders behind them holding
+    // numbers from an older drag, and the two sets collided: a live account
+    // had three folders claiming position 0. mergeOrder puts the dragged rows
+    // back into the whole list before any of it is saved.
     (payload, at) => {
       // Conversations are never reordered, so a threads payload has no
       // business here and the narrowing says so rather than assuming.
@@ -899,9 +908,8 @@ export function App() {
 
       // Folders and tags share the attribute but are separate lists, and one
       // must never be renumbered by a drag in the other.
-      const known = new Set(
-        payload.kind === 'folder' ? folders.map((f) => f.id) : tags.map((x) => x.id),
-      );
+      const everything = payload.kind === 'folder' ? folders.map((f) => f.id) : tags.map((x) => x.id);
+      const known = new Set(everything);
       const list = ids.filter((id) => known.has(id));
       const from = list.indexOf(moving);
       if (from < 0) return;
@@ -913,12 +921,13 @@ export function App() {
       if (target < 0) return;
       next.splice(at.edge === 'before' ? target : target + 1, 0, moving);
       if (next.join() === list.join()) return;
+      const order = mergeOrder(everything, next);
 
       if (payload.kind === 'folder') {
         const byId = new Map(folders.map((f) => [f.id, f]));
         const wasOrder = folders;
-        setFolders(next.map((id) => byId.get(id)!).filter(Boolean));
-        void api.reorderFolders(next).catch((e) => {
+        setFolders(order.map((id) => byId.get(id)!).filter(Boolean));
+        void api.reorderFolders(order).catch((e) => {
           // Put the order back. This was optimistic without a way home, so a
           // refused reorder left the rail showing an arrangement the engine
           // had never accepted — and looking correct while being wrong.
@@ -928,8 +937,8 @@ export function App() {
       } else {
         const byId = new Map(tags.map((x) => [x.id, x]));
         const wasOrder = tags;
-        setTags(next.map((id) => byId.get(id)!).filter(Boolean));
-        void api.reorderTags(next).catch((e) => {
+        setTags(order.map((id) => byId.get(id)!).filter(Boolean));
+        void api.reorderTags(order).catch((e) => {
           setTags(wasOrder);
           setToast(t('tag-rename-failed', { error: String(e) }));
         });

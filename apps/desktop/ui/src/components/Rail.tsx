@@ -26,6 +26,9 @@ const MAILBOXES = MAILBOX_KEYS.map((key) => ({
 
 type Tag = { id: number; name: string; colour: string; thread_count: number };
 
+/** What a row with children does before anybody touches it. See `isOpen`. */
+const FOLDED_AT_LAUNCH = true;
+
 /**
  * Marks a rail destination so a drag can find it.
  *
@@ -156,7 +159,7 @@ export function Rail({
   /** What the naming field starts holding — "Parent/" for a subfolder. */
   const [folderPrefill, setFolderPrefill] = useState('');
   /** Rows folded shut by hand (true) or opened by hand (false). A path that is
-   *  absent takes the default — see foldedByDefault. */
+   *  absent takes the default, which is folded — see FOLDED_AT_LAUNCH. */
   const [folded, setFolded] = useState<Record<string, boolean>>({});
   const [renamingFolder, setRenamingFolder] = useState<number | null>(null);
   // Which naming dialog is up — the collapsed rail's way of asking for a
@@ -216,18 +219,28 @@ export function Rail({
     own.filter((f) => under(f, trashPath)),
     trashPath?.length ?? 0,
   );
-  /* Archive and Trash start folded. What hangs off them is mail already dealt
-     with, and a rail that opens with forty archived years unrolled pushes the
-     folders you actually work in off the bottom of the screen. Only the two
-     anchors default this way: once one is open, the rows inside it fold and
-     unfold like every other row. */
-  const foldedByDefault = (path: string) => path === archivePath || path === trashPath;
-  const isOpen = (path: string) => !(folded[path] ?? foldedByDefault(path));
+  /* Every row with children starts folded, on every launch.
+
+     The rail opens as a list of the things you filed under, not as the whole
+     filing cabinet: this account has forty folders under Archive alone, and
+     unrolling them pushes the folders somebody actually works in off the
+     bottom of the screen. Opening one is a click; scrolling past forty is not.
+
+     Archive and Trash were the only two that defaulted this way, which made
+     the rule read as a rule about those two mailboxes rather than about
+     depth. It also depended on a role: an account whose server marks no
+     \Archive had no anchor to match, so the whole archive tree unrolled at
+     launch anyway.
+
+     Folds are not remembered between launches, deliberately. "Where did I
+     leave the sidebar three days ago" is not a question worth restoring, and
+     an app that opens the same way every time is one you can learn. */
+  const isOpen = (path: string) => !(folded[path] ?? FOLDED_AT_LAUNCH);
   const archiveOpen = archivePath !== undefined && isOpen(archivePath);
   const trashOpen = trashPath !== undefined && isOpen(trashPath);
 
   const toggle = (path: string) =>
-    setFolded((prev) => ({ ...prev, [path]: !(prev[path] ?? foldedByDefault(path)) }));
+    setFolded((prev) => ({ ...prev, [path]: !(prev[path] ?? FOLDED_AT_LAUNCH) }));
 
   const dragging = dragActive || folderDragPath !== null;
 

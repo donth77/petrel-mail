@@ -74,6 +74,22 @@
   // Date descending is the default because that is what a mailbox means by
   // "no opinion", and it is what every list here showed before there was a
   // control to change it.
+  // Puts a list into the order a set of ids names. Ids the list does not hold
+  // are ignored; rows the ids do not name keep their slots, so a partial save
+  // is visibly partial here rather than silently accepted.
+  function reindex(list, ids) {
+    if (!ids || !ids.length) return null;
+    var pos = {};
+    ids.forEach(function (id, i) { pos[id] = i; });
+    var moving = list.filter(function (x) { return pos[x.id] !== undefined; });
+    moving.sort(function (a, b) { return pos[a.id] - pos[b.id]; });
+    var k = 0;
+    for (var i = 0; i < list.length; i += 1) {
+      if (pos[list[i].id] !== undefined) { list[i] = moving[k]; k += 1; }
+    }
+    return null;
+  }
+
   function sorted(list, a) {
     var key = a.sort || 'date';
     var up = !!a.ascending;
@@ -400,6 +416,13 @@
     // harness tab away would take the app under test with it.
     open_external: function () { return null; },
     empty_trash: function () { return '7/0'; },
+    // Modelled, not stubbed. The engine numbers the ids it is handed from
+    // zero and orders by that number, so a shim that accepted the call and
+    // did nothing would let a reorder saving half the list look correct —
+    // which is exactly the bug this models. Reordering the arrays in place
+    // is what makes a re-fetch answer the way a relaunch would.
+    reorder_folders: function (a) { return reindex(folders, a.ids); },
+    reorder_tags: function (a) { return reindex(tags, a.ids); },
     check_update: function () {
       // ?update=1 offers one; ?update=err makes the check itself fail, which
       // must not read as "up to date".
