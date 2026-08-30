@@ -18,3 +18,11 @@ export const ISSUES_URL = `${REPO_URL}/issues`;
  *  heading it opens with, so the link lands on the title rather than wherever
  *  GitHub decides to scroll. */
 export const SOURCE_URL = `${REPO_URL}#petrel`;
+
+/** Every release, newest first. Where somebody goes to read what changed in a
+ *  version they do not have, or to fetch one the updater cannot reach. */
+export const RELEASES_URL = `${REPO_URL}/releases`;
+
+/** The newest release. GitHub resolves `latest` itself, so this cannot go
+ *  stale the way a pinned tag would. */
+export const LATEST_RELEASE_URL = `${REPO_URL}/releases/latest`;

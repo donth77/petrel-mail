@@ -28,14 +28,20 @@ cp "$root/scripts/harness/msg.html" "$out/msg.html"
 # Inject the shim ahead of the module script. A classic script tag runs during
 # parsing, so window.__TAURI_INTERNALS__ exists before the deferred module ever
 # evaluates — which is the only ordering that works.
-python3 - "$out/index.html" <<'PY'
-import re, sys
-path = sys.argv[1]
+python3 - "$out/index.html" "$out/shim.js" <<'PY'
+import hashlib, re, sys
+path, shim = sys.argv[1], sys.argv[2]
 html = open(path).read()
 if 'shim.js' not in html:
-    html = re.sub(r'(<script type="module")', '<script src="./shim.js"></script>\n    \\1', html, count=1)
+    # Stamped with the shim's own hash. Without it the browser keeps the copy
+    # it fetched the first time and every later change to the shim is invisible
+    # — which is worse than no shim, because the harness then reports on code
+    # nobody is running. Cost an afternoon once; the URL is cheap.
+    tag = hashlib.blake2s(open(shim, 'rb').read(), digest_size=6).hexdigest()
+    html = re.sub(r'(<script type="module")',
+                  f'<script src="./shim.js?v={tag}"></script>\n    \\1', html, count=1)
     open(path, 'w').write(html)
-    print("shim injected")
+    print(f"shim injected (v={tag})")
 PY
 
 echo "serving $out on http://localhost:$port"

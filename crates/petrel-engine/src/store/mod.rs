@@ -804,6 +804,35 @@ pub enum CountMode {
     Off,
 }
 
+/// The rail's fixed mailboxes, in the order they ship in.
+///
+/// One list, because the sidebar section that reorders and hides them, the
+/// counts query, and the settings that store somebody's arrangement all have
+/// to agree on what a mailbox *is*. A tenth key, `folders`, covers every
+/// folder somebody made; it has no row of its own here because it is not a
+/// mailbox.
+pub const MAILBOX_KEYS: [&str; 9] = [
+    "inbox", "starred", "snoozed", "sent", "drafts", "outbox", "archive", "spam", "trash",
+];
+
+/// The mailbox nobody may hide. Everything else is somebody's business.
+pub const ESSENTIAL_MAILBOX: &str = "inbox";
+
+impl Store {
+    /// What a mailbox counts when nobody has said otherwise.
+    ///
+    /// The rule in one function: a list you built by hand counts everything on
+    /// it, a place mail lands by itself counts what you have not read, and
+    /// Sent counts nothing because nothing waits there.
+    pub fn default_count_mode(key: &str) -> CountMode {
+        match key {
+            "drafts" | "outbox" | "starred" | "snoozed" => CountMode::Total,
+            "sent" => CountMode::Off,
+            _ => CountMode::Unread,
+        }
+    }
+}
+
 impl CountMode {
     pub fn parse(s: &str) -> CountMode {
         match s {

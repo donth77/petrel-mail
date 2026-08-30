@@ -216,16 +216,48 @@
     view_counts: function (a) {
       // Modelled, not faked: a shim that always returned the same numbers
       // would let a badge that ignores its setting look correct.
-      if (a.mode === 'off') return [];
+      //
+      // One mode per mailbox now, as the engine answers. The defaults live in
+      // lib/mailboxes.ts; repeated here because the shim stands in for the
+      // engine, and an engine that agreed with the caller by construction
+      // would test nothing.
+      var modes = a.modes || {};
+      var byDefault = function (key) {
+        if (key === 'drafts' || key === 'outbox' || key === 'starred' || key === 'snoozed') {
+          return 'total';
+        }
+        return key === 'sent' ? 'off' : 'unread';
+      };
+      var modeOf = function (key) { return modes[key] || byDefault(key); };
       var now = Date.now();
       var live = rows.filter(function (r) { return !r.filed && !(r.snoozed > now); });
-      var n = a.mode === 'total'
-        ? live.length
-        : live.filter(function (r) { return r.unread; }).length;
-      var out = n > 0 ? [['inbox', n]] : [];
-      // The outbox's own numbers: how many are held, and how many of those
-      // are waiting on a person — the one that turns the rail amber.
-      out.push(['outbox', 5]);
+      var out = [];
+      var push = function (key, all, unread) {
+        var mode = modeOf(key);
+        if (mode === 'off') return;
+        var n = mode === 'total' ? all : unread;
+        if (n > 0) out.push([key, n]);
+      };
+      push('inbox', live.length, live.filter(function (r) { return r.unread; }).length);
+      push('starred', 18, 0); // read, starred, and still worth a number
+      push('snoozed', 2, 0);
+      push('sent', 40, 0);
+      push('drafts', 1, 1);
+      push('outbox', 5, 5);
+      push('spam', 2, 2);
+      push('trash', 3, 0);
+      push('archive', 12, 4);
+      // Folders answer under their own key. Emitted so a folder row can be
+      // seen carrying both a number and a ⋮ — the pair that has to share the
+      // row's right-hand corner.
+      if (modeOf('folders') !== 'off') {
+        var folderCounts = { 101: 7, 103: 2, 7: 4 };
+        Object.keys(folderCounts).forEach(function (id) {
+          out.push(['folder:' + id, folderCounts[id]]);
+        });
+      }
+      // Not a count, and no count preference silences it: the one that turns
+      // the rail amber when a send could not be proved either way.
       out.push(['outbox:attention', 1]);
       return out;
     },
@@ -317,13 +349,34 @@
     check_update: function () {
       // ?update=1 offers one; ?update=err makes the check itself fail, which
       // must not read as "up to date".
+      //
+      // current_notes is what the running build was compiled with, so the
+      // pane can be seen answering about the version somebody already has.
+      // Long on purpose: the box has a ceiling and has to scroll rather than
+      // stretch the pane past its own footer.
+      var running = [
+        'A new Sidebar pane: choose which mailboxes appear, put them in the',
+        'order you want, and pick what number each one carries.',
+        '',
+        'Starred and Snoozed count everything on them rather than only the',
+        'unread, which is what starring something is for.',
+        '',
+        'Moving a folder to the Trash works when the bin already holds a',
+        'folder of that name.',
+        '',
+        'Archiving on a server with no Archive folder no longer loses mail.',
+        '',
+        'Search filter pills keep the mailbox you were searching in.',
+      ].join('\n');
       if (location.search.indexOf('update=err') !== -1) {
-        return { current: '0.0.1', available: null, notes: null, error: 'network unreachable' };
+        return { current: '0.0.1', available: null, notes: null,
+                 current_notes: running, error: 'network unreachable' };
       }
       if (location.search.indexOf('update=1') !== -1) {
-        return { current: '0.0.1', available: '0.2.0', notes: 'Faster lists, invitations.', error: null };
+        return { current: '0.0.1', available: '0.2.0', notes: 'Faster lists, invitations.',
+                 current_notes: running, error: null };
       }
-      return { current: '0.0.1', available: null, notes: null, error: null };
+      return { current: '0.0.1', available: null, notes: null, current_notes: running, error: null };
     },
     install_update: function () { return null; },
     restart_for_update: function () { return null; },

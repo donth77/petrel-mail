@@ -40,6 +40,14 @@ export const DEFAULTS = {
   /// the rail to say how big each mailbox is; off is for anyone who would
   /// rather not be counted at.
   badges: 'unread' as 'unread' | 'total' | 'off',
+
+  /// How the sidebar's mailboxes are arranged: their order, which of them are
+  /// shown, and what number each one carries. JSON, written by the Sidebar
+  /// pane and read by lib/mailboxes.ts, which stores only what differs from
+  /// the defaults so an improved default still reaches anyone who never
+  /// overrode that row. Empty until somebody changes something, which is when
+  /// `badges` above stops being consulted.
+  railMailboxes: '',
   /** Days a message may sit in the Trash before Petrel deletes it, on the
    *  server and here. '0' is off, and is the default: deleting mail on a
    *  timer is a promise to opt into rather than a default to discover. */

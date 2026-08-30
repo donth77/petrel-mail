@@ -286,6 +286,50 @@
   flex-shrink: 0;
 }
 
+/* Every count sits at the sidebar's right edge, on every row.
+
+   It did not used to. The ⋮ holds its space on purpose — so a name and count
+   do not shift as it fades in — but it holds that space *after* the count, and
+   only rows that have a ⋮ at all. So Archive's number and every folder's sat
+   29px inside Starred's, and the column read as ragged.
+
+   Taking the ⋮ out of flow fixes the ragged edge without giving up the
+   no-shift property: out of flow it never moves anything, ever. It then wants
+   the same corner the count is in, so on the rows that have one the count
+   steps aside while the row is pointed at. Which of the two you want at that
+   moment is not in doubt: you are reaching for the menu.
+
+   Expanded only. Collapsed, the rows are icons centred in a narrow rail and
+   an absolute right-hand control would land on top of them. */
+.rail:not([data-collapsed]) .rail-scroll .rail-item {
+  position: relative;
+}
+
+.rail:not([data-collapsed]) .rail-scroll .rail-item .tag-edit {
+  position: absolute;
+  inset-inline-end: 7px;
+  inset-block-start: 50%;
+  transform: translateY(-50%);
+  margin-inline-start: 0;
+}
+
+/* Which rows share the corner is marked in the markup rather than guessed at
+   here, so the rule matches exactly the rows that render a ⋮.
+   
+   Three states, not two. Pointing at the row is the obvious one and focus is
+   its keyboard twin, but an open menu is neither: it portals out of the row,
+   so the moment the pointer moves away `:hover` and `:focus-within` both stop
+   matching while the ⋮ stays lit by its own `aria-expanded` rule — and the
+   number reappeared underneath it. `:has()` is the only way to ask "is this
+   row's menu open" from the count's side; every engine this ships to has had
+   it since 2023, and where it does not the count simply stays put, which is
+   where it was before any of this. */
+.rail-item[data-has-menu]:hover .count,
+.rail-item[data-has-menu]:focus-within .count,
+.rail-item[data-has-menu]:has(.tag-edit[aria-expanded='true']) .count {
+  visibility: hidden;
+}
+
 .rail-item .count {
   margin-inline-start: auto;
   font-family: var(--mono);

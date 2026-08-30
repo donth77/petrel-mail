@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Download, RefreshCw, RotateCw } from 'lucide-react';
+import { Download, ExternalLink, RefreshCw, RotateCw, Tag } from 'lucide-react';
 import { api, type UpdateStatus } from '../../lib/api';
 import { Icon } from '../Icon';
+import { LATEST_RELEASE_URL, RELEASES_URL } from '../../lib/project';
 import { t, type StringId } from '../../lib/strings';
 
 /** A category from the engine becomes a sentence here, where it can be
@@ -86,10 +87,12 @@ export function Updates({ onMessage }: { onMessage: (text: string) => void }) {
       <h1 className="pane-title">{t('settings-updates')}</h1>
 
       <section className="field">
-        <div className="flabel">{t('update-this-version')}</div>
-        <p className="fhelp">
+        {/* No heading above this. "This copy of Petrel" said nothing the line
+            below it does not, and a label whose only job is to introduce one
+            sentence is furniture. */}
+        <div className="flabel">
           {status ? t('update-running', { version: status.current }) : t('update-reading')}
-        </p>
+        </div>
         {/* What changed in the build you are running. Compiled in rather than
             fetched, so it is here offline and cannot be a spinner. A dev build
             has none, and shows none. The box is the same fixed, scrollable one
@@ -102,6 +105,25 @@ export function Updates({ onMessage }: { onMessage: (text: string) => void }) {
           <button type="button" className="fbtn" disabled={busy} onClick={() => void check()}>
             <Icon icon={RefreshCw} size={13} />
             {t('update-check')}
+          </button>
+          {/* The updater is one way to a release and the browser is the other.
+              Somebody on a build the updater cannot reach, or reading about a
+              version they do not have, needs the second one. */}
+          <button
+            type="button"
+            className="fbtn"
+            onClick={() => void api.openExternal(LATEST_RELEASE_URL)}
+          >
+            <Icon icon={Tag} size={13} />
+            {t('update-latest')}
+          </button>
+          <button
+            type="button"
+            className="fbtn"
+            onClick={() => void api.openExternal(RELEASES_URL)}
+          >
+            <Icon icon={ExternalLink} size={13} />
+            {t('update-releases')}
           </button>
         </div>
       </section>

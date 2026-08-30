@@ -56,17 +56,23 @@ pub fn thread_detail(
 /// The mode comes from the caller rather than from stored settings because the
 /// setting lives in the renderer with the rest of them, and a second copy in
 /// the engine is a second thing to keep in step.
+/// One entry per mailbox the person has an opinion about — `inbox`, `starred`,
+/// and the rest, plus `folders` for every folder they made. Anything absent
+/// falls to the engine's own rule for that mailbox, so a fresh install sends
+/// nothing and still gets sensible numbers.
 #[tauri::command]
 pub fn view_counts(
-    mode: String,
+    modes: std::collections::HashMap<String, String>,
     state: State<Arc<AppState>>,
 ) -> Result<Vec<(String, i64)>, String> {
     let _t = Timed::new("view_counts");
     note_ui_touch(&state);
+    let modes: std::collections::HashMap<String, petrel_engine::store::CountMode> = modes
+        .iter()
+        .map(|(k, v)| (k.clone(), petrel_engine::store::CountMode::parse(v)))
+        .collect();
     let store = state.store()?;
-    store
-        .view_counts(petrel_engine::store::CountMode::parse(&mode))
-        .map_err(|e| e.to_string())
+    store.view_counts(&modes).map_err(|e| e.to_string())
 }
 
 /// Every conversation in a view, counted — not the loaded window's length.

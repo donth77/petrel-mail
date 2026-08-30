@@ -9,6 +9,22 @@
 use petrel_engine::actions::{ActionKind, PlacementPolicy};
 use petrel_engine::store::{CountMode, ListView, NewMessage, Store, flags};
 
+/// Every mailbox set to one mode, which is how the rail's numbers used to be
+/// asked for before each row could answer for itself. Handy for the tests that
+/// are about a mode rather than about the per-mailbox rule.
+fn all_at(mode: CountMode) -> std::collections::HashMap<String, CountMode> {
+    petrel_engine::store::MAILBOX_KEYS
+        .iter()
+        .map(|k| ((*k).to_string(), mode))
+        .chain(std::iter::once(("folders".to_string(), mode)))
+        .collect()
+}
+
+/// Nobody has said otherwise, so every mailbox answers by the engine's rule.
+fn as_shipped() -> std::collections::HashMap<String, CountMode> {
+    std::collections::HashMap::new()
+}
+
 /// Places every seeded message in the inbox — the tests that read Inbox
 /// call this; the tests that build their own placements do not.
 fn inbox_all(store: &Store, account: i64, ids: &[i64]) {
@@ -226,10 +242,7 @@ fn view_counts_report_per_mailbox_and_by_conversation() {
         store.set_flags(*id, 0, flags::SEEN).unwrap(); // unread
     }
     let counts = |s: &Store| -> std::collections::HashMap<String, i64> {
-        s.view_counts(CountMode::Unread)
-            .unwrap()
-            .into_iter()
-            .collect()
+        s.view_counts(&as_shipped()).unwrap().into_iter().collect()
     };
     assert_eq!(counts(&store).get("inbox"), Some(&4));
 
@@ -250,7 +263,7 @@ fn view_counts_report_per_mailbox_and_by_conversation() {
 
     // Asking for totals is a different question, and Sent can answer that one.
     let totals: std::collections::HashMap<String, i64> = store
-        .view_counts(CountMode::Total)
+        .view_counts(&all_at(CountMode::Total))
         .unwrap()
         .into_iter()
         .collect();
@@ -264,7 +277,12 @@ fn view_counts_report_per_mailbox_and_by_conversation() {
     assert_eq!(totals.get("inbox"), Some(&3));
 
     // Off means off, not zeroes.
-    assert!(store.view_counts(CountMode::Off).unwrap().is_empty());
+    assert!(
+        store
+            .view_counts(&all_at(CountMode::Off))
+            .unwrap()
+            .is_empty()
+    );
 }
 
 /// The account header's unread is a claim about your mail, not about every row
@@ -551,4 +569,53 @@ mod archive_tree {
             .unwrap();
         assert_eq!(rows.len(), 1, "{rows:?}");
     }
+}
+
+/// Starred and Snoozed count what is on them, not how much of it is unread.
+///
+/// A star is not something mail arrives carrying, like unread; it is a person
+/// deciding to keep something in front of them. So the number that means
+/// anything is how many are on the list. Counting only the unread ones is the
+/// same mistake the Drafts badge would make sitting at zero with three drafts
+/// in it — and on a real account it showed nothing at all beside eighteen
+/// starred conversations, every one of them read.
+///
+/// Snoozed follows for the same reason: you deferred those on purpose, and the
+/// useful number is how many are coming back.
+#[test]
+fn a_list_you_made_yourself_counts_everything_on_it() {
+    let (store, account, ids) = seeded();
+    inbox_all(&store, account, &ids);
+    let counts = |s: &Store| -> std::collections::HashMap<String, i64> {
+        s.view_counts(&as_shipped()).unwrap().into_iter().collect()
+    };
+
+    // Two starred conversations, both read.
+    for id in &ids[..2] {
+        store
+            .set_flags(*id, flags::FLAGGED | flags::SEEN, 0)
+            .unwrap();
+    }
+    assert_eq!(
+        counts(&store).get("starred"),
+        Some(&2),
+        "starring is the act that puts it on the list; reading it does not take it off"
+    );
+
+    // And one snoozed, read, still counted.
+    store
+        .apply_thread_action(
+            account,
+            store.thread_of(ids[3]).unwrap().unwrap_or(-ids[3]),
+            ActionKind::Snooze,
+            Some(1_900_000_000_000),
+            PlacementPolicy::Exclusive,
+        )
+        .unwrap();
+    store.set_flags(ids[3], flags::SEEN, 0).unwrap();
+    assert_eq!(
+        counts(&store).get("snoozed"),
+        Some(&1),
+        "a snoozed conversation is waiting to come back whether or not it was read"
+    );
 }

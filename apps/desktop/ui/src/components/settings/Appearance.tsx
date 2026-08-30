@@ -1,6 +1,7 @@
 import { Monitor, Moon, Sun, type LucideIcon } from 'lucide-react';
 import { resolveLocale, DEFAULTS, useSettings, type Settings } from '../../lib/settings';
 import { Icon } from '../Icon';
+import { Pill } from './Pill';
 import { availableLocales, t, type StringId } from '../../lib/strings';
 
 const ACCENTS = ['#0E7C86', '#3B6EA5', '#6B5CA5', '#9A6B1F', '#5E7C4A', '#A8544B'];
@@ -10,31 +11,6 @@ const THEMES: { value: Settings['theme']; label: StringId; icon: LucideIcon }[] 
   { value: 'dark', label: 'theme-dark', icon: Moon },
   { value: 'system', label: 'theme-system', icon: Monitor },
 ];
-
-/** A segmented control: few options, all worth showing at once. */
-function Pill<T extends string>({
-  value, options, onChange,
-}: {
-  value: T;
-  options: { value: T; label: string }[];
-  onChange: (v: T) => void;
-}) {
-  return (
-    <div className="pill" role="group">
-      {options.map((o) => (
-        <button
-          key={o.value}
-          type="button"
-          className={o.value === value ? 'on' : undefined}
-          aria-pressed={o.value === value}
-          onClick={() => onChange(o.value)}
-        >
-          {o.label}
-        </button>
-      ))}
-    </div>
-  );
-}
 
 export function Appearance() {
   const { settings, set } = useSettings();
@@ -131,23 +107,12 @@ export function Appearance() {
         </div>
       </section>
 
-      {/* Here rather than under Notifications, where this started. "Badges"
-          is grouped with notifications in the spec, but that means the dock
-          icon — an interruption. These are numbers in the sidebar: a question
-          about how the app looks, and Appearance is where people look. */}
-      <section className="field">
-        <div className="flabel">{t('badges')}</div>
-        <p className="fhelp">{t('badges-help')}</p>
-        <Pill
-          value={settings.badges}
-          onChange={(v) => set('badges', v)}
-          options={[
-            { value: 'unread', label: t('badges-unread') },
-            { value: 'total', label: t('badges-total') },
-            { value: 'off', label: t('badges-off') },
-          ]}
-        />
-      </section>
+      {/* The sidebar's numbers used to be one switch here, offering Unread,
+          Everything or None for every row at once — and listing the mailboxes
+          it did not apply to in its own help text. Each row answers for itself
+          in the Sidebar pane now, so there is no global label left to
+          contradict. The stored value is still read once, for anyone who had
+          set it to something other than the default. */}
 
       <section className="field">
         <div className="flabel">{t('appearance-checkboxes')}</div>

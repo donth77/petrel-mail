@@ -7,6 +7,13 @@ import {
   type Thread,
 } from './lib/api';
 import { chips, folderScopeName, hasToken, scopeFor, toggleToken } from './lib/search-chips';
+import {
+  arrangementFor,
+  countFor,
+  countModes,
+  serialiseArrangement,
+  visibleMailboxes,
+} from './lib/mailboxes';
 import { count as fmtCount, fileSize } from './lib/format';
 import { t, type StringId } from './lib/strings';
 import { Search } from 'lucide-react';
@@ -76,6 +83,13 @@ export function App() {
   // Whether the search field has the user's attention, which is when the
   // filters are worth showing.
   const [searching, setSearching] = useState(false);
+  // How the sidebar's mailboxes are arranged. Derived rather than stored in
+  // state: the settings are the source, and a second copy here would be a
+  // second thing to keep in step.
+  const arrangement = useMemo(
+    () => arrangementFor(settings.railMailboxes, settings.badges),
+    [settings.railMailboxes, settings.badges],
+  );
   // Find-in-conversation. Held here because ⌘F is a global key and the bar has
   // to survive the reading pane re-rendering under it.
   const [finding, setFinding] = useState(false);
@@ -126,12 +140,14 @@ export function App() {
   // "Mailbox counts: None" turns it off, on the grounds that someone who does
   // not want counts beside their mailboxes does not want one on the Dock.
   useEffect(() => {
+    // The Dock follows the inbox's own answer. Somebody who turned the inbox
+    // number off did not ask to be badged about it on the Dock instead.
     const total =
-      settings.badges === 'off'
+      countFor(arrangement, 'inbox') === 'off'
         ? null
         : accounts.reduce((sum, a) => sum + (a.unread_count ?? 0), 0);
     void api.setDockBadge(total).catch(() => {});
-  }, [accounts, settings.badges]);
+  }, [accounts, arrangement]);
   // The view's true size; items.length is only the loaded window.
   const [viewTotal, setViewTotal] = useState<number | null>(null);
 
@@ -248,7 +264,7 @@ export function App() {
         }
         return next;
       }),
-    countMode: settings.badges,
+    countModes: countModes(arrangement),
     folderRole: (id) => folders.find((f) => f.id === id)?.role ?? undefined,
   });
 
@@ -1239,7 +1255,7 @@ export function App() {
     let live = true;
     const t = window.setTimeout(() => {
       api
-        .viewCounts(settings.badges)
+        .viewCounts(countModes(arrangement))
         .then((rows) => live && setCounts(Object.fromEntries(rows)))
         .catch(() => {});
       // The switcher's per-account unread rides the same tick: it was read
@@ -1272,7 +1288,7 @@ export function App() {
       live = false;
       window.clearTimeout(t);
     };
-  }, [status?.count, status?.seeding, settings.badges, items, accountEpoch, setAccounts, setTags]);
+  }, [status?.count, status?.seeding, arrangement, items, accountEpoch, setAccounts, setTags]);
 
   // First run: no account can sign in, so there is nothing to show but the
   // way to add one. Decided from the status the app reports, not from an
@@ -1333,6 +1349,7 @@ export function App() {
         unread={unread}
         counts={counts}
         outboxNeedsAttention={counts['outbox:attention'] ?? 0}
+        mailboxOrder={visibleMailboxes(arrangement)}
         view={view}
         folders={folders}
         onCreateFolder={(name) =>

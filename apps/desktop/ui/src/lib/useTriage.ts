@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from 'react';
 import { api, type ActionKind, type Thread } from './api';
-import { countDeltas, type CountMode } from './counts';
+import { countDeltas } from './counts';
+import type { CountMode } from './mailboxes';
 import { t } from './strings';
 
 /** Whether an action takes a conversation out of the list you are looking at.
@@ -109,7 +110,8 @@ export function useTriage(opts: {
   /** The same for the mailbox numbers, keyed by rail key. */
   onViewCount?: (deltas: Record<string, number>) => void;
   /** What the rail's numbers mean, so a nudge can agree with the recount. */
-  countMode?: CountMode;
+  /** What each sidebar mailbox counts, from the arrangement. */
+  countModes?: Record<string, CountMode>;
   /** The role of a folder a `move` names, so the inbox's number can move. */
   folderRole?: (folderId: number) => string | undefined;
 }) {
@@ -123,7 +125,7 @@ export function useTriage(opts: {
     tagById,
     onTagCount,
     onViewCount,
-    countMode = 'unread',
+    countModes = {},
     folderRole,
   } = opts;
   const [pending, setPending] = useState(false);
@@ -186,7 +188,7 @@ export function useTriage(opts: {
         view,
         unread: row.unread,
         removes,
-        mode: countMode,
+        modes: countModes,
         toRole: kind === 'move' && targetId != null ? folderRole?.(targetId) : undefined,
       });
       const movedAny = Object.keys(moved).length > 0;
@@ -273,7 +275,7 @@ export function useTriage(opts: {
       tagById,
       onTagCount,
       onViewCount,
-      countMode,
+      countModes,
       folderRole,
     ],
   );

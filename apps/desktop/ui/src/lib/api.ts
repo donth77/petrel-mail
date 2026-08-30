@@ -441,8 +441,12 @@ const mock = {
     { id: 2, name: 'receipts', colour: '#5E7C4A', thread_count: 31 },
     { id: 3, name: 'urgent', colour: '#B0524A', thread_count: 4 },
   ],
-  viewCounts: async (mode: string): Promise<[string, number][]> =>
-    mode === 'off' ? [] : [['inbox', 3], ['drafts', 1], ['spam', 2]],
+  viewCounts: async (modes: Record<string, string>): Promise<[string, number][]> =>
+    // The harness answers per mailbox now, so hiding a row and turning its
+    // number off can be told apart on screen.
+    (['inbox', 'drafts', 'spam', 'starred'] as const)
+      .filter((k) => (modes[k] ?? 'unread') !== 'off')
+      .map((k, i) => [k, [3, 1, 2, 18][i] ?? 1] as [string, number]),
   invitation: async (): Promise<InvitationView | null> => null,
   respondInvitation: async () => {},
   draftConflict: async (): Promise<{ other_id: number } | null> => null,
@@ -613,7 +617,8 @@ const real = {
     invoke<{ path: string; name: string; size: number }>('stage_attachment', { name, bytes }),
   /** Absent `account` means the one on screen — see the Rust command. */
   tags: (account?: number) => invoke<Tag[]>('list_tags', { account: account ?? null }),
-  viewCounts: (mode: string) => invoke<[string, number][]>('view_counts', { mode }),
+  viewCounts: (modes: Record<string, string>) =>
+    invoke<[string, number][]>('view_counts', { modes }),
   draftConflict: (id: number) => invoke<{ other_id: number } | null>('draft_conflict', { id }),
   resolveDraftConflict: (id: number, otherId: number, takeServer: boolean) =>
     invoke<void>('resolve_draft_conflict', { id, otherId, takeServer }),

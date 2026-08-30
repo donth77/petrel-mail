@@ -12,21 +12,17 @@ import { NameDialog } from './NameDialog';
 import { acceptsDrop } from '../lib/dnd';
 import type { InsertPoint } from '../lib/useDrag';
 import { buildFolderTree, type FolderNode, nestableRolePath, underAnchor } from '../lib/folders';
+import { MAILBOX_KEYS, MAILBOX_LOOK } from '../lib/mailboxes';
 import { AccountMenu } from './AccountMenu';
 import { RailFlyout } from './RailFlyout';
 import { Tip } from './Tip';
 
-const MAILBOXES: { id: StringId; key: string; glyph: LucideIcon }[] = [
-  { id: 'mailbox-inbox', key: 'inbox', glyph: Inbox },
-  { id: 'mailbox-starred', key: 'starred', glyph: Star },
-  { id: 'mailbox-snoozed', key: 'snoozed', glyph: Clock },
-  { id: 'mailbox-sent', key: 'sent', glyph: Send },
-  { id: 'mailbox-drafts', key: 'drafts', glyph: PencilLine },
-  { id: 'mailbox-outbox', key: 'outbox', glyph: Upload },
-  { id: 'mailbox-archive', key: 'archive', glyph: Archive },
-  { id: 'mailbox-spam', key: 'spam', glyph: ShieldAlert },
-  { id: 'mailbox-trash', key: 'trash', glyph: Trash2 },
-];
+/** The rail's mailbox rows, from the one map the settings pane also draws. */
+const MAILBOXES = MAILBOX_KEYS.map((key) => ({
+  key,
+  id: MAILBOX_LOOK[key].label,
+  glyph: MAILBOX_LOOK[key].glyph,
+}));
 
 type Tag = { id: number; name: string; colour: string; thread_count: number };
 
@@ -68,6 +64,9 @@ type Props = {
       a message that needs a person must not go unnoticed, and this is where
       you find out — the sidebar, not a dialog. */
   outboxNeedsAttention: number;
+  /** Which mailboxes to draw, in order. From the sidebar arrangement, so a row
+   *  somebody hid is simply absent rather than drawn and ignored. */
+  mailboxOrder: string[];
   /** Whether a drag is in flight, so destinations can say they will take it
       before the pointer reaches them rather than only once it arrives. */
   dragActive: boolean;
@@ -137,6 +136,7 @@ export function Rail({
   insertAt,
   dragActive,
   outboxNeedsAttention,
+  mailboxOrder,
   railRef,
 }: Props) {
 
@@ -310,6 +310,7 @@ export function Rail({
           className="rail-item"
           style={indent}
           aria-current={view === `folder:${f.id}` ? 'page' : undefined}
+          data-has-menu={!collapsed ? true : undefined}
           onClick={() => onView(`folder:${f.id}`)}
           onPointerDown={(e) => {
             setDragOrigin(owner ?? null);
@@ -439,7 +440,10 @@ export function Rail({
           mailbox list was to scroll back up it. */}
       <div className="rail-scroll">
       <div className="rail-label">{t('rail-mailboxes')}</div>
-      {MAILBOXES.map((m) => {
+      {mailboxOrder
+        .map((key) => MAILBOXES.find((m) => m.key === key))
+        .filter((m): m is (typeof MAILBOXES)[number] => m !== undefined)
+        .map((m) => {
         const subtree = m.key === 'archive' ? archiveTree : m.key === 'trash' ? trashTree : [];
         const anchor = (
           <button
@@ -564,7 +568,7 @@ export function Rail({
           );
         }
         return row;
-      })}
+        })}
 
 
       {/* Folders the user made, between the fixed mailboxes and the tags —
@@ -714,6 +718,7 @@ export function Rail({
               type="button"
               className="rail-item"
               aria-current={view === `tag:${tag.name}` ? 'page' : undefined}
+              data-has-menu={!collapsed ? true : undefined}
               onClick={() => onView(`tag:${tag.name}`)}
               onPointerDown={(e) => onDragTag(e, tag.id, tag.name)}
               {...dropTarget(`tag:${tag.name}`, view, dropOver)}

@@ -140,7 +140,9 @@
   margin-block-start: 6px;
   padding-inline-start: 10px;
   border-inline-start: 2px solid var(--hair);
-  max-block-size: 11em;
+  /* Roomy enough to read a release without scrolling for most of them, and
+     still bounded so a long one cannot stretch the pane past its own footer. */
+  max-block-size: 24em;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
@@ -303,4 +305,123 @@
   margin: 4px 0 0;
   font-size: 12px;
   color: var(--ink3);
+}
+
+/* The Sidebar pane's mailbox list. One row per mailbox: a checkbox and its
+   name on the left, the count control and the two move buttons on the right,
+   so the three things a row can be asked stay in the same columns down the
+   list rather than reflowing per row. */
+/* The column heading. A row of the same grid, not a grid of its own: two
+   grids with identical track definitions still size their tracks to their own
+   contents, so `auto` under the word "Number" and `auto` under a three-button
+   control are simply different widths — 178px apart, as it turned out. */
+.mailbox-head {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: subgrid;
+  align-items: end;
+}
+
+.mailbox-col {
+  align-self: end;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink3);
+}
+
+/* One grid for the whole list, so every row's three columns are measured
+   together and the heading lands over the control it names. Rows are
+   `display: contents` for the same reason: a row that is its own grid cannot
+   share a column with the row above it. */
+.mailbox-rows {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: grid;
+  /* Move buttons, then the mailbox, then its number. The controls lead
+     because reordering is a question about position, and position reads down
+     the left edge of a list. */
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  column-gap: 10px;
+  row-gap: 2px;
+}
+
+/* Subgrid rather than `display: contents`, which also shares the columns but
+   takes the row's box away with them — and the box is the list item. Under
+   `display: contents` the accessibility tree held no list and no items at all,
+   just a flat run of checkboxes and buttons, so a screen reader lost "item 3
+   of 9" along with any sense that the controls on a line belong together. */
+.mailbox-row {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: subgrid;
+  align-items: center;
+  padding-block: 4px;
+}
+
+.mailbox-show {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-inline-size: 0;
+}
+
+.mailbox-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A hidden mailbox still reads, so the list matches the sidebar it describes
+   rather than becoming a list of names you have to decode. */
+.mailbox-name.off {
+  opacity: 0.55;
+}
+
+.mailbox-move {
+  display: flex;
+  gap: 2px;
+}
+
+/* The two reorder buttons. Written out rather than borrowed from a rail class
+   because they live in a settings list, not a sidebar: they are always
+   visible, always reachable by keyboard, and they say so. */
+.move-btn {
+  display: grid;
+  place-items: center;
+  inline-size: 24px;
+  block-size: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: none;
+  color: var(--ink2);
+  cursor: pointer;
+}
+
+/* The same wash the rail's own rows and its ⋮ use on hover, so a button here
+   feels like a button there. */
+.move-btn:hover:not(:disabled) {
+  background: var(--hair2);
+  color: var(--ink);
+}
+
+.move-btn:active:not(:disabled) {
+  background: var(--hair);
+}
+
+/* Focus is drawn, not assumed. These are the only way to reorder from the
+   keyboard, so tabbing to one has to be visible. */
+.move-btn:focus-visible {
+  outline: var(--focus-ring) solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* At the ends of the list. Dimmed and no longer a pointer, because a button
+   that cannot do anything should not look like one that can. */
+.move-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
 }

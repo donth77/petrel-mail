@@ -274,34 +274,45 @@ impl Store {
     /// one unread row. A badge saying five would not match anything the user
     /// can point at.
     ///
-    /// Not every mailbox counts the same thing, because "unread" does not mean
-    /// the same thing everywhere. Mail you wrote is not unread in any useful
-    /// sense — a Drafts badge stuck at zero while three drafts sit there would
-    /// simply be wrong — so Drafts and the Outbox report how many are waiting.
-    /// Sent reports nothing at all: there is no pending work in a sent message,
-    /// and a number that never moves is furniture.
-    pub fn view_counts(&self, mode: CountMode) -> Result<Vec<(String, i64)>> {
-        // Mail you wrote yourself is never meaningfully unread, so these two
-        // report how many are waiting even in unread mode — a Drafts badge
-        // stuck at zero with three drafts sitting there would simply be wrong.
-        const ALWAYS_TOTAL: [&str; 2] = ["drafts", "outbox"];
-        const UNREAD: [&str; 6] = ["inbox", "starred", "snoozed", "archive", "spam", "trash"];
+    /// One rule: each mailbox reports what is *waiting* in it.
+    ///
+    /// Unread is only what waiting means in the Inbox, and in folders and the
+    /// bins, where mail arrives on its own and the question is whether you have
+    /// looked at it. It means something else on a list you made yourself.
+    /// Starring, snoozing and writing a draft are all acts of putting something
+    /// aside on purpose, so everything on those lists is waiting whether or not
+    /// it has been read — reading a starred message does not take it off the
+    /// list. Nothing ever waits in Sent, so Sent gets no number; a count that
+    /// never moves is furniture.
+    ///
+    /// Stated as one rule because the old spelling of it — unread everywhere,
+    /// with a growing list of exceptions — had four exceptions and a setting
+    /// labelled "Unread" that contradicted them. A real account showed no
+    /// badge at all beside eighteen starred conversations.
+    /// The caller may override any of it per mailbox — that is the sidebar
+    /// section's whole job — and anything it does not name falls to the rule
+    /// above. `folders` covers every folder somebody made, which have no
+    /// individual rows of their own in that section.
+    pub fn view_counts(
+        &self,
+        modes: &std::collections::HashMap<String, CountMode>,
+    ) -> Result<Vec<(String, i64)>> {
+        let mode_for = |key: &str| {
+            modes
+                .get(key)
+                .copied()
+                .unwrap_or_else(|| Self::default_count_mode(key))
+        };
 
         let mut out = Vec::new();
-        if mode == CountMode::Off {
-            return Ok(out);
-        }
-        for key in UNREAD.iter().chain(ALWAYS_TOTAL.iter()).chain(
-            // Sent only earns a number when the number is a total. There is no
-            // pending work in a sent message, and a count that never moves is
-            // furniture.
-            ["sent"].iter().filter(|_| mode == CountMode::Total),
-        ) {
-            let view = ListView::parse(key);
-            let total = mode == CountMode::Total || ALWAYS_TOTAL.contains(key);
-            let n = self.count_view(&view, total)?;
+        for key in MAILBOX_KEYS {
+            let mode = mode_for(key);
+            if mode == CountMode::Off {
+                continue;
+            }
+            let n = self.count_view(&ListView::parse(key), mode == CountMode::Total)?;
             if n > 0 {
-                out.push(((*key).to_string(), n));
+                out.push((key.to_string(), n));
             }
         }
         // Tags are left out: their rail rows already carry a count, and it is
@@ -326,14 +337,14 @@ impl Store {
         // full thread-grouping count per folder, and forty folders times a
         // six-thousand-message account, refreshed on every sync tick, was a
         // measurable share of what made the app feel stuck mid-sync.
-        if let Some(account) = self.active_account()? {
-            // The same mode the mailboxes answer in: unread by default, or
-            // everything when the badge setting says so.
-            let unread_clause = match mode {
-                // Off never reaches here (the fn returns empty above), but
-                // exhaustiveness is cheaper than the assumption.
-                CountMode::Off => return Ok(out),
-                CountMode::Total => String::new(),
+        // Folders answer under one key of their own. Mail lands in them by
+        // itself, so unread is what waiting means there.
+        let folders_mode = mode_for("folders");
+        if let Some(account) = self.active_account()?
+            && folders_mode != CountMode::Off
+        {
+            let unread_clause = match folders_mode {
+                CountMode::Total | CountMode::Off => String::new(),
                 CountMode::Unread => format!(" AND m.flags & {} = 0", flags::SEEN),
             };
             let mut stmt = self.conn.prepare_cached(&format!(
@@ -355,7 +366,15 @@ impl Store {
                 }
             }
         }
-        out.push(("outbox:attention".to_string(), needs));
+        // Only when there is something to say. This one is not a count and no
+        // count preference silences it: a message whose send could not be
+        // proved either way is a problem, not a badge, and somebody who asked
+        // for no numbers did not ask to be kept in the dark about it. Absent
+        // rather than zero because the rail replaces this map wholesale, so a
+        // missing key clears the amber exactly as a zero would.
+        if needs > 0 {
+            out.push(("outbox:attention".to_string(), needs));
+        }
         Ok(out)
     }
 

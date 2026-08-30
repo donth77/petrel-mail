@@ -2,9 +2,10 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { Dialog, DialogDismiss } from '@ariakit/react';
 import { Filter,
   Bell, Database, Mail, PencilLine, Shield, SunMoon, User, X,
-  type LucideIcon, RefreshCw } from 'lucide-react';
+  type LucideIcon, RefreshCw , PanelLeft} from 'lucide-react';
 import { Accounts } from './settings/Accounts';
 import { Appearance } from './settings/Appearance';
+import { Sidebar } from './settings/Sidebar';
 import { Rules } from './settings/Rules';
 import { Composing } from './settings/Composing';
 import { Notifications } from './settings/Notifications';
@@ -18,7 +19,7 @@ import { t, type StringId } from '../lib/strings';
 
 type PaneId =
   | 'accounts' | 'identities' | 'composing' | 'notifications'
-  | 'appearance' | 'privacy' | 'storage' | 'rules' | 'updates';
+  | 'appearance' | 'sidebar' | 'privacy' | 'storage' | 'rules' | 'updates';
 
 const PANES: { id: PaneId; label: StringId; icon: LucideIcon }[] = [
   { id: 'accounts', label: 'settings-accounts', icon: Mail },
@@ -26,6 +27,7 @@ const PANES: { id: PaneId; label: StringId; icon: LucideIcon }[] = [
   { id: 'composing', label: 'settings-composing', icon: PencilLine },
   { id: 'notifications', label: 'settings-notifications', icon: Bell },
   { id: 'appearance', label: 'settings-appearance', icon: SunMoon },
+  { id: 'sidebar', label: 'settings-sidebar', icon: PanelLeft },
   { id: 'rules', label: 'settings-rules', icon: Filter },
   { id: 'privacy', label: 'settings-privacy', icon: Shield },
   { id: 'storage', label: 'settings-storage', icon: Database },
@@ -64,6 +66,7 @@ export function Settings({ open, pane: requested, onClose, onMessage, onAddAccou
     composing: <Composing />,
     notifications: <Notifications />,
     appearance: <Appearance />,
+    sidebar: <Sidebar />,
     rules: <Rules onMessage={onMessage} />,
     privacy: <Privacy />,
     storage: <Storage onMessage={onMessage} />,

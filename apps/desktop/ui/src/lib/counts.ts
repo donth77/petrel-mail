@@ -1,4 +1,5 @@
 import type { ActionKind } from './api';
+import { defaultCount } from './mailboxes';
 
 /** What the rail's numbers mean, from the Badges setting. */
 export type CountMode = 'unread' | 'total' | 'off';
@@ -23,16 +24,13 @@ const COUNTED = new Set([
 /**
  * Whether this conversation is one of the ones a given number is counting.
  *
- * Mirrors `Store::view_counts`. Most rows are unread counts, so a read
- * conversation moving between mailboxes moves no number at all. Drafts and the
- * Outbox are always totals — a Drafts badge stuck at zero with three drafts in
- * it would simply be wrong — and Sent earns a number only when numbers are
- * totals, because there is no pending work in a sent message.
+ * Mirrors `Store::view_counts`, which now answers per mailbox: what each row
+ * counts lives in one place, `mailboxes.ts`, beside the engine's own rule. So
+ * this asks only the question that is left once the row's mode is known — does
+ * a number that counts *this* mode move for *this* conversation.
  */
-function counted(key: string, mode: CountMode, unread: boolean): boolean {
+function counted(mode: CountMode, unread: boolean): boolean {
   if (mode === 'off') return false;
-  if (key === 'drafts' || key === 'outbox') return true;
-  if (key === 'sent') return mode === 'total';
   return mode === 'total' || unread;
 }
 
@@ -74,20 +72,22 @@ export function countDeltas(opts: {
   unread: boolean;
   /** Whether the action takes the row out of that view (`leavesView`). */
   removes: boolean;
-  mode: CountMode;
+  /** What each mailbox counts, from the sidebar arrangement. A row this does
+   *  not name falls to its default, the same as in the engine. */
+  modes: Record<string, CountMode>;
   /** The role of the folder a `move` names, when the folder has one. */
   toRole?: string;
 }): Record<string, number> {
-  const { kind, view, unread, removes, mode, toRole } = opts;
-  if (mode === 'off') return {};
+  const { kind, view, unread, removes, modes, toRole } = opts;
+  const modeOf = (key: string) => modes[key] ?? defaultCount(key);
   const out: Record<string, number> = {};
 
   const to = destination(kind, toRole);
   // `to !== view` is what stops trashing from the bin, or archiving from the
   // archive, claiming the conversation arrived somewhere it already was.
-  if (to && to !== view && counted(to, mode, unread)) out[to] = 1;
+  if (to && to !== view && counted(modeOf(to), unread)) out[to] = 1;
 
-  if (removes && COUNTED.has(view) && counted(view, mode, unread)) {
+  if (removes && COUNTED.has(view) && counted(modeOf(view), unread)) {
     out[view] = (out[view] ?? 0) - 1;
   }
   return out;
