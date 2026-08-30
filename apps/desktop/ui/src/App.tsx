@@ -7,13 +7,7 @@ import {
   type Thread,
 } from './lib/api';
 import { chips, folderScopeName, hasToken, scopeFor, toggleToken } from './lib/search-chips';
-import {
-  arrangementFor,
-  countFor,
-  countModes,
-  serialiseArrangement,
-  visibleMailboxes,
-} from './lib/mailboxes';
+import { arrangementFor, countFor, countModes, visibleMailboxes } from './lib/mailboxes';
 import { count as fmtCount, fileSize } from './lib/format';
 import { t, type StringId } from './lib/strings';
 import { Search } from 'lucide-react';

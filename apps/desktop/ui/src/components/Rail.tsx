@@ -1,11 +1,11 @@
 import type React from 'react';
 import { useEffect, useRef, useState } from 'react';
 import {
-  ChevronDown, ChevronRight, FolderClosed, Inbox, Star, Clock, Send, PencilLine, Upload, Archive, ShieldAlert, Trash2,
-  CircleHelp, PanelLeftClose, PanelLeftOpen, PenSquare, Plus, Settings, type LucideIcon, FolderPlus, TagPlus } from 'lucide-react';
+  ChevronDown, ChevronRight, FolderClosed,
+  CircleHelp, PanelLeftClose, PanelLeftOpen, PenSquare, Plus, Settings, FolderPlus, TagPlus } from 'lucide-react';
 import type { Account, Folder } from '../lib/api';
 import { Icon } from './Icon';
-import { t, type StringId } from '../lib/strings';
+import { t } from '../lib/strings';
 import { TagMenu } from './TagMenu';
 import { FolderMenu } from './FolderMenu';
 import { NameDialog } from './NameDialog';
