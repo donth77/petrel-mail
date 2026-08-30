@@ -125,7 +125,8 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
 
         // One connection, one STATUS line per folder, fetch only what moved.
         // A relaunch over a warm store downloads nothing it already holds.
-        let (fresh, failures) = run_sync_cycle(&state, account, &cfg, true).await;
+        let (fresh, failures) =
+            run_sync_cycle(&state, account, &cfg, true, Scope::Everything).await;
         let targets = folders_to_sync(&state, account);
         if failures > 0 {
             log_sync(&format!("{failures} folder(s) could not be synced"));
@@ -174,20 +175,51 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
         // spawn_backfill for why it is not part of the poll loop.
         spawn_backfill(Arc::clone(&state), account, cfg.clone());
 
-        // From here on, poll. The first pass took a window of recent mail;
-        // every pass after it asks only for UIDs above the highest we hold, so
-        // a poll costs one round trip when nothing has arrived.
+        // From here on the account is watched rather than polled, on two
+        // clocks that answer two different questions.
         //
-        // Polling rather than IDLE for now: IDLE needs a connection held open
-        // and re-issued every 29 minutes, and getting that wrong fails in the
-        // worst way — silently, by simply never delivering anything. A poll is
-        // duller and its failure mode is visible.
+        // A wake says "the inbox changed" and nothing more, so it is answered
+        // with the inbox and nothing more: one folder, about a second, and the
+        // message is on screen. The sweep is the slower question — what did
+        // another client do to the other hundred folders — and it is the
+        // expensive one: 101 STATUS round trips twice over, measured at 31
+        // seconds on a real account.
+        //
+        // Running them on one clock is what made Petrel feel slow. Every wake
+        // paid the sweep's half minute before anything appeared, and IDLE was
+        // torn down for all of it, so mail that arrived during a sweep was
+        // announced to nobody and waited for whatever woke the next one.
         let every = std::time::Duration::from_secs(
             std::env::var("PETREL_POLL_SECONDS")
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .filter(|s| *s >= 15)
                 .unwrap_or(120),
+        );
+        // How often the other folders are swept. Five minutes rather than the
+        // poll interval because a sweep is not free and nothing is waiting on
+        // it: mail arrives through the wake path now, and this only catches up
+        // with what was done elsewhere. It is also *more* often than the old
+        // loop managed on a quiet account, where the sweep rode the 20-minute
+        // IDLE ceiling.
+        let sweep_every = std::time::Duration::from_secs(
+            std::env::var("PETREL_SWEEP_SECONDS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|s| *s >= 30)
+                .unwrap_or(300),
+        );
+        // The gap-filling reconcile is the most expensive step of the lot and
+        // the least urgent — it exists to catch mail a closed watermark
+        // skipped, which is a rare accident rather than a daily event. Kept on
+        // the old cadence so this change cannot make the account busier than
+        // it already was.
+        let reconcile_every = std::time::Duration::from_secs(
+            std::env::var("PETREL_RECONCILE_SECONDS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|s| *s >= 60)
+                .unwrap_or(20 * 60),
         );
         // RFC 2177 puts the ceiling at 29 minutes; 20 leaves room for a server
         // that is stricter than the standard without making reconnects frequent.
@@ -197,25 +229,89 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
             if has_idle { "IDLE" } else { "poll" }
         ));
 
-        loop {
-            if has_idle {
-                // Held open until the server speaks, so mail lands immediately
-                // rather than on the next tick. A failure here drops through to
-                // the poll below rather than ending the loop: losing push is a
-                // reason to check more slowly, not to stop checking.
-                match petrel_providers::imap::idle_once(&cfg, "INBOX", idle_ceiling).await {
-                    Ok(_) => {}
-                    Err(e) => {
-                        log_sync(&format!("idle failed, falling back to poll: {e}"));
-                        tokio::time::sleep(every).await;
+        // The watcher owns the IDLE connection and nothing else, so the sweep
+        // can take as long as it likes without the account going deaf. A
+        // capacity of one is the coalescing: wakes that land while a pass is
+        // running collapse into the single pass that follows it, which is the
+        // right answer because a wake carries no detail to lose.
+        let (wake_tx, mut wake_rx) = tokio::sync::mpsc::channel::<()>(1);
+        if has_idle {
+            let cfg = cfg.clone();
+            tokio::spawn(async move {
+                // Backoff rather than the flat two-minute sleep this used to
+                // take on failure. A refused IDLE is usually a dropped socket
+                // and retrying costs one connection; two minutes of blindness
+                // for it was the worst trade in the loop.
+                let mut backoff = std::time::Duration::from_secs(2);
+                let ceiling_backoff = std::time::Duration::from_secs(120);
+                loop {
+                    let armed = std::time::Instant::now();
+                    let watching =
+                        petrel_providers::imap::idle_watch(&cfg, "INBOX", idle_ceiling, || {
+                            // Full means a pass is already coming; dropping
+                            // this one loses nothing.
+                            let _ = wake_tx.try_send(());
+                        })
+                        .await;
+                    match watching {
+                        Ok(()) => {
+                            backoff = std::time::Duration::from_secs(2);
+                            log_sync(&format!(
+                                "idle held {:.0}s, reconnecting",
+                                armed.elapsed().as_secs_f32()
+                            ));
+                        }
+                        Err(e) => {
+                            log_sync(&format!(
+                                "idle failed after {:.0}s, retrying in {}s: {e}",
+                                armed.elapsed().as_secs_f32(),
+                                backoff.as_secs()
+                            ));
+                            tokio::time::sleep(backoff).await;
+                            backoff = (backoff * 2).min(ceiling_backoff);
+                        }
+                    }
+                    if wake_tx.is_closed() {
+                        return;
                     }
                 }
-            } else {
-                tokio::time::sleep(every).await;
+            });
+        }
+
+        let mut swept = std::time::Instant::now();
+        let mut reconciled = std::time::Instant::now();
+        loop {
+            // Whichever comes first: the server speaking, or the sweep falling
+            // due. An account with no IDLE has no watcher, so `wake_rx` never
+            // fires and the timer alone drives it — the old poll, unchanged.
+            let until_sweep = sweep_every.saturating_sub(swept.elapsed());
+            let wait = if has_idle { until_sweep } else { every };
+            let by_wake = tokio::select! {
+                got = wake_rx.recv() => {
+                    // The watcher only ends if the loop is gone, but a closed
+                    // channel here would otherwise spin.
+                    if got.is_none() {
+                        tokio::time::sleep(wait).await;
+                        false
+                    } else {
+                        true
+                    }
+                }
+                _ = tokio::time::sleep(wait) => false,
+            };
+            let cycle = std::time::Instant::now();
+            // A wake still takes the sweep if one has come due meanwhile, so a
+            // busy mailbox cannot starve the other folders.
+            let sweeping = !by_wake || swept.elapsed() >= sweep_every;
+            if sweeping {
+                swept = std::time::Instant::now();
             }
 
             // Deliver first, so the fetch that follows confirms local state
             // rather than contradicting it — the same ordering as startup.
+            // Always, on both paths: the person's own changes are the ones
+            // they are watching for, and holding them for a sweep would make
+            // the app feel slower at exactly the moment it must not.
             let _ = drain_actions(
                 Arc::clone(&state),
                 account,
@@ -226,14 +322,25 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
             )
             .await;
             send_due(Arc::clone(&state), account).await;
-            reconcile_ghost_placements(&state, account, &cfg).await;
-            tend_the_bin(&state, account).await;
+            if sweeping {
+                tend_the_bin(&state, account).await;
+                if reconciled.elapsed() >= reconcile_every {
+                    reconciled = std::time::Instant::now();
+                    reconcile_ghost_placements(&state, account, &cfg).await;
+                }
+            }
 
             // One connection for the whole account, STATUS-gated per folder:
             // a quiet cycle costs a line per folder, not a login per folder.
-            let (fresh, failures) = run_sync_cycle(&state, account, &cfg, false).await;
+            let scope = if sweeping {
+                Scope::Everything
+            } else {
+                Scope::Inbox
+            };
+            let (fresh, failures) = run_sync_cycle(&state, account, &cfg, false, scope).await;
             if account_is_gmail(&cfg) {
                 // One round trip when nothing changed; live labels when it did.
+                // On both paths: a new message usually arrives with its labels.
                 run_label_sweep(&state, account, &cfg).await;
                 run_thrid_sweep(&state, account, &cfg).await;
             }
@@ -253,8 +360,53 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
             if trouble.is_none() {
                 *state.sync_error.lock().unwrap() = None;
             }
+            // The two paths are meant to cost very different amounts, and this
+            // is where that stops being a claim.
+            log_sync(&format!(
+                // Tagged with the account, because two of them write to this
+                // log and they are not comparable: one had twelve folders and
+                // the other a hundred and one, so an untagged "sweep: 14.3s"
+                // says nothing about whether that is good or bad. The id
+                // rather than the address — a log is not the place for it.
+                "account {account} {}: {:.1}s",
+                if sweeping { "sweep" } else { "wake" },
+                cycle.elapsed().as_secs_f32()
+            ));
         }
     });
+}
+
+/// Which folders a pass covers.
+///
+/// An IDLE wake is a report about the folder being watched and nothing else:
+/// the server said the inbox changed, not that the other hundred folders did.
+/// Sweeping all of them to find that out costs half a minute on a real
+/// account, measured, and the mail the person is waiting for sits behind it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Scope {
+    /// The inbox alone, for a wake. 794ms on the account this was written
+    /// against, against 13.9s for all hundred and one folders.
+    Inbox,
+    /// Every folder, for the sweep that catches what other clients did.
+    Everything,
+}
+
+/// The targets a scope leaves.
+///
+/// Its own function so the narrowing can be tested without a server. Getting
+/// it wrong in the quiet direction gives an inbox that never syncs, and that
+/// is the one failure nobody reports as a bug — it just looks like no mail.
+fn narrow(targets: Vec<(String, String, i64)>, scope: Scope) -> Vec<(String, String, i64)> {
+    match scope {
+        Scope::Everything => targets,
+        // By role rather than by position. `folders_to_sync` happens to put
+        // the inbox first today, and a filter that trusted that would break
+        // silently the day somebody reorders the list.
+        Scope::Inbox => targets
+            .into_iter()
+            .filter(|(role, _, _)| role == "inbox")
+            .collect(),
+    }
 }
 
 /// One sync cycle for one account: every folder, one connection.
@@ -271,8 +423,9 @@ async fn run_sync_cycle(
     account: i64,
     cfg: &ImapConfig,
     verbose: bool,
+    scope: Scope,
 ) -> (usize, usize) {
-    let targets = folders_to_sync(state, account);
+    let targets = narrow(folders_to_sync(state, account), scope);
     if targets.is_empty() {
         return (0, 0);
     }
@@ -1108,5 +1261,56 @@ mod folder_survey_tests {
             true,
         );
         assert_eq!(out.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::{Scope, narrow};
+
+    /// The shape `folders_to_sync` returns: (role, path, id), roles first.
+    fn targets() -> Vec<(String, String, i64)> {
+        [
+            ("inbox", "INBOX", 1),
+            ("sent", "Sent", 2),
+            ("trash", "Trash", 3),
+            ("", "Archive", 4),
+            ("", "Archive/2026", 5),
+        ]
+        .into_iter()
+        .map(|(r, p, id)| (r.to_string(), p.to_string(), id))
+        .collect()
+    }
+
+    #[test]
+    fn a_wake_takes_the_inbox_and_nothing_else() {
+        let out = narrow(targets(), Scope::Inbox);
+        let paths: Vec<&str> = out.iter().map(|(_, p, _)| p.as_str()).collect();
+        assert_eq!(paths, vec!["INBOX"]);
+    }
+
+    #[test]
+    fn a_sweep_takes_everything() {
+        assert_eq!(narrow(targets(), Scope::Everything).len(), 5);
+    }
+
+    #[test]
+    fn the_inbox_is_found_by_role_not_by_position() {
+        // The same folders with the inbox last. A filter that took the first
+        // row would sync Sent on every wake and never the inbox — and the
+        // symptom would be "no new mail", not an error anybody could chase.
+        let mut shuffled = targets();
+        shuffled.rotate_left(1);
+        let out = narrow(shuffled, Scope::Inbox);
+        let paths: Vec<&str> = out.iter().map(|(_, p, _)| p.as_str()).collect();
+        assert_eq!(paths, vec!["INBOX"]);
+    }
+
+    #[test]
+    fn an_account_with_no_inbox_role_narrows_to_nothing() {
+        // Rather than to everything: a wake that quietly swept all hundred
+        // folders would put the cost straight back.
+        let none: Vec<(String, String, i64)> = vec![(String::new(), "Archive".to_string(), 4)];
+        assert!(narrow(none, Scope::Inbox).is_empty());
     }
 }

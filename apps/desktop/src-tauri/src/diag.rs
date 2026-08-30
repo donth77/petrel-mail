@@ -145,7 +145,15 @@ pub(crate) fn log_sync(msg: &str) {
         .open(path)
     {
         use std::io::Write;
-        let _ = writeln!(f, "{} {msg}", now_ms());
+        // One buffer, one write. `writeln!` formats straight into the file and
+        // can reach the descriptor in several calls, so two threads logging at
+        // once interleaved mid-line: a real log holds
+        // "17878307040931787830704093  SLOW storage_report: 1087msSLOW status:
+        // 348ms", which is two entries spliced together and neither of them
+        // parseable. Append mode makes a single write atomic; it cannot make
+        // three of them atomic.
+        let line = format!("{} {msg}\n", now_ms());
+        let _ = f.write_all(line.as_bytes());
     }
 }
 

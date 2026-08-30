@@ -922,6 +922,95 @@ pub async fn idle_once(cfg: &ImapConfig, folder: &str, timeout: Duration) -> Res
     }
 }
 
+/// Holds one connection open and reports every time the server speaks.
+///
+/// The difference from `idle_once` is what happens *after* a wake. `idle_once`
+/// logs out, so its caller opens a fresh connection for the next watch and a
+/// mailbox that speaks often costs a TLS handshake and a LOGIN per message.
+/// On a live account that showed up as thirteen `Can't assign requested
+/// address` failures in a week — the local ephemeral ports were being spent
+/// on reconnects. Here the session is kept: DONE, hand the wake over, IDLE
+/// again, all on the same socket.
+///
+/// Returns `Ok(())` when `ceiling` is reached and the connection should be
+/// rebuilt. The ceiling is measured from the login, not reset per wake,
+/// because RFC 2177's limit is on how long a *connection* may sit in IDLE —
+/// a busy mailbox must still come up for air on the same schedule as a quiet
+/// one, or the reconnect that keeps the socket alive never happens.
+///
+/// `on_wake` is called once per report and must not block: it runs between
+/// DONE and the next IDLE, which is exactly the window this exists to keep
+/// short. Hand the work to somebody else and return.
+pub async fn idle_watch<F>(
+    cfg: &ImapConfig,
+    folder: &str,
+    ceiling: Duration,
+    on_wake: F,
+) -> Result<()>
+where
+    F: FnMut(),
+{
+    match cfg.security {
+        Security::Tls => {
+            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
+            idle_watch_session(client, cfg, folder, ceiling, on_wake).await
+        }
+        #[cfg(feature = "insecure-plaintext")]
+        Security::InsecurePlaintext => {
+            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
+            idle_watch_session(Client::new(tcp), cfg, folder, ceiling, on_wake).await
+        }
+    }
+}
+
+async fn idle_watch_session<S, F>(
+    client: Client<S>,
+    cfg: &ImapConfig,
+    folder: &str,
+    ceiling: Duration,
+    mut on_wake: F,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug + 'static,
+    F: FnMut(),
+{
+    let started = std::time::Instant::now();
+    let mut session = client
+        .login(&cfg.user, &cfg.pass)
+        .await
+        .map_err(|(e, _)| e)?;
+    session.select(folder).await?;
+
+    loop {
+        let left = ceiling.saturating_sub(started.elapsed());
+        // Zero would be an IDLE that times out the instant it is issued, which
+        // is a round trip spent to learn nothing.
+        if left.is_zero() {
+            break;
+        }
+        let mut handle = session.idle();
+        handle.init().await?;
+        let woke = {
+            // Two timeouts, for the reason given on `idle_session`: the
+            // library's is reset by any response, including keepalives, so
+            // only the outer wall-clock one can enforce the ceiling.
+            let (idle_wait, _interrupt) = handle.wait_with_timeout(left);
+            match tokio::time::timeout(left, idle_wait).await {
+                Ok(r) => matches!(r?, IdleResponse::NewData(_)),
+                Err(_) => false,
+            }
+        };
+        // DONE before anything else: the connection is in IDLE until it is
+        // sent, and a session in IDLE will not take another command.
+        session = handle.done().await?;
+        if woke {
+            on_wake();
+        }
+    }
+    session.logout().await?;
+    Ok(())
+}
+
 async fn idle_session<S>(
     client: Client<S>,
     cfg: &ImapConfig,
