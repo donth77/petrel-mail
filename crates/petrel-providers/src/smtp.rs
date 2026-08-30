@@ -170,6 +170,27 @@ pub struct Outgoing {
     pub attachments: Vec<Attachment>,
 }
 
+/// Wraps an HTML body in a document, if it is not one already.
+///
+/// The composer produces a fragment — `<p>…</p>`, the contenteditable's own
+/// markup — and that is what went on the wire. Every other mail client sends a
+/// complete document, so a bare fragment is unusual enough for some filters to
+/// count against it, and it leaves the charset for the receiving client to
+/// guess from the MIME header alone rather than finding it in the markup too.
+///
+/// Left alone if it already looks like a document: a forwarded or quoted
+/// message may arrive as one, and nesting `<html>` inside `<html>` is worse
+/// than either.
+fn as_document(html: &str) -> String {
+    let head = html.trim_start();
+    let looks_whole = head.len() >= 5 && head[..5].eq_ignore_ascii_case("<html")
+        || head.len() >= 9 && head[..9].eq_ignore_ascii_case("<!doctype");
+    if looks_whole {
+        return html.to_string();
+    }
+    format!("<html><head><meta charset=\"utf-8\"></head><body>{html}</body></html>")
+}
+
 impl Outgoing {
     /// Renders to RFC 5322 bytes, and returns the Message-ID it stamped.
     ///
@@ -203,15 +224,22 @@ impl Outgoing {
         let mut b = MessageBuilder::new()
             .from((self.from_name.as_str(), self.from_addr.as_str()))
             .subject(self.subject.as_str())
-            .message_id(message_id);
+            .message_id(message_id)
+            // Named, but not versioned. Every ordinary client says what wrote
+            // the message and mail carrying no such header is slightly the
+            // odder thing; a version number would only tell a stranger which
+            // build the sender is running.
+            .header("User-Agent", mail_builder::headers::raw::Raw::new("Petrel"));
 
         // Pasted images ride the draft as data: URIs; the wire gets them as
         // parts of their own, referenced by cid. Seeded from the Message-ID so
         // the ids are as unique as the message they belong to.
+        // Wrapped after the inline-image rewrite, so the cid substitution sees
+        // the markup the composer produced rather than a document it did not.
         let (html, inline) = match &self.body_html {
             Some(html) => {
                 let (rewritten, inline) = extract_inline_images(html, message_id);
-                (Some(rewritten), inline)
+                (Some(as_document(&rewritten)), inline)
             }
             None => (None, Vec::new()),
         };

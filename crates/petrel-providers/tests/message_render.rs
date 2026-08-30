@@ -285,3 +285,93 @@ mod inline_images {
         assert!(!s.contains("multipart/related"), "{s}");
     }
 }
+
+/// What the wire gets, for a mail filter reading it cold.
+///
+/// Petrel's own messages were landing in Gmail's spam folder. The cause was
+/// the sending domain's DNS rather than anything here, but the audit that
+/// found it also found two things worth changing in what is written: the HTML
+/// part went out as a bare `<p>…</p>` fragment where every other client sends
+/// a document, and nothing said what had written the message.
+mod deliverability {
+    use petrel_providers::smtp::Outgoing;
+
+    fn note(html: Option<&str>) -> Outgoing {
+        Outgoing {
+            from_addr: "me@example.com".into(),
+            from_name: "Tom".into(),
+            to: vec!["them@example.com".into()],
+            cc: vec![],
+            subject: "Hello".into(),
+            body_text: "Hello there.".into(),
+            body_html: html.map(|h| h.to_string()),
+            in_reply_to: None,
+            references: vec![],
+            attachments: vec![],
+        }
+    }
+
+    /// Undoes quoted-printable, so a test can assert on the markup rather than
+    /// on its encoding. Without this the assertions read `charset=3D` and
+    /// break the day a line wraps a character earlier.
+    fn decoded(raw: &str) -> String {
+        let joined = raw.replace("=\r\n", "").replace("=\n", "");
+        let bytes = joined.as_bytes();
+        let mut out = String::with_capacity(joined.len());
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'='
+                && i + 2 < bytes.len()
+                && let Ok(b) = u8::from_str_radix(&joined[i + 1..i + 3], 16)
+            {
+                out.push(b as char);
+                i += 3;
+                continue;
+            }
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+        out
+    }
+
+    fn rendered(o: &Outgoing) -> String {
+        decoded(&String::from_utf8_lossy(&o.render("example.com").1))
+    }
+
+    #[test]
+    fn the_html_part_is_a_document_not_a_fragment() {
+        let out = rendered(&note(Some("<p>Hello there.</p>")));
+        assert!(
+            out.contains("<html><head><meta charset=\"utf-8\"></head><body>"),
+            "no document wrapper in:\n{out}"
+        );
+        assert!(out.contains("<p>Hello there.</p>"));
+        assert!(out.contains("</body></html>"));
+    }
+
+    #[test]
+    fn markup_that_is_already_a_document_is_left_alone() {
+        // A forward or a quoted reply can arrive whole. Nesting <html> inside
+        // <html> is worse than either shape on its own.
+        let out = rendered(&note(Some("<html><body><p>Quoted.</p></body></html>")));
+        assert_eq!(out.matches("<html>").count(), 1, "wrapped a document twice");
+    }
+
+    #[test]
+    fn a_doctype_counts_as_a_document() {
+        let out = rendered(&note(Some("<!DOCTYPE html><html><body>hi</body></html>")));
+        assert_eq!(out.matches("<html>").count(), 1);
+    }
+
+    #[test]
+    fn the_message_says_what_wrote_it() {
+        assert!(rendered(&note(None)).contains("User-Agent: Petrel"));
+    }
+
+    #[test]
+    fn a_plain_text_message_gains_no_html_part() {
+        // The wrapper must not conjure an HTML body where the sender wrote none.
+        let out = rendered(&note(None));
+        assert!(!out.contains("text/html"), "invented an HTML part");
+    }
+}
