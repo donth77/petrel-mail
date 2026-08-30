@@ -804,6 +804,51 @@ pub enum CountMode {
     Off,
 }
 
+/// What a list is ordered by, and which way.
+///
+/// Date is the one the store is built for: conversations are paged by walking
+/// an index newest-first and stopping when the page is full, so a mailbox of
+/// any size costs about a page. The other two have no such index — a
+/// conversation's sender and subject are its *newest message's*, which is not
+/// known until the conversation has been resolved — so they group first and
+/// sort afterwards. Measured on a real 26,000-message account: date 6ms,
+/// sender 139ms. Fine for a deliberate change of sort, which is what this is;
+/// it is not the path every list open takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortKey {
+    Date,
+    Sender,
+    Subject,
+}
+
+impl SortKey {
+    pub fn parse(s: &str) -> SortKey {
+        match s {
+            "sender" => SortKey::Sender,
+            "subject" => SortKey::Subject,
+            _ => SortKey::Date,
+        }
+    }
+}
+
+/// A list's order: what by, and which way round.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sort {
+    pub key: SortKey,
+    /// Ascending means oldest first, or A to Z. Newest first is the default
+    /// because that is what a mailbox is for.
+    pub ascending: bool,
+}
+
+impl Default for Sort {
+    fn default() -> Self {
+        Sort {
+            key: SortKey::Date,
+            ascending: false,
+        }
+    }
+}
+
 /// The rail's fixed mailboxes, in the order they ship in.
 ///
 /// One list, because the sidebar section that reorders and hides them, the

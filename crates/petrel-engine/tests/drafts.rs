@@ -19,12 +19,26 @@ fn a_saved_draft_appears_in_the_drafts_view_and_nowhere_else() {
         .unwrap();
 
     let drafts = s
-        .list_threads(&ListView::Folder("drafts".into()), 0, 50)
+        .list_threads(
+            &ListView::Folder("drafts".into()),
+            0,
+            50,
+            petrel_engine::store::Sort::default(),
+        )
         .unwrap();
     assert_eq!(drafts.len(), 1);
     assert_eq!(drafts[0].subject, "Hello");
     // It is filed, so it must not also be sitting in the inbox.
-    assert!(s.list_threads(&ListView::Inbox, 0, 50).unwrap().is_empty());
+    assert!(
+        s.list_threads(
+            &ListView::Inbox,
+            0,
+            50,
+            petrel_engine::store::Sort::default()
+        )
+        .unwrap()
+        .is_empty()
+    );
 }
 
 #[test]
@@ -58,9 +72,14 @@ fn saving_again_updates_rather_than_multiplying() {
 
     assert_eq!(id, same);
     assert_eq!(
-        s.list_threads(&ListView::Folder("drafts".into()), 0, 50)
-            .unwrap()
-            .len(),
+        s.list_threads(
+            &ListView::Folder("drafts".into()),
+            0,
+            50,
+            petrel_engine::store::Sort::default()
+        )
+        .unwrap()
+        .len(),
         1
     );
     let back = s.load_draft(id).unwrap();
@@ -92,9 +111,14 @@ fn deleting_a_draft_removes_it() {
         .unwrap();
     s.delete_draft(id).unwrap();
     assert!(
-        s.list_threads(&ListView::Folder("drafts".into()), 0, 50)
-            .unwrap()
-            .is_empty()
+        s.list_threads(
+            &ListView::Folder("drafts".into()),
+            0,
+            50,
+            petrel_engine::store::Sort::default()
+        )
+        .unwrap()
+        .is_empty()
     );
 }
 
@@ -116,23 +140,52 @@ mod outbox {
             .save_draft(account, None, "a@example.com", "Later", "body", "")
             .unwrap();
         assert_eq!(
-            s.list_threads(&ListView::Folder("drafts".into()), 0, 50)
-                .unwrap()
-                .len(),
+            s.list_threads(
+                &ListView::Folder("drafts".into()),
+                0,
+                50,
+                petrel_engine::store::Sort::default()
+            )
+            .unwrap()
+            .len(),
             1
         );
-        assert!(s.list_threads(&ListView::Outbox, 0, 50).unwrap().is_empty());
+        assert!(
+            s.list_threads(
+                &ListView::Outbox,
+                0,
+                50,
+                petrel_engine::store::Sort::default()
+            )
+            .unwrap()
+            .is_empty()
+        );
 
         s.schedule_send(id, Some(now_ms() + 600_000)).unwrap();
 
         // It is post now, not a draft — showing it in both would invite editing
         // something already on its way.
         assert!(
-            s.list_threads(&ListView::Folder("drafts".into()), 0, 50)
-                .unwrap()
-                .is_empty()
+            s.list_threads(
+                &ListView::Folder("drafts".into()),
+                0,
+                50,
+                petrel_engine::store::Sort::default()
+            )
+            .unwrap()
+            .is_empty()
         );
-        assert_eq!(s.list_threads(&ListView::Outbox, 0, 50).unwrap().len(), 1);
+        assert_eq!(
+            s.list_threads(
+                &ListView::Outbox,
+                0,
+                50,
+                petrel_engine::store::Sort::default()
+            )
+            .unwrap()
+            .len(),
+            1
+        );
     }
 
     #[test]
@@ -147,12 +200,26 @@ mod outbox {
         // An outbox you cannot retrieve something from is a worse promise than
         // sending at once.
         assert_eq!(
-            s.list_threads(&ListView::Folder("drafts".into()), 0, 50)
-                .unwrap()
-                .len(),
+            s.list_threads(
+                &ListView::Folder("drafts".into()),
+                0,
+                50,
+                petrel_engine::store::Sort::default()
+            )
+            .unwrap()
+            .len(),
             1
         );
-        assert!(s.list_threads(&ListView::Outbox, 0, 50).unwrap().is_empty());
+        assert!(
+            s.list_threads(
+                &ListView::Outbox,
+                0,
+                50,
+                petrel_engine::store::Sort::default()
+            )
+            .unwrap()
+            .is_empty()
+        );
     }
 
     #[test]
@@ -391,7 +458,9 @@ fn two_drafts_list_as_two_even_when_threaded_together() {
         )
         .expect("second");
     let view = petrel_engine::store::ListView::parse("drafts");
-    let rows = store.list_threads(&view, 0, 50).expect("list");
+    let rows = store
+        .list_threads(&view, 0, 50, petrel_engine::store::Sort::default())
+        .expect("list");
     assert_eq!(rows.len(), 2, "two drafts are two rows");
 }
 

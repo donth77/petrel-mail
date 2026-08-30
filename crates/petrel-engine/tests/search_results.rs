@@ -72,7 +72,12 @@ fn a_result_says_why_it_matched() {
 fn an_ordinary_listing_carries_no_match_snippet() {
     let (store, _) = seeded();
     let rows = store
-        .list_threads(&petrel_engine::store::ListView::Inbox, 0, 20)
+        .list_threads(
+            &petrel_engine::store::ListView::Inbox,
+            0,
+            20,
+            petrel_engine::store::Sort::default(),
+        )
         .unwrap();
     assert!(!rows.is_empty());
     assert!(rows.iter().all(|r| r.match_snippet.is_none()));
@@ -174,7 +179,12 @@ mod operators {
         assert!(starred.is_empty(), "nothing is starred yet");
 
         let ids = store
-            .list_threads(&petrel_engine::store::ListView::Inbox, 0, 50)
+            .list_threads(
+                &petrel_engine::store::ListView::Inbox,
+                0,
+                50,
+                petrel_engine::store::Sort::default(),
+            )
             .unwrap();
         store
             .set_flags(ids[0].id, petrel_engine::store::flags::FLAGGED, 0)
@@ -242,13 +252,13 @@ fn best_match_and_newest_are_not_the_same_order() {
     }
 
     let best: Vec<String> = store
-        .search_threads_sorted("annex", 10, false)
+        .search_threads_sorted("annex", 10, None)
         .unwrap()
         .into_iter()
         .map(|r| r.subject)
         .collect();
     let newest: Vec<String> = store
-        .search_threads_sorted("annex", 10, true)
+        .search_threads_sorted("annex", 10, Some(petrel_engine::store::Sort::default()))
         .unwrap()
         .into_iter()
         .map(|r| r.subject)
@@ -350,7 +360,14 @@ mod the_bin {
         let spam = store.ensure_folder(account, "spam", "spam").unwrap();
         store.place_message(ids[0], spam).unwrap();
 
-        let rows = store.list_threads(&ListView::parse("spam"), 0, 50).unwrap();
+        let rows = store
+            .list_threads(
+                &ListView::parse("spam"),
+                0,
+                50,
+                petrel_engine::store::Sort::default(),
+            )
+            .unwrap();
         assert_eq!(rows.len(), 1, "the Spam view is where spam belongs");
     }
 }

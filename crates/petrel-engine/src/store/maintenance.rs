@@ -442,7 +442,7 @@ impl Store {
             // active: an export is addressed to a person by their mailbox,
             // and "the one on screen" is not something the file can record.
             let threads: Vec<i64> = self
-                .list_threads_for(account, view, 0, u32::MAX)?
+                .list_threads_for(account, view, 0, u32::MAX, Sort::default())?
                 .into_iter()
                 .map(|t| t.thread_id)
                 .collect();

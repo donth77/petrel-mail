@@ -92,6 +92,10 @@ type Props = {
   onMoveFolder: (folder: Folder) => void;
   /** Asks to empty the bin. Absent in windows that do not own that. */
   onEmptyTrash?: () => void;
+  /** Everything in a folder read or unread, and everything in it to the Trash.
+   *  Both act on the mail, not the folder, so both take the folder itself. */
+  onMarkFolderRead: (folder: Folder, read: boolean) => void;
+  onTrashFolderContents: (folder: Folder) => void;
   /** Make a tag that is attached to nothing yet. Returns once it exists, so the
    *  rail can put the input away only after the work succeeded. */
   onCreateTag: (name: string) => Promise<void>;
@@ -121,6 +125,8 @@ export function Rail({
   onDeleteFolder,
   onMoveFolder,
   onEmptyTrash,
+  onMarkFolderRead,
+  onTrashFolderContents,
   onCreateTag,
   onRenameTag,
   onColourTag,
@@ -161,6 +167,9 @@ export function Rail({
   const [renaming, setRenaming] = useState<number | null>(null);
   /** Where the archive tree roots, for the mailbox row's folder-drop. */
   const archiveRolePath = nestableRolePath(folders, 'archive');
+  /** The folder a mailbox row stands for, where one exists. A row's verbs act
+   *  on mail, and mail lives in a folder rather than in a view. */
+  const roleFolder = (key: string) => folders.find((f) => f.role === key);
   const nameInput = useRef<HTMLInputElement>(null);
   useEffect(() => {
     if (naming) nameInput.current?.focus();
@@ -310,7 +319,6 @@ export function Rail({
           className="rail-item"
           style={indent}
           aria-current={view === `folder:${f.id}` ? 'page' : undefined}
-          data-has-menu={!collapsed ? true : undefined}
           onClick={() => onView(`folder:${f.id}`)}
           onPointerDown={(e) => {
             setDragOrigin(owner ?? null);
@@ -341,9 +349,7 @@ export function Rail({
           {chevron}
           <Icon icon={FolderClosed} />
           <span className="rail-text">{n.label}</span>
-          {!dense && counts[`folder:${f.id}`] > 0 && (
-            <span className="count">{counts[`folder:${f.id}`]}</span>
-          )}
+          {/* Before the count, so the two never share a corner. */}
           {!collapsed && (
             <FolderMenu
               path={f.path}
@@ -354,7 +360,12 @@ export function Rail({
               }}
               onMove={() => onMoveFolder(f)}
               onDelete={() => onDeleteFolder(f)}
+              onMarkAll={(read) => onMarkFolderRead(f, read)}
+              onTrashAll={() => onTrashFolderContents(f)}
             />
+          )}
+          {!dense && counts[`folder:${f.id}`] > 0 && (
+            <span className="count">{counts[`folder:${f.id}`]}</span>
           )}
         </button>
       )
@@ -509,20 +520,47 @@ export function Rail({
             {/* Collapsed, there is no room for a number beside a 16px icon,
                 and a dot that only says "something" is not worth the pixels —
                 the tooltip carries the label, and expanding carries the count. */}
-            {!collapsed && counts[m.key] > 0 && (
-              <span className="count">{counts[m.key]}</span>
-            )}
-            {/* Archived folders hang off this row, so this row also carries
-                their chevron and the way to make the first one. */}
-            {m.key === 'archive' && !collapsed && archiveTree.length > 0 && archivePath && (
-              <FolderMenu
-                path={archivePath}
-                onNewChild={() => {
-                  setFolderPrefill(`${archivePath}/`);
-                  setNamingFolder(true);
-                }}
-              />
-            )}
+            {/* The Inbox and the Archive get the same verbs a folder does,
+                because they hold mail the same way. The row's own folder is
+                what they act on: a mailbox key names a view, and marking a
+                view read is not a thing the server understands.
+
+                Archived folders also hang off the Archive row, so it carries
+                their chevron and the way to make the first one. The ⋮ comes
+                before the count, so the two never share a corner. */}
+            {/* Every row with a real folder behind it gets the verbs that act
+                on its mail. Starred, Snoozed and the Outbox are views rather
+                than folders — there is nothing on the server to mark — so
+                they carry no menu at all rather than one that cannot work.
+
+                Sent and Spam get all three: clearing spam into the bin and
+                tidying Sent are both things people do. Drafts is left out of
+                the binning on purpose — a draft in the Trash is a strange
+                object, and discarding drafts deserves its own verb rather
+                than arriving as a side effect of this one. */}
+            {['inbox', 'archive', 'sent', 'spam', 'drafts'].includes(m.key) &&
+              !collapsed &&
+              (() => {
+                const own = roleFolder(m.key);
+                if (!own) return null;
+                return (
+                  <FolderMenu
+                    path={own.path}
+                    onNewChild={
+                      m.key === 'archive' && archivePath
+                        ? () => {
+                            setFolderPrefill(`${archivePath}/`);
+                            setNamingFolder(true);
+                          }
+                        : undefined
+                    }
+                    onMarkAll={(read) => onMarkFolderRead(own, read)}
+                    onTrashAll={
+                      m.key === 'drafts' ? undefined : () => onTrashFolderContents(own)
+                    }
+                  />
+                );
+              })()}
             {/* The bin's verb lives where every other folder verb lives,
                 rather than in the list header: it is a thing done to a
                 folder, and the header has no other actions for it to sit
@@ -530,6 +568,9 @@ export function Rail({
                 a menu that appears and disappears is one nobody learns. */}
             {m.key === 'trash' && !collapsed && onEmptyTrash && (
               <FolderMenu path={trashPath ?? 'Trash'} onEmpty={onEmptyTrash} />
+            )}
+            {!collapsed && counts[m.key] > 0 && (
+              <span className="count">{counts[m.key]}</span>
             )}
           </button>
         );
@@ -718,8 +759,7 @@ export function Rail({
               type="button"
               className="rail-item"
               aria-current={view === `tag:${tag.name}` ? 'page' : undefined}
-              data-has-menu={!collapsed ? true : undefined}
-              onClick={() => onView(`tag:${tag.name}`)}
+                  onClick={() => onView(`tag:${tag.name}`)}
               onPointerDown={(e) => onDragTag(e, tag.id, tag.name)}
               {...dropTarget(`tag:${tag.name}`, view, dropOver)}
               data-drop-ok={dragActive && acceptsDrop(`tag:${tag.name}`, view) ? true : undefined}
@@ -732,9 +772,7 @@ export function Rail({
                 aria-hidden="true"
               />
               <span className="rail-text">{tag.name}</span>
-              {!collapsed && tag.thread_count > 0 && (
-                <span className="count">{tag.thread_count}</span>
-              )}
+              {/* Before the count, so the two never share a corner. */}
               {!collapsed && (
                 <TagMenu
                   name={tag.name}
@@ -743,6 +781,9 @@ export function Rail({
                   onColour={(c) => onColourTag(tag.id, c)}
                   onDelete={() => onDeleteTag({ id: tag.id, name: tag.name })}
                 />
+              )}
+              {!collapsed && tag.thread_count > 0 && (
+                <span className="count">{tag.thread_count}</span>
               )}
             </button>
             )}

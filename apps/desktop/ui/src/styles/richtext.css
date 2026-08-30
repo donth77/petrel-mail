@@ -300,3 +300,52 @@
   color: var(--ink);
   font-weight: 550;
 }
+
+/* The sort control in the list header.
+   
+   Quiet until pointed at: it names the current order all the time, and a
+   button that shouts sits beside a mailbox name it is not more important
+   than. Pushed to the end of the row so the name and its count read as one
+   phrase with the control apart from them. */
+.sort-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-inline-start: auto;
+  padding: 2px 6px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: none;
+  color: var(--ink3);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.sort-btn:hover {
+  background: var(--hair2);
+  color: var(--ink);
+}
+
+.sort-btn[aria-expanded='true'] {
+  background: var(--hair2);
+  color: var(--ink);
+}
+
+.sort-btn:focus-visible {
+  outline: var(--focus-ring) solid var(--accent);
+  outline-offset: 1px;
+}
+
+.sort-btn-label {
+  white-space: nowrap;
+}
+
+/* The tick's column, held whether or not a tick is in it, so the labels do
+   not shift sideways as the chosen row moves down the menu. */
+.menu-tick {
+  display: inline-grid;
+  place-items: center;
+  inline-size: 13px;
+  flex: none;
+}

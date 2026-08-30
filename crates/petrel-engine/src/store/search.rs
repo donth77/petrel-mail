@@ -94,15 +94,35 @@ impl Store {
     /// Best match by default. Ranking is local BM25 over the extracted text, so
     /// the thing you are looking for is usually first — sorting by date is for
     /// retracing a timeline, which is a different question and one click away.
+    /// Search results in a chosen order, or in the order the ranking put them.
+    ///
+    /// `None` is best match — the one order only a search can offer, because
+    /// only a search has a query to be relevant to. Everything else is the
+    /// same three keys a list offers, applied to the rows the search already
+    /// found rather than to the mailbox, so the cost is the result set and not
+    /// the account.
     pub fn search_threads_sorted(
         &self,
         query: &str,
         limit: u32,
-        newest_first: bool,
+        sort: Option<Sort>,
     ) -> Result<Vec<ThreadListing>> {
         let mut rows = self.search_threads(query, limit)?;
-        if newest_first {
-            rows.sort_by_key(|r| std::cmp::Reverse(r.date_ms));
+        let Some(sort) = sort else { return Ok(rows) };
+        match sort.key {
+            SortKey::Date => rows.sort_by_key(|r| r.date_ms),
+            SortKey::Sender => rows.sort_by_key(|r| {
+                let who = if r.from_display.is_empty() {
+                    &r.from_addr
+                } else {
+                    &r.from_display
+                };
+                who.to_lowercase()
+            }),
+            SortKey::Subject => rows.sort_by_key(|r| r.subject.to_lowercase()),
+        }
+        if !sort.ascending {
+            rows.reverse();
         }
         Ok(rows)
     }

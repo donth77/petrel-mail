@@ -45,8 +45,15 @@
   font-weight: 600;
 }
 
+/* Beside the mailbox's name, not adrift from it.
+   
+   This used to claim the free space itself, which was right while it was the
+   last thing in the row. The sort control now ends the row and claims it too,
+   and two auto margins in one flex row share the space out between them
+   rather than one winning — so the count came to rest in the middle, reading
+   as neither part of the heading nor part of the control. The row's own 8px
+   gap is the spacing; the auto margin belongs to the control alone. */
 .view-count {
-  margin-inline-start: auto;
   font-family: var(--mono);
   font-size: 10.5px;
   color: var(--ink3);

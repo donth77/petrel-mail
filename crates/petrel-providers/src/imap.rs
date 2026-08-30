@@ -2258,3 +2258,126 @@ mod special_use_tests {
         assert!(selectable(&f("Contracts", &[])));
     }
 }
+
+/// Marks every message in a folder, in one command.
+///
+/// `UID STORE 1:*` rather than a loop. The alternative is one round trip per
+/// message, and a real account has ten thousand in a single folder: at even a
+/// tenth of a second each that is twenty minutes of hammering somebody's
+/// server to set a flag the protocol will set in one line.
+///
+/// Returns how many the server said were there, from SELECT's EXISTS, so the
+/// caller can say "4,187 marked" rather than "done".
+pub async fn store_flag_all(cfg: &ImapConfig, folder: &str, flag: &str, add: bool) -> Result<u32> {
+    match cfg.security {
+        Security::Tls => {
+            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
+            store_flag_all_session(client, cfg, folder, flag, add).await
+        }
+        #[cfg(feature = "insecure-plaintext")]
+        Security::InsecurePlaintext => {
+            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
+            store_flag_all_session(Client::new(tcp), cfg, folder, flag, add).await
+        }
+    }
+}
+
+async fn store_flag_all_session<S>(
+    client: Client<S>,
+    cfg: &ImapConfig,
+    folder: &str,
+    flag: &str,
+    add: bool,
+) -> Result<u32>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
+{
+    let mut session = client
+        .login(&cfg.user, &cfg.pass)
+        .await
+        .map_err(|(e, _)| e)?;
+    let mailbox = session.select(folder).await?;
+    let n = mailbox.exists;
+    // Nothing to do, and `1:*` on an empty mailbox is a command some servers
+    // answer with an error rather than a shrug.
+    if n == 0 {
+        session.logout().await?;
+        return Ok(0);
+    }
+    let op = if add {
+        "+FLAGS.SILENT"
+    } else {
+        "-FLAGS.SILENT"
+    };
+    {
+        let mut updates = session.uid_store("1:*", format!("{op} ({flag})")).await?;
+        while updates.next().await.is_some() {}
+    }
+    session.logout().await?;
+    Ok(n)
+}
+
+/// Moves every message in a folder into another, in one command.
+///
+/// The bulk twin of `move_uid`, and the same two paths: UID MOVE where the
+/// server has it, COPY + \Deleted + EXPUNGE where it does not. The fallback
+/// expunges the whole mailbox, which here is exactly what was asked for —
+/// unlike the single-message case, where it is the reason MOVE is preferred.
+pub async fn move_all(
+    cfg: &ImapConfig,
+    from: &str,
+    to: &str,
+    server_has_move: bool,
+) -> Result<u32> {
+    match cfg.security {
+        Security::Tls => {
+            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
+            move_all_session(client, cfg, from, to, server_has_move).await
+        }
+        #[cfg(feature = "insecure-plaintext")]
+        Security::InsecurePlaintext => {
+            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
+            move_all_session(Client::new(tcp), cfg, from, to, server_has_move).await
+        }
+    }
+}
+
+async fn move_all_session<S>(
+    client: Client<S>,
+    cfg: &ImapConfig,
+    from: &str,
+    to: &str,
+    server_has_move: bool,
+) -> Result<u32>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
+{
+    let mut session = client
+        .login(&cfg.user, &cfg.pass)
+        .await
+        .map_err(|(e, _)| e)?;
+    let mailbox = session.select(from).await?;
+    let n = mailbox.exists;
+    if n == 0 {
+        session.logout().await?;
+        return Ok(0);
+    }
+    if server_has_move {
+        session.uid_mv("1:*", to).await?;
+    } else {
+        session.uid_copy("1:*", to).await?;
+        {
+            let mut updates = session
+                .uid_store("1:*", "+FLAGS.SILENT (\\Deleted)")
+                .await?;
+            while updates.next().await.is_some() {}
+        }
+        {
+            let expunged = session.expunge().await?;
+            futures::pin_mut!(expunged);
+            while expunged.next().await.is_some() {}
+        }
+    }
+    session.logout().await?;
+    Ok(n)
+}

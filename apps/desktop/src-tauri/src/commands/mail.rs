@@ -12,6 +12,8 @@ pub fn list_threads(
     view: Option<String>,
     offset: u32,
     limit: u32,
+    sort: Option<String>,
+    ascending: Option<bool>,
     state: State<Arc<AppState>>,
 ) -> Result<Vec<ThreadListing>, String> {
     let _t = Timed::new("list_threads");
@@ -19,9 +21,15 @@ pub fn list_threads(
     // The rail key is parsed by the engine, which owns the mapping from a view
     // to a query. An absent view means the inbox.
     let view = ListView::parse(view.as_deref().unwrap_or("inbox"));
+    // Absent means the default, which is newest first: a caller that does not
+    // care about order should not have to name one.
+    let sort = petrel_engine::store::Sort {
+        key: petrel_engine::store::SortKey::parse(sort.as_deref().unwrap_or("date")),
+        ascending: ascending.unwrap_or(false),
+    };
     let store = state.store()?;
     store
-        .list_threads(&view, offset, limit.min(2000))
+        .list_threads(&view, offset, limit.min(2000), sort)
         .map_err(|e| e.to_string())
 }
 
@@ -85,17 +93,25 @@ pub fn view_count(view: Option<String>, state: State<Arc<AppState>>) -> Result<i
     store.conversations_in(&view).map_err(|e| e.to_string())
 }
 
+/// `sort` absent means best match — the order the ranking produced, which is
+/// the one thing a list cannot offer because a list has nothing to be relevant
+/// to. Any other value is the same key a list would take.
 #[tauri::command]
 pub fn search_messages(
     query: String,
-    newest: bool,
+    sort: Option<String>,
+    ascending: Option<bool>,
     state: State<Arc<AppState>>,
 ) -> Result<Vec<ThreadListing>, String> {
     let _t = Timed::new("search");
     note_ui_touch(&state);
+    let sort = sort.map(|key| petrel_engine::store::Sort {
+        key: petrel_engine::store::SortKey::parse(&key),
+        ascending: ascending.unwrap_or(false),
+    });
     let store = state.store()?;
     store
-        .search_threads_sorted(&query, 200, newest)
+        .search_threads_sorted(&query, 200, sort)
         .map_err(|e| e.to_string())
 }
 

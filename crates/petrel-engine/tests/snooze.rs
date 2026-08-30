@@ -40,7 +40,7 @@ fn now_ms() -> i64 {
 
 fn subjects(store: &Store, view: &ListView) -> Vec<String> {
     let mut s: Vec<String> = store
-        .list_threads(view, 0, 50)
+        .list_threads(view, 0, 50, petrel_engine::store::Sort::default())
         .unwrap()
         .into_iter()
         .map(|t| t.subject)

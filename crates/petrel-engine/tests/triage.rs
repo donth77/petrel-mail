@@ -174,7 +174,14 @@ fn archived_conversations_leave_the_listing_and_come_back_on_undo() {
     }
     let tid = thread_of(&store, ids[0]);
 
-    let before = store.list_threads(&ListView::Inbox, 0, 50).unwrap();
+    let before = store
+        .list_threads(
+            &ListView::Inbox,
+            0,
+            50,
+            petrel_engine::store::Sort::default(),
+        )
+        .unwrap();
     assert_eq!(before.len(), 3, "all three start in the listing");
 
     let receipt = store
@@ -186,7 +193,14 @@ fn archived_conversations_leave_the_listing_and_come_back_on_undo() {
             PlacementPolicy::Exclusive,
         )
         .unwrap();
-    let after = store.list_threads(&ListView::Inbox, 0, 50).unwrap();
+    let after = store
+        .list_threads(
+            &ListView::Inbox,
+            0,
+            50,
+            petrel_engine::store::Sort::default(),
+        )
+        .unwrap();
     assert_eq!(after.len(), 2, "the archived conversation left the listing");
     assert!(
         !after.iter().any(|t| t.thread_id == tid),
@@ -194,7 +208,14 @@ fn archived_conversations_leave_the_listing_and_come_back_on_undo() {
     );
 
     store.undo_action(receipt.action_id).unwrap();
-    let restored = store.list_threads(&ListView::Inbox, 0, 50).unwrap();
+    let restored = store
+        .list_threads(
+            &ListView::Inbox,
+            0,
+            50,
+            petrel_engine::store::Sort::default(),
+        )
+        .unwrap();
     assert_eq!(restored.len(), 3, "undo puts it back in the listing");
     assert!(restored.iter().any(|t| t.thread_id == tid));
 }
@@ -211,7 +232,15 @@ fn archived_conversations_leave_the_listing_and_come_back_on_undo() {
 fn unplaced_messages_do_not_haunt_the_inbox() {
     let (store, _account, _ids) = seeded();
     assert_eq!(
-        store.list_threads(&ListView::Inbox, 0, 50).unwrap().len(),
+        store
+            .list_threads(
+                &ListView::Inbox,
+                0,
+                50,
+                petrel_engine::store::Sort::default()
+            )
+            .unwrap()
+            .len(),
         0,
         "no placement, no inbox: membership is the meaning now"
     );
@@ -244,7 +273,15 @@ fn trashed_and_spammed_conversations_leave_the_listing() {
         )
         .unwrap();
     assert_eq!(
-        store.list_threads(&ListView::Inbox, 0, 50).unwrap().len(),
+        store
+            .list_threads(
+                &ListView::Inbox,
+                0,
+                50,
+                petrel_engine::store::Sort::default()
+            )
+            .unwrap()
+            .len(),
         1
     );
 }
@@ -276,7 +313,12 @@ fn moving_to_a_named_folder_is_undoable() {
     // stays out of the inbox listing but is not in archive/trash/spam either.
     assert!(
         !store
-            .list_threads(&ListView::Folder("archive".into()), 0, 50)
+            .list_threads(
+                &ListView::Folder("archive".into()),
+                0,
+                50,
+                petrel_engine::store::Sort::default()
+            )
             .unwrap()
             .iter()
             .any(|t| t.thread_id == tid)
@@ -576,7 +618,12 @@ fn deleting_forever_leaves_the_list_and_cannot_be_undone() {
 
     // Gone from the view it was in, not merely moved somewhere else.
     let left: Vec<i64> = store
-        .list_threads(&ListView::Folder("trash".into()), 0, 50)
+        .list_threads(
+            &ListView::Folder("trash".into()),
+            0,
+            50,
+            petrel_engine::store::Sort::default(),
+        )
         .unwrap()
         .into_iter()
         .map(|t| t.id)
@@ -592,7 +639,12 @@ fn deleting_forever_leaves_the_list_and_cannot_be_undone() {
 
     // Refusing undo must not have half-restored it on the way out.
     let after: Vec<i64> = store
-        .list_threads(&ListView::Folder("trash".into()), 0, 50)
+        .list_threads(
+            &ListView::Folder("trash".into()),
+            0,
+            50,
+            petrel_engine::store::Sort::default(),
+        )
         .unwrap()
         .into_iter()
         .map(|t| t.id)

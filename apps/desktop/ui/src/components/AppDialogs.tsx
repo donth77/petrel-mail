@@ -14,6 +14,7 @@ import {
   underAnchor,
 } from '../lib/folders';
 import { Archive as ArchiveIcon, Trash2 } from 'lucide-react';
+import { MAILBOX_LOOK, type MailboxKey } from '../lib/mailboxes';
 import { Confirm } from './Confirm';
 import { Dialog } from '@ariakit/react';
 import { Picker, type PickerOption } from './Picker';
@@ -35,6 +36,9 @@ export function AppDialogs({
   movingFolder,
   setMovingFolder,
   deletingFolder,
+  trashingAll,
+  setTrashingAll,
+  onTrashedAll,
   setDeletingFolder,
   pendingDelete,
   setPendingDelete,
@@ -64,6 +68,9 @@ export function AppDialogs({
   movingFolder: Folder | null;
   setMovingFolder: Dispatch<SetStateAction<Folder | null>>;
   deletingFolder: Folder | null;
+  trashingAll: { folder: Folder; count: number } | null;
+  setTrashingAll: Dispatch<SetStateAction<{ folder: Folder; count: number } | null>>;
+  onTrashedAll: () => void;
   setDeletingFolder: Dispatch<SetStateAction<Folder | null>>;
   pendingDelete: number[] | null;
   setPendingDelete: Dispatch<SetStateAction<number[] | null>>;
@@ -86,6 +93,18 @@ export function AppDialogs({
   onCancelEmptyTrash: () => void;
   onEmptyTrash: () => void;
 }) {
+  /** What to call a folder in a sentence.
+   *
+   *  A role folder wears the name the rail gives it, not the one the server
+   *  does: "Move everything in INBOX to the Trash?" is a question about a
+   *  protocol, and the row it came from says Inbox. Everything else is its own
+   *  leaf, read with the delimiter this account actually uses. */
+  const folderName = (f: Folder | null | undefined) => {
+    if (!f) return '';
+    const look = MAILBOX_LOOK[f.role as MailboxKey];
+    return look ? t(look.label) : folderLeaf(f.path, folderDelimiter(folders));
+  };
+
   /** Whether a folder already sits in the bin, which is what makes deleting
    *  it mean deletion rather than a move. */
   const binned = (f: Folder | null) =>
@@ -289,6 +308,31 @@ export function AppDialogs({
                   : t('folder-failed', { error: String(e) }),
               ),
             );
+        }}
+      />
+
+      {/* Everything in a folder to the Trash. Asks, and asks with the number
+          in it: "move everything" is a different decision at four messages and
+          at ten thousand, and the menu item cannot know which one you meant.
+          Not a delete-forever — the mail is in the Trash and comes back out —
+          so it wears the same wording as any other binning. */}
+      <Confirm
+        open={trashingAll !== null}
+        title={t('folder-trash-all-confirm', { name: folderName(trashingAll?.folder) })}
+        detail={t('folder-trash-all-body', { count: fmtCount(trashingAll?.count ?? 0) })}
+        confirmLabel={t('folder-trash-all-do')}
+        onClose={() => setTrashingAll(null)}
+        onConfirm={() => {
+          const target = trashingAll;
+          setTrashingAll(null);
+          if (!target) return;
+          void api
+            .trashFolderContents(target.folder.id)
+            .then((n) => {
+              setToast(t('folder-trashed-all', { count: fmtCount(n) }));
+              onTrashedAll();
+            })
+            .catch((e) => setToast(t('folder-failed', { error: String(e) })));
         }}
       />
 

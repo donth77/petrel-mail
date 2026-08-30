@@ -1,7 +1,7 @@
 import type React from 'react';
 import { useState } from 'react';
 import { Menu, MenuButton, MenuItem, MenuProvider, MenuSeparator } from '@ariakit/react';
-import { MoreHorizontal } from 'lucide-react';
+import { MoreHorizontal, SquarePen, TagIcon } from 'lucide-react';
 import { Icon } from './Icon';
 import { t } from '../lib/strings';
 
@@ -60,7 +60,8 @@ export function TagMenu({
       </MenuButton>
       <Menu portal gutter={6} className="menu" aria-label={t('tag-edit', { name })}>
         <MenuItem className="menu-item" onClick={onRename}>
-          {t('tag-rename')}
+          <Icon icon={SquarePen} size={14} />
+          <span className="menu-label">{t('tag-rename')}</span>
         </MenuItem>
 
         <div className="tag-section">{t('tag-colour')}</div>
@@ -95,7 +96,10 @@ export function TagMenu({
 
         <MenuSeparator className="menu-sep" />
         <MenuItem className="menu-item danger" onClick={onDelete}>
-          {t('tag-delete')}
+          {/* A tag is taken off every conversation carrying it rather than
+              binned, so a bin would be the wrong picture. */}
+          <Icon icon={TagIcon} size={14} />
+          <span className="menu-label">{t('tag-delete')}</span>
         </MenuItem>
       </Menu>
     </MenuProvider>

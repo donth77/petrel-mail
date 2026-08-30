@@ -11,6 +11,8 @@ import { arrangementFor, countFor, countModes, visibleMailboxes } from './lib/ma
 import { count as fmtCount, fileSize } from './lib/format';
 import { t, type StringId } from './lib/strings';
 import { Search } from 'lucide-react';
+import { SortMenu } from './components/SortMenu';
+import { DEFAULT_SORT, SEARCH_SORT, effectiveSort, wireSort, type Sort } from './lib/sort';
 import { Rail } from './components/Rail';
 import { useKeyboard } from './lib/useKeyboard';
 import { useAppMenu } from './lib/menu';
@@ -62,10 +64,12 @@ import { PaneResize } from './components/PaneResize';
 export function App() {
   const { settings, locale, set } = useSettings();
   const [status, setStatus] = useState<Status | null>(null);
-  // Bumped when the active account changes. Every effect that reads the
-  // store keys on it, so a switch reloads the list, the counts, the tags, the
-  // folders and the identity together — rather than each noticing separately
-  // or, worse, some not noticing at all.
+  // Bumped when the active account changes, and by anything else that
+  // rewrites a lot of the store at once — marking a folder read, emptying one
+  // into the Trash. Every effect that reads the store keys on it, so one bump
+  // reloads the list, the counts, the tags, the folders and the identity
+  // together rather than each noticing separately or, worse, some not
+  // noticing at all. The name is about where it came from, not its only use.
   const [accountEpoch, setAccountEpoch] = useState(0);
   const [items, setItems] = useState<Thread[]>([]);
   const [query, setQuery] = useState('');
@@ -73,7 +77,23 @@ export function App() {
   // different question about one search — "find the thing" against "retrace the
   // timeline" — and carrying last week's answer into today's search is wrong
   // more often than it is right.
-  const [newestFirst, setNewestFirst] = useState(false);
+  // Two, because a list and a search are asked different questions. A mailbox
+  // opens newest-first, which is what a mailbox is for; a search opens on its
+  // ranking, which is what searching is for. One shared state would have made
+  // every search inherit whatever the mailbox was last sorted by — and the
+  // best-match order, the only one a search can offer, would never be the one
+  // you got by default.
+  const [listSort, setListSort] = useState<Sort>(DEFAULT_SORT);
+  const [searchSort, setSearchSort] = useState<Sort>(SEARCH_SORT);
+  // Relevance exists only while a query does, so what is actually applied is
+  // not always what is stored: leaving a mailbox on Best match after the box
+  // empties would have it claim an order it cannot have.
+  //
+  // `hasQuery`, not `searching` — that name is already taken by whether the
+  // search bar is open, which is a different thing: the bar can be focused
+  // with nothing typed in it, and an empty box is a mailbox.
+  const hasQuery = query.trim().length > 0;
+  const activeSort = effectiveSort(hasQuery ? searchSort : listSort, hasQuery);
   // Whether the search field has the user's attention, which is when the
   // filters are worth showing.
   const [searching, setSearching] = useState(false);
@@ -169,7 +189,10 @@ export function App() {
   useEffect(() => {
     let live = true;
     const run = () => {
-      const p = query.trim() ? api.search(query, newestFirst) : api.threads(view, 0, 500);
+      const wire = wireSort(activeSort);
+      const p = query.trim()
+        ? api.search(query, wire.key, wire.ascending)
+        : api.threads(view, 0, 500, wire.key, wire.ascending);
       p.then((rows: Thread[]) => {
         if (!live) return;
         setError(null);
@@ -191,7 +214,7 @@ export function App() {
       live = false;
       clearTimeout(h);
     };
-  }, [query, view, newestFirst, status?.count, status?.seeding, accountEpoch]);
+  }, [query, view, activeSort, status?.count, status?.seeding, accountEpoch]);
 
   // A new query starts at the top.
   //
@@ -202,12 +225,14 @@ export function App() {
   useEffect(() => {
     const scroller = listRef.current?.querySelector<HTMLElement>('.scroller');
     if (scroller) scroller.scrollTop = 0;
-  }, [query, view, newestFirst]);
+  }, [query, view, activeSort]);
 
   // The tag awaiting confirmation. Deleting one takes it off every
   // conversation carrying it, which is not a thing to do on one click.
   const [deletingTag, setDeletingTag] = useState<{ id: number; name: string } | null>(null);
   const [deletingFolder, setDeletingFolder] = useState<Folder | null>(null);
+  /** The folder whose contents are about to go to the Trash, and how many. */
+  const [trashingAll, setTrashingAll] = useState<{ folder: Folder; count: number } | null>(null);
   const [movingFolder, setMovingFolder] = useState<Folder | null>(null);
   // The outbox message awaiting a discard confirmation. Discarding is the one
   // outbox action with no undo: the message was never sent, so there is
@@ -1361,6 +1386,35 @@ export function App() {
         }
         onDeleteFolder={setDeletingFolder}
         onMoveFolder={setMovingFolder}
+        // Marking is not destructive and its inverse is the item beside it, so
+        // it goes straight through rather than asking first. The count comes
+        // back from the engine, so "nothing to mark" and "4,187 marked" are
+        // different sentences rather than one hopeful one.
+        onMarkFolderRead={(folder, read) => {
+          void api
+            .markFolderRead(folder.id, read)
+            .then((n) => {
+              setToast(
+                n === 0
+                  ? t('folder-marked-none')
+                  : t(read ? 'folder-marked-read' : 'folder-marked-unread', {
+                      count: fmtCount(n),
+                    }),
+              );
+              setAccountEpoch((n) => n + 1);
+            })
+            .catch((e) => setToast(t('folder-failed', { error: String(e) })));
+        }}
+        // This one asks, and asks with the number in it: "move everything" is
+        // a different decision at four messages and at ten thousand.
+        onTrashFolderContents={(folder) => {
+          void api
+            .folderMessageCount(folder.id)
+            .then((n) =>
+              n === 0 ? setToast(t('folder-empty-already')) : setTrashingAll({ folder, count: n }),
+            )
+            .catch((e) => setToast(t('folder-failed', { error: String(e) })));
+        }}
         onEmptyTrash={() => setEmptyingTrash(true)}
         onDragFolder={startFolder}
         folderDragPath={
@@ -1518,11 +1572,28 @@ export function App() {
               // Kept up while a chip is being clicked: blur fires first, and
               // hiding the row on the way to it would move the target away.
               onBlur={() => {
+                // Deferred a tick, because what matters is where focus *went*
+                // and at blur time it has not gone anywhere yet.
+                //
                 // Leaving with only the pre-applied token means no search was
-                // meant; the field empties rather than staying half-armed.
-                const leaf = folderScopeName(view, folders);
-                if (query.trim() === scopeFor(view, leaf)?.token) setQuery('');
-                window.setTimeout(() => setSearching(false), 150);
+                // meant, and the field empties rather than staying half-armed.
+                // But "leaving" has to mean leaving: the sort control and the
+                // filter chips are part of this header, and a menu opened from
+                // one of them takes focus into a portal outside it. Clearing on
+                // any blur at all threw the search away when somebody reached
+                // for the sort — the chips only escaped because they refuse
+                // focus outright, which a menu button cannot do.
+                window.setTimeout(() => {
+                  const active = document.activeElement;
+                  const stillInSearch =
+                    active instanceof Element &&
+                    (active.closest('.list-head') !== null ||
+                      active.closest('[role="menu"]') !== null);
+                  if (stillInSearch) return;
+                  const leaf = folderScopeName(view, folders);
+                  if (query.trim() === scopeFor(view, leaf)?.token) setQuery('');
+                  setSearching(false);
+                }, 150);
               }}
               aria-label={t('search-placeholder')}
             />
@@ -1587,28 +1658,6 @@ export function App() {
                 <span className="view-count">
                   {t('search-found', { count: fmtCount(items.length) })}
                 </span>
-                {/* No auto margin here: the count already claims the free
-                    space, and two elements both pushing left split it between
-                    them — which left "N found" adrift in the middle of the row
-                    rather than sitting with the control it belongs to. */}
-                <div className="sort-row tight" role="group" aria-label={t('search-sort')}>
-                  <button
-                    type="button"
-                    className={newestFirst ? undefined : 'on'}
-                    aria-pressed={!newestFirst}
-                    onClick={() => setNewestFirst(false)}
-                  >
-                    {t('search-sort-best')}
-                  </button>
-                  <button
-                    type="button"
-                    className={newestFirst ? 'on' : undefined}
-                    aria-pressed={newestFirst}
-                    onClick={() => setNewestFirst(true)}
-                  >
-                    {t('search-sort-newest')}
-                  </button>
-                </div>
               </>
             ) : (
               <span className="view-count">
@@ -1626,6 +1675,15 @@ export function App() {
                     : t('list-unread', { count: fmtCount(unread) })}
               </span>
             )}
+            {/* Last in the row and pushed to its end, so the mailbox's name
+                and its count read as one phrase and the control that changes
+                the order sits apart from them. The same control whether or
+                not a search is running — only its options differ. */}
+            <SortMenu
+              sort={activeSort}
+              onChange={hasQuery ? setSearchSort : setListSort}
+              searching={hasQuery}
+            />
           </div>
         </div>
 
@@ -2144,6 +2202,9 @@ export function App() {
         setMovingFolder={setMovingFolder}
         deletingFolder={deletingFolder}
         setDeletingFolder={setDeletingFolder}
+        trashingAll={trashingAll}
+        setTrashingAll={setTrashingAll}
+        onTrashedAll={() => setAccountEpoch((n) => n + 1)}
         pendingDelete={pendingDelete}
         setPendingDelete={setPendingDelete}
         draftConflict={draftConflict}

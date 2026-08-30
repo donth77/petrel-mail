@@ -346,12 +346,16 @@ fn bench_list_open() {
     let time = |label: &str, offset: u32| {
         let view = ListView::parse("inbox");
         for _ in 0..3 {
-            store.list_threads(&view, offset, 50).unwrap();
+            store
+                .list_threads(&view, offset, 50, petrel_engine::store::Sort::default())
+                .unwrap();
         }
         let mut times: Vec<f64> = (0..50)
             .map(|_| {
                 let t = Instant::now();
-                let rows = store.list_threads(&view, offset, 50).unwrap();
+                let rows = store
+                    .list_threads(&view, offset, 50, petrel_engine::store::Sort::default())
+                    .unwrap();
                 let ms = t.elapsed().as_secs_f64() * 1000.0;
                 std::hint::black_box(rows);
                 ms

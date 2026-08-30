@@ -347,7 +347,7 @@ const mock = {
     seeding: false, count: 10000, server_total: 12500, source: 'tom@northbay.example',
     retention: 'mirror', data_dir: '~/Library/Application Support/Petrel',
   }),
-  threads: async (view: string, offset: number, limit: number) => {
+  threads: async (view: string, offset: number, limit: number, _sort?: string, _asc = false) => {
     const rows = mockRows(Math.min(limit, 2000), offset);
     // Enough fidelity to exercise the view switch: the browser mock is not the
     // engine, and pretending otherwise is what let an unimplemented view look
@@ -452,6 +452,9 @@ const mock = {
   draftConflict: async (): Promise<{ other_id: number } | null> => null,
   resolveDraftConflict: async () => {},
   emptyTrash: async (): Promise<string> => '12/0',
+  folderMessageCount: async () => 1204,
+  markFolderRead: async () => 37,
+  trashFolderContents: async () => 1204,
   checkUpdate: async (): Promise<UpdateStatus> => ({
     current: '0.0.1',
     available: null,
@@ -590,8 +593,8 @@ invite_response: null,
 
 const real = {
   status: () => invoke<Status>('status'),
-  threads: (view: string, offset: number, limit: number) =>
-    invoke<Thread[]>('list_threads', { view, offset, limit }),
+  threads: (view: string, offset: number, limit: number, sort?: string, ascending = false) =>
+    invoke<Thread[]>('list_threads', { view, offset, limit, sort, ascending }),
   threadById: (threadId: number) => invoke<Thread | null>('thread_by_id', { threadId }),
   openExternal: (url: string) => invoke<void>('open_external', { url }),
   discoverAccount: (address: string) => invoke<Discovered | null>('discover_account', { address }),
@@ -623,6 +626,12 @@ const real = {
   resolveDraftConflict: (id: number, otherId: number, takeServer: boolean) =>
     invoke<void>('resolve_draft_conflict', { id, otherId, takeServer }),
   emptyTrash: () => invoke<string>('empty_trash'),
+  folderMessageCount: (folderId: number) =>
+    invoke<number>('folder_message_count', { folderId }),
+  markFolderRead: (folderId: number, read: boolean) =>
+    invoke<number>('mark_folder_read', { folderId, read }),
+  trashFolderContents: (folderId: number) =>
+    invoke<number>('trash_folder_contents', { folderId }),
   checkUpdate: () => invoke<UpdateStatus>('check_update'),
   installUpdate: () => invoke<void>('install_update'),
   restartForUpdate: () => invoke<void>('restart_for_update'),
@@ -734,8 +743,8 @@ const real = {
   setSetting: (key: string, value: string) => invoke<void>('set_setting', { key, value }),
   threadDetail: (threadId: number) =>
     invoke<ThreadMessage[]>('thread_detail', { threadId }),
-  search: (query: string, newest = false) =>
-    invoke<Thread[]>('search_messages', { query, newest }),
+  search: (query: string, sort?: string, ascending = false) =>
+    invoke<Thread[]>('search_messages', { query, sort, ascending }),
 
   messageUrl: (messageId: number) => invoke<string>('message_url', { messageId }),
   log: (entry: string) => invoke('frontend_log', { entry }).catch(() => {}),

@@ -6,6 +6,7 @@ use crate::state::{AppState, active_account, note_ui_touch};
 use petrel_engine::actions::{ActionKind, ActionReceipt};
 use petrel_engine::store::FolderSummary;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use tauri::State;
 
 /// Applies a triage action locally and queues it. Returns the receipt the UI
@@ -278,4 +279,131 @@ pub fn reorder_folders(ids: Vec<i64>, state: State<'_, Arc<AppState>>) -> Result
 pub fn reorder_tags(ids: Vec<i64>, state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let mut store = state.store()?;
     store.reorder_tags(&ids).map_err(|e| e.to_string())
+}
+
+/// How many messages a folder holds, so a confirmation can name the number.
+#[tauri::command]
+pub fn folder_message_count(folder_id: i64, state: State<Arc<AppState>>) -> Result<i64, String> {
+    let store = state.store()?;
+    store
+        .folder_message_count(folder_id)
+        .map_err(|e| e.to_string())
+}
+
+/// Marks everything in a folder read, or unread.
+///
+/// Done here rather than through the action queue, which is per message: a
+/// folder with ten thousand messages in it would put ten thousand rows in that
+/// queue and spend ten thousand round trips draining them. IMAP will set the
+/// whole mailbox in one command, so that is what this sends, the same way
+/// Empty Trash does its own work rather than queuing it.
+///
+/// Local first, then the server, which is the opposite of `rename_folder` and
+/// deliberately so: this is not destructive, the local half is instant, and
+/// somebody who marks a folder read wants the number to move now rather than
+/// after a round trip. A server that refuses leaves the two disagreeing until
+/// the next sync reconciles, which is the ordinary state of every flag here.
+#[tauri::command]
+pub async fn mark_folder_read(
+    folder_id: i64,
+    read: bool,
+    state: State<'_, Arc<AppState>>,
+) -> Result<usize, String> {
+    let (cfg, paths, changed) = {
+        let store = state.store()?;
+        let account = active_account(&store)?;
+        // The subtree, because that is what "all" means on a row with folders
+        // under it. IMAP has no recursive STORE, so this is one command per
+        // mailbox — sixteen for a real Archive, against the ten thousand a
+        // per-message queue would have sent.
+        let paths: Vec<String> = store
+            .folder_subtree(folder_id)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|(_, path)| path)
+            .collect();
+        let changed = store
+            .mark_folder_seen(folder_id, read)
+            .map_err(|e| e.to_string())?;
+        (imap_config_for(&store, account), paths, changed)
+    };
+    if let Some(cfg) = cfg {
+        let mut total = 0u32;
+        for path in &paths {
+            match petrel_providers::imap::store_flag_all(&cfg, path, "\\Seen", read).await {
+                Ok(n) => total += n,
+                // Reported, not swallowed. The local half already happened and
+                // the next sync will notice the disagreement; what must not
+                // happen is silence about a server that said no.
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+        log_sync(&format!(
+            "marked {} across {} mailbox(es), {total} message(s)",
+            if read { "read" } else { "unread" },
+            paths.len()
+        ));
+    }
+    Ok(changed)
+}
+
+/// Moves everything in a folder to the Trash.
+///
+/// The folder stays; only its contents go. Recoverable exactly as any other
+/// binning is — the mail is in the Trash until somebody empties it — which is
+/// why this is a confirm rather than the undo the per-message actions get:
+/// capturing prior state for ten thousand messages to make one undo entry is
+/// a lot of database for a gesture whose inverse is "drag it back".
+#[tauri::command]
+pub async fn trash_folder_contents(
+    folder_id: i64,
+    state: State<'_, Arc<AppState>>,
+) -> Result<usize, String> {
+    let (cfg, from_paths, to_path, to_id, has_move) = {
+        let store = state.store()?;
+        let account = active_account(&store)?;
+        let from_paths: Vec<String> = store
+            .folder_subtree(folder_id)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|(_, path)| path)
+            .collect();
+        let to_id = store
+            .folder_for_role(account, "trash")
+            .map_err(|e| e.to_string())?
+            .ok_or("this account has no Trash")?;
+        let to_path = store
+            .folder_path(to_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("no such folder")?;
+        (
+            imap_config_for(&store, account),
+            from_paths,
+            to_path,
+            to_id,
+            state.server_has_move.load(Ordering::Relaxed),
+        )
+    };
+    if from_paths.contains(&to_path) {
+        return Err("that is the Trash".into());
+    }
+    // Server first here, unlike marking read: this one moves mail, and a local
+    // move that the server refused would show an empty folder that is still
+    // full on every other client.
+    if let Some(cfg) = cfg {
+        let mut moved = 0u32;
+        for from in &from_paths {
+            moved += petrel_providers::imap::move_all(&cfg, from, &to_path, has_move)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        log_sync(&format!(
+            "moved {moved} message(s) from {} mailbox(es) to {to_path}",
+            from_paths.len()
+        ));
+    }
+    let mut store = state.store()?;
+    store
+        .move_folder_contents(folder_id, to_id)
+        .map_err(|e| e.to_string())
 }

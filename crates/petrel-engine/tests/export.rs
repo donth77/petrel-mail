@@ -199,7 +199,12 @@ mod round_trip {
 
         // Everything arrived as itself — including the escaped line.
         let rows = b
-            .list_threads(&ListView::parse(&format!("folder:{imported}")), 0, 50)
+            .list_threads(
+                &ListView::parse(&format!("folder:{imported}")),
+                0,
+                50,
+                petrel_engine::store::Sort::default(),
+            )
             .unwrap();
         assert_eq!(rows.len(), 3, "{rows:?}");
         let hits = b.search_threads("desk of Dana", 10).unwrap();

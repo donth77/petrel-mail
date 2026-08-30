@@ -13,6 +13,11 @@
   place-items: center;
   inline-size: 20px;
   block-size: 20px;
+  /* Zeroed, not inherited. A button carries the browser's own 1px 6px, which
+     leaves an 8px content box for a 14px icon: `place-items: center` then
+     centres the icon in a box narrower than itself and the dots sit 3px right
+     of where the 20px square says they are. */
+  padding: 0;
   margin-inline-start: auto;
   border: 0;
   border-radius: 4px;
@@ -22,9 +27,8 @@
   opacity: 0;
 }
 
-.rail-item .count + .tag-edit {
-  margin-inline-start: 0;
-}
+/* The ⋮ now comes before the count and does the pushing itself; rail.css
+   owns that. This rule dated from when the count came first. */
 
 .rail-item:hover .tag-edit,
 .tag-edit:focus-visible,

@@ -11,6 +11,7 @@ impl Store {
         view: &ListView,
         offset: u32,
         limit: u32,
+        sort: Sort,
     ) -> Result<Vec<ThreadListing>> {
         // Scoped to the account on screen. The query was written when one
         // account was all there was; with two, every view showed both
@@ -18,7 +19,7 @@ impl Store {
         // mistake that "one active at a time" exists to prevent. A missing
         // account (an empty store) scopes to nothing, which lists nothing.
         let account = self.active_account()?.unwrap_or(-1);
-        self.list_threads_for(account, view, offset, limit)
+        self.list_threads_for(account, view, offset, limit, sort)
     }
 
     /// `list_threads` for a named account rather than the active one — for
@@ -29,6 +30,7 @@ impl Store {
         view: &ListView,
         offset: u32,
         limit: u32,
+        sort: Sort,
     ) -> Result<Vec<ThreadListing>> {
         self.listing_rows(
             account,
@@ -39,6 +41,7 @@ impl Store {
                 offset,
                 bound: view.bound().map(str::to_string),
                 per_message: matches!(view, ListView::Folder(r) if r == "drafts"),
+                sort,
             },
         )
     }
@@ -64,6 +67,7 @@ impl Store {
                 offset: 0,
                 bound: Some(thread_id.to_string()),
                 per_message: false,
+                sort: Sort::default(),
             },
         )?;
         Ok(rows.into_iter().next())
@@ -82,6 +86,7 @@ struct ListingQuery<'a> {
     /// a Message-ID, edited apart on the server — are still two drafts.
     /// Every other view groups into conversations.
     per_message: bool,
+    sort: Sort,
 }
 
 impl Store {
@@ -96,19 +101,21 @@ impl Store {
     /// collecting distinct conversations until there are enough, and only
     /// those conversations are aggregated.
     fn listing_rows(&self, account: i64, q: ListingQuery<'_>) -> Result<Vec<ThreadListing>> {
+        // Borrowed, not destructured: page_keys wants the whole query and the
+        // row fetch wants most of it, so moving fields out of it here means
+        // neither can have it.
         let ListingQuery {
             inner,
             outer,
-            limit,
-            offset,
             bound,
             per_message,
-        } = q;
-        let keys = self.page_keys(account, inner, per_message, limit, offset, bound.clone())?;
+            ..
+        } = &q;
+        let keys = self.page_keys(account, &q)?;
         if keys.is_empty() {
             return Ok(Vec::new());
         }
-        self.rows_for_keys(account, inner, outer, per_message, &keys, bound)
+        self.rows_for_keys(account, inner, outer, *per_message, &keys, bound.clone())
     }
 
     /// The conversations one page of the list shows, newest first.
@@ -118,25 +125,69 @@ impl Store {
     /// SQLite streams the rows, so a mailbox of any size costs about a page's
     /// worth of them. A conversation's *position* is its newest message,
     /// which is exactly what walking newest-first gives.
-    fn page_keys(
-        &self,
-        account: i64,
-        inner: &str,
-        per_message: bool,
-        limit: u32,
-        offset: u32,
-        bound: Option<String>,
-    ) -> Result<Vec<i64>> {
+    fn page_keys(&self, account: i64, q: &ListingQuery<'_>) -> Result<Vec<i64>> {
+        let ListingQuery {
+            inner,
+            limit,
+            offset,
+            bound,
+            per_message,
+            sort,
+            ..
+        } = q;
+        let (limit, offset, per_message, sort) = (*limit, *offset, *per_message, *sort);
+        let bound = bound.clone();
         let key = if per_message {
             "-id"
         } else {
             "coalesce(thread_id, -id)"
         };
-        let sql = format!(
-            "SELECT {key} FROM messages
-             WHERE deleted_at_ms IS NULL AND account_id = {account} AND {inner}
-             ORDER BY date_ms DESC"
-        );
+        // Two shapes, and which one runs is the whole performance story.
+        //
+        // By date, the walk *is* the sort: stream messages down the index and
+        // keep the first sighting of each conversation, because a
+        // conversation's position by date is its newest message and that is
+        // the first one met. Costs a page, whatever the mailbox holds.
+        //
+        // By sender or subject there is no such shortcut. Those are properties
+        // of the conversation's newest message, which is not known until every
+        // conversation has been resolved to one — so the set is grouped first
+        // and sorted afterwards, and the whole matching set is touched. 139ms
+        // on a real 26,000-message inbox, which is affordable for a sort
+        // somebody chose and would not be for every list open.
+        let sql = match sort.key {
+            SortKey::Date => {
+                let dir = if sort.ascending { "ASC" } else { "DESC" };
+                format!(
+                    "SELECT {key} FROM messages
+                     WHERE deleted_at_ms IS NULL AND account_id = {account} AND {inner}
+                     ORDER BY date_ms {dir}"
+                )
+            }
+            SortKey::Sender | SortKey::Subject => {
+                let dir = if sort.ascending { "ASC" } else { "DESC" };
+                // Empty last either way: a conversation with no subject sorts
+                // to the end rather than to the top, where it would look like
+                // the answer.
+                let field = match sort.key {
+                    SortKey::Sender => {
+                        "lower(coalesce(nullif(n.from_display,''), n.from_addr, ''))"
+                    }
+                    _ => "lower(coalesce(nullif(n.subject,''), ''))",
+                };
+                format!(
+                    "SELECT n.k FROM (
+                       SELECT {key} AS k,
+                              max(date_ms) AS d,
+                              from_display, from_addr, subject
+                         FROM messages
+                        WHERE deleted_at_ms IS NULL AND account_id = {account} AND {inner}
+                        GROUP BY k
+                     ) n
+                     ORDER BY nullif({field}, '') IS NULL, {field} {dir}, n.d DESC"
+                )
+            }
+        };
         let mut stmt = self.conn.prepare_cached(&sql)?;
         // A view's predicate binds its folder role or tag name as ?3; one
         // without a bound references no parameters at all. Bind exactly as
@@ -264,7 +315,20 @@ impl Store {
                 match_snippet: None,
             })
         })?;
-        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        let mut out = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+        // Back into the order the page was chosen in. The query above ends in
+        // ORDER BY date DESC, which is not the list's order and cannot be:
+        // it groups, and saying "the order these ids arrived in" in SQL means
+        // a CASE with one branch per row.
+        // The query above groups
+        // and therefore cannot preserve it, and for a long time it did not
+        // have to: every list was newest-first and the two orders agreed by
+        // accident. The moment a list could be sorted any other way, that
+        // accident became a list that ignored the sort it was given.
+        let rank: std::collections::HashMap<i64, usize> =
+            keys.iter().enumerate().map(|(i, k)| (*k, i)).collect();
+        out.sort_by_key(|r| rank.get(&r.thread_id).copied().unwrap_or(usize::MAX));
+        Ok(out)
     }
 
     /// The numbers beside the rail's mailboxes.

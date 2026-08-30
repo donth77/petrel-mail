@@ -409,6 +409,136 @@ impl Store {
         Ok(())
     }
 
+    /// A folder and everything filed under it, by id.
+    ///
+    /// Every "all the mail in here" verb means the subtree, not the one
+    /// mailbox: `Archive` itself holds a single message on a real account
+    /// while `Archive/...` holds ten thousand, so a Mark all as read that
+    /// stopped at the named folder would report marking one and look broken.
+    /// Empty Trash already read the subtree; these follow it.
+    ///
+    /// Both separators, because a path is the server's and servers differ.
+    /// Escaped, because a folder called `glassdoor+102025_2` is a name and not
+    /// a LIKE pattern.
+    pub fn folder_subtree(&self, folder_id: i64) -> Result<Vec<(i64, String)>> {
+        let (account, path): (i64, String) = self.conn.query_row(
+            "SELECT account_id, path FROM folders WHERE id = ?1",
+            params![folder_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let pattern = like_escape(&path);
+        let mut stmt = self.conn.prepare(
+            "SELECT id, path FROM folders
+              WHERE account_id = ?1
+                AND (id = ?2
+                     OR path LIKE ?3 || '/%' ESCAPE '\\'
+                     OR path LIKE ?3 || '.%' ESCAPE '\\')
+              ORDER BY path",
+        )?;
+        let rows = stmt.query_map(params![account, folder_id, pattern], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// How many messages a folder holds, for a sentence that names a number
+    /// before somebody agrees to it.
+    ///
+    /// Messages, not conversations: "move 10,479 messages to the Trash" is
+    /// what is about to happen, and a conversation count would understate it.
+    pub fn folder_message_count(&self, folder_id: i64) -> Result<i64> {
+        let ids = self.folder_subtree(folder_id)?;
+        let holes = std::iter::repeat_n("?", ids.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        Ok(self.conn.query_row(
+            &format!(
+                "SELECT count(DISTINCT p.message_id) FROM placements p
+                 JOIN messages m ON m.id = p.message_id
+                 WHERE p.folder_id IN ({holes}) AND m.deleted_at_ms IS NULL"
+            ),
+            rusqlite::params_from_iter(ids.iter().map(|(id, _)| *id)),
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Marks everything in a folder read, or unread — the local half.
+    ///
+    /// One statement rather than a loop over the placements: a folder can hold
+    /// ten thousand messages, and this runs while somebody is looking at the
+    /// sidebar waiting for the number to move.
+    ///
+    /// Returns how many rows actually changed, so "nothing to do" and "4,187
+    /// marked" can be told apart in what the app says afterwards.
+    pub fn mark_folder_seen(&self, folder_id: i64, seen: bool) -> Result<usize> {
+        let (set, test) = if seen {
+            (
+                format!("flags | {}", flags::SEEN),
+                format!("flags & {} = 0", flags::SEEN),
+            )
+        } else {
+            (
+                format!("flags & ~{}", flags::SEEN),
+                format!("flags & {} != 0", flags::SEEN),
+            )
+        };
+        let ids = self.folder_subtree(folder_id)?;
+        let holes = std::iter::repeat_n("?", ids.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        Ok(self.conn.execute(
+            &format!(
+                "UPDATE messages SET flags = {set}
+                 WHERE deleted_at_ms IS NULL AND {test}
+                   AND id IN (SELECT message_id FROM placements
+                               WHERE folder_id IN ({holes}))"
+            ),
+            rusqlite::params_from_iter(ids.iter().map(|(id, _)| *id)),
+        )?)
+    }
+
+    /// Moves everything in a folder to another one — the local half of a
+    /// "delete all", where the destination is the bin.
+    ///
+    /// Exclusive, like every other binning here: a message in the Trash is not
+    /// also still sitting in the folder it came from, nor under any other
+    /// label it happened to carry. That is what the word means on both kinds
+    /// of provider, and the alternative is mail that reads as deleted and is
+    /// still in three places.
+    ///
+    /// Returns how many messages moved.
+    pub fn move_folder_contents(&mut self, folder_id: i64, to: i64) -> Result<usize> {
+        let subtree = self.folder_subtree(folder_id)?;
+        let holes = std::iter::repeat_n("?", subtree.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let ids: Vec<i64> = {
+            let mut stmt = self.conn.prepare(&format!(
+                "SELECT DISTINCT p.message_id FROM placements p
+                 JOIN messages m ON m.id = p.message_id
+                 WHERE p.folder_id IN ({holes}) AND m.deleted_at_ms IS NULL"
+            ))?;
+            let rows = stmt.query_map(
+                rusqlite::params_from_iter(subtree.iter().map(|(id, _)| *id)),
+                |r| r.get(0),
+            )?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let tx = self.conn.transaction()?;
+        for id in &ids {
+            tx.execute("DELETE FROM placements WHERE message_id = ?1", params![id])?;
+            tx.execute(
+                "INSERT OR IGNORE INTO placements(message_id, folder_id) VALUES (?1, ?2)",
+                params![id, to],
+            )?;
+        }
+        tx.commit()?;
+        Ok(ids.len())
+    }
+
     pub fn folders_of(&self, message_id: i64) -> Result<Vec<i64>> {
         let mut stmt = self
             .conn

@@ -58,7 +58,7 @@ fn thread_of(store: &Store, id: i64) -> i64 {
 
 fn subjects(store: &Store, view: &ListView) -> Vec<String> {
     let mut s: Vec<String> = store
-        .list_threads(view, 0, 50)
+        .list_threads(view, 0, 50, petrel_engine::store::Sort::default())
         .unwrap()
         .into_iter()
         .map(|t| t.subject)
@@ -513,7 +513,12 @@ mod by_id {
         inbox_all(&store, account, &ids);
         let thread = thread_of(&store, ids[3]);
         let from_view = store
-            .list_threads(&ListView::Inbox, 0, 50)
+            .list_threads(
+                &ListView::Inbox,
+                0,
+                50,
+                petrel_engine::store::Sort::default(),
+            )
             .unwrap()
             .into_iter()
             .find(|t| t.thread_id == thread)
@@ -565,7 +570,12 @@ mod archive_tree {
             .unwrap();
 
         let rows = store
-            .list_threads(&ListView::parse("archive"), 0, 50)
+            .list_threads(
+                &ListView::parse("archive"),
+                0,
+                50,
+                petrel_engine::store::Sort::default(),
+            )
             .unwrap();
         assert_eq!(rows.len(), 1, "{rows:?}");
     }
@@ -617,5 +627,84 @@ fn a_list_you_made_yourself_counts_everything_on_it() {
         counts(&store).get("snoozed"),
         Some(&1),
         "a snoozed conversation is waiting to come back whether or not it was read"
+    );
+}
+
+/// The list in an order somebody chose.
+///
+/// Date is the order the paging is built around — walk the index newest first
+/// and the first sighting of a conversation is its newest message, which is
+/// its position. The other two are properties of that newest message and have
+/// no index, so they group first and sort after. What this pins is that all
+/// three actually reorder, and that reversing means reversing.
+#[test]
+fn a_list_can_be_ordered_by_date_sender_or_subject() {
+    use petrel_engine::store::{Sort, SortKey};
+    let mut store = Store::open_in_memory().unwrap();
+    let account = store.ensure_test_account().unwrap();
+    // Deliberately: alphabetical by sender is the reverse of by date, and by
+    // subject agrees with neither, so no two orders can pass by coincidence.
+    let msgs: Vec<NewMessage> = [
+        ("Zoe Adams", "Apples", 3_000i64),
+        ("Mia Brown", "Zebras", 2_000),
+        ("Al Carter", "Mangoes", 1_000),
+    ]
+    .iter()
+    .map(|(who, subject, when)| NewMessage {
+        account_id: account,
+        date_ms: *when,
+        from_addr: format!("{}@example.com", who.to_lowercase().replace(' ', ".")),
+        from_display: (*who).into(),
+        to_addr: "me@example.com".into(),
+        subject: (*subject).into(),
+        body_text: "body".into(),
+    })
+    .collect();
+    let ids = store.insert_messages(&msgs).unwrap();
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+    for id in &ids {
+        store.place_message(*id, inbox).unwrap();
+    }
+
+    let order = |key: SortKey, ascending: bool| -> Vec<String> {
+        store
+            .list_threads(&ListView::Inbox, 0, 50, Sort { key, ascending })
+            .unwrap()
+            .into_iter()
+            .map(|r| r.from_display)
+            .collect()
+    };
+    let subjects = |key: SortKey, ascending: bool| -> Vec<String> {
+        store
+            .list_threads(&ListView::Inbox, 0, 50, Sort { key, ascending })
+            .unwrap()
+            .into_iter()
+            .map(|r| r.subject)
+            .collect()
+    };
+
+    assert_eq!(
+        order(SortKey::Date, false),
+        ["Zoe Adams", "Mia Brown", "Al Carter"]
+    );
+    assert_eq!(
+        order(SortKey::Date, true),
+        ["Al Carter", "Mia Brown", "Zoe Adams"]
+    );
+    assert_eq!(
+        order(SortKey::Sender, true),
+        ["Al Carter", "Mia Brown", "Zoe Adams"]
+    );
+    assert_eq!(
+        order(SortKey::Sender, false),
+        ["Zoe Adams", "Mia Brown", "Al Carter"]
+    );
+    assert_eq!(
+        subjects(SortKey::Subject, true),
+        ["Apples", "Mangoes", "Zebras"]
+    );
+    assert_eq!(
+        subjects(SortKey::Subject, false),
+        ["Zebras", "Mangoes", "Apples"]
     );
 }

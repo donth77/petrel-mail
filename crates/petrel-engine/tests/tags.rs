@@ -99,7 +99,12 @@ fn deleting_takes_it_off_the_messages_too() {
     assert!(store.tags_of(ids[1]).unwrap().is_empty());
     // And the view built on it is empty rather than broken.
     let rows = store
-        .list_threads(&ListView::parse("tag:Urgent"), 0, 50)
+        .list_threads(
+            &ListView::parse("tag:Urgent"),
+            0,
+            50,
+            petrel_engine::store::Sort::default(),
+        )
         .unwrap();
     assert!(rows.is_empty());
 }

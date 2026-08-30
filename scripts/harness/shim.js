@@ -19,6 +19,13 @@
   ];
 
   var now = Date.now();
+  // Sam first, so the row the fixtures open is the one they always opened.
+  var SENDERS = [
+    ['Sam Ortiz', 'sam@example.com'],
+    ['Dana Wu', 'dana@example.com'],
+    ['Alex Rivera', 'alex@example.com'],
+    ['Priya Nair', 'priya@example.com'],
+  ];
   var rows = Array.from({ length: 40 }, function (_, i) {
     return {
       // Negative thread ids on purpose: real unthreaded mail is keyed by
@@ -26,13 +33,18 @@
       // hide sign bugs in anything that round-trips a thread id.
       thread_id: -(i + 1),
       id: i + 1,
-      from_display: 'Sam Ortiz',
-      from_addr: 'sam@example.com',
+      // Four senders on rotation, not one name forty times. Sorting by sender
+      // is only observable if the senders differ, and a fixture where every
+      // row agrees would let a sort that does nothing look like it works.
+      // Their alphabetical order is not their date order, which is the whole
+      // point: the two sorts have to disagree for either to be testable.
+      from_display: SENDERS[i % SENDERS.length][0],
+      from_addr: SENDERS[i % SENDERS.length][1],
       subject: 'Conversation ' + (i + 1),
       snippet: 'body text here',
       date_ms: now - i * 60000,
       message_count: 1,
-      participants: 'Sam Ortiz',
+      participants: SENDERS[i % SENDERS.length][0],
       unread: i % 3 === 0,
       starred: false,
       has_attachments: false,
@@ -56,6 +68,34 @@
   rows[8].tags = [{ id: 11, name: 'Urgent', colour: '#A8544B' }];
   rows[9].tags = [{ id: 11, name: 'Urgent', colour: '#A8544B' }];
 
+  // The engine's ordering, modelled rather than skipped. `sort` names the key
+  // and `ascending` the direction, exactly as the commands take them; an
+  // unknown key falls back to date, which is what the engine's parse does.
+  // Date descending is the default because that is what a mailbox means by
+  // "no opinion", and it is what every list here showed before there was a
+  // control to change it.
+  function sorted(list, a) {
+    var key = a.sort || 'date';
+    var up = !!a.ascending;
+    var by = {
+      sender: function (r) { return (r.from_display || '').toLowerCase(); },
+      subject: function (r) { return (r.subject || '').toLowerCase(); },
+    }[key];
+    var out = list.slice();
+    out.sort(function (x, y) {
+      if (by) {
+        var bx = by(x);
+        var by_ = by(y);
+        // Ties break by date, newest first, so a page of one sender is not
+        // in whatever order the filter happened to produce.
+        if (bx !== by_) return (bx < by_ ? -1 : 1) * (up ? 1 : -1);
+        return y.date_ms - x.date_ms;
+      }
+      return (x.date_ms - y.date_ms) * (up ? 1 : -1);
+    });
+    return out;
+  }
+
   var folders = [
     { id: 101, role: '', path: 'Contracts' },
     { id: 102, role: '', path: 'Contracts/2026' },
@@ -63,6 +103,12 @@
     { id: 1, role: 'archive', path: 'Archive' },
     { id: 2, role: 'inbox', path: 'INBOX' },
     { id: 3, role: 'trash', path: 'Trash' },
+    // The roles a real account actually reports. Without them the rail rows
+    // for Sent, Drafts and Spam have no folder behind them, and anything that
+    // acts on a mailbox's mail silently had nothing to act on here.
+    { id: 4, role: 'sent', path: 'Sent' },
+    { id: 5, role: 'drafts', path: 'Drafts' },
+    { id: 6, role: 'spam', path: 'Spam' },
         { id: 7, role: '', path: 'Receipts' },
         { id: 8, role: '', path: 'Projects/Petrel' },
         { id: 9, role: '', path: 'Archive/Old letters' },
@@ -173,25 +219,29 @@
       // which is the exact failure this harness exists to catch.
       var view = a.view || 'inbox';
       var now = Date.now();
-      if (view === 'inbox') {
-        return rows.filter(function (r) { return !r.filed && !(r.snoozed > now); });
+      return sorted(pick(), a);
+
+      function pick() {
+        if (view === 'inbox') {
+          return rows.filter(function (r) { return !r.filed && !(r.snoozed > now); });
+        }
+        if (view === 'snoozed') return rows.filter(function (r) { return r.snoozed > now; });
+        if (view === 'starred') return rows.filter(function (r) { return r.starred; });
+        // User folders: what the move test filed lands here, so the way back
+        // out of a folder can be exercised too.
+        if (view.indexOf('folder:') === 0) {
+          var fid = Number(view.slice(7));
+          return rows.filter(function (r) { return r.filed === fid; });
+        }
+        if (view === 'outbox') return [];
+        if (view.indexOf('tag:') === 0) {
+          var name = view.slice(4);
+          return rows.filter(function (r) {
+            return r.tags.some(function (t) { return t.name === name; });
+          });
+        }
+        return rows.filter(function (r) { return r.filed === view; });
       }
-      if (view === 'snoozed') return rows.filter(function (r) { return r.snoozed > now; });
-      if (view === 'starred') return rows.filter(function (r) { return r.starred; });
-      // User folders: what the move test filed lands here, so the way back
-      // out of a folder can be exercised too.
-      if (view.indexOf('folder:') === 0) {
-        var fid = Number(view.slice(7));
-        return rows.filter(function (r) { return r.filed === fid; });
-      }
-      if (view === 'outbox') return [];
-      if (view.indexOf('tag:') === 0) {
-        var name = view.slice(4);
-        return rows.filter(function (r) {
-          return r.tags.some(function (t) { return t.name === name; });
-        });
-      }
-      return rows.filter(function (r) { return r.filed === view; });
     },
     search_messages: function (a) {
       // Modelled, not stubbed: results have to carry why they matched, and the
@@ -207,8 +257,7 @@
             '…the revised \u{E000}' + (a.query || '') + '\u{E001} and the pricing sheet…',
         });
       });
-      if (a.newest) found.sort(function (x, y) { return y.date_ms - x.date_ms; });
-      return found;
+      return a.sort ? sorted(found, a) : found;
     },
     list_tags: function () {
       return tags;
@@ -291,15 +340,20 @@
     set_account_archive: function () {
       return null;
     },
-    thread_detail: function () {
+    thread_detail: function (a) {
+      // Read off the row rather than hardcoded: the list now shows four
+      // senders, and a pane that answered "Sam Ortiz" for all of them would
+      // make every sender bug invisible here.
+      var row = rows.filter(function (r) { return r.thread_id === a.threadId; })[0]
+        || rows[0];
       return [
         {
-          id: 1,
-          from_display: 'Sam Ortiz',
-          from_addr: 'sam@example.com',
+          id: row.id,
+          from_display: row.from_display,
+          from_addr: row.from_addr,
           to_display: 'me',
-          date_ms: now,
-          subject: 'Conversation 1',
+          date_ms: row.date_ms,
+          subject: row.subject,
           recipients: '',
           // Two files, one previewable and one not, so both verbs and the
           // executable warning can be exercised in the browser.
@@ -492,6 +546,26 @@
     },
     list_folders: function () {
       return folders;
+    },
+    folder_message_count: function () {
+      // Big enough that the confirmation's number is worth reading, which is
+      // the whole reason the dialog asks for one.
+      return 1204;
+    },
+    mark_folder_read: function (a) {
+      // Modelled, not faked: the rows the harness holds actually change, so
+      // the sidebar's number moves afterwards the way it would for real.
+      var n = 0;
+      rows.forEach(function (r) {
+        if (a.read && r.unread) { r.unread = false; n += 1; }
+        else if (!a.read && !r.unread) { r.unread = true; n += 1; }
+      });
+      return n;
+    },
+    trash_folder_contents: function () {
+      var n = rows.filter(function (r) { return !r.filed; }).length;
+      rows.forEach(function (r) { r.filed = true; });
+      return n;
     },
     rename_folder: function () { return null; },
     push_draft: function () { return null; },

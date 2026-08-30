@@ -48,7 +48,9 @@ fn a_user_folder_view_lists_exactly_what_is_placed_there() {
         .unwrap();
 
     let view = ListView::parse(&format!("folder:{receipts}"));
-    let rows = store.list_threads(&view, 0, 50).unwrap();
+    let rows = store
+        .list_threads(&view, 0, 50, petrel_engine::store::Sort::default())
+        .unwrap();
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(rows[0].subject, "a receipt");
 
@@ -72,7 +74,12 @@ fn renaming_keeps_the_folder_id_and_its_contents() {
     assert_eq!(row.path, "Receipts");
     // Same id, same contents: the open view survives a rename.
     let rows = store
-        .list_threads(&ListView::parse(&format!("folder:{id}")), 0, 50)
+        .list_threads(
+            &ListView::parse(&format!("folder:{id}")),
+            0,
+            50,
+            petrel_engine::store::Sort::default(),
+        )
         .unwrap();
     assert_eq!(rows.len(), 1);
 }
@@ -433,4 +440,148 @@ fn a_plain_archive_folder_is_the_archive() {
     let after = store.folders(account).unwrap();
     let archive = after.iter().find(|f| f.path == "Archive").unwrap();
     assert_eq!(archive.role, "archive", "and keeps it across surveys");
+}
+
+/// Marking a whole folder read, and back again.
+///
+/// One statement rather than a loop, because a real folder holds ten thousand
+/// messages and this runs while somebody watches the sidebar. What the test
+/// pins is the arithmetic: only the rows that actually changed are counted, so
+/// the app can say "nothing to do" rather than claiming it marked a folder
+/// that was already read.
+#[test]
+fn marking_a_folder_read_touches_only_what_was_unread() {
+    let (_dir, mut store, blobs, account) = setup();
+    let folder = store.ensure_named_folder(account, "Newsletters").unwrap();
+    let other = store.ensure_named_folder(account, "Elsewhere").unwrap();
+    let mut ids = Vec::new();
+    for i in 0..3 {
+        ids.push(
+            store
+                .ingest_raw(
+                    &blobs,
+                    account,
+                    Some(folder),
+                    Some(i + 1),
+                    &fixture(&format!("n{i}@x"), "note"),
+                )
+                .unwrap()
+                .message_id,
+        );
+    }
+    // One elsewhere, which must not be touched.
+    let outsider = store
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(other),
+            Some(9),
+            &fixture("out@x", "outside"),
+        )
+        .unwrap()
+        .message_id;
+
+    // Ingested mail is unread, so all three change.
+    assert_eq!(store.mark_folder_seen(folder, true).unwrap(), 3);
+    // And a second pass changes nothing, rather than reporting three again.
+    assert_eq!(store.mark_folder_seen(folder, true).unwrap(), 0);
+
+    let seen =
+        |id: i64| -> bool { store.flags_of(id).unwrap() & petrel_engine::store::flags::SEEN != 0 };
+    assert!(
+        ids.iter().all(|id| seen(*id)),
+        "every message in the folder"
+    );
+    assert!(!seen(outsider), "and nothing outside it");
+
+    // Back again.
+    assert_eq!(store.mark_folder_seen(folder, false).unwrap(), 3);
+    assert!(ids.iter().all(|id| !seen(*id)));
+}
+
+/// Emptying a folder into the bin.
+///
+/// Exclusive, like every other binning: the mail is in the Trash and nowhere
+/// else. Mail that reads as deleted and is still filed in two places is the
+/// state this avoids.
+#[test]
+fn moving_a_folders_contents_leaves_them_only_in_the_bin() {
+    let (_dir, mut store, blobs, account) = setup();
+    let folder = store.ensure_named_folder(account, "Doomed").unwrap();
+    let trash = store.ensure_folder(account, "trash", "Trash").unwrap();
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+    let m = store
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(folder),
+            Some(1),
+            &fixture("d@x", "doomed"),
+        )
+        .unwrap()
+        .message_id;
+    // Also filed in the inbox, the way a Gmail message carries two labels.
+    store.place_message(m, inbox).unwrap();
+
+    assert_eq!(store.folder_message_count(folder).unwrap(), 1);
+    assert_eq!(store.move_folder_contents(folder, trash).unwrap(), 1);
+
+    assert_eq!(
+        store.folders_of(m).unwrap(),
+        vec![trash],
+        "in the bin, and not still in the folder or the inbox"
+    );
+    assert_eq!(store.folder_message_count(folder).unwrap(), 0);
+    // The message itself survives; only its filing changed.
+    assert!(store.blob_hash_for(m).unwrap().is_some());
+}
+
+/// "All the mail in here" means the subtree, not the one mailbox.
+///
+/// Caught by measuring rather than by reading: on a real account `Archive`
+/// itself holds a single message while `Archive/...` holds ten thousand, so a
+/// Mark all as read that stopped at the named folder reported marking one and
+/// looked broken. Empty Trash already read the subtree; these had to follow.
+#[test]
+fn marking_and_binning_a_folder_reach_everything_filed_under_it() {
+    let (_dir, mut store, blobs, account) = setup();
+    let parent = store.ensure_named_folder(account, "Archive").unwrap();
+    let child = store.ensure_named_folder(account, "Archive/2026").unwrap();
+    let deep = store
+        .ensure_named_folder(account, "Archive/2026/Q1")
+        .unwrap();
+    // A folder that merely starts with the same letters must not be swept in.
+    let bystander = store
+        .ensure_named_folder(account, "Archived stuff")
+        .unwrap();
+
+    let mut n = 0;
+    for folder in [parent, child, deep, bystander] {
+        n += 1;
+        store
+            .ingest_raw(
+                &blobs,
+                account,
+                Some(folder),
+                Some(n),
+                &fixture(&format!("m{n}@x"), "note"),
+            )
+            .unwrap();
+    }
+
+    assert_eq!(
+        store.folder_message_count(parent).unwrap(),
+        3,
+        "the folder and its two descendants, not the lookalike beside them"
+    );
+    assert_eq!(store.mark_folder_seen(parent, true).unwrap(), 3);
+
+    let trash = store.ensure_folder(account, "trash", "Trash").unwrap();
+    assert_eq!(store.move_folder_contents(parent, trash).unwrap(), 3);
+    assert_eq!(store.folder_message_count(parent).unwrap(), 0);
+    assert_eq!(
+        store.folder_message_count(bystander).unwrap(),
+        1,
+        "`Archived stuff` is not under `Archive`"
+    );
 }
