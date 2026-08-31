@@ -55,6 +55,41 @@ fn env_pass(cfg: &ImapConfig) -> &str {
     }
 }
 
+/// Stamps `data-theme` on the document, as early as anything can.
+///
+/// Its own function so it can be tested: this runs before every other script
+/// in the window, so a syntax error here would not break the theme, it would
+/// break the app — and it is exactly the kind of string that survives review
+/// by looking plausible.
+///
+/// `theme` arrives already quoted as JSON. `documentElement` normally exists
+/// by the time an init script runs, but the retry costs nothing and the
+/// alternative is a theme that silently fails to apply on whichever platform
+/// disagrees.
+fn theme_init_script(theme: &str) -> String {
+    format!(
+        "(function(){{var t={theme};function a(){{\
+         if(document.documentElement){{document.documentElement.setAttribute('data-theme',t);}}\
+         else{{requestAnimationFrame(a);}}}}a();}})();"
+    )
+}
+
+/// The theme the person chose, if it is not "system".
+///
+/// Only light and dark are worth stamping: "system" means letting the
+/// stylesheet's own `prefers-color-scheme` block decide, which it already
+/// does correctly and without an attribute. Returned as a JSON string so it
+/// can be dropped straight into the script.
+fn stored_theme(state: &std::sync::Arc<AppState>) -> Option<String> {
+    let store = state.store.lock().ok()?;
+    let settings = store.settings().ok()?;
+    match settings.get("theme").map(String::as_str) {
+        Some("dark") => Some("\"dark\"".into()),
+        Some("light") => Some("\"light\"".into()),
+        _ => None,
+    }
+}
+
 pub fn run() {
     // Chosen once, here, for the whole process. rustls picks a crypto provider
     // on its own only while exactly one is compiled in; the moment a second
@@ -505,6 +540,21 @@ pub fn run() {
             }
 
             let mut init = DIAG.to_string();
+            // The chosen theme, stamped before the page's own scripts run.
+            //
+            // The renderer reads its settings over IPC, which is a round trip
+            // that finishes well after the first frame — so a person who
+            // picked dark on a light machine, or light on a dark one, saw the
+            // opposite theme flash on every single launch. Nobody noticed
+            // because the default is "system", which matches whatever the
+            // stylesheet would have done anyway.
+            //
+            // It cannot be an inline script in index.html: the CSP is
+            // `script-src 'self'`. An init script is exempt and runs earlier,
+            // which is exactly what this needs.
+            if let Some(theme) = stored_theme(&app.state::<Arc<AppState>>()) {
+                init.push_str(&theme_init_script(&theme));
+            }
             if let Ok(mode) = std::env::var("PETREL_SELFTEST") {
                 if mode == "open" {
                     init.push_str(
@@ -596,4 +646,39 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running petrel");
+}
+
+#[cfg(test)]
+mod theme_init_tests {
+    use super::theme_init_script;
+
+    /// This script runs before every other script in the window. A mistake in
+    /// it does not produce the wrong theme, it produces a window where nothing
+    /// runs at all — so the shape is checked rather than assumed.
+    #[test]
+    fn it_stamps_the_theme_it_was_given() {
+        let js = theme_init_script("\"dark\"");
+        assert!(js.contains("setAttribute('data-theme',t)"), "{js}");
+        assert!(js.contains("var t=\"dark\";"), "{js}");
+    }
+
+    #[test]
+    fn the_braces_balance_and_nothing_is_left_open() {
+        // A line-continuation in the Rust literal eating a brace is the exact
+        // way this breaks, and it reads as fine.
+        for theme in ["\"dark\"", "\"light\""] {
+            let js = theme_init_script(theme);
+            let opens = js.matches('{').count();
+            let closes = js.matches('}').count();
+            assert_eq!(opens, closes, "unbalanced braces for {theme}: {js}");
+            assert_eq!(js.matches('(').count(), js.matches(')').count(), "{js}");
+            assert!(js.ends_with("})();"), "{js}");
+            // One statement, one line: a stray newline inside would be
+            // harmless, but a stray backslash would not.
+            assert!(
+                !js.contains('\\'),
+                "a backslash survived into the script: {js}"
+            );
+        }
+    }
 }

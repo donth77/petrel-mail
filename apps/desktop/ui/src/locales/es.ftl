@@ -288,6 +288,7 @@ status-sync-failed = Error al sincronizar
 status-demo = Correo de demostración · sin cuenta
 status-seeding = Construyendo tu buzón…
 status-counts = { $count } conversaciones · { $unread } sin leer
+status-loading = Cargando…
 cmd-archive = Marcar como hecho
 cmd-archive-alias = Archivar
 cmd-snooze = Posponer esta conversación

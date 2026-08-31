@@ -285,6 +285,7 @@ status-sync-failed = 동기화 실패
 status-demo = 데모 메일 · 계정 없음
 status-seeding = 메일함을 만드는 중…
 status-counts = 대화 { $count }개 · 읽지 않음 { $unread }개
+status-loading = 불러오는 중…
 cmd-archive = 완료로 표시
 cmd-archive-alias = 보관
 cmd-snooze = 이 대화 다시 알림

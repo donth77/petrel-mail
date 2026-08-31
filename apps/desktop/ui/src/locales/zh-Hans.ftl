@@ -250,6 +250,7 @@ status-sync-failed = 同步失败
 status-demo = 演示邮件 · 无账户
 status-seeding = 正在建立你的邮箱…
 status-counts = { $count } 个会话 · { $unread } 封未读
+status-loading = 正在加载…
 cmd-archive = 标记为完成
 cmd-archive-alias = 归档
 cmd-snooze = 延后此会话

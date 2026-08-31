@@ -250,6 +250,7 @@ status-sync-failed = 同期に失敗しました
 status-demo = デモ用メール · アカウントなし
 status-seeding = メールボックスを構築しています…
 status-counts = { $count } 件のスレッド · 未読 { $unread } 件
+status-loading = 読み込み中…
 cmd-archive = 完了にする
 cmd-archive-alias = アーカイブ
 cmd-snooze = このスレッドをスヌーズ

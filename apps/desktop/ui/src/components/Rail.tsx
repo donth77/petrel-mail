@@ -74,7 +74,8 @@ type Props = {
       before the pointer reaches them rather than only once it arrives. */
   dragActive: boolean;
   accountColor: string;
-  unread: number;
+  /** Null until the first list arrives — unknown, rather than none. */
+  unread: number | null;
   /** Per-mailbox numbers, keyed by rail key. Absent means nothing to show —
    *  the engine omits empty ones rather than sending zeroes. */
   counts: Record<string, number>;

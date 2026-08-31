@@ -248,6 +248,7 @@ export const STRING_IDS = [
   'status-demo',
   'status-seeding',
   'status-counts',
+  'status-loading',
   'cmd-archive',
   'cmd-archive-alias',
   'cmd-snooze',

@@ -1110,7 +1110,18 @@ export function App() {
     return () => clearTimeout(h);
   }, [active?.id, settings.layout]);
 
-  const unread = useMemo(() => items.filter((m) => m.unread).length, [items]);
+  // Null while the answer is not known yet, which is not the same as none.
+  //
+  // This is derived from the loaded rows, so before the first list arrives it
+  // was zero — and the account switcher said "0 unread" next to "Building your
+  // mailbox…". That is the same confident lie the list refuses to tell three
+  // hundred lines below, where a sync in flight is deliberately not reported
+  // as an empty inbox. The condition is copied from there rather than
+  // reinvented: one view, one number, and one idea of when it is known.
+  const unread = useMemo(
+    () => (loading || (status?.seeding && items.length === 0) ? null : items.filter((m) => m.unread).length),
+    [items, loading, status?.seeding],
+  );
 
   const [counts, setCounts] = useState<Record<string, number>>({});
 
@@ -1681,7 +1692,9 @@ export function App() {
                           needs: fmtCount(counts['outbox:attention'] ?? 0),
                         })
                       : t('outbox-count', { count: fmtCount(counts['outbox'] ?? 0) })
-                    : t('list-unread', { count: fmtCount(unread) })}
+                    : unread === null
+                      ? ''
+                      : t('list-unread', { count: fmtCount(unread) })}
               </span>
             )}
             {/* Last in the row and pushed to its end, so the mailbox's name
@@ -2298,7 +2311,12 @@ export function App() {
         <span>
           {view === 'outbox'
             ? t('outbox-count', { count: fmtCount(counts['outbox'] ?? 0) })
-            : t('status-counts', { count: fmtCount(viewTotal ?? items.length), unread: fmtCount(unread) })}
+            : unread === null
+              ? t('status-loading')
+              : t('status-counts', {
+                  count: fmtCount(viewTotal ?? items.length),
+                  unread: fmtCount(unread),
+                })}
         </span>
         <span className="spacer" />
         <span>

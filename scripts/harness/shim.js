@@ -802,6 +802,16 @@
     },
   };
 
+  // ?slowboot=N holds the first answer to the commands the first paint waits
+  // on, so the loading state can actually be looked at. Without it the window
+  // is through it in about 280ms and every attempt to sample lands after the
+  // fact — which is how "0 unread" during loading survived being noticed.
+  var slowBoot = (function () {
+    var m = /[?&]slowboot=(\d+)/.exec(window.location.search);
+    return m ? Number(m[1]) : 0;
+  })();
+  var heldFirst = {};
+
   window.__TAURI_INTERNALS__ = {
     invoke: function (cmd, args) {
       window.__PETREL_IPC__.push({ cmd: cmd, args: args });
@@ -810,7 +820,16 @@
       // silently succeeding would let a renamed command pass unnoticed.
       if (!h) return Promise.reject('no such command: ' + cmd);
       try {
-        return Promise.resolve(h(args || {}));
+        var value = h(args || {});
+        // Only the first call per command, so the app becomes usable rather
+        // than staying slow for the whole session.
+        if (slowBoot && !heldFirst[cmd] && (cmd === 'status' || cmd === 'list_threads' || cmd === 'view_counts')) {
+          heldFirst[cmd] = true;
+          return new Promise(function (resolve) {
+            setTimeout(function () { resolve(value); }, slowBoot);
+          });
+        }
+        return Promise.resolve(value);
       } catch (e) {
         return Promise.reject(String(e));
       }

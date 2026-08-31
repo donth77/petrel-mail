@@ -9,7 +9,8 @@ type Props = {
   /** The address actually signed in, which may be known before the account row
    *  is, so it is passed separately rather than inferred from the list. */
   current: string;
-  unread: number;
+  /** Null while the count is still unknown. */
+  unread: number | null;
   accountColor: string;
   onSwitch: (index: number) => void;
   onSettings: () => void;
@@ -49,8 +50,12 @@ export function AccountMenu({
           <span className="clip" style={{ display: 'block', fontSize: 12.5, fontWeight: 600 }}>
             {current}
           </span>
-          <span className="mono" style={{ fontSize: 10, color: 'var(--ink3)' }}>
-            {t('list-unread', { count: unread })}
+          {/* Nothing at all until the number is real. A count that reads
+              "0 unread" while the mailbox is still being built is worse than
+              a blank line: it is an answer, and it is wrong. The row keeps its
+              height either way, so nothing moves when the number arrives. */}
+          <span className="mono" style={{ fontSize: 10, color: 'var(--ink3)', minHeight: '1.2em' }}>
+            {unread === null ? '\u00a0' : t('list-unread', { count: unread })}
           </span>
         </span>
         <Icon icon={ChevronDown} size={13} />

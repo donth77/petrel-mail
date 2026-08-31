@@ -267,6 +267,7 @@ status-sync-failed = Sync failed
 status-demo = Demo mail · no account
 status-seeding = Building your mailbox…
 status-counts = { $count } conversations · { $unread } unread
+status-loading = Loading…
 cmd-archive = Mark Done
 cmd-archive-alias = Archive
 cmd-snooze = Snooze this conversation
