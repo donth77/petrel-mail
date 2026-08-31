@@ -4,7 +4,7 @@ pub(crate) mod backfill;
 pub(crate) mod drafts;
 pub(crate) mod drain;
 
-use crate::diag::{friendly_sync_error, log_sync};
+use crate::diag::{friendly_sync_error_for, log_sync};
 use crate::send::{send_due, spawn_outbox_clock};
 use crate::state::{AppState, now_ms};
 use crate::sync::backfill::spawn_backfill;
@@ -99,7 +99,8 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
             }
             Err(e) => {
                 log_sync(&format!("folder discovery FAILED: {e}"));
-                *state.sync_error.lock().unwrap() = Some(friendly_sync_error(&format!("{e}")));
+                *state.sync_error.lock().unwrap() =
+                    Some(friendly_sync_error_for(&cfg.host, &format!("{e}")));
             }
         }
 
@@ -134,7 +135,7 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
         if !targets.is_empty() && failures >= targets.len() {
             let msg = "no folder could be synced";
             log_sync(msg);
-            *state.sync_error.lock().unwrap() = Some(friendly_sync_error(msg));
+            *state.sync_error.lock().unwrap() = Some(friendly_sync_error_for(&cfg.host, msg));
             *state.source.lock().unwrap() = "sync failed".into();
         } else {
             let held = state.seeded.load(Ordering::Relaxed);

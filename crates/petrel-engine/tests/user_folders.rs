@@ -585,3 +585,79 @@ fn marking_and_binning_a_folder_reach_everything_filed_under_it() {
         "`Archived stuff` is not under `Archive`"
     );
 }
+
+/// The number shown before somebody wipes the store.
+///
+/// Everything synced from a server can be fetched again; mail imported from an
+/// mbox, or filed into a local folder, cannot. A warning that undercounts is
+/// worse than no warning, and one that overcounts teaches people to dismiss
+/// it — so this checks both directions.
+#[test]
+fn local_only_mail_is_counted_and_synced_mail_is_not() {
+    let (_dir, mut store, blobs, account) = setup();
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+    let imported = store.ensure_named_folder(account, "Imported").unwrap();
+    store.mark_folder_local(imported).unwrap();
+
+    // Nothing yet.
+    assert_eq!(store.local_only_messages().unwrap(), 0);
+
+    // One that came from the server: recoverable, so it must not count.
+    store
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(inbox),
+            Some(1),
+            &fixture("a@x", "from the server"),
+        )
+        .unwrap();
+    assert_eq!(
+        store.local_only_messages().unwrap(),
+        0,
+        "synced mail is not local-only"
+    );
+
+    // One that exists here and nowhere else.
+    store
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(imported),
+            None,
+            &fixture("b@x", "imported"),
+        )
+        .unwrap();
+    assert_eq!(
+        store.local_only_messages().unwrap(),
+        1,
+        "imported mail was not counted"
+    );
+}
+
+/// A message the server also holds is recoverable, however else it is filed.
+#[test]
+fn a_copy_on_the_server_makes_a_message_recoverable() {
+    let (_dir, mut store, blobs, account) = setup();
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+    let local = store.ensure_named_folder(account, "Local").unwrap();
+    store.mark_folder_local(local).unwrap();
+
+    let m = store
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(inbox),
+            Some(9),
+            &fixture("c@x", "both places"),
+        )
+        .unwrap()
+        .message_id;
+    // Also placed in a local folder. Still on the server, so still not lost.
+    store.place_message(m, local).unwrap();
+    assert_eq!(
+        store.local_only_messages().unwrap(),
+        0,
+        "a message the server still holds must not be counted as local-only"
+    );
+}

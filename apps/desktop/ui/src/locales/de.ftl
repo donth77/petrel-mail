@@ -102,6 +102,8 @@ onb-app-password = App-Passwort
 onb-app-password-help = { $provider } verlangt ein App-Passwort statt Ihres normalen. Erstellen Sie eines in den Sicherheitseinstellungen und fügen Sie es hier ein. Petrel bewahrt es im Schlüsselbund Ihres Mac auf, nie in einer Datei.
 onb-app-password-link = App-Passwort erstellen
 onb-password-help = Petrel bewahrt es im Schlüsselbund Ihres Mac auf, nie in einer Datei.
+onb-oauth-required = { $provider }-Konten melden sich über Microsoft an statt mit einem Passwort, und Petrel kann das noch nicht. Bei manchen Geschäftskonten funktioniert ein Passwort trotzdem, Sie können es also versuchen — falls es abgelehnt wird, liegt es daran.
+onb-oauth-help = Wenn Ihre Organisation die Passwortanmeldung für E-Mail noch erlaubt, verwenden Sie Ihr normales Passwort.
 onb-servers = Servereinstellungen
 onb-servers-help = Für Anbieter ohne Anmeldeschaltfläche. Die Server haben wir aus Ihrer Adresse erraten.
 onb-username = Benutzername
@@ -373,6 +375,24 @@ rule-sum-nothing = noch nichts tun
 storage-import = Nachrichten hereinholen
 storage-import-help = mbox-Archive und .eml-Dateien landen in einem lokalen Ordner „Importiert“ auf diesem Mac. Sie können sie hier lesen und durchsuchen, und nichts wird hochgeladen. Dasselbe Archiv zweimal zu importieren fügt nichts hinzu.
 storage-import-button = mbox oder .eml importieren…
+storage-remove-all = Alle lokalen Daten entfernen
+storage-remove-all-help = Löscht E-Mails, Einstellungen und gespeicherte Passwörter von diesem Computer. Die Deinstallation von Petrel tut das nicht — Ihr Postfach bleibt absichtlich erhalten, damit nichts versehentlich verloren geht.
+storage-remove-all-button = Alles entfernen…
+storage-remove-all-confirm = Alles von diesem Computer entfernen?
+storage-remove-all-body = { $messages ->
+    [one] { $messages } Nachricht
+   *[other] { $messages } Nachrichten
+  }, { $accounts ->
+    [one] { $accounts } Konto
+   *[other] { $accounts } Konten
+  } und { $size } werden gelöscht, zusammen mit den gespeicherten Passwörtern.
+storage-remove-all-local = { $count ->
+    [one] { $count } davon gibt es nur hier und sie kann nicht erneut geladen werden.
+   *[other] { $count } davon gibt es nur hier und sie können nicht erneut geladen werden.
+  }
+storage-remove-all-path = Der Ordner { $path } wird entfernt und Petrel beendet sich.
+storage-remove-all-do = Alles entfernen
+storage-remove-all-failed = Die Daten konnten nicht entfernt werden: { $error }
 storage-imported = { $count ->
     [one] { $count } Nachricht importiert
    *[other] { $count } Nachrichten importiert

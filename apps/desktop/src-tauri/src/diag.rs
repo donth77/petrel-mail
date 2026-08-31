@@ -157,24 +157,71 @@ pub(crate) fn log_sync(msg: &str) {
     }
 }
 
+/// Which provider a host belongs to, for advice that fits it.
+///
+/// Only used to choose between hints that are already true of that provider —
+/// never to decide whether something failed. An unrecognised host gets the
+/// general answer, which is correct rather than merely vague.
+fn provider_of(host: &str) -> Provider {
+    let h = host.to_ascii_lowercase();
+    if h.contains("gmail") || h.contains("googlemail") {
+        Provider::Gmail
+    } else if h.contains("outlook") || h.contains("office365") || h.contains("hotmail") {
+        Provider::Microsoft
+    } else {
+        Provider::Other
+    }
+}
+
+enum Provider {
+    Gmail,
+    Microsoft,
+    Other,
+}
+
 /// Turns a protocol error into something a person can act on.
 ///
 /// The raw text is Rust's Debug rendering of an IMAP response — `code: None,
 /// info: Some("[AUTHENTICATIONFAILED] ...")` — which tells a user nothing and
 /// tells them it unhelpfully. The detail still goes to sync.log; what reaches
 /// the screen should say what to do about it.
-pub(crate) fn friendly_sync_error(raw: &str) -> String {
+///
+/// `host` decides which advice fits. Every sign-in failure used to be answered
+/// with Gmail's: somebody whose Fastmail password was mistyped was told to
+/// switch on 2-Step Verification, and somebody on Outlook was sent to set up a
+/// Google app password. Advice for the wrong provider is worse than none —
+/// it sends a person to fix something that was never broken.
+pub(crate) fn friendly_sync_error_for(host: &str, raw: &str) -> String {
     let r = raw.to_ascii_uppercase();
     if r.contains("AUTHENTICATIONFAILED") || r.contains("INVALID CREDENTIALS") {
-        return "Sign-in was refused. Gmail needs 2-Step Verification switched on \
-                and an app password — your ordinary account password will not work \
-                for IMAP."
-            .into();
+        return match provider_of(host) {
+            Provider::Gmail => "Sign-in was refused. Gmail needs 2-Step Verification \
+                switched on and an app password — your ordinary account password will \
+                not work for IMAP."
+                .into(),
+            // Not "make an app password": Microsoft has been retiring password
+            // sign-in for mail, and Petrel cannot do the OAuth that replaces
+            // it. Saying so is more use than sending somebody to a settings
+            // page that will not help.
+            Provider::Microsoft => "Sign-in was refused. Microsoft accounts increasingly \
+                require OAuth sign-in for mail, which Petrel does not support yet, so a \
+                password may not work here however it is set up."
+                .into(),
+            Provider::Other => "Sign-in was refused. Check the address and password. \
+                Many providers will not accept your ordinary password for mail and want \
+                an app password made in their security settings."
+                .into(),
+        };
     }
     if r.contains("AUTHORIZATIONFAILED") || r.contains("WEBALERT") {
-        return "The server accepted the password but refused access. For Gmail \
-                this usually means IMAP is switched off in settings."
-            .into();
+        return match provider_of(host) {
+            Provider::Gmail => "The server accepted the password but refused access. \
+                For Gmail this usually means IMAP is switched off in settings."
+                .into(),
+            _ => "The server accepted the password but refused access. Check whether \
+                IMAP is switched on for this account."
+                .into(),
+        };
     }
     if r.contains("DNS") || r.contains("NAME OR SERVICE") || r.contains("RESOLVE") {
         return "That server name could not be looked up. Check the host.".into();
@@ -191,4 +238,60 @@ pub(crate) fn friendly_sync_error(raw: &str) -> String {
     }
     // Unknown: show the raw text rather than a reassuring guess.
     raw.to_string()
+}
+
+#[cfg(test)]
+mod sync_error_tests {
+    use super::friendly_sync_error_for;
+
+    /// Advice for the wrong provider is worse than none.
+    ///
+    /// Every refused sign-in used to be answered with Gmail's: a Fastmail user
+    /// who mistyped a password was told to switch on 2-Step Verification, and
+    /// an Outlook user was sent to make a Google app password. Both are being
+    /// pointed at something that was never broken.
+    const REFUSED: &str = "code: None, info: Some(\"[AUTHENTICATIONFAILED] Invalid credentials\")";
+
+    #[test]
+    fn gmail_still_gets_gmails_advice() {
+        let msg = friendly_sync_error_for("imap.gmail.com", REFUSED);
+        assert!(msg.contains("Gmail"), "{msg}");
+        assert!(msg.contains("2-Step"), "{msg}");
+    }
+
+    #[test]
+    fn microsoft_is_told_the_actual_reason() {
+        // Not "make an app password": Microsoft is retiring password sign-in
+        // for mail and Petrel has no OAuth, so that advice leads nowhere.
+        let msg = friendly_sync_error_for("outlook.office365.com", REFUSED);
+        assert!(msg.contains("OAuth"), "{msg}");
+        assert!(
+            !msg.contains("Gmail"),
+            "sent an Outlook user to Google: {msg}"
+        );
+    }
+
+    #[test]
+    fn everybody_else_gets_advice_that_is_true_of_them() {
+        for host in [
+            "imap.fastmail.com",
+            "mail.privateemail.com",
+            "imap.mail.me.com",
+        ] {
+            let msg = friendly_sync_error_for(host, REFUSED);
+            assert!(!msg.contains("Gmail"), "{host} was told about Gmail: {msg}");
+            assert!(msg.contains("app password"), "{host}: {msg}");
+        }
+    }
+
+    #[test]
+    fn the_other_verdicts_are_unchanged_whoever_the_host_is() {
+        let dns =
+            friendly_sync_error_for("imap.example.com", "failed to lookup address: DNS error");
+        assert!(dns.contains("could not be looked up"), "{dns}");
+        // And something nobody classified still shows its own words rather
+        // than a reassuring guess.
+        let odd = friendly_sync_error_for("imap.example.com", "something nobody has seen before");
+        assert_eq!(odd, "something nobody has seen before");
+    }
 }

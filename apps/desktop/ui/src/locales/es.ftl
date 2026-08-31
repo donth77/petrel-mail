@@ -123,6 +123,8 @@ onb-app-password = Contraseña de aplicación
 onb-app-password-help = { $provider } pide una contraseña de aplicación en vez de la normal. Crea una en sus ajustes de seguridad y pégala aquí. Petrel la guarda en el llavero de tu Mac, nunca en un archivo.
 onb-app-password-link = Crear una contraseña de aplicación
 onb-password-help = Petrel la guarda en el llavero de tu Mac, nunca en un archivo.
+onb-oauth-required = Las cuentas de { $provider } inician sesión con Microsoft en lugar de con una contraseña, y Petrel aún no puede hacerlo. En algunas cuentas de trabajo la contraseña todavía funciona, así que puede intentarlo: si se rechaza, este es el motivo.
+onb-oauth-help = Si su organización aún permite iniciar sesión con contraseña para el correo, use su contraseña habitual.
 onb-servers = Configuración del servidor
 onb-servers-help = Para proveedores sin botón de inicio de sesión. Hemos deducido los servidores de tu dirección.
 onb-username = Nombre de usuario
@@ -395,6 +397,24 @@ rule-sum-nothing = no hacer nada todavía
 storage-import = Traer correo
 storage-import-help = Los archivos mbox y .eml van a una carpeta local llamada “Importado” en este Mac. Puedes leerlos y buscarlos aquí, y no se sube nada. Importar el mismo archivo dos veces no añade nada.
 storage-import-button = Importar mbox o .eml…
+storage-remove-all = Eliminar todos los datos locales
+storage-remove-all-help = Borra el correo, los ajustes y las contraseñas guardadas de este equipo. Desinstalar Petrel no hace esto: su buzón se conserva a propósito, para que nada se pierda por accidente.
+storage-remove-all-button = Eliminar todo…
+storage-remove-all-confirm = ¿Eliminar todo de este equipo?
+storage-remove-all-body = Se borrarán { $messages ->
+    [one] { $messages } mensaje
+   *[other] { $messages } mensajes
+  }, { $accounts ->
+    [one] { $accounts } cuenta
+   *[other] { $accounts } cuentas
+  } y { $size }, junto con las contraseñas guardadas.
+storage-remove-all-local = { $count ->
+    [one] { $count } de ellos solo existe aquí y no se puede volver a descargar.
+   *[other] { $count } de ellos solo existen aquí y no se pueden volver a descargar.
+  }
+storage-remove-all-path = Se elimina la carpeta { $path } y Petrel se cierra.
+storage-remove-all-do = Eliminar todo
+storage-remove-all-failed = No se pudieron eliminar los datos: { $error }
 storage-imported = { $count ->
     [one] Importado { $count } mensaje
    *[other] Importados { $count } mensajes

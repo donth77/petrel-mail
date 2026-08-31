@@ -539,6 +539,37 @@ impl Store {
     /// it is written, so the two agree to the byte — and the walk was a
     /// `stat()` per message, most of a second on a mailbox of any size, which
     /// is a long time for a settings pane to sit blank.
+    /// Messages that exist on this computer and nowhere else.
+    ///
+    /// The number a person needs before they wipe the store. Everything synced
+    /// from a server can be fetched again; mail imported from an mbox, and
+    /// anything filed into a local folder, cannot. Deleting the store takes
+    /// those with it and no resync brings them back.
+    ///
+    /// A message counts when it has placements and every one of them is in a
+    /// local folder. One copy still on a server is enough to make it
+    /// recoverable, which is why this asks "all" rather than "any" — erring
+    /// the other way would inflate the warning and teach people to dismiss it.
+    pub fn local_only_messages(&self) -> Result<i64> {
+        Ok(self.conn.query_row(
+            "SELECT count(*) FROM (
+               SELECT p.message_id
+                 FROM placements p
+                 JOIN folders f ON f.id = p.folder_id
+                 JOIN messages m ON m.id = p.message_id
+                WHERE m.deleted_at_ms IS NULL
+                GROUP BY p.message_id
+               HAVING sum(
+                        CASE WHEN coalesce(
+                          json_extract(f.sync_state_json, '$.local'), 0) IN (1, 'true')
+                        THEN 0 ELSE 1 END
+                      ) = 0
+             )",
+            [],
+            |r| r.get(0),
+        )?)
+    }
+
     pub fn storage_report(&self, db_path: &Path) -> Result<StorageReport> {
         let file = |p: std::path::PathBuf| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
         let database_bytes = file(db_path.to_path_buf())

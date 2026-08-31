@@ -51,7 +51,7 @@ export type Discovered = {
   via: 'known-provider' | 'ispdb' | 'mx';
   imap: Server;
   smtp: Server;
-  auth: 'password' | 'app-password';
+  auth: 'password' | 'app-password' | 'oauth-required';
   app_password_url: string | null;
 };
 
@@ -185,6 +185,16 @@ export type Identity = {
   display_name: string;
   signature: string;
   signature_on_reply: boolean;
+};
+
+/** What removing everything would cost, in the numbers that decide it. */
+export type RemovalReport = {
+  messages: number;
+  /** Of those, the ones no resync can bring back. */
+  local_only: number;
+  accounts: number;
+  bytes: number;
+  path: string;
 };
 
 export type StorageReport = {
@@ -412,6 +422,10 @@ const mock = {
   renameTag: async () => {},
   setTagColour: async () => {},
   deleteTag: async () => {},
+  removalReport: async () => ({
+    messages: 40, local_only: 3, accounts: 1, bytes: 12_400_000, path: '/tmp/Petrel',
+  }),
+  removeAllLocalData: async () => {},
   storage: async (): Promise<StorageReport> => ({
     messages: 40, attachments: 2,
     database_bytes: 12_582_912, blob_bytes: 41_943_040, index_bytes: 3_145_728,
@@ -705,6 +719,8 @@ const real = {
   // the retry ladder and the ambiguous-outcome rule apply to all of them.
   // A binding that sent straight to the wire would be a way around all three.
   storage: () => invoke<StorageReport>('storage_report'),
+  removalReport: () => invoke<RemovalReport>('removal_report'),
+  removeAllLocalData: () => invoke<void>('remove_all_local_data'),
   exportMbox: (accountId: number, view: string, path: string) =>
     invoke<string>('export_mbox', { accountId, view, path }),
   importMail: (paths: string[]) =>

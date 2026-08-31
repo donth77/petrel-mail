@@ -90,6 +90,19 @@
   color: var(--bad, #b0524a);
 }
 
+/* A caution, not a failure — this is said before anything has been tried, and
+   the attempt is still allowed. Marked off by a rule rather than coloured like
+   an error, so it reads as "know this first" instead of "something went
+   wrong". */
+.onb-warn {
+  margin: 10px 0 0;
+  padding-inline-start: 10px;
+  border-inline-start: 2px solid var(--warn, #b8863b);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink2);
+}
+
 /* The connection test's verdict. Said in its own line, in its own colour,
    because it is the moment the form turns from a guess into a configuration. */
 .onb-test {

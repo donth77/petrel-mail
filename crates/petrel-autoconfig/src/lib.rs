@@ -37,6 +37,19 @@ pub enum Auth {
     /// A password generated for this app in the provider's security settings,
     /// because the account's own password is refused for IMAP.
     AppPassword,
+    /// The provider wants OAuth, which Petrel cannot do yet.
+    ///
+    /// Said out loud rather than left to be discovered. Microsoft has been
+    /// retiring password sign-in for mail across Outlook.com and Exchange
+    /// Online, and `outlook.office365.com` offers `AUTH=XOAUTH2` beside
+    /// `AUTH=PLAIN`; Petrel only ever sends LOGIN. Offering an app-password
+    /// link here — as this did — sends somebody to a settings page that will
+    /// not fix anything, and the sign-in fails afterwards anyway.
+    ///
+    /// Not a refusal: some tenants still permit a password, so the setup
+    /// screen warns and lets the attempt happen rather than deciding for
+    /// somebody whose account might be the exception.
+    OauthRequired,
 }
 
 /// What the chain found.
@@ -126,8 +139,11 @@ fn known_by_domain(domain: &str) -> Option<Discovered> {
             via: Via::KnownProvider,
             imap: server("outlook.office365.com", 993),
             smtp: server("smtp-mail.outlook.com", 465),
-            auth: Auth::AppPassword,
-            app_password_url: Some("https://account.live.com/proofs/manage/additional".into()),
+            auth: Auth::OauthRequired,
+            // Deliberately none: the app-password page this used to offer
+            // cannot make a Microsoft account work with a client that has no
+            // OAuth.
+            app_password_url: None,
         },
         "fastmail.com" | "fastmail.fm" => Discovered {
             provider: "Fastmail".into(),
@@ -208,7 +224,10 @@ fn known_by_mx(mx_host: &str) -> Result<Option<Discovered>, Error> {
             via: Via::Mx,
             imap: server("outlook.office365.com", 993),
             smtp: server("smtp.office365.com", 465),
-            auth: Auth::AppPassword,
+            // Same reason as Outlook.com above: a tenant on Exchange Online
+            // is the account type Microsoft turned password sign-in off for
+            // first.
+            auth: Auth::OauthRequired,
             app_password_url: None,
         }
     } else if h.ends_with("zoho.com") || h.ends_with("zoho.eu") || h.ends_with("zohomail.com") {

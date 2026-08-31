@@ -102,6 +102,8 @@ onb-app-password = App password
 onb-app-password-help = { $provider } asks for an app password rather than your normal one. Create one in its security settings and paste it here. Petrel keeps it in your Mac’s keychain, never in a file.
 onb-app-password-link = Create an app password
 onb-password-help = Petrel keeps it in your Mac’s keychain, never in a file.
+onb-oauth-required = { $provider } accounts sign in with Microsoft rather than with a password, and Petrel cannot do that yet. A password may still work on some work accounts, so you can try — but if it is refused, this is why.
+onb-oauth-help = If your organisation still allows password sign-in for mail, use your ordinary password.
 onb-servers = Server settings
 onb-servers-help = For providers without a sign-in button. We guessed the servers from your address.
 onb-username = Username
@@ -375,6 +377,24 @@ rule-sum-nothing = do nothing yet
 storage-import = Bring mail in
 storage-import-help = mbox archives and .eml files go into a local “Imported” folder on this Mac. You can read and search them here, and nothing is uploaded. Importing the same archive twice adds nothing.
 storage-import-button = Import mbox or .eml…
+storage-remove-all = Remove all local data
+storage-remove-all-help = Deletes the mail, settings and saved passwords from this computer. Uninstalling Petrel does not do this — your mailbox is left behind on purpose, so nothing is lost by accident.
+storage-remove-all-button = Remove everything…
+storage-remove-all-confirm = Remove everything from this computer?
+storage-remove-all-body = { $messages ->
+    [one] { $messages } message
+   *[other] { $messages } messages
+  }, { $accounts ->
+    [one] { $accounts } account
+   *[other] { $accounts } accounts
+  } and { $size } will be deleted, along with the saved passwords.
+storage-remove-all-local = { $count ->
+    [one] { $count } of those exists only here and cannot be downloaded again.
+   *[other] { $count } of those exist only here and cannot be downloaded again.
+  }
+storage-remove-all-path = The folder { $path } is removed and Petrel quits.
+storage-remove-all-do = Remove everything
+storage-remove-all-failed = Could not remove the data: { $error }
 storage-imported = { $count ->
     [one] Imported { $count } message
    *[other] Imported { $count } messages

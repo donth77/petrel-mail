@@ -598,6 +598,13 @@
     import_mail: function () { return { imported: 3, duplicates: 1, failed: 0 }; },
     print_message: function () { return null; },
     view_count: function () { return 40; },
+    removal_report: function () {
+      // Modelled with local-only mail present, because that number is the
+      // whole reason the dialog exists and a shim answering zero would let a
+      // missing warning look correct.
+      return { messages: 40, local_only: 3, accounts: 1, bytes: 12400000, path: '/tmp/Petrel' };
+    },
+    remove_all_local_data: function () { return null; },
     list_rules: function () { return rules.slice(); },
     save_rule: function (a) {
       if (a.ruleId) {

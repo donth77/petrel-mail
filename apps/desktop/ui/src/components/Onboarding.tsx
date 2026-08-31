@@ -189,6 +189,17 @@ export function Onboarding({ onDone }: { onDone: (added: { id: number; email: st
             <p className="onb-body">{t('onb-direct', { provider: step.found.provider })}</p>
             <p className="onb-body">{t('onb-stored')}</p>
 
+            {/* Said before the password box rather than after the attempt.
+                Microsoft has been retiring password sign-in for mail, and
+                Petrel sends LOGIN and nothing else — so for most of these
+                accounts no password will work, whatever is typed here.
+                Warned rather than blocked: some tenants still allow one, and
+                deciding for somebody whose account might be the exception is
+                not this screen's call to make. */}
+            {step.found.auth === 'oauth-required' && (
+              <p className="onb-warn">{t('onb-oauth-required', { provider: step.found.provider })}</p>
+            )}
+
             <label className="onb-label" htmlFor="onb-pass">
               {t(step.found.auth === 'app-password' ? 'onb-app-password' : 'onb-password')}
             </label>
@@ -205,7 +216,9 @@ export function Onboarding({ onDone }: { onDone: (added: { id: number; email: st
             <p className="onb-quiet">
               {step.found.auth === 'app-password'
                 ? t('onb-app-password-help', { provider: step.found.provider })
-                : t('onb-password-help')}
+                : step.found.auth === 'oauth-required'
+                  ? t('onb-oauth-help')
+                  : t('onb-password-help')}
               {step.found.app_password_url && (
                 <>
                   {' '}

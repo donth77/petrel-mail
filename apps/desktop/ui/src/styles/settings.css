@@ -425,3 +425,17 @@
   opacity: 0.3;
   cursor: default;
 }
+
+/* The one button in Settings that destroys something. Marked in the danger
+   colour the confirm dialog already uses, so the warning and the button that
+   opens it read as the same thing rather than two unrelated surfaces. Outline
+   rather than a filled red block: it sits in a list of ordinary actions and
+   should be findable, not alarming, until it is pressed. */
+.fbtn.danger {
+  border-color: color-mix(in oklab, var(--danger) 40%, var(--hair));
+  color: var(--danger);
+}
+.fbtn.danger:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: color-mix(in oklab, var(--danger) 8%, transparent);
+}

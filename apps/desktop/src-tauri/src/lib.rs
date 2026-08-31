@@ -374,6 +374,8 @@ pub fn run() {
             commands::outbox::outbox_edit,
             commands::outbox::outbox_check,
             commands::storage::storage_report,
+            commands::storage::removal_report,
+            commands::storage::remove_all_local_data,
             commands::storage::export_mbox,
             commands::storage::import_mail,
             commands::mail::print_message,

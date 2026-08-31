@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react';
 import {
   Archive, Download, Inbox, PencilLine, Send, ShieldAlert, Star, Tag as TagIcon, Trash2, Upload,
+  FlameKindling,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { api, type Account, type Folder, type StorageReport, type Tag } from '../../lib/api';
+import { api, type Account, type Folder, type RemovalReport, type StorageReport, type Tag } from '../../lib/api';
 import { fileSize } from '../../lib/format';
 import { exportScopes } from '../../lib/export-scopes';
 import { Icon } from '../Icon';
+import { Confirm } from '../Confirm';
 import { PickerField, type FieldOption } from '../PickerField';
 import { t, type StringId } from '../../lib/strings';
 import { useSettings } from '../../lib/settings';
@@ -87,6 +89,8 @@ export function Storage({ onMessage }: { onMessage: (text: string) => void }) {
   const [chosen, setChosen] = useState<Record<number, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** The removal dialog's contents; non-null while it is open. */
+  const [removal, setRemoval] = useState<RemovalReport | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -430,6 +434,69 @@ export function Storage({ onMessage }: { onMessage: (text: string) => void }) {
           </button>
         </div>
       </section>
+
+      {/* The uninstall story, and the reason it has to be here: no uninstaller
+          does this. Dragging Petrel to the Trash leaves the mailbox behind,
+          and the Windows uninstaller's "delete application data" box clears a
+          different directory than the one the mail is in. Somebody handing
+          back a laptop needs one place to press. */}
+      <section className="field">
+        <div className="flabel">{t('storage-remove-all')}</div>
+        <p className="fhelp">{t('storage-remove-all-help')}</p>
+        <div className="storage-actions">
+          <button
+            type="button"
+            className="fbtn danger"
+            disabled={busy}
+            onClick={() => {
+              void api
+                .removalReport()
+                .then(setRemoval)
+                .catch((e) => onMessage(t('storage-remove-all-failed', { error: String(e) })));
+            }}
+          >
+            <Icon icon={FlameKindling} size={13} />
+            {t('storage-remove-all-button')}
+          </button>
+        </div>
+      </section>
+
+      {/* The count of mail that exists nowhere else is the whole point of the
+          dialog. Everything synced can be fetched again; imported mail and
+          anything in a local folder cannot, and that is the sentence somebody
+          needs before they agree rather than after. */}
+      <Confirm
+        open={removal !== null}
+        title={t('storage-remove-all-confirm')}
+        detail={
+          removal
+            ? [
+                t('storage-remove-all-body', {
+                  messages: removal.messages,
+                  accounts: removal.accounts,
+                  size: fileSize(removal.bytes),
+                }),
+                removal.local_only > 0
+                  ? t('storage-remove-all-local', { count: removal.local_only })
+                  : '',
+                t('storage-remove-all-path', { path: removal.path }),
+              ]
+                .filter(Boolean)
+                .join(' ')
+            : ''
+        }
+        confirmLabel={t('storage-remove-all-do')}
+        onClose={() => setRemoval(null)}
+        onConfirm={() => {
+          setRemoval(null);
+          // Nothing is shown afterwards on purpose: the command deletes the
+          // store and quits, so any "done" message would be a window writing
+          // to a database that is no longer there.
+          void api
+            .removeAllLocalData()
+            .catch((e) => onMessage(t('storage-remove-all-failed', { error: String(e) })));
+        }}
+      />
     </div>
   );
 }
