@@ -8,4 +8,5 @@
 //! provider semantics leak.
 
 pub mod imap;
+pub mod oauth;
 pub mod smtp;

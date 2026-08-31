@@ -23,6 +23,12 @@ futures = "0.3"
 # multipart boundaries — solved problems not worth re-solving.
 mail-builder = "0.4"
 base64 = "0.22"
+# The OAuth flow's arithmetic: a SHA-256 for the PKCE challenge, the system
+# random source for the verifier, and JSON to read a token response. Already
+# in the tree by way of other crates, so this costs no new build.
+sha2 = "0.10"
+getrandom = "0.3"
+serde_json.workspace = true
 thiserror.workspace = true
 
 tempfile.workspace = true
@@ -32,6 +38,8 @@ path = "../petrel-engine"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
+# The RFC 7636 worked example is checked by hashing it here too.
+sha2 = "0.10"
 
 [dev-dependencies.petrel-mime]
 path = "../petrel-mime"
