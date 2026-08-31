@@ -162,7 +162,7 @@ async fn a_renumbered_folder_is_remapped_without_losing_mail() {
         host: "127.0.0.1".into(),
         port,
         user: "petrel".into(),
-        credential: Credential::password("petrelpass".into()),
+        credential: Credential::password("petrelpass"),
         security: Security::InsecurePlaintext,
     };
 

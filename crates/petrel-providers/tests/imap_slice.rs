@@ -117,14 +117,16 @@ async fn live_provider_probe() {
 #[cfg(feature = "insecure-plaintext")]
 mod local {
     use super::env_config;
-    use petrel_providers::imap::{ImapConfig, Security, SyncStrategy, append_message, probe};
+    use petrel_providers::imap::{
+        Credential, ImapConfig, Security, SyncStrategy, append_message, probe,
+    };
 
     fn cfg() -> ImapConfig {
         env_config(Security::InsecurePlaintext).unwrap_or(ImapConfig {
             host: "127.0.0.1".into(),
             port: 3143,
             user: "petrel".into(),
-            credential: Credential::password("petrelpass".into()),
+            credential: Credential::password("petrelpass"),
             security: Security::InsecurePlaintext,
         })
     }

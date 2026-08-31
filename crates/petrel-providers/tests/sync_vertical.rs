@@ -20,7 +20,7 @@ fn cfg() -> ImapConfig {
         host: "127.0.0.1".into(),
         port: 3143,
         user: "petrel".into(),
-        credential: Credential::password("petrelpass".into()),
+        credential: Credential::password("petrelpass"),
         security: Security::InsecurePlaintext,
     }
 }

@@ -221,7 +221,7 @@ async fn a_quiet_cycle_is_status_lines_on_one_connection() {
         host: "127.0.0.1".into(),
         port,
         user: "u".into(),
-        credential: Credential::password("p".into()),
+        credential: Credential::password("p"),
         security: Security::InsecurePlaintext,
     };
     let mk = |since: &[(u32, Option<u32>, Option<u64>)]| -> Vec<FolderPass> {
@@ -383,7 +383,7 @@ async fn backfill_walks_history_in_strides_and_knows_when_it_is_done() {
         host: "127.0.0.1".into(),
         port,
         user: "u".into(),
-        credential: Credential::password("p".into()),
+        credential: Credential::password("p"),
         security: Security::InsecurePlaintext,
     };
 

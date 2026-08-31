@@ -2139,10 +2139,7 @@ pub async fn login_check(cfg: &ImapConfig) -> Result<()> {
         #[cfg(feature = "insecure-plaintext")]
         Security::InsecurePlaintext => {
             let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
-            let mut session = Client::new(tcp)
-                .login(&cfg.user, &cfg.pass)
-                .await
-                .map_err(|(e, _)| e)?;
+            let mut session = sign_in(Client::new(tcp), cfg).await?;
             session.logout().await?;
             Ok(())
         }
