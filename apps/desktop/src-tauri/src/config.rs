@@ -2,7 +2,7 @@
 
 use crate::state::AppState;
 use petrel_engine::store::Store;
-use petrel_providers::imap::{ImapConfig, Security};
+use petrel_providers::imap::{Credential, ImapConfig, Security};
 use std::sync::Mutex;
 
 /// Reads account settings from the environment. Credentials never appear in
@@ -172,7 +172,7 @@ pub(crate) fn imap_config_for(store: &Store, account_id: i64) -> Option<ImapConf
         host: servers.imap_host,
         port: servers.imap_port,
         user: servers.username,
-        pass,
+        credential: Credential::Password(pass),
         security: Security::Tls,
     })
 }
@@ -193,7 +193,7 @@ pub(crate) fn smtp_config_for(
         host: servers.smtp_host,
         port: servers.smtp_port,
         user: servers.username,
-        pass,
+        credential: Credential::Password(pass),
     })
 }
 
@@ -239,7 +239,7 @@ pub(crate) fn imap_config_from_env() -> Option<ImapConfig> {
             .and_then(|p| p.parse().ok())
             .unwrap_or(if plaintext { 143 } else { 993 }),
         user,
-        pass,
+        credential: Credential::Password(pass),
         security,
     })
 }

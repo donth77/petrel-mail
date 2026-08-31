@@ -434,7 +434,10 @@ pub struct SmtpConfig {
     pub host: String,
     pub port: u16,
     pub user: String,
-    pub pass: String,
+    /// The same two kinds as IMAP, for the same reason: a bearer token and a
+    /// password go on the wire through different commands, and one handed to
+    /// the other's command fails in a way that reads as a wrong password.
+    pub credential: crate::imap::Credential,
 }
 
 impl SmtpConfig {
@@ -449,7 +452,7 @@ impl SmtpConfig {
             host,
             port: 465,
             user: user.to_string(),
-            pass: pass.to_string(),
+            credential: crate::imap::Credential::password(pass),
         }
     }
 }
@@ -479,9 +482,22 @@ pub async fn login_check(cfg: &SmtpConfig) -> std::result::Result<(), String> {
     if !ehlo.starts_with("250") {
         return Err(format!("EHLO: {}", ehlo.trim()));
     }
-    let plain =
-        base64::engine::general_purpose::STANDARD.encode(format!("\0{}\0{}", cfg.user, cfg.pass));
-    w.write_all(format!("AUTH PLAIN {plain}\r\n").as_bytes())
+    // The same choice `send_tls` makes, for the same reason: onboarding has to
+    // test the credential the account will actually send with, or a token
+    // account passes its setup check and then fails on the first message.
+    let auth_line = match &cfg.credential {
+        crate::imap::Credential::Password(pass) => {
+            let plain = base64::engine::general_purpose::STANDARD
+                .encode(format!("\0{}\0{}", cfg.user, pass));
+            format!("AUTH PLAIN {plain}\r\n")
+        }
+        crate::imap::Credential::Bearer(bearer) => {
+            let token = base64::engine::general_purpose::STANDARD
+                .encode(crate::imap::xoauth2_payload(&cfg.user, bearer));
+            format!("AUTH XOAUTH2 {token}\r\n")
+        }
+    };
+    w.write_all(auth_line.as_bytes())
         .await
         .map_err(|e| e.to_string())?;
     let auth = read_reply(&mut reader).await.map_err(|e| e.to_string())?;
@@ -596,11 +612,23 @@ pub async fn send_tls(cfg: &SmtpConfig, msg: &Outgoing, raw: &[u8]) -> SendResul
     say!("ehlo", format!("EHLO {}\r\n", cfg.host));
     expect!("ehlo", 250);
 
-    // AUTH PLAIN is \0user\0pass, base64. Only ever over TLS, which is why
-    // this function has no plaintext sibling.
-    let token =
-        base64::engine::general_purpose::STANDARD.encode(format!("\0{}\0{}", cfg.user, cfg.pass));
-    say!("auth", format!("AUTH PLAIN {token}\r\n"));
+    // Two mechanisms, one shape: a base64 blob on the AUTH line. PLAIN is
+    // \0user\0pass; XOAUTH2 is the same string IMAP sends, which is why it
+    // comes from there rather than being spelled twice. Only ever over TLS,
+    // which is why this function has no plaintext sibling.
+    let auth_line = match &cfg.credential {
+        crate::imap::Credential::Password(pass) => {
+            let token = base64::engine::general_purpose::STANDARD
+                .encode(format!("\0{}\0{}", cfg.user, pass));
+            format!("AUTH PLAIN {token}\r\n")
+        }
+        crate::imap::Credential::Bearer(bearer) => {
+            let token = base64::engine::general_purpose::STANDARD
+                .encode(crate::imap::xoauth2_payload(&cfg.user, bearer));
+            format!("AUTH XOAUTH2 {token}\r\n")
+        }
+    };
+    say!("auth", auth_line);
     expect!("auth", 235);
 
     say!("mail", format!("MAIL FROM:<{}>\r\n", msg.from_addr));

@@ -5,7 +5,9 @@
 
 use std::time::Instant;
 
-use petrel_providers::imap::{FolderPass, ImapConfig, PassOutcome, Security, sync_pass};
+use petrel_providers::imap::{
+    Credential, FolderPass, ImapConfig, PassOutcome, Security, sync_pass,
+};
 
 #[tokio::test]
 #[ignore = "reads the real test account"]
@@ -14,7 +16,7 @@ async fn a_second_cycle_over_a_warm_store_fetches_nothing() {
         host: std::env::var("PETREL_NC_IMAP_HOST").expect("source .env.namecheap"),
         port: 993,
         user: std::env::var("PETREL_NC_USER").unwrap(),
-        pass: std::env::var("PETREL_NC_PASS").unwrap(),
+        credential: Credential::password(std::env::var("PETREL_NC_PASS").unwrap()),
         security: Security::Tls,
     };
     let names = [

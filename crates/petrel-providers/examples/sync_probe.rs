@@ -10,7 +10,7 @@
 
 use std::time::Instant;
 
-use petrel_providers::imap::{ImapConfig, Security, special_use_role};
+use petrel_providers::imap::{Credential, ImapConfig, Security, special_use_role};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
@@ -26,13 +26,19 @@ async fn main() {
             .and_then(|p| p.parse().ok())
             .unwrap_or(993),
         user: env("PETREL_IMAP_USER"),
-        pass: env("PETREL_IMAP_PASS"),
+        credential: Credential::password(env("PETREL_IMAP_PASS")),
         security: Security::Tls,
     };
     // The host is safe to name; the account is not, so only its shape is shown.
     println!("host      : {}:{}", cfg.host, cfg.port);
     println!("user      : {} chars", cfg.user.len());
-    println!("pass      : {} chars", cfg.pass.len());
+    println!(
+        "credential: {}",
+        match &cfg.credential {
+            Credential::Password(p) => format!("password, {} chars", p.len()),
+            Credential::Bearer(_) => "bearer token".to_string(),
+        }
+    );
     println!("limit     : {limit}");
     println!();
 

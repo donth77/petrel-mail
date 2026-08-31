@@ -8,8 +8,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_imap::Client;
 use async_imap::extensions::idle::IdleResponse;
+use async_imap::{Client, Session};
 use futures::StreamExt;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
@@ -45,8 +45,32 @@ pub struct ImapConfig {
     pub host: String,
     pub port: u16,
     pub user: String,
-    pub pass: String,
+    pub credential: Credential,
     pub security: Security,
+}
+
+/// How an account proves who it is.
+///
+/// A password and a bearer token are not interchangeable strings: they go on
+/// the wire through different commands, and a token is short-lived where a
+/// password is not. Keeping them apart in the type is what stops a refreshed
+/// token being handed to LOGIN, which fails in a way that reads exactly like a
+/// wrong password.
+///
+/// The token is expected to be *fresh*. Nothing down here knows about the
+/// keychain or when a token expires; the caller refreshes and hands over one
+/// that works, because a provider that tried to renew its own credentials
+/// would need to know where they are kept.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Credential {
+    Password(String),
+    Bearer(String),
+}
+
+impl Credential {
+    pub fn password(p: impl Into<String>) -> Self {
+        Credential::Password(p.into())
+    }
 }
 
 /// How the engine must sync a given server, derived from its capabilities.
@@ -189,10 +213,7 @@ async fn probe_session<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
 {
-    let mut session = client
-        .login(&cfg.user, &cfg.pass)
-        .await
-        .map_err(|(e, _)| e)?;
+    let mut session = sign_in(client, cfg).await?;
 
     let caps = session.capabilities().await?;
     let capabilities = parse_capabilities(caps.iter().map(|c| capability_token(&format!("{c:?}"))));
@@ -285,10 +306,7 @@ pub async fn append_message(
     match cfg.security {
         Security::Tls => {
             let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
-            let mut session = client
-                .login(&cfg.user, &cfg.pass)
-                .await
-                .map_err(|(e, _)| e)?;
+            let mut session = sign_in(client, cfg).await?;
             session.append(folder, flags, None, raw).await?;
             session.logout().await?;
         }
@@ -296,10 +314,7 @@ pub async fn append_message(
         Security::InsecurePlaintext => {
             let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
             let client = Client::new(tcp);
-            let mut session = client
-                .login(&cfg.user, &cfg.pass)
-                .await
-                .map_err(|(e, _)| e)?;
+            let mut session = sign_in(client, cfg).await?;
             session.append(folder, flags, None, raw).await?;
             session.logout().await?;
         }
@@ -401,10 +416,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
     F: FnMut(u32, i64, &[u8]),
 {
-    let mut session = client
-        .login(&cfg.user, &cfg.pass)
-        .await
-        .map_err(|(e, _)| e)?;
+    let mut session = sign_in(client, cfg).await?;
     let mailbox = session.select(folder).await?;
     let mut n = 0usize;
     if mailbox.exists > 0 {
@@ -453,10 +465,7 @@ async fn fetch_raw_session<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
 {
-    let mut session = client
-        .login(&cfg.user, &cfg.pass)
-        .await
-        .map_err(|(e, _)| e)?;
+    let mut session = sign_in(client, cfg).await?;
     let mailbox = session.select(folder).await?;
     let mut out = Vec::new();
     if mailbox.exists > 0 {
@@ -587,13 +596,23 @@ where
     if !greeting.starts_with("* OK") && !greeting.starts_with("* PREAUTH") {
         return Err(ImapError::Protocol(format!("greeting: {greeting}")));
     }
-    exchange(
-        &mut lines,
-        &mut write,
-        "t1",
-        &format!("LOGIN {} {}", quote(&cfg.user), quote(&cfg.pass)),
-    )
-    .await?;
+    // This path writes the protocol by hand rather than going through the
+    // client, so it needs its own line for each credential kind. SASL-IR
+    // (RFC 4959) lets the token ride on the AUTHENTICATE command itself,
+    // which every server offering XOAUTH2 supports.
+    let sign_in_line = match &cfg.credential {
+        Credential::Password(pass) => {
+            format!("LOGIN {} {}", quote(&cfg.user), quote(pass))
+        }
+        Credential::Bearer(token) => {
+            use base64::Engine as _;
+            format!(
+                "AUTHENTICATE XOAUTH2 {}",
+                base64::engine::general_purpose::STANDARD.encode(xoauth2_payload(&cfg.user, token))
+            )
+        }
+    };
+    exchange(&mut lines, &mut write, "t1", &sign_in_line).await?;
     let opened = exchange(
         &mut lines,
         &mut write,
@@ -684,10 +703,7 @@ async fn sweep_labels_session<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
 {
-    let mut session = client
-        .login(&cfg.user, &cfg.pass)
-        .await
-        .map_err(|(e, _)| e)?;
+    let mut session = sign_in(client, cfg).await?;
     // EXAMINE: reading where mail lives must not mark any of it seen.
     let mailbox = session.examine(folder).await?;
     let modseq = mailbox.highest_modseq;
@@ -778,10 +794,7 @@ async fn gmail_labels_session<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
 {
-    let mut session = client
-        .login(&cfg.user, &cfg.pass)
-        .await
-        .map_err(|(e, _)| e)?;
+    let mut session = sign_in(client, cfg).await?;
     let mailbox = session.examine(folder).await?;
     let mut out = Vec::new();
     if mailbox.exists > 0 {
@@ -831,10 +844,7 @@ async fn flags_only_session<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
 {
-    let mut session = client
-        .login(&cfg.user, &cfg.pass)
-        .await
-        .map_err(|(e, _)| e)?;
+    let mut session = sign_in(client, cfg).await?;
     let mailbox = session.examine(folder).await?;
     let mut out = Vec::new();
     if mailbox.exists > 0 {
@@ -875,10 +885,7 @@ async fn folder_counts_session<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
 {
-    let mut session = client
-        .login(&cfg.user, &cfg.pass)
-        .await
-        .map_err(|(e, _)| e)?;
+    let mut session = sign_in(client, cfg).await?;
     let mut out = Vec::new();
     for name in folders {
         // A folder that cannot be examined is reported as absent rather than
@@ -963,6 +970,71 @@ where
     }
 }
 
+/// The SASL exchange for XOAUTH2.
+///
+/// One initial response and nothing after it: the server either accepts, or
+/// sends a base64 error blob and expects an empty line before it will report
+/// the failure. Answering that with more credentials would hang the exchange,
+/// so every challenge after the first gets nothing.
+struct XOauth2 {
+    initial: String,
+    sent: bool,
+}
+
+impl async_imap::Authenticator for XOauth2 {
+    type Response = String;
+
+    fn process(&mut self, _challenge: &[u8]) -> Self::Response {
+        if self.sent {
+            // The error path. The server has already refused; this empty line
+            // is what lets it say so rather than waiting for us.
+            return String::new();
+        }
+        self.sent = true;
+        self.initial.clone()
+    }
+}
+
+/// The credential string XOAUTH2 carries, before base64.
+///
+/// `user=<address>^Aauth=Bearer <token>^A^A`, where ^A is a single 0x01 byte.
+/// Written out here rather than inline because the shape is exact — the two
+/// trailing separators are not a typo, and a version with one of them is
+/// refused by every server that implements this.
+pub fn xoauth2_payload(user: &str, token: &str) -> String {
+    format!("user={user}\x01auth=Bearer {token}\x01\x01")
+}
+
+/// Signs in, by whichever means the account carries.
+///
+/// One function because there were twenty-nine copies of `.login(user, pass)`
+/// scattered through this file, and adding a second way to authenticate to
+/// twenty-nine places is how one of them gets missed — the one that then fails
+/// only for accounts using the new way, on whichever code path nobody tried.
+async fn sign_in<S>(client: Client<S>, cfg: &ImapConfig) -> Result<Session<S>>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
+{
+    match &cfg.credential {
+        Credential::Password(pass) => client
+            .login(&cfg.user, pass)
+            .await
+            .map_err(|(e, _)| e)
+            .map_err(Into::into),
+        Credential::Bearer(token) => client
+            .authenticate(
+                "XOAUTH2",
+                XOauth2 {
+                    initial: xoauth2_payload(&cfg.user, token),
+                    sent: false,
+                },
+            )
+            .await
+            .map_err(|(e, _)| e)
+            .map_err(Into::into),
+    }
+}
+
 async fn idle_watch_session<S, F>(
     client: Client<S>,
     cfg: &ImapConfig,
@@ -975,10 +1047,7 @@ where
     F: FnMut(),
 {
     let started = std::time::Instant::now();
-    let mut session = client
-        .login(&cfg.user, &cfg.pass)
-        .await
-        .map_err(|(e, _)| e)?;
+    let mut session = sign_in(client, cfg).await?;
     session.select(folder).await?;
 
     loop {
@@ -1020,10 +1089,7 @@ async fn idle_session<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug + 'static,
 {
-    let mut session = client
-        .login(&cfg.user, &cfg.pass)
-        .await
-        .map_err(|(e, _)| e)?;
+    let mut session = sign_in(client, cfg).await?;
     session.select(folder).await?;
 
     let mut handle = session.idle();
@@ -1152,10 +1218,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
     F: FnMut(usize, u32, i64, &[u8]),
 {
-    let mut session = client
-        .login(&cfg.user, &cfg.pass)
-        .await
-        .map_err(|(e, _)| e)?;
+    let mut session = sign_in(client, cfg).await?;
     let condstore = session
         .capabilities()
         .await
@@ -1367,10 +1430,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
     F: FnMut(u32, i64, &[u8]),
 {
-    let mut session = client
-        .login(&cfg.user, &cfg.pass)
-        .await
-        .map_err(|(e, _)| e)?;
+    let mut session = sign_in(client, cfg).await?;
     let mailbox = session.select(folder).await?;
     let uid_validity = mailbox.uid_validity;
     // Checked before a single byte is fetched: after a reset the watermark
@@ -1450,10 +1510,7 @@ async fn id_map_session<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
 {
-    let mut session = client
-        .login(&cfg.user, &cfg.pass)
-        .await
-        .map_err(|(e, _)| e)?;
+    let mut session = sign_in(client, cfg).await?;
     let mailbox = session.select(folder).await?;
     let mut map = IdMap {
         uid_validity: mailbox.uid_validity,
@@ -1520,10 +1577,7 @@ async fn id_range_session<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
 {
-    let mut session = client
-        .login(&cfg.user, &cfg.pass)
-        .await
-        .map_err(|(e, _)| e)?;
+    let mut session = sign_in(client, cfg).await?;
     session.select(folder).await?;
     let mut out = Vec::new();
     {
@@ -1546,10 +1600,7 @@ pub async fn folder_uidnext(cfg: &ImapConfig, folder: &str) -> Result<Option<u32
     match cfg.security {
         Security::Tls => {
             let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
-            let mut session = client
-                .login(&cfg.user, &cfg.pass)
-                .await
-                .map_err(|(e, _)| e)?;
+            let mut session = sign_in(client, cfg).await?;
             let s = session.status(folder, "(UIDNEXT)").await?;
             session.logout().await?;
             Ok(s.uid_next)
@@ -1558,10 +1609,7 @@ pub async fn folder_uidnext(cfg: &ImapConfig, folder: &str) -> Result<Option<u32
         Security::InsecurePlaintext => {
             let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
             let client = Client::new(tcp);
-            let mut session = client
-                .login(&cfg.user, &cfg.pass)
-                .await
-                .map_err(|(e, _)| e)?;
+            let mut session = sign_in(client, cfg).await?;
             let s = session.status(folder, "(UIDNEXT)").await?;
             session.logout().await?;
             Ok(s.uid_next)
@@ -1649,10 +1697,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
     F: FnMut(u32, i64, &[u8]),
 {
-    let mut session = client
-        .login(&cfg.user, &cfg.pass)
-        .await
-        .map_err(|(e, _)| e)?;
+    let mut session = sign_in(client, cfg).await?;
     session.select(folder).await?;
     let mut n = 0usize;
     {
@@ -1707,10 +1752,7 @@ async fn store_flag_session<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
 {
-    let mut session = client
-        .login(&cfg.user, &cfg.pass)
-        .await
-        .map_err(|(e, _)| e)?;
+    let mut session = sign_in(client, cfg).await?;
     session.select(folder).await?;
     let op = if add {
         "+FLAGS.SILENT"
@@ -1775,10 +1817,7 @@ async fn store_labels_session<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
 {
-    let mut session = client
-        .login(&cfg.user, &cfg.pass)
-        .await
-        .map_err(|(e, _)| e)?;
+    let mut session = sign_in(client, cfg).await?;
     session.select(folder).await?;
     let op = if add { "+X-GM-LABELS" } else { "-X-GM-LABELS" };
     {
@@ -1832,10 +1871,7 @@ async fn expunge_uid_session<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
 {
-    let mut session = client
-        .login(&cfg.user, &cfg.pass)
-        .await
-        .map_err(|(e, _)| e)?;
+    let mut session = sign_in(client, cfg).await?;
     session.select(folder).await?;
     {
         let mut updates = session
@@ -1911,10 +1947,7 @@ async fn folder_op_session<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
 {
-    let mut session = client
-        .login(&cfg.user, &cfg.pass)
-        .await
-        .map_err(|(e, _)| e)?;
+    let mut session = sign_in(client, cfg).await?;
     let result = match op {
         FolderOp::Create => session.create(a).await,
         FolderOp::Rename => session.rename(a, b).await,
@@ -1967,10 +2000,7 @@ async fn move_uid_session<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
 {
-    let mut session = client
-        .login(&cfg.user, &cfg.pass)
-        .await
-        .map_err(|(e, _)| e)?;
+    let mut session = sign_in(client, cfg).await?;
     session.select(from).await?;
     if server_has_move {
         session.uid_mv(uid.to_string(), to).await?;
@@ -2030,10 +2060,7 @@ async fn uid_search_session<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
 {
-    let mut session = client
-        .login(&cfg.user, &cfg.pass)
-        .await
-        .map_err(|(e, _)| e)?;
+    let mut session = sign_in(client, cfg).await?;
     session.select(folder).await?;
     let hits = session.uid_search(query).await?;
     let mut found: Vec<u32> = hits.into_iter().collect();
@@ -2084,10 +2111,7 @@ async fn search_session<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
 {
-    let mut session = client
-        .login(&cfg.user, &cfg.pass)
-        .await
-        .map_err(|(e, _)| e)?;
+    let mut session = sign_in(client, cfg).await?;
     session.select(folder).await?;
     let hits = session.search(query).await?;
     let mut found: Vec<u32> = hits.into_iter().collect();
@@ -2107,10 +2131,7 @@ pub async fn login_check(cfg: &ImapConfig) -> Result<()> {
     match cfg.security {
         Security::Tls => {
             let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
-            let session = client
-                .login(&cfg.user, &cfg.pass)
-                .await
-                .map_err(|(e, _)| e)?;
+            let session = sign_in(client, cfg).await?;
             let mut session = session;
             session.logout().await?;
             Ok(())
@@ -2381,10 +2402,7 @@ async fn store_flag_all_session<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
 {
-    let mut session = client
-        .login(&cfg.user, &cfg.pass)
-        .await
-        .map_err(|(e, _)| e)?;
+    let mut session = sign_in(client, cfg).await?;
     let mailbox = session.select(folder).await?;
     let n = mailbox.exists;
     // Nothing to do, and `1:*` on an empty mailbox is a command some servers
@@ -2441,10 +2459,7 @@ async fn move_all_session<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
 {
-    let mut session = client
-        .login(&cfg.user, &cfg.pass)
-        .await
-        .map_err(|(e, _)| e)?;
+    let mut session = sign_in(client, cfg).await?;
     let mailbox = session.select(from).await?;
     let n = mailbox.exists;
     if n == 0 {

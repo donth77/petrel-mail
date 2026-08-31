@@ -19,14 +19,16 @@
 
 use std::time::{Duration, Instant};
 
-use petrel_providers::imap::{FolderPass, ImapConfig, Security, folder_counts, probe, sync_pass};
+use petrel_providers::imap::{
+    Credential, FolderPass, ImapConfig, Security, folder_counts, probe, sync_pass,
+};
 
 fn cfg() -> ImapConfig {
     ImapConfig {
         host: std::env::var("PETREL_NC_IMAP_HOST").expect("source .env.namecheap"),
         port: 993,
         user: std::env::var("PETREL_NC_USER").unwrap(),
-        pass: std::env::var("PETREL_NC_PASS").unwrap(),
+        credential: Credential::password(std::env::var("PETREL_NC_PASS").unwrap()),
         security: Security::Tls,
     }
 }

@@ -4,7 +4,7 @@ use crate::config::{imap_config, imap_config_from_env, keychain_entry, remember_
 use crate::state::{AppState, note_ui_touch};
 use crate::sync::spawn_real_sync;
 use petrel_engine::store::AccountSummary;
-use petrel_providers::imap::{ImapConfig, Security};
+use petrel_providers::imap::{Credential, ImapConfig, Security};
 use std::sync::Arc;
 use tauri::State;
 
@@ -63,7 +63,7 @@ async fn test_account_inner(setup: AccountSetup, which: Option<String>) -> Resul
         host: setup.imap_host.clone(),
         port: setup.imap_port,
         user: setup.username.clone(),
-        pass: setup.password.clone(),
+        credential: Credential::password(setup.password.clone()),
         security: Security::Tls,
     };
     if do_imap {
@@ -75,7 +75,7 @@ async fn test_account_inner(setup: AccountSetup, which: Option<String>) -> Resul
         host: setup.smtp_host.clone(),
         port: setup.smtp_port,
         user: setup.username.clone(),
-        pass: setup.password.clone(),
+        credential: Credential::password(setup.password.clone()),
     };
     if do_smtp {
         petrel_providers::smtp::login_check(&smtp)

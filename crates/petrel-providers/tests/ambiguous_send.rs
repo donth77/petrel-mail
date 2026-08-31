@@ -22,7 +22,7 @@ use std::time::Duration;
 use petrel_engine::outbox::{
     AttemptOutcome, SendState, ServerEvidence, may_retry_automatically, reconcile,
 };
-use petrel_providers::imap::{ImapConfig, Security, find_message_id};
+use petrel_providers::imap::{Credential, ImapConfig, Security, find_message_id};
 use petrel_providers::smtp::{SendResult, send_plaintext};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -35,7 +35,7 @@ fn imap_cfg() -> ImapConfig {
         host: "127.0.0.1".into(),
         port: 3143,
         user: "petrel".into(),
-        pass: "petrelpass".into(),
+        credential: Credential::password("petrelpass".into()),
         security: Security::InsecurePlaintext,
     }
 }

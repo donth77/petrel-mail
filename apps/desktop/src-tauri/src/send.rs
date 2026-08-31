@@ -74,6 +74,19 @@ struct Attempt {
 /// up, a message written from one went out over the other's SMTP server, as
 /// the other's address, carrying the other's signature, and was filed in the
 /// other's Sent folder — with every layer reporting success.
+/// The password inside a config, for the SMTP fallback that derives its
+/// settings from the IMAP host.
+///
+/// Empty for a token account, which is correct rather than convenient: that
+/// fallback exists for the environment-driven developer account, and an
+/// account signing in with OAuth has real SMTP settings of its own.
+fn cfg_password(cfg: &petrel_providers::imap::ImapConfig) -> &str {
+    match &cfg.credential {
+        petrel_providers::imap::Credential::Password(p) => p,
+        petrel_providers::imap::Credential::Bearer(_) => "",
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn attempt(
     state: &Arc<AppState>,
@@ -98,7 +111,7 @@ async fn attempt(
         .lock()
         .ok()
         .and_then(|st| smtp_config_for(&st, account))
-        .unwrap_or_else(|| SmtpConfig::for_imap_host(&cfg.host, &cfg.user, &cfg.pass));
+        .unwrap_or_else(|| SmtpConfig::for_imap_host(&cfg.host, &cfg.user, cfg_password(&cfg)));
     let domain = cfg
         .user
         .split('@')

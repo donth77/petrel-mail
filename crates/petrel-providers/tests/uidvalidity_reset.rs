@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use petrel_engine::blob::BlobStore;
 use petrel_engine::store::Store;
-use petrel_providers::imap::{FetchOutcome, ImapConfig, Security};
+use petrel_providers::imap::{Credential, FetchOutcome, ImapConfig, Security};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 
@@ -162,7 +162,7 @@ async fn a_renumbered_folder_is_remapped_without_losing_mail() {
         host: "127.0.0.1".into(),
         port,
         user: "petrel".into(),
-        pass: "petrelpass".into(),
+        credential: Credential::password("petrelpass".into()),
         security: Security::InsecurePlaintext,
     };
 

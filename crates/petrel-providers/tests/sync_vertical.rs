@@ -13,14 +13,14 @@
 
 use petrel_engine::blob::BlobStore;
 use petrel_engine::store::Store;
-use petrel_providers::imap::{ImapConfig, Security, append_message, fetch_raw};
+use petrel_providers::imap::{Credential, ImapConfig, Security, append_message, fetch_raw};
 
 fn cfg() -> ImapConfig {
     ImapConfig {
         host: "127.0.0.1".into(),
         port: 3143,
         user: "petrel".into(),
-        pass: "petrelpass".into(),
+        credential: Credential::password("petrelpass".into()),
         security: Security::InsecurePlaintext,
     }
 }

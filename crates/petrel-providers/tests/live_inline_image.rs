@@ -10,7 +10,7 @@
 //! Sends from the Gmail test account to the Namecheap one, then fetches the
 //! delivered copy over IMAP and walks it with our own parser.
 
-use petrel_providers::imap::{ImapConfig, Security, fetch_raw, find_message_id};
+use petrel_providers::imap::{Credential, ImapConfig, Security, fetch_raw, find_message_id};
 use petrel_providers::smtp::{Outgoing, SendResult, SmtpConfig, send_tls};
 
 fn env(name: &str) -> String {
@@ -74,7 +74,7 @@ async fn a_pasted_image_survives_real_delivery() {
         host: to_imap,
         port: 993,
         user: to,
-        pass: to_pass,
+        credential: Credential::password(to_pass),
         security: Security::Tls,
     };
     let mut seq: Option<u32> = None;

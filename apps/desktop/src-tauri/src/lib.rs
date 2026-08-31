@@ -43,6 +43,18 @@ use state::{AppState, now_ms};
 use sync::spawn_real_sync;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// The password out of an environment-driven config.
+///
+/// That account is always a password — it is built from `PETREL_IMAP_PASS` —
+/// so the other arm cannot happen. Written as a match anyway rather than an
+/// unwrap, because the compiler will point here the day it can.
+fn env_pass(cfg: &ImapConfig) -> &str {
+    match &cfg.credential {
+        petrel_providers::imap::Credential::Password(p) => p,
+        petrel_providers::imap::Credential::Bearer(_) => "",
+    }
+}
+
 pub fn run() {
     // Chosen once, here, for the whole process. rustls picks a crypto provider
     // on its own only while exactly one is compiled in; the moment a second
@@ -184,7 +196,9 @@ pub fn run() {
                         continue;
                     }
                     let smtp = petrel_providers::smtp::SmtpConfig::for_imap_host(
-                        &env.host, &env.user, &env.pass,
+                        &env.host,
+                        &env.user,
+                        env_pass(&env),
                     );
                     let servers = petrel_engine::store::AccountServers {
                         imap_host: env.host.clone(),
@@ -201,9 +215,9 @@ pub fn run() {
                     if let Ok(entry) = keychain_entry(summary.id) {
                         // set_password refuses to overwrite on macOS; clear first.
                         let _ = entry.delete_credential();
-                        match entry.set_password(&env.pass) {
+                        match entry.set_password(env_pass(&env)) {
                             Ok(()) => {
-                                remember_password(summary.id, &env.pass);
+                                remember_password(summary.id, env_pass(&env));
                                 log_sync(&format!(
                                     "adopted environment credentials for {} into the keychain",
                                     env.user
@@ -248,7 +262,7 @@ pub fn run() {
                     for (id, cfg) in &configs {
                         if let Ok(entry) = keychain_entry(*id) {
                             let _ = entry.delete_credential();
-                            if let Err(e) = entry.set_password(&cfg.pass) {
+                            if let Err(e) = entry.set_password(env_pass(cfg)) {
                                 eprintln!("[keychain] re-own of account {id} failed: {e}");
                                 all_ok = false;
                             }

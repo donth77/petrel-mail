@@ -5,14 +5,14 @@
 //!
 //! Uses throwaway names of its own; the delete at the end is the cleanup.
 
-use petrel_providers::imap::{ImapConfig, Security};
+use petrel_providers::imap::{Credential, ImapConfig, Security};
 
 fn cfg() -> ImapConfig {
     ImapConfig {
         host: std::env::var("PETREL_NC_IMAP_HOST").expect("source .env.namecheap"),
         port: 993,
         user: std::env::var("PETREL_NC_USER").expect("PETREL_NC_USER"),
-        pass: std::env::var("PETREL_NC_PASS").expect("PETREL_NC_PASS"),
+        credential: Credential::password(std::env::var("PETREL_NC_PASS").expect("PETREL_NC_PASS")),
         security: Security::Tls,
     }
 }

@@ -4,7 +4,7 @@
 //!     cargo test -p petrel-providers --test live_draft_push -- --ignored --nocapture
 
 use petrel_providers::imap::{
-    ImapConfig, Security, append_message, expunge_uid, uids_for_message_id,
+    Credential, ImapConfig, Security, append_message, expunge_uid, uids_for_message_id,
 };
 use petrel_providers::smtp::Outgoing;
 
@@ -15,7 +15,7 @@ async fn a_draft_edit_replaces_its_server_copy() {
         host: std::env::var("PETREL_NC_IMAP_HOST").expect("source .env.namecheap"),
         port: 993,
         user: std::env::var("PETREL_NC_USER").unwrap(),
-        pass: std::env::var("PETREL_NC_PASS").unwrap(),
+        credential: Credential::password(std::env::var("PETREL_NC_PASS").unwrap()),
         security: Security::Tls,
     };
     let msgid = format!(

@@ -20,7 +20,7 @@
 //! cargo test -p petrel-providers --test imap_slice live_provider -- --ignored --nocapture
 //! ```
 
-use petrel_providers::imap::{ImapConfig, Security};
+use petrel_providers::imap::{Credential, ImapConfig, Security};
 
 fn env_config(security: Security) -> Option<ImapConfig> {
     Some(ImapConfig {
@@ -30,7 +30,7 @@ fn env_config(security: Security) -> Option<ImapConfig> {
             .and_then(|p| p.parse().ok())
             .unwrap_or(993),
         user: std::env::var("PETREL_IMAP_USER").ok()?,
-        pass: std::env::var("PETREL_IMAP_PASS").ok()?,
+        credential: Credential::password(std::env::var("PETREL_IMAP_PASS").ok()?),
         security,
     })
 }
@@ -124,7 +124,7 @@ mod local {
             host: "127.0.0.1".into(),
             port: 3143,
             user: "petrel".into(),
-            pass: "petrelpass".into(),
+            credential: Credential::password("petrelpass".into()),
             security: Security::InsecurePlaintext,
         })
     }
