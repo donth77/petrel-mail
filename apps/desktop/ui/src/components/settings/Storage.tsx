@@ -357,7 +357,6 @@ export function Storage({ onMessage }: { onMessage: (text: string) => void }) {
       {byAccount.length > 0 && (
         <section className="field">
           <div className="flabel">{t('storage-by-account')}</div>
-          <p className="fhelp">{t('storage-by-account-help')}</p>
           <table className="storage-table">
             <tbody>
               {byAccount.map(({ s, a }) => (
@@ -376,7 +375,6 @@ export function Storage({ onMessage }: { onMessage: (text: string) => void }) {
 
       <section className="field">
         <div className="flabel">{t('storage-export')}</div>
-        <p className="fhelp">{t('storage-export-help')}</p>
         {accounts.length > 1 ? (
           // A row per account: which mailbox a file holds is not something to
           // leave to whichever account happened to be on screen.

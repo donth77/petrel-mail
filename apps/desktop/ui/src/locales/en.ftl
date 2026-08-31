@@ -299,7 +299,7 @@ identity-signature-replies = Use this signature on replies too
 identity-signature-replies-help = Off means new messages only. A signature repeated down a long thread is the thing people complain about.
 identity-save-failed = Could not save that: { $error }
 privacy-remote = Remote content
-privacy-remote-help = Images and other files a message loads from the internet. Blocking them is why a message can be read without the sender learning anything about you.
+privacy-remote-help = Images and other files a message loads from the internet. Fetching them tells the sender you opened their message.
 privacy-remote-block = Block
 privacy-remote-allow = Allow
 privacy-remote-warning = Senders will be able to tell when you opened a message, how often, and roughly where from.
@@ -321,7 +321,7 @@ storage-account-messages = { $count ->
    *[other] { $count } messages
 }
 settings-rules = Rules
-settings-for-account = For { $email } — each account keeps its own
+settings-for-account = For { $email }
 rules-on-arrival = When mail arrives
 rules-help = Rules run on new mail as it arrives, top to bottom, and every rule that matches will run. They never touch mail that is already here, and they wait while Petrel is still fetching older mail.
 rule-new = New rule
