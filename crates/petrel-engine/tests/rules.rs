@@ -13,7 +13,9 @@ fn setup() -> (tempfile::TempDir, Store, i64) {
 fn cond(field: &str, contains: &str) -> Condition {
     Condition {
         field: field.into(),
-        contains: contains.into(),
+        header: None,
+        op: petrel_engine::rules::Op::Contains,
+        value: contains.into(),
     }
 }
 
@@ -270,4 +272,178 @@ fn an_action_naming_another_accounts_folder_is_refused() {
         );
     }
     assert!(store.pending_actions(mine).unwrap().is_empty());
+}
+
+/// The fields and operators a rule can be written in.
+///
+/// Rules began as "does this field contain this text", four fields and one
+/// test. That answers "mail from Dana" and almost nothing else: not "from
+/// exactly this address rather than anyone whose name contains it", not
+/// "everything except the daily digest", not "anything over ten megabytes".
+mod conditions {
+    use petrel_engine::rules::{Actions, Condition, Envelope, Op, Rule, matches};
+
+    fn envelope() -> Envelope {
+        Envelope {
+            from: "dana wu <dana@vendorco.example>".into(),
+            to: "me@example.com".into(),
+            cc: "priya nair <priya@vendorco.example>".into(),
+            subject: "q3 invoice attached".into(),
+            list_id: String::new(),
+            body: "please find the invoice for september attached.".into(),
+            size: 2_400_000,
+            // 2026-08-30T00:00:00Z
+            date_ms: 1_788_048_000_000,
+            headers: vec![
+                ("x-spam-flag".into(), "NO".into()),
+                ("precedence".into(), "bulk".into()),
+                ("received".into(), "from a.example".into()),
+                ("received".into(), "from b.example".into()),
+            ],
+        }
+    }
+
+    fn rule(field: &str, op: Op, value: &str) -> Rule {
+        named_rule(field, None, op, value)
+    }
+
+    fn named_rule(field: &str, header: Option<&str>, op: Op, value: &str) -> Rule {
+        Rule {
+            id: 1,
+            position: 0,
+            enabled: true,
+            name: "r".into(),
+            conditions: vec![Condition {
+                field: field.into(),
+                header: header.map(str::to_string),
+                op,
+                value: value.into(),
+            }],
+            actions: Actions::default(),
+        }
+    }
+
+    fn hit(field: &str, op: Op, value: &str) -> bool {
+        matches(&rule(field, op, value), &envelope())
+    }
+
+    #[test]
+    fn every_text_operator_and_its_opposite() {
+        assert!(hit("subject", Op::Contains, "invoice"));
+        assert!(!hit("subject", Op::NotContains, "invoice"));
+        assert!(hit("subject", Op::Is, "Q3 Invoice Attached"));
+        assert!(!hit("subject", Op::Is, "invoice"));
+        assert!(hit("subject", Op::IsNot, "invoice"));
+        assert!(hit("subject", Op::StartsWith, "q3"));
+        assert!(!hit("subject", Op::StartsWith, "invoice"));
+        assert!(hit("subject", Op::NotStartsWith, "invoice"));
+        assert!(hit("subject", Op::EndsWith, "attached"));
+        assert!(hit("subject", Op::NotEndsWith, "q3"));
+    }
+
+    #[test]
+    fn the_new_fields_see_what_they_should() {
+        assert!(hit("cc", Op::Contains, "priya"));
+        assert!(hit("body", Op::Contains, "september"));
+        // Cc is its own field, not quietly folded into To.
+        assert!(!hit("to", Op::Contains, "priya"));
+    }
+
+    #[test]
+    fn size_is_in_kilobytes_because_that_is_what_gets_typed() {
+        assert!(hit("size", Op::Over, "1000"));
+        assert!(!hit("size", Op::Over, "5000"));
+        assert!(hit("size", Op::Under, "5000"));
+        // A number that is not a number matches nothing rather than zero.
+        assert!(!hit("size", Op::Over, "big"));
+    }
+
+    #[test]
+    fn dates_compare_by_whole_days() {
+        assert!(hit("date", Op::Before, "2026-09-01"));
+        assert!(
+            !hit("date", Op::Before, "2026-08-30"),
+            "its own day is not before itself"
+        );
+        assert!(hit("date", Op::After, "2026-08-29"));
+        assert!(
+            !hit("date", Op::After, "2026-08-30"),
+            "its own day is not after itself"
+        );
+        assert!(!hit("date", Op::Before, "not-a-date"));
+    }
+
+    #[test]
+    fn a_header_condition_names_its_header() {
+        let env = envelope();
+        assert!(matches(
+            &named_rule("header", Some("X-Spam-Flag"), Op::Is, "no"),
+            &env
+        ));
+        assert!(!matches(
+            &named_rule("header", Some("X-Spam-Flag"), Op::Is, "yes"),
+            &env
+        ));
+        // A header that is not there does not contain anything — so the
+        // positive test fails and the negative one holds.
+        assert!(!matches(
+            &named_rule("header", Some("X-Nope"), Op::Contains, "x"),
+            &env
+        ));
+        assert!(matches(
+            &named_rule("header", Some("X-Nope"), Op::NotContains, "x"),
+            &env
+        ));
+        // Naming no header at all matches nothing.
+        assert!(!matches(&rule("header", Op::Contains, "x"), &env));
+    }
+
+    #[test]
+    fn a_repeated_header_means_any_of_them_and_all_of_them() {
+        let env = envelope();
+        // Positive: any copy will do.
+        assert!(matches(
+            &named_rule("header", Some("Received"), Op::Contains, "b.example"),
+            &env
+        ));
+        // Negative: every copy has to hold, or a message slips through on the
+        // strength of the innocent one.
+        assert!(!matches(
+            &named_rule("header", Some("Received"), Op::NotContains, "b.example"),
+            &env
+        ));
+        assert!(matches(
+            &named_rule("header", Some("Received"), Op::NotContains, "c.example"),
+            &env
+        ));
+    }
+
+    #[test]
+    fn a_half_written_rule_matches_nothing() {
+        // Whichever way it is phrased. "Does not contain nothing" is true of
+        // every message ever sent, and a rule being typed must not fire.
+        for op in [Op::Contains, Op::NotContains, Op::Is, Op::IsNot] {
+            assert!(!hit("subject", op, ""), "empty value matched with {op:?}");
+        }
+    }
+
+    #[test]
+    fn a_rule_written_before_operators_existed_still_means_what_it_meant() {
+        // The shape on disk from the days when substring was the only test.
+        let old: Condition =
+            serde_json::from_str(r#"{"field":"from","contains":"vendorco"}"#).unwrap();
+        assert_eq!(old.op, Op::Contains);
+        assert_eq!(old.value, "vendorco");
+        assert!(matches(
+            &Rule {
+                id: 1,
+                position: 0,
+                enabled: true,
+                name: "r".into(),
+                conditions: vec![old],
+                actions: Actions::default(),
+            },
+            &envelope()
+        ));
+    }
 }

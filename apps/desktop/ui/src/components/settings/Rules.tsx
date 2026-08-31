@@ -1,18 +1,25 @@
 import { useEffect, useState } from 'react';
 import { ArrowDown, ArrowUp, Plus, Trash2 } from 'lucide-react';
-import { api, type Folder, type Rule, type RuleCondition, type Tag } from '../../lib/api';
+import { api, type Folder, type Rule, type Tag } from '../../lib/api';
 import { Icon } from '../Icon';
 import { PickerField } from '../PickerField';
 import { AccountNote } from './AccountNote';
 import { filableFolderRows } from '../../lib/folders';
 import { t } from '../../lib/strings';
-
-const FIELDS = ['from', 'to', 'subject', 'list_id'] as const;
+import {
+  FIELD_LABEL, OP_LABEL, RULE_FIELDS, opForField, opsFor, valueKind,
+  type RuleField,
+} from '../../lib/rules';
 
 /** A rule summarised in one readable line, so the list explains itself. */
 export function summary(rule: Rule, folders: Folder[], tags: Tag[]): string {
   const conds = rule.conditions
-    .map((c) => `${t(`rule-field-${c.field}` as 'rule-field-from')} ~ “${c.contains}”`)
+    .map((c) => {
+      // The header's own name is what the rule is about, so it stands in for
+      // the field: "X-Spam-Flag is YES" rather than "Header is YES".
+      const what = c.field === 'header' && c.header ? c.header : t(FIELD_LABEL[c.field]);
+      return `${what} ${t(OP_LABEL[c.op])} “${c.value}”`;
+    })
     .join(' + ');
   const acts: string[] = [];
   const a = rule.actions;
@@ -61,12 +68,12 @@ export function Rules({ onMessage }: { onMessage: (text: string) => void }) {
     position: rules.length,
     enabled: true,
     name: '',
-    conditions: [{ field: 'from', contains: '' }],
+    conditions: [{ field: 'from', op: 'contains', value: '' }],
     actions: { move_to: null, tag: null, mark_read: false, skip_inbox: false, notify: false },
   };
 
   const save = async (r: Rule) => {
-    const conditions = r.conditions.filter((c) => c.contains.trim());
+    const conditions = r.conditions.filter((c) => c.value.trim());
     if (!r.name.trim() || conditions.length === 0) {
       onMessage(t('rule-needs-substance'));
       return;
@@ -157,23 +164,60 @@ export function Rules({ onMessage }: { onMessage: (text: string) => void }) {
                 value={c.field}
                 aria-label={t('rule-field')}
                 onChange={(e) => {
+                  const field = e.target.value as RuleField;
                   const conditions = [...editing.conditions];
-                  conditions[i] = { ...c, field: e.target.value as RuleCondition['field'] };
+                  // The operator follows the field. Leaving "contains"
+                  // selected against Size would save a rule that can never
+                  // match, and look configured while doing it.
+                  conditions[i] = { ...c, field, op: opForField(field, c.op) };
                   setEditing({ ...editing, conditions });
                 }}
               >
-                {FIELDS.map((f) => (
-                  <option key={f} value={f}>{t(`rule-field-${f}` as 'rule-field-from')}</option>
+                {RULE_FIELDS.map((f) => (
+                  <option key={f} value={f}>{t(FIELD_LABEL[f])}</option>
+                ))}
+              </select>
+              {c.field === 'header' && (
+                <input
+                  className="text-input rule-header-name"
+                  placeholder={t('rule-header-placeholder')}
+                  aria-label={t('rule-header-placeholder')}
+                  value={c.header ?? ''}
+                  onChange={(e) => {
+                    const conditions = [...editing.conditions];
+                    conditions[i] = { ...c, header: e.target.value };
+                    setEditing({ ...editing, conditions });
+                  }}
+                  onKeyDown={(e) => e.stopPropagation()}
+                />
+              )}
+              <select
+                className="select"
+                value={c.op}
+                aria-label={t('rule-op')}
+                onChange={(e) => {
+                  const conditions = [...editing.conditions];
+                  conditions[i] = { ...c, op: e.target.value as typeof c.op };
+                  setEditing({ ...editing, conditions });
+                }}
+              >
+                {opsFor(c.field).map((o) => (
+                  <option key={o} value={o}>{t(OP_LABEL[o])}</option>
                 ))}
               </select>
               <input
                 className="text-input"
-                placeholder={t('rule-contains-placeholder')}
-                aria-label={t('rule-contains-placeholder')}
-                value={c.contains}
+                type={valueKind(c.field) === 'text' ? 'text' : valueKind(c.field)}
+                placeholder={
+                  valueKind(c.field) === 'number'
+                    ? t('rule-value-kb-placeholder')
+                    : t('rule-value-placeholder')
+                }
+                aria-label={t('rule-value-placeholder')}
+                value={c.value}
                 onChange={(e) => {
                   const conditions = [...editing.conditions];
-                  conditions[i] = { ...c, contains: e.target.value };
+                  conditions[i] = { ...c, value: e.target.value };
                   setEditing({ ...editing, conditions });
                 }}
                 onKeyDown={(e) => e.stopPropagation()}
@@ -198,7 +242,7 @@ export function Rules({ onMessage }: { onMessage: (text: string) => void }) {
             onClick={() =>
               setEditing({
                 ...editing,
-                conditions: [...editing.conditions, { field: 'subject', contains: '' }],
+                conditions: [...editing.conditions, { field: 'subject', op: 'contains', value: '' }],
               })
             }
           >

@@ -282,6 +282,15 @@ pub struct ParsedMessage {
     pub list_id: Option<String>,
     /// Threading parents, oldest first (References, then In-Reply-To).
     pub references: Vec<String>,
+    /// Every header, lowercased name and raw value, in the order the message
+    /// carries them.
+    ///
+    /// Kept whole rather than picked over because a filter rule can name any
+    /// header it likes — `X-Spam-Status`, `Precedence`, `Auto-Submitted` —
+    /// and the parser cannot know in advance which one somebody will ask
+    /// about. A message with two `Received` lines keeps both: a rule that
+    /// asks about Received means any of them.
+    pub headers: Vec<(String, String)>,
 }
 
 impl ParsedMessage {
@@ -463,6 +472,21 @@ pub fn parse_message(raw: &[u8]) -> Option<ParsedMessage> {
             }
         }),
         references,
+        // Sliced out of the raw bytes by the offsets the parser recorded, not
+        // looked up by name: `header_raw` answers with the *first* header of
+        // a given name, so a message carrying several Received lines would
+        // have come back holding the same one over and over.
+        headers: msg
+            .headers()
+            .iter()
+            .map(|h| {
+                let value = raw
+                    .get(h.offset_start as usize..h.offset_end as usize)
+                    .map(|b| String::from_utf8_lossy(b).trim().to_string())
+                    .unwrap_or_default();
+                (h.name().to_ascii_lowercase(), value)
+            })
+            .collect(),
     })
 }
 

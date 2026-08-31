@@ -10,7 +10,7 @@ const rule = (actions: Partial<Rule['actions']>): Rule => ({
   position: 0,
   enabled: true,
   name: 'r',
-  conditions: [{ field: 'from', contains: 'dana@' }],
+  conditions: [{ field: 'from', op: 'contains', value: 'dana@' }],
   actions: { move_to: null, tag: null, mark_read: false, skip_inbox: false, notify: false, ...actions },
 });
 
@@ -42,6 +42,8 @@ describe('rule summary', () => {
 
   it('reads out the actions a rule does carry', () => {
     const line = summary(rule({ tag: 5, mark_read: true, notify: true }), folders, tags);
-    expect(line).toBe('From ~ “dana@” → tag Invoices, mark read, notify');
+    // The operator is named rather than left as a squiggle: "From contains"
+    // and "From is exactly" are different rules and the line has to say which.
+    expect(line).toBe('From contains “dana@” → tag Invoices, mark read, notify');
   });
 });

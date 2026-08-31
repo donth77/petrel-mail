@@ -33,15 +33,37 @@
   width: 100%;
   box-sizing: border-box;
 }
+/* Field, an optional header name, comparison, value, and the remove button.
+   Five things where there used to be two, so the row wraps rather than
+   squeezing the value box down to nothing on a narrow settings pane. */
 .rule-cond {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 6px;
   align-items: center;
 }
 .rule-cond .text-input {
-  flex: 1;
+  /* The value is what gets read back, so it takes the room that is left —
+     but never less than a legible amount, which is what forces the wrap. */
+  flex: 1 1 10ch;
+  min-width: 10ch;
   margin-bottom: 0;
+}
+.rule-cond .select {
+  flex: 0 1 auto;
+  min-width: 0;
+  /* `.select` carries a top margin for the stacked fields it usually sits in.
+     Here the row centres its children, so that margin pushed every select 5px
+     below the inputs beside it — visible as a wobble once the row held two of
+     each rather than one. */
+  margin-top: 0;
+}
+/* A header name is short and known: X-Spam-Flag, Precedence. Given its own
+   width so it does not compete with the value for the row's free space. */
+.rule-cond .rule-header-name {
+  flex: 0 1 16ch;
+  min-width: 8ch;
 }
 .rule-acts {
   display: flex;

@@ -924,7 +924,7 @@ fn apply_rules_to(state: &Arc<AppState>, account: i64, arrivals: &[i64]) {
             continue;
         };
         // What a condition can see belongs with the matching, not here.
-        let envelope = petrel_engine::rules::Envelope::from_message(&parsed);
+        let envelope = petrel_engine::rules::Envelope::from_message(&parsed, raw.len() as u64);
         let mut announced = false;
         for rule in &rules {
             if !petrel_engine::rules::matches(rule, &envelope) {

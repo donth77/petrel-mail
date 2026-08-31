@@ -2,6 +2,7 @@
    UI depends on is one file wide. Types mirror the Rust structs. */
 
 import { invoke } from '@tauri-apps/api/core';
+import type { RuleField, RuleOp } from './rules';
 
 export type Listing = {
   id: number;
@@ -217,7 +218,13 @@ export type AuthInfo = {
   dmarc: string | null;
 };
 
-export type RuleCondition = { field: 'from' | 'to' | 'subject' | 'list_id'; contains: string };
+export type RuleCondition = {
+  field: RuleField;
+  /** Which header, when `field` is `header`. */
+  header?: string | null;
+  op: RuleOp;
+  value: string;
+};
 export type RuleActions = {
   move_to: number | null;
   tag: number | null;
