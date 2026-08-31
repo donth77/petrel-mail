@@ -112,7 +112,24 @@
       }
       return (x.date_ms - y.date_ms) * (up ? 1 : -1);
     });
-    return out;
+    // The engine joins the tags table every time it builds a row, so a row
+    // always reports a tag's current name and colour rather than a copy taken
+    // when it was applied. The fixture kept the copy, so renaming or
+    // recolouring a tag left every row still showing the old one — and a fix
+    // for exactly that bug was indistinguishable from the bug, because the
+    // refetch handed back the stale colour again.
+    //
+    // A tag the list no longer holds is left alone rather than dropped: that
+    // is deletion, which this is not modelling.
+    return out.map(function (r) {
+      if (!r.tags || !r.tags.length) return r;
+      return Object.assign({}, r, {
+        tags: r.tags.map(function (x) {
+          var live = tags.find(function (t) { return t.id === x.id; });
+          return live ? { id: live.id, name: live.name, colour: live.colour } : x;
+        }),
+      });
+    });
   }
 
   var folders = [
