@@ -691,6 +691,8 @@ export const STRING_IDS = [
   'sc-group-write',
   'sc-help',
   'sc-move-tag',
+  'sc-move-inbox',
+  'sc-pop-out',
   'sc-msg-nav',
   'sc-next',
   'sc-open',

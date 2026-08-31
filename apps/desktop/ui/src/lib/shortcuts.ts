@@ -79,6 +79,12 @@ export const BINDINGS: Binding[] = [
     chords: [{ key: 'b' }], available: true },
   { id: 'move-tag', group: 'act', label: 'sc-move-tag', display: ['V', 'L'],
     chords: [{ key: 'v' }, { key: 'l' }], available: true },
+  // The way back out of Archive, Trash and Spam. Plain I, beside ⇧I for
+  // "mark read" — the same split U already has.
+  { id: 'move-inbox', group: 'act', label: 'sc-move-inbox', display: ['I'],
+    chords: [{ key: 'i' }], available: true },
+  { id: 'pop-out', group: 'act', label: 'sc-pop-out', display: ['O'],
+    chords: [{ key: 'o' }], available: true },
   { id: 'read-unread', group: 'act', label: 'sc-read-unread', display: ['read', 'unread'],
     chords: [{ key: 'i', shift: true }, { key: 'u', shift: true }], available: true },
   { id: 'select', group: 'act', label: 'sc-select', display: ['X', 'extend'],

@@ -21,6 +21,8 @@ export type KeyActions = {
   openMove: () => void;
   openTag: () => void;
   toggleStar: () => void;
+  moveToInbox: () => void;
+  popOut: () => void;
   toggleReaderFull: () => void;
   findInMessage: () => void;
   undo: () => void;
@@ -226,6 +228,16 @@ export function useKeyboard(actions: KeyActions) {
         case 'U':
           e.preventDefault();
           return a.backToList();
+        // Plain letters, deliberately below the shifted cases above: ⇧I marks
+        // read and ⇧U marks unread, and both return before reaching here. The
+        // same split `u` and ⇧U already live under.
+        case 'i':
+          e.preventDefault();
+          return a.moveToInbox();
+        case 'o':
+        case 'O':
+          e.preventDefault();
+          return a.popOut();
         case 'F6':
           e.preventDefault();
           return a.cyclePanes(e.shiftKey);

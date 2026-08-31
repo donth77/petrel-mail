@@ -423,6 +423,31 @@ export function App() {
     toggleReaderFull: () => {
       if (settings.layout !== 'off' && activeRef.current) setReaderFull((f) => !f);
     },
+    // The way back, on a key. Everywhere except the inbox itself and the views
+    // for mail you wrote, which was never in the inbox to return to — the same
+    // rule the menu item follows, because a shortcut that works where its menu
+    // entry is hidden is a shortcut nobody can discover and everybody can hit
+    // by accident.
+    moveToInbox: () => {
+      if (['inbox', 'sent', 'drafts', 'outbox'].includes(view)) return;
+      const inbox = folders.find((f) => f.role === 'inbox');
+      if (!inbox) return;
+      // The same helper every other key action uses: the selection when there
+      // is one, otherwise the conversation under the cursor.
+      targets(selected, activeId).forEach((id) => void triage.run('move', id, inbox.id));
+      if (selected.size > 0) setSelected(new Set());
+    },
+    // Acts on the conversation under the cursor, so it works while arrowing
+    // down a list rather than only from an open message.
+    popOut: () => {
+      // One window per conversation, so this takes the cursor's row rather
+      // than the selection: opening eleven windows from one keystroke is not
+      // what anybody meant by it.
+      if (activeId == null) return;
+      void api
+        .popoutMessage(activeId)
+        .catch((e) => setToast(t('popout-failed', { error: String(e) })));
+    },
     undo: () => {
       // A pending send outranks the last triage action: it is the thing with a
       // deadline, and it is what the countdown just told you Z would do.

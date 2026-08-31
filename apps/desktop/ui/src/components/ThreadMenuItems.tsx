@@ -104,6 +104,7 @@ export function ThreadMenuItems({
             <MenuItem className="menu-item" onClick={onPopOut}>
               <Icon icon={ExternalLink} size={14} />
               <span className="menu-label">{t('reader-popout')}</span>
+              <span className="menu-key">O</span>
             </MenuItem>
           )}
           {onToggleFull && (
@@ -170,6 +171,7 @@ export function ThreadMenuItems({
         <MenuItem className="menu-item" onClick={onMoveInbox}>
           <Icon icon={Inbox} size={14} />
           <span className="menu-label">{t('menu-move-inbox')}</span>
+          <span className="menu-key">I</span>
         </MenuItem>
       )}
 
