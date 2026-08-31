@@ -58,6 +58,47 @@ fn utf8_envelope_quoted_strings_parse() {
     assert_eq!(mailbox, "info");
 }
 
+#[test]
+fn utf8_envelope_mixed_ascii_and_brackets_parse() {
+    // Shape that aborted a real sync: RFC822.SIZE then ENVELOPE, quoted
+    // subject mixing ASCII, UTF-8, brackets, parentheses and `#`, personal
+    // name with a space. Fake addresses only.
+    let line = concat!(
+        r#"* 2 FETCH (UID 2 FLAGS () RFC822.SIZE 11740 ENVELOPE ("Mon, 31 Aug 2026 16:56:18 +0900" "#,
+        r#""[Boardフォーム(example.net) - タスク #42] 完了メッセージについて" "#,
+        r#"(("山田 太郎" NIL "info" "example.jp")) (("山田 太郎" NIL "info" "example.jp")) "#,
+        r#"(("山田 太郎" NIL "info" "example.jp")) ((NIL NIL "user" "example.com")) NIL NIL NIL "#,
+        r#""<synthetic@example.test>"))"#,
+        "\r\n"
+    );
+    let (rest, response) =
+        parse_response(line.as_bytes()).expect("mixed UTF-8 ENVELOPE must parse");
+    assert!(rest.is_empty(), "leftover: {:?}", std::str::from_utf8(rest));
+    let Response::Fetch(seq, attrs) = response else {
+        panic!("expected FETCH, got {response:?}");
+    };
+    assert_eq!(seq, 2);
+    let envelope = attrs
+        .iter()
+        .find_map(|attr| match attr {
+            AttributeValue::Envelope(e) => Some(e.as_ref()),
+            _ => None,
+        })
+        .expect("ENVELOPE");
+    let subject = std::str::from_utf8(envelope.subject.as_ref().expect("subject")).unwrap();
+    assert!(subject.contains("完了"), "subject: {subject}");
+    let name = envelope
+        .from
+        .as_ref()
+        .expect("from")
+        .first()
+        .expect("one from")
+        .name
+        .as_ref()
+        .expect("name");
+    assert_eq!(std::str::from_utf8(name).unwrap(), "山田 太郎");
+}
+
 #[cfg(feature = "insecure-plaintext")]
 mod scripted {
     use std::sync::{Arc, Mutex};
