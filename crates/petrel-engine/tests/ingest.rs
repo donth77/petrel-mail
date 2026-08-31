@@ -230,3 +230,88 @@ fn mail_survives_closing_and_reopening_the_store() {
         .fts_integrity_check()
         .expect("index consistent after reopen");
 }
+
+/// ISO-2022-JP headers and body, the charset Japanese transactional mail
+/// still uses. Synthetic addresses only.
+fn iso_2022_jp_mail() -> Vec<u8> {
+    let mut raw = b"From: =?ISO-2022-JP?B?GyRCMnE1RCRON28bKEI=?= <info@example.jp>\r\n\
+To: me@example.com\r\n\
+Subject: =?ISO-2022-JP?B?GyRCMnE1RCRON28bKEI=?=\r\n\
+Date: Tue, 18 Aug 2026 14:02:00 +0000\r\n\
+Message-ID: <iso2022jp@example.jp>\r\n\
+MIME-Version: 1.0\r\n\
+Content-Type: text/plain; charset=ISO-2022-JP\r\n\
+Content-Transfer-Encoding: 7bit\r\n\r\n"
+        .to_vec();
+    raw.extend_from_slice(b"\x1b$B$3$l$OK\\J8$G$9!#\x1b(B\r\n");
+    raw
+}
+
+#[test]
+fn iso_2022_jp_ingests_readable_and_searchable() {
+    let (_dir, mut store, blobs, account) = setup();
+    let out = store
+        .ingest_raw(&blobs, account, None, Some(1), &iso_2022_jp_mail())
+        .expect("ingest");
+
+    let rows = store.list_recent(0, 10).expect("list");
+    let row = rows.iter().find(|r| r.id == out.message_id).expect("row");
+    assert_eq!(row.subject, "会議の件");
+    assert_eq!(row.from_display, "会議の件");
+    assert!(
+        row.snippet.contains("本文"),
+        "snippet was {:?}",
+        row.snippet
+    );
+
+    let hits = store.search("会議", 10).expect("search");
+    assert!(
+        hits.iter().any(|h| h.message_id == out.message_id),
+        "CJK search must find the decoded subject"
+    );
+    store.fts_integrity_check().expect("index consistent");
+}
+
+#[test]
+fn reindex_repairs_legacy_charset_columns() {
+    let (_dir, mut store, blobs, account) = setup();
+    let out = store
+        .ingest_raw(&blobs, account, None, Some(1), &iso_2022_jp_mail())
+        .expect("ingest");
+
+    // What the extractor wrote before full_encoding: Base64 unwrapped, JIS
+    // left as ESC sequences. List rows and search both saw this.
+    let garbled = "\u{1b}$B2q5D$N7o\u{1b}(B";
+    let garbled_body = "\u{1b}$B$3$l$OK\\J8$G$9!#\u{1b}(B\r\n";
+    store
+        .overwrite_extracted(out.message_id, garbled, garbled, garbled_body, garbled_body)
+        .expect("plant stale extraction");
+    store
+        .set_setting("extraction_version", "3")
+        .expect("roll version back");
+
+    let stale = store.list_recent(0, 10).expect("list");
+    let stale_row = stale.iter().find(|r| r.id == out.message_id).expect("row");
+    assert_eq!(stale_row.subject, garbled);
+    assert!(
+        store.search("会議", 10).expect("search").is_empty(),
+        "garbled CJK must not match until reindex"
+    );
+
+    let n = store.reindex_bodies(&blobs).expect("reindex");
+    assert_eq!(n, 1);
+    assert_eq!(store.reindex_bodies(&blobs).expect("second pass"), 0);
+
+    let rows = store.list_recent(0, 10).expect("list");
+    let row = rows.iter().find(|r| r.id == out.message_id).expect("row");
+    assert_eq!(row.subject, "会議の件");
+    assert_eq!(row.from_display, "会議の件");
+    assert!(
+        row.snippet.contains("本文"),
+        "snippet was {:?}",
+        row.snippet
+    );
+    let hits = store.search("会議", 10).expect("search");
+    assert!(hits.iter().any(|h| h.message_id == out.message_id));
+    store.fts_integrity_check().expect("index consistent");
+}

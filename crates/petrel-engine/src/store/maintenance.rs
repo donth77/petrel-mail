@@ -65,11 +65,15 @@ impl Store {
         Ok(())
     }
 
-    /// Re-derives the indexed text of every stored message from its bytes.
+    /// Re-derives stored text of every message from its bytes: list columns,
+    /// the search index, address display names, and attachment filenames.
     ///
     /// Runs when the extraction version moves, and not otherwise: it re-parses
     /// every blob, which is cheap for a few hundred messages and not something
     /// to do at every launch. Returns how many were rewritten.
+    ///
+    /// Does not re-thread. A conversation grouped under a garbled subject stays
+    /// grouped; only the displayed and indexed text is repaired.
     pub fn reindex_bodies(&mut self, blobs: &crate::blob::BlobStore) -> Result<usize> {
         let held: i64 = self
             .settings()?
@@ -92,13 +96,26 @@ impl Store {
         let tx = self.conn.transaction()?;
         let mut done = 0usize;
         {
-            // Both the index and the row preview. The first pass rewrote only
-            // the index, which is why placeholders kept showing on rows: the
-            // preview is a separate column, written once at ingest, and no
-            // amount of reindexing touches it.
-            let mut update =
-                tx.prepare("UPDATE fts_content SET body_text = ?2 WHERE message_id = ?1")?;
-            let mut preview = tx.prepare("UPDATE messages SET snippet = ?2 WHERE id = ?1")?;
+            let mut upd_msg = tx.prepare(
+                "UPDATE messages SET from_addr = ?2, from_display = ?3, subject = ?4,
+                        subject_norm = ?5, snippet = ?6
+                 WHERE id = ?1",
+            )?;
+            let mut upd_fts = tx.prepare(
+                "INSERT INTO fts_content(message_id, subject, body_text, addrs, attachment_names)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(message_id) DO UPDATE SET
+                    subject = excluded.subject, body_text = excluded.body_text,
+                    addrs = excluded.addrs, attachment_names = excluded.attachment_names",
+            )?;
+            let mut del_addr = tx.prepare("DELETE FROM message_addresses WHERE message_id = ?1")?;
+            let mut ins_addr = tx.prepare(
+                "INSERT INTO message_addresses(message_id, role, addr_norm, display)
+                 VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            let mut upd_att = tx.prepare(
+                "UPDATE attachments SET filename = ?3 WHERE message_id = ?1 AND part_id = ?2",
+            )?;
             for (id, hash) in rows {
                 // A blob that will not read is not a reason to abandon the
                 // rest; it keeps whatever text it already had.
@@ -107,8 +124,41 @@ impl Store {
                     continue;
                 };
                 let text = parsed.index_text();
-                update.execute(params![id, &text])?;
-                preview.execute(params![id, preview_of(&text)])?;
+                let snippet = preview_of(&text);
+                let subject = parsed.subject.clone().unwrap_or_default();
+                let subject_norm = crate::threading::normalize_subject(&subject);
+                let attachment_names = parsed
+                    .attachments
+                    .iter()
+                    .filter_map(|a| a.filename.clone())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let addrs_text = parsed
+                    .addresses()
+                    .iter()
+                    .map(|(_, addr, name)| match name {
+                        Some(n) => format!("{n} {addr}"),
+                        None => addr.clone(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+
+                upd_msg.execute(params![
+                    id,
+                    parsed.from_addr,
+                    parsed.from_display,
+                    &subject,
+                    subject_norm,
+                    snippet,
+                ])?;
+                upd_fts.execute(params![id, &subject, text, addrs_text, attachment_names])?;
+                del_addr.execute(params![id])?;
+                for (role, addr, name) in parsed.addresses() {
+                    ins_addr.execute(params![id, role, addr, name])?;
+                }
+                for (i, a) in parsed.attachments.iter().enumerate() {
+                    upd_att.execute(params![id, i as i64, a.filename])?;
+                }
                 done += 1;
             }
         }
@@ -116,6 +166,29 @@ impl Store {
         self.rebuild_fts()?;
         self.set_setting("extraction_version", &Self::EXTRACTION_VERSION.to_string())?;
         Ok(done)
+    }
+
+    /// Plants the columns an older extractor would have written, so a test can
+    /// ask `reindex_bodies` to repair them. Not a product path.
+    pub fn overwrite_extracted(
+        &mut self,
+        id: i64,
+        subject: &str,
+        from_display: &str,
+        snippet: &str,
+        body_text: &str,
+    ) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "UPDATE messages SET subject = ?2, from_display = ?3, snippet = ?4 WHERE id = ?1",
+            params![id, subject, from_display, snippet],
+        )?;
+        tx.execute(
+            "UPDATE fts_content SET subject = ?2, body_text = ?3 WHERE message_id = ?1",
+            params![id, subject, body_text],
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn rebuild_fts(&self) -> Result<()> {

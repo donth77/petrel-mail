@@ -1538,7 +1538,7 @@ impl Store {
     /// The index is built once, when a message arrives, so an improvement to
     /// extraction reaches only new mail — everything already held keeps
     /// whatever the old code produced. This is the version that says otherwise.
-    pub const EXTRACTION_VERSION: i64 = 3;
+    pub const EXTRACTION_VERSION: i64 = 4;
 
     /// The blob backing a message, for the reading pane to fetch and render.
     /// Who sent a message and when — the two facts an attribution line needs.

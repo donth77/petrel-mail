@@ -530,6 +530,37 @@ Subject: =?utf-8?B?5p2x5Lqs6KiI55S7?=\r\n\r\n\
     }
 
     #[test]
+    fn decodes_iso_2022_jp_headers_and_body() {
+        // Japanese hosts still send this. Without mail-parser's full_encoding
+        // feature the encoded-word Base64 unwraps and the JIS payload is left
+        // as ESC sequences in the subject and the body.
+        let mut raw = b"From: =?ISO-2022-JP?B?GyRCMnE1RCRON28bKEI=?= <info@example.jp>\r\n\
+Subject: =?ISO-2022-JP?B?GyRCMnE1RCRON28bKEI=?=\r\n\
+MIME-Version: 1.0\r\n\
+Content-Type: text/plain; charset=ISO-2022-JP\r\n\
+Content-Transfer-Encoding: 7bit\r\n\r\n"
+            .to_vec();
+        raw.extend_from_slice(b"\x1b$B$3$l$OK\\J8$G$9!#\x1b(B\r\n");
+        let m = parse_message(&raw).expect("parses");
+        assert_eq!(m.subject.as_deref(), Some("会議の件"));
+        assert_eq!(m.from_display.as_deref(), Some("会議の件"));
+        assert!(m.body_text.contains("本文"), "body was {:?}", m.body_text);
+    }
+
+    #[test]
+    fn decodes_shift_jis_body() {
+        let mut raw = b"From: info@example.jp\r\n\
+Subject: sjis\r\n\
+MIME-Version: 1.0\r\n\
+Content-Type: text/plain; charset=Shift_JIS\r\n\
+Content-Transfer-Encoding: 8bit\r\n\r\n"
+            .to_vec();
+        raw.extend_from_slice(b"\x82\xb1\x82\xea\x82\xcd\x96{\x95\xb6\x82\xc5\x82\xb7\x81B\r\n");
+        let m = parse_message(&raw).expect("parses");
+        assert!(m.body_text.contains("本文"), "body was {:?}", m.body_text);
+    }
+
+    #[test]
     fn the_unsubscribe_header_is_read_in_all_its_forms() {
         let raw = |headers: &str| {
             format!(
