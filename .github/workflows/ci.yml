@@ -70,6 +70,8 @@ jobs:
           cargo test -p petrel-providers --features insecure-plaintext --test sync_vertical -- --ignored --nocapture
           # UIDVALIDITY reset recovery — scripted in-process server, no container.
           cargo test -p petrel-providers --features insecure-plaintext --test uidvalidity_reset -- --nocapture
+          # Japanese / 8-bit IMAP: ENVELOPE quoted UTF-8, and probe(0) issues no FETCH.
+          cargo test -p petrel-providers --features insecure-plaintext --test imap_utf8 -- --nocapture
           docker stop petrel-greenmail
       # Fast benchmark sanity at reduced scale; the full 100k run is manual.
       - run: PETREL_BENCH_N=10000 cargo test --release -p petrel-engine --test store_spike -- --ignored --nocapture

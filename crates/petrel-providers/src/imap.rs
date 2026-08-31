@@ -240,48 +240,42 @@ where
     };
 
     let mut headers = Vec::new();
-    if mailbox.exists > 0 {
+    // fetch_limit 0 is LIST + capabilities + SELECT only — no header sampling.
+    if fetch_limit > 0 && mailbox.exists > 0 {
         let last = mailbox.exists;
         let first = last.saturating_sub(fetch_limit.saturating_sub(1)).max(1);
         let range = format!("{first}:{last}");
-        let mut fetches = session
-            .fetch(range, "(UID FLAGS RFC822.SIZE ENVELOPE)")
-            .await?;
-        while let Some(fetch) = fetches.next().await {
-            let fetch = fetch?;
-            let envelope = fetch.envelope();
-            let subject = envelope
-                .and_then(|e| e.subject.as_ref())
-                .map(|s| String::from_utf8_lossy(s).to_string())
-                .unwrap_or_default();
-            let from = envelope
-                .and_then(|e| e.from.as_ref())
-                .and_then(|f| f.first())
-                .map(|a| {
-                    let mbox = a
-                        .mailbox
-                        .as_ref()
-                        .map(|m| String::from_utf8_lossy(m).to_string());
-                    let host = a
-                        .host
-                        .as_ref()
-                        .map(|h| String::from_utf8_lossy(h).to_string());
-                    match (mbox, host) {
-                        (Some(m), Some(h)) => format!("{m}@{h}"),
-                        (Some(m), None) => m,
-                        _ => String::new(),
-                    }
-                })
-                .unwrap_or_default();
-            headers.push(FetchedHeader {
-                uid: fetch.uid,
-                subject,
-                from,
-                size: fetch.size,
-                seen: fetch
-                    .flags()
-                    .any(|f| matches!(f, async_imap::types::Flag::Seen)),
-            });
+        // ENVELOPE chokes on UTF-8 quoted-strings some servers emit; parse headers locally.
+        if let Ok(mut fetches) = session
+            .fetch(
+                range,
+                "(UID FLAGS RFC822.SIZE BODY.PEEK[HEADER.FIELDS (DATE FROM SUBJECT)])",
+            )
+            .await
+        {
+            while let Some(fetch) = fetches.next().await {
+                let Ok(fetch) = fetch else { continue };
+                let Some(uid) = fetch.uid else { continue };
+                let (subject, from) = fetch
+                    .header()
+                    .and_then(petrel_mime::parse_message)
+                    .map(|parsed| {
+                        (
+                            parsed.subject.unwrap_or_default(),
+                            parsed.from_addr.unwrap_or_default(),
+                        )
+                    })
+                    .unwrap_or_default();
+                headers.push(FetchedHeader {
+                    uid: Some(uid),
+                    subject,
+                    from,
+                    size: fetch.size,
+                    seen: fetch
+                        .flags()
+                        .any(|f| matches!(f, async_imap::types::Flag::Seen)),
+                });
+            }
         }
     }
 
