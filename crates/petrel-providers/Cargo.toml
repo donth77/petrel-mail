@@ -30,6 +30,9 @@ sha2 = "0.10"
 getrandom = "0.3"
 serde_json.workspace = true
 thiserror.workspace = true
+# Probe samples DATE/FROM/SUBJECT as header literals and parses them here.
+# ENVELOPE is 7-bit quoted-strings; Japanese mail is not.
+petrel-mime = { path = "../petrel-mime" }
 
 tempfile.workspace = true
 
@@ -41,5 +44,3 @@ tokio = { version = "1", features = ["full"] }
 # The RFC 7636 worked example is checked by hashing it here too.
 sha2 = "0.10"
 
-[dev-dependencies.petrel-mime]
-path = "../petrel-mime"

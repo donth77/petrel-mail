@@ -236,13 +236,29 @@ pub(crate) fn friendly_sync_error_for(host: &str, raw: &str) -> String {
                 stopped rather than continuing in the clear."
             .into();
     }
+    if is_imap_parse_error(raw) {
+        // Parser failures embed the raw FETCH line — subjects, addresses, all
+        // of it — in the error text. The detail stays in the engine; what
+        // reaches the screen must not repeat any of that.
+        return "The server sent a response Petrel could not parse. Your mail \
+                is still on the server."
+            .into();
+    }
     // Unknown: show the raw text rather than a reassuring guess.
     raw.to_string()
 }
 
+/// True when an error string is an IMAP parser dump rather than a protocol
+/// verdict. Those dumps carry FETCH lines with mail content and must not be
+/// logged or shown verbatim.
+pub(crate) fn is_imap_parse_error(raw: &str) -> bool {
+    let r = raw.to_ascii_lowercase();
+    r.contains("during parsing") || r.contains("takewhile1")
+}
+
 #[cfg(test)]
 mod sync_error_tests {
-    use super::friendly_sync_error_for;
+    use super::{friendly_sync_error_for, is_imap_parse_error};
 
     /// Advice for the wrong provider is worse than none.
     ///
@@ -281,6 +297,36 @@ mod sync_error_tests {
             let msg = friendly_sync_error_for(host, REFUSED);
             assert!(!msg.contains("Gmail"), "{host} was told about Gmail: {msg}");
             assert!(msg.contains("app password"), "{host}: {msg}");
+        }
+    }
+
+    #[test]
+    fn imap_parse_errors_never_echo_fetch_payload() {
+        let raw = "imap: io: Error(Error { input: [42], code: TakeWhile1 }) during \
+            parsing of \"* 358391 FETCH (UID 1 ENVELOPE (会議の件 user@example.com))\"";
+        assert!(is_imap_parse_error(raw));
+        let msg = friendly_sync_error_for("imap.example.com", raw);
+        assert!(
+            msg.contains("could not parse"),
+            "expected generic parse message: {msg}"
+        );
+        assert!(
+            msg.contains("still on the server"),
+            "expected reassurance: {msg}"
+        );
+        for leak in ["会議", "example.com", "FETCH ("] {
+            assert!(!msg.contains(leak), "leaked mail content in: {msg}");
+        }
+    }
+
+    #[test]
+    fn takewhile1_alone_is_treated_as_parse_failure() {
+        let raw = "parse error TakeWhile1 at ENVELOPE 会議の件 user@example.com";
+        assert!(is_imap_parse_error(raw));
+        let msg = friendly_sync_error_for("imap.example.com", raw);
+        assert!(msg.contains("could not parse"), "{msg}");
+        for leak in ["会議", "example.com", "ENVELOPE"] {
+            assert!(!msg.contains(leak), "leaked mail content in: {msg}");
         }
     }
 

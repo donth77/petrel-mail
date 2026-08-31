@@ -42,3 +42,9 @@ inherits = "release"
 lto = false
 debug = true
 
+# Drop when imap-proto 0.17 is on crates.io and async-imap depends on it.
+# Upstream tokio-imap#194 (unpublished 0.17) is the same is_char relaxation;
+# 0.17 also changes *_utf8 to Cow<str>, which async-imap 0.11.3 cannot compile against.
+[patch.crates-io]
+imap-proto = { path = "vendor/imap-proto" }
+
