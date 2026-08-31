@@ -417,8 +417,20 @@ fn is_cjk(c: char) -> bool {
 /// value means "no tags", never an error — a row must render even if its tag
 /// join went wrong.
 fn parse_row_tags(json: Option<String>) -> Vec<ThreadRowTag> {
-    json.and_then(|j| serde_json::from_str::<Vec<ThreadRowTag>>(&j).ok())
-        .unwrap_or_default()
+    let Some(j) = json else { return Vec::new() };
+    match serde_json::from_str::<Vec<ThreadRowTag>>(&j) {
+        Ok(tags) => tags,
+        Err(e) => {
+            // An empty list is the right thing to show a reader rather than
+            // failing the whole listing over a chip. But it is the wrong thing
+            // to do quietly: a query that stopped selecting one of the fields
+            // landed here and every row came back untagged, with nothing to
+            // distinguish it from a row that genuinely has no tags. In a debug
+            // build that is a bug in the SQL, and it should stop the tests.
+            debug_assert!(false, "row tags did not parse: {e}: {j}");
+            Vec::new()
+        }
+    }
 }
 
 fn has_cjk(s: &str) -> bool {

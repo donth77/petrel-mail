@@ -5,6 +5,20 @@
 //! share the ListView predicates, which stay in mod.rs with the enum.
 use super::*;
 
+/// The tags a row wears, as one JSON array per conversation.
+///
+/// Shared by the two queries that build a row — the list's and the one search
+/// uses to fetch its hits by id — because they had been written out twice and
+/// drifted: the second lost `id` from the object. `ThreadRowTag` needs all
+/// three fields, and the parse helper turns a failed parse into an empty list,
+/// so the loss was silent and total. Every search result came back untagged.
+const TAGS_JSON: &str = "(SELECT json_group_array(
+                         json_object('id', tg.id, 'name', tg.name, 'colour', coalesce(tg.colour,'')))
+                     FROM (SELECT DISTINCT mt.tag_id FROM message_tags mt
+                           JOIN messages mm ON mm.id = mt.message_id
+                           WHERE coalesce(mm.thread_id, -mm.id) = t.thread_id) d
+                     JOIN tags tg ON tg.id = d.tag_id) AS tags_json";
+
 impl Store {
     pub fn list_threads(
         &self,
@@ -246,12 +260,7 @@ impl Store {
             "SELECT coalesce(m.thread_id, -m.id), m.id, coalesce(m.from_display,''), coalesce(m.from_addr,''),
                     coalesce(m.subject,''), coalesce(m.snippet,''), m.date_ms, t.n,
                     coalesce(t.participants,''), t.unread, t.starred, t.attach,
-                    (SELECT json_group_array(
-                         json_object('id', tg.id, 'name', tg.name, 'colour', coalesce(tg.colour,'')))
-                     FROM (SELECT DISTINCT mt.tag_id FROM message_tags mt
-                           JOIN messages mm ON mm.id = mt.message_id
-                           WHERE coalesce(mm.thread_id, -mm.id) = t.thread_id) d
-                     JOIN tags tg ON tg.id = d.tag_id) AS tags_json,
+                    {tags_json},
                     (SELECT a.filename FROM attachments a
                      JOIN messages mm ON mm.id = a.message_id
                      WHERE coalesce(mm.thread_id, -mm.id) = t.thread_id
@@ -274,6 +283,7 @@ impl Store {
              GROUP BY {mkey}
              ORDER BY m.date_ms DESC LIMIT ?1 OFFSET ?2",
             inner = inner,
+            tags_json = TAGS_JSON,
             outer = outer,
             account = account,
             key = key,
@@ -493,15 +503,12 @@ impl Store {
         let holes = std::iter::repeat_n("?", thread_ids.len())
             .collect::<Vec<_>>()
             .join(",");
+        let tags_json = TAGS_JSON;
         let sql = format!(
             "SELECT coalesce(m.thread_id, -m.id), m.id, coalesce(m.from_display,''), coalesce(m.from_addr,''),
                     coalesce(m.subject,''), coalesce(m.snippet,''), m.date_ms, t.n,
                     coalesce(t.participants,''), t.unread, t.starred, t.attach,
-                    (SELECT json_group_array(json_object('name', tg.name, 'colour', coalesce(tg.colour,'')))
-                     FROM (SELECT DISTINCT mt.tag_id FROM message_tags mt
-                           JOIN messages mm ON mm.id = mt.message_id
-                           WHERE coalesce(mm.thread_id, -mm.id) = t.thread_id) d
-                     JOIN tags tg ON tg.id = d.tag_id) AS tags_json,
+                    {tags_json},
                     (SELECT a.filename FROM attachments a
                      JOIN messages mm ON mm.id = a.message_id
                      WHERE coalesce(mm.thread_id, -mm.id) = t.thread_id
