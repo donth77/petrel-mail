@@ -133,6 +133,24 @@
         { id: 9, role: '', path: 'Archive/Old letters' },
         { id: 10, role: '', path: 'Archive/Old letters/2019' },
   ];
+
+  // A move names a destination folder, so the fixture has to file the row
+  // where that folder's own view will look for it. Filing every move under one
+  // sentinel made them all land nowhere: the row left the list it was in and
+  // never arrived in the one it was sent to, which made "move to inbox"
+  // indistinguishable from a row that had simply been deleted.
+  //
+  // `filed` is the fixture's vocabulary for where a row lives: falsy for the
+  // inbox, a role name for the reserved mailboxes, a numeric id for a user
+  // folder. Mapping the target id through the folder list is what keeps a
+  // moved row visible in the place the app said to put it.
+  function filedFor(target) {
+    var dest = folders.filter(function (f) { return f.id === target; })[0];
+    if (!dest) return 'moved';
+    if (dest.role === 'inbox') return 0;
+    if (dest.role) return dest.role;
+    return dest.id;
+  }
   // ?gmailFolders=1: the same rail over a Gmail-shaped account — roles wear
   // the reserved [Gmail] names, and user folders sit at the top level plus
   // one already archived under the plain `Archive` label the anchor uses.
@@ -531,7 +549,7 @@
         else if (a.kind === 'unstar') row.starred = false;
         else if (a.kind === 'mark_read') row.unread = false;
         else if (a.kind === 'mark_unread') row.unread = true;
-        else if (a.kind === 'move') row.filed = 'moved';
+        else if (a.kind === 'move') row.filed = filedFor(a.target);
         else if (a.kind === 'delete_forever') rows.splice(rows.indexOf(row), 1);
         else if (a.kind === 'snooze') row.snoozed = a.target;
         else if (a.kind === 'unsnooze') row.snoozed = 0;
