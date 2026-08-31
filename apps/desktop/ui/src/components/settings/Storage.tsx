@@ -335,7 +335,7 @@ export function Storage({ onMessage }: { onMessage: (text: string) => void }) {
       <h1 className="pane-title">{t('settings-storage')}</h1>
 
       <section className="field" aria-busy={!report && !error}>
-        <div className="flabel">{t('storage-on-this-mac')}</div>
+        <div className="flabel">{t('storage-on-this-computer')}</div>
         {error ? (
           <p className="fhelp">{error}</p>
         ) : (
@@ -391,7 +391,6 @@ export function Storage({ onMessage }: { onMessage: (text: string) => void }) {
 
       <section className="field">
         <div className="flabel">{t('trash-retention')}</div>
-        <p className="fhelp">{t('trash-retention-help')}</p>
         <select
           className="select"
           value={settings.trashRetentionDays}
@@ -424,7 +423,6 @@ export function Storage({ onMessage }: { onMessage: (text: string) => void }) {
 
       <section className="field">
         <div className="flabel">{t('storage-import')}</div>
-        <p className="fhelp">{t('storage-import-help')}</p>
         <div className="storage-actions">
           <button type="button" className="fbtn" disabled={busy} onClick={() => void importFrom()}>
             <Icon icon={Upload} size={13} />

@@ -98,7 +98,6 @@ export function Notifications() {
 
       <section className="field">
         <div className="flabel">{t('notify-desktop')}</div>
-        <p className="fhelp">{t('notify-desktop-help')}</p>
         <div className="seg" role="group">
           <button
             type="button"

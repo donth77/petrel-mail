@@ -21,7 +21,6 @@ export function Appearance() {
 
       <section className="field">
         <div className="flabel">{t('appearance-theme')}</div>
-        <p className="fhelp">{t('appearance-theme-help')}</p>
         <div className="seg" role="group">
           {THEMES.map((th) => (
             <button
@@ -40,7 +39,6 @@ export function Appearance() {
 
       <section className="field">
         <div className="flabel">{t('appearance-language')}</div>
-        <p className="fhelp">{t('appearance-language-help')}</p>
         <select
           className="select"
           value={settings.language}
@@ -61,7 +59,6 @@ export function Appearance() {
 
       <section className="field">
         <div className="flabel">{t('appearance-accent')}</div>
-        <p className="fhelp">{t('appearance-accent-help')}</p>
         <div className="dotrow">
           {ACCENTS.map((c) => (
             <button
@@ -79,7 +76,6 @@ export function Appearance() {
 
       <section className="field">
         <div className="flabel">{t('appearance-list')}</div>
-        <p className="fhelp">{t('appearance-list-help')}</p>
         <div className="sub-controls">
           <div>
             <div className="sublabel">{t('appearance-density')}</div>
@@ -116,7 +112,6 @@ export function Appearance() {
 
       <section className="field">
         <div className="flabel">{t('appearance-checkboxes')}</div>
-        <p className="fhelp">{t('appearance-checkboxes-help')}</p>
         <Pill
           value={settings.checkboxes}
           onChange={(v) => set('checkboxes', v)}
@@ -129,7 +124,6 @@ export function Appearance() {
 
       <section className="field last">
         <div className="flabel">{t('appearance-text-size')}</div>
-        <p className="fhelp">{t('appearance-text-size-help')}</p>
         <div className="slider-row">
           <span className="slider-a small">A</span>
           <input
