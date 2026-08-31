@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { summary } from './Rules';
-import type { Folder, Rule, Tag } from '../../lib/api';
+import type { Folder, Rule, RuleCondition, Tag } from '../../lib/api';
 
 const folders = [{ id: 7, path: 'Marketing' }] as unknown as Folder[];
 const tags = [{ id: 5, name: 'Invoices' }] as unknown as Tag[];
@@ -45,5 +45,35 @@ describe('rule summary', () => {
     // The operator is named rather than left as a squiggle: "From contains"
     // and "From is exactly" are different rules and the line has to say which.
     expect(line).toBe('From contains “dana@” → tag Invoices, mark read, notify');
+  });
+});
+
+/**
+ * Saving is where an unmatchable rule gets made permanent.
+ *
+ * The editor stops most of them by construction — the operator follows the
+ * field, so `Size contains` cannot be built. The one it cannot stop that way
+ * is a Header condition with no header named: every control is filled in and
+ * the rule is still dead.
+ */
+describe('what survives being saved', () => {
+  const keep = (c: RuleCondition) =>
+    [c].filter((x) => x.value.trim() && (x.field !== 'header' || (x.header ?? '').trim())).length === 1;
+
+  it('drops a condition with no value', () => {
+    expect(keep({ field: 'from', op: 'contains', value: '  ' })).toBe(false);
+  });
+
+  it('drops a header condition that names no header', () => {
+    expect(keep({ field: 'header', op: 'contains', value: 'YES' })).toBe(false);
+    expect(keep({ field: 'header', op: 'contains', value: 'YES', header: '  ' })).toBe(false);
+  });
+
+  it('keeps a header condition that names one', () => {
+    expect(keep({ field: 'header', op: 'is', value: 'YES', header: 'X-Spam-Flag' })).toBe(true);
+  });
+
+  it('does not ask other fields for a header name', () => {
+    expect(keep({ field: 'subject', op: 'ends_with', value: 'digest' })).toBe(true);
   });
 });

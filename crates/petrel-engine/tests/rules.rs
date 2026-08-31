@@ -447,3 +447,159 @@ mod conditions {
         ));
     }
 }
+
+/// The whole chain, from bytes off the wire to a verdict.
+///
+/// The condition tests build an `Envelope` by hand, which proves the matching
+/// but assumes the envelope is filled correctly. That assumption is where a
+/// rules feature quietly dies: every unit test passes and no rule ever fires,
+/// because the field the matcher reads is not the field the parser wrote.
+mod end_to_end {
+    use petrel_engine::rules::{Actions, Condition, Envelope, Op, Rule, matches};
+
+    const RAW: &[u8] = b"From: Dana Wu <dana@vendorco.example>\r\n\
+To: Tom <me@example.com>\r\n\
+Cc: Priya Nair <priya@vendorco.example>\r\n\
+Subject: Q3 invoice attached\r\n\
+Date: Sun, 30 Aug 2026 09:00:00 +0000\r\n\
+X-Spam-Flag: NO\r\n\
+Received: from a.example\r\n\
+Received: from b.example\r\n\
+\r\n\
+Please find the September invoice attached.\r\n";
+
+    fn envelope() -> Envelope {
+        let parsed = petrel_mime::parse_message(RAW).expect("parses");
+        Envelope::from_message(&parsed, RAW.len() as u64)
+    }
+
+    fn rule(field: &str, header: Option<&str>, op: Op, value: &str) -> Rule {
+        Rule {
+            id: 1,
+            position: 0,
+            enabled: true,
+            name: "r".into(),
+            conditions: vec![Condition {
+                field: field.into(),
+                header: header.map(str::to_string),
+                op,
+                value: value.into(),
+            }],
+            actions: Actions::default(),
+        }
+    }
+
+    fn hit(field: &str, op: Op, value: &str) -> bool {
+        matches(&rule(field, None, op, value), &envelope())
+    }
+
+    #[test]
+    fn a_real_message_fills_every_field_a_rule_can_read() {
+        assert!(hit("from", Op::Contains, "vendorco"), "from");
+        assert!(hit("from", Op::Contains, "dana wu"), "display name too");
+        assert!(hit("to", Op::Contains, "me@example.com"), "to");
+        assert!(hit("cc", Op::Contains, "priya"), "cc");
+        assert!(hit("subject", Op::StartsWith, "q3"), "subject");
+        assert!(hit("body", Op::Contains, "september"), "body");
+        assert!(hit("date", Op::After, "2026-08-29"), "date");
+        assert!(hit("size", Op::Over, "0"), "size");
+    }
+
+    #[test]
+    fn a_header_rule_reads_the_value_not_the_whole_line() {
+        // The parser slices header values out of the raw bytes. Slicing from
+        // the wrong offset would give "X-Spam-Flag: NO" here, and a rule
+        // written as `is NO` would never match while looking perfectly sane.
+        let env = envelope();
+        assert!(matches(
+            &rule("header", Some("X-Spam-Flag"), Op::Is, "NO"),
+            &env
+        ));
+        assert!(!matches(
+            &rule("header", Some("X-Spam-Flag"), Op::Contains, "x-spam-flag"),
+            &env
+        ));
+    }
+
+    #[test]
+    fn both_copies_of_a_repeated_header_survive_the_parser() {
+        let env = envelope();
+        assert!(matches(
+            &rule("header", Some("Received"), Op::Contains, "a.example"),
+            &env
+        ));
+        assert!(matches(
+            &rule("header", Some("Received"), Op::Contains, "b.example"),
+            &env
+        ));
+    }
+
+    #[test]
+    fn the_negatives_hold_on_a_real_message() {
+        assert!(hit("subject", Op::NotContains, "refund"));
+        assert!(!hit("subject", Op::NotContains, "invoice"));
+        assert!(hit("from", Op::NotEndsWith, "@gmail.com"));
+    }
+}
+
+/// A rule has to survive being put down and picked up again.
+///
+/// Conditions are stored as JSON, so the operator and the header name only
+/// exist on disk if serde writes them and reads them back. A field that
+/// silently defaults on load is the failure that looks like the rule
+/// "stopped working" weeks later, with nothing to point at.
+mod round_trip {
+    use petrel_engine::rules::{Actions, Condition, Op};
+    use petrel_engine::store::Store;
+    use tempfile::TempDir;
+
+    fn setup() -> (TempDir, Store, i64) {
+        let dir = TempDir::new().unwrap();
+        let store = Store::open(&dir.path().join("t.db")).unwrap();
+        let account = store.ensure_test_account().unwrap();
+        (dir, store, account)
+    }
+
+    #[test]
+    fn every_operator_and_a_header_name_come_back_unchanged() {
+        let (_dir, mut store, account) = setup();
+        let conditions: Vec<Condition> = [
+            ("from", None, Op::Contains, "a"),
+            ("to", None, Op::NotContains, "b"),
+            ("cc", None, Op::Is, "c"),
+            ("subject", None, Op::IsNot, "d"),
+            ("body", None, Op::StartsWith, "e"),
+            ("list_id", None, Op::NotStartsWith, "f"),
+            ("header", Some("X-Spam-Flag"), Op::EndsWith, "g"),
+            ("header", Some("Precedence"), Op::NotEndsWith, "h"),
+            ("size", None, Op::Over, "100"),
+            ("date", None, Op::Before, "2026-01-01"),
+        ]
+        .into_iter()
+        .map(|(field, header, op, value)| Condition {
+            field: field.into(),
+            header: header.map(str::to_string),
+            op,
+            value: value.into(),
+        })
+        .collect();
+
+        let id = store
+            .save_rule(
+                account,
+                None,
+                "everything",
+                true,
+                &conditions,
+                &Actions::default(),
+            )
+            .unwrap();
+
+        let back = store.rules_for_account(account).unwrap();
+        let saved = back.iter().find(|r| r.id == id).expect("the rule is there");
+        assert_eq!(
+            saved.conditions, conditions,
+            "a condition changed on the way to disk and back"
+        );
+    }
+}

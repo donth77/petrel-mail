@@ -73,7 +73,13 @@ export function Rules({ onMessage }: { onMessage: (text: string) => void }) {
   };
 
   const save = async (r: Rule) => {
-    const conditions = r.conditions.filter((c) => c.value.trim());
+    // A condition needs a value, and a header condition needs to say which
+    // header. Without that second test a rule saved with the header name left
+    // blank matches nothing at all — it sits in the list looking enabled and
+    // quietly never fires, which is the failure this editor exists to prevent.
+    const conditions = r.conditions.filter(
+      (c) => c.value.trim() && (c.field !== 'header' || (c.header ?? '').trim()),
+    );
     if (!r.name.trim() || conditions.length === 0) {
       onMessage(t('rule-needs-substance'));
       return;

@@ -14,7 +14,10 @@
   window.__PETREL_IPC__ = [];
   var rules = [
     { id: 701, position: 0, enabled: true, name: 'Newsletters aside',
-      conditions: [{ field: 'list_id', contains: 'news' }],
+      // The engine's shape, not the one rules were first written in: it
+      // deserializes an old row and serializes the new form, so the renderer
+      // is never handed a condition without an operator.
+      conditions: [{ field: 'list_id', op: 'contains', value: 'news' }],
       actions: { move_to: 7, tag: null, mark_read: false, skip_inbox: true } },
   ];
 
