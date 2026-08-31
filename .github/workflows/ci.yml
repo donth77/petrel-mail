@@ -46,6 +46,13 @@ jobs:
           toolchain: 1.96.1
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      # The tree carries a patched copy of imap-proto, and a path dependency
+      # has no checksum — nothing else would notice those six thousand lines
+      # changing. Before the build, not after: if the vendored crate is not
+      # what it claims to be, the test results mean nothing.
+      - name: Vendored crate is unchanged apart from its patch
+        if: matrix.os == 'ubuntu-latest'
+        run: ./scripts/check-vendor.sh
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --exclude petrel-desktop --all-targets -- -D warnings
       - run: cargo test

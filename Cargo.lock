@@ -3163,6 +3163,7 @@ name = "petrel-engine"
 version = "0.0.1"
 dependencies = [
  "blake3",
+ "petrel-engine",
  "petrel-mime",
  "petrel-testkit",
  "rusqlite",

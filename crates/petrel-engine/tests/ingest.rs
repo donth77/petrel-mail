@@ -315,3 +315,159 @@ fn reindex_repairs_legacy_charset_columns() {
     assert!(hits.iter().any(|h| h.message_id == out.message_id));
     store.fts_integrity_check().expect("index consistent");
 }
+
+/// The re-extraction in slices, and what survives being interrupted.
+///
+/// The whole pass is about ninety seconds on a real mailbox, and it runs
+/// holding the lock every UI command needs. Slicing it is what keeps the
+/// window alive; resuming is what stops an interrupted upgrade starting over
+/// from the top every launch.
+mod reindex_batches {
+    use petrel_engine::blob::BlobStore;
+    use petrel_engine::store::Store;
+    use tempfile::TempDir;
+
+    fn fixture(n: usize) -> Vec<u8> {
+        format!(
+            "From: Dana <dana@example.com>\r\nTo: me@example.com\r\n\
+             Subject: message {n}\r\nDate: Tue, 18 Aug 2026 14:02:00 +0000\r\n\
+             Message-ID: <m{n}@x>\r\nMIME-Version: 1.0\r\n\
+             Content-Type: text/plain; charset=utf-8\r\n\r\nbody {n}\r\n"
+        )
+        .into_bytes()
+    }
+
+    fn store_with(count: usize) -> (TempDir, Store, BlobStore) {
+        let dir = TempDir::new().unwrap();
+        let mut store = Store::open(&dir.path().join("t.db")).unwrap();
+        let blobs = BlobStore::open(&dir.path().join("blobs")).unwrap();
+        let account = store.ensure_test_account().unwrap();
+        let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+        for n in 0..count {
+            store
+                .ingest_raw(
+                    &blobs,
+                    account,
+                    Some(inbox),
+                    Some(n as u32 + 1),
+                    &fixture(n),
+                )
+                .unwrap();
+        }
+        // Back to an older extractor, so there is work to do.
+        store.set_setting("extraction_version", "0").unwrap();
+        (dir, store, blobs)
+    }
+
+    #[test]
+    fn a_slice_does_its_share_and_says_there_is_more() {
+        let (_d, mut store, blobs) = store_with(10);
+        let first = store.reindex_batch(&blobs, 4).unwrap();
+        assert_eq!(first.done, 4);
+        assert!(!first.finished, "four of ten is not finished");
+    }
+
+    #[test]
+    fn slices_resume_rather_than_repeat() {
+        let (_d, mut store, blobs) = store_with(10);
+        let mut seen = 0usize;
+        let mut slices = 0;
+        loop {
+            let p = store.reindex_batch(&blobs, 3).unwrap();
+            seen += p.done;
+            slices += 1;
+            if p.finished {
+                break;
+            }
+            assert!(slices < 20, "did not converge — a slice is repeating work");
+        }
+        // Ten messages in threes: 3, 3, 3, 1, then an empty slice that
+        // finishes. Every message exactly once, none twice.
+        assert_eq!(seen, 10, "wrong total across slices");
+    }
+
+    #[test]
+    fn finishing_moves_the_version_and_starting_again_is_free() {
+        let (_d, mut store, blobs) = store_with(5);
+        while !store.reindex_batch(&blobs, 2).unwrap().finished {}
+        // Now current: another pass must do nothing at all.
+        let again = store.reindex_batch(&blobs, 2).unwrap();
+        assert_eq!(again.done, 0);
+        assert!(again.finished);
+        assert_eq!(store.reindex_bodies(&blobs).unwrap(), 0);
+    }
+
+    #[test]
+    fn an_interrupted_pass_is_not_marked_done() {
+        let (_d, mut store, blobs) = store_with(10);
+        let p = store.reindex_batch(&blobs, 3).unwrap();
+        assert!(!p.finished);
+        // Quitting here must leave the store still wanting the work, or the
+        // seven messages nobody reached keep their old extraction for good.
+        let held = store
+            .settings()
+            .unwrap()
+            .get("extraction_version")
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(0);
+        assert!(held < Store::EXTRACTION_VERSION, "marked done at 3 of 10");
+        // And picking up where it left off covers the rest.
+        assert_eq!(store.reindex_bodies(&blobs).unwrap(), 7);
+    }
+
+    #[test]
+    fn the_whole_pass_still_works_in_one_call() {
+        let (_d, mut store, blobs) = store_with(6);
+        assert_eq!(store.reindex_bodies(&blobs).unwrap(), 6);
+    }
+}
+
+/// Is the explicit FTS rebuild at the end of a re-extraction doing anything?
+///
+/// It costs 8.5 seconds on a real mailbox — the single longest stretch the
+/// store's lock is held, and so the longest the window is frozen. The triggers
+/// on `fts_content` already mirror every write into both indexes, so the
+/// question is whether the rebuild repairs anything they missed.
+#[test]
+fn search_finds_re_extracted_text_without_an_explicit_rebuild() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let mut store = petrel_engine::store::Store::open(&dir.path().join("t.db")).unwrap();
+    let blobs = petrel_engine::blob::BlobStore::open(&dir.path().join("blobs")).unwrap();
+    let account = store.ensure_test_account().unwrap();
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+
+    let raw = b"From: Dana <dana@example.com>\r\nTo: me@example.com\r\n\
+Subject: quarterly rutabaga report\r\nDate: Tue, 18 Aug 2026 14:02:00 +0000\r\n\
+Message-ID: <r1@x>\r\nMIME-Version: 1.0\r\n\
+Content-Type: text/plain; charset=utf-8\r\n\r\nthe rutabaga numbers are in\r\n";
+    let out = store
+        .ingest_raw(&blobs, account, Some(inbox), Some(1), raw)
+        .unwrap();
+
+    // Garble what was extracted, exactly as an older extractor would have left
+    // it, and mark the store as needing the work again.
+    store
+        .overwrite_extracted(
+            out.message_id,
+            "mojibake",
+            "mojibake",
+            "mojibake",
+            "mojibake",
+        )
+        .unwrap();
+    store.set_setting("extraction_version", "0").unwrap();
+    assert_eq!(
+        store.search("rutabaga", 10).unwrap().len(),
+        0,
+        "the fixture did not actually garble the index"
+    );
+
+    // Slices only. Nothing here calls rebuild_fts by hand.
+    while !store.reindex_batch(&blobs, 1).unwrap().finished {}
+
+    assert_eq!(
+        store.search("rutabaga", 10).unwrap().len(),
+        1,
+        "re-extracted text never reached the search index"
+    );
+}

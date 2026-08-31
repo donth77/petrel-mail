@@ -246,35 +246,51 @@ where
         let first = last.saturating_sub(fetch_limit.saturating_sub(1)).max(1);
         let range = format!("{first}:{last}");
         // ENVELOPE chokes on UTF-8 quoted-strings some servers emit; parse headers locally.
-        if let Ok(mut fetches) = session
+        //
+        // A failure here is reported, not propagated. These headers are a
+        // sample the setup screen shows to say "this is your mail"; the probe
+        // itself is about capabilities, and a server that answers LIST and
+        // SELECT but not this is still an account worth adding. Silence was
+        // the wrong half of that though — a probe that came back with nothing
+        // read exactly like a mailbox that was simply empty.
+        match session
             .fetch(
                 range,
                 "(UID FLAGS RFC822.SIZE BODY.PEEK[HEADER.FIELDS (DATE FROM SUBJECT)])",
             )
             .await
         {
-            while let Some(fetch) = fetches.next().await {
-                let Ok(fetch) = fetch else { continue };
-                let Some(uid) = fetch.uid else { continue };
-                let (subject, from) = fetch
-                    .header()
-                    .and_then(petrel_mime::parse_message)
-                    .map(|parsed| {
-                        (
-                            parsed.subject.unwrap_or_default(),
-                            parsed.from_addr.unwrap_or_default(),
-                        )
-                    })
-                    .unwrap_or_default();
-                headers.push(FetchedHeader {
-                    uid: Some(uid),
-                    subject,
-                    from,
-                    size: fetch.size,
-                    seen: fetch
-                        .flags()
-                        .any(|f| matches!(f, async_imap::types::Flag::Seen)),
-                });
+            Err(e) => eprintln!("[imap] probe headers unavailable: {e}"),
+            Ok(mut fetches) => {
+                while let Some(fetch) = fetches.next().await {
+                    let fetch = match fetch {
+                        Ok(f) => f,
+                        Err(e) => {
+                            eprintln!("[imap] probe header skipped: {e}");
+                            continue;
+                        }
+                    };
+                    let Some(uid) = fetch.uid else { continue };
+                    let (subject, from) = fetch
+                        .header()
+                        .and_then(petrel_mime::parse_message)
+                        .map(|parsed| {
+                            (
+                                parsed.subject.unwrap_or_default(),
+                                parsed.from_addr.unwrap_or_default(),
+                            )
+                        })
+                        .unwrap_or_default();
+                    headers.push(FetchedHeader {
+                        uid: Some(uid),
+                        subject,
+                        from,
+                        size: fetch.size,
+                        seen: fetch
+                            .flags()
+                            .any(|f| matches!(f, async_imap::types::Flag::Seen)),
+                    });
+                }
             }
         }
     }

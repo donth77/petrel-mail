@@ -25,15 +25,50 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
         // Mail already held was indexed by whatever the extraction did then.
         // When that improves, the improvement has to be applied backwards or it
         // only ever reaches mail that has not arrived yet.
+        //
+        // A slice at a time, and the lock goes back between them. The whole
+        // pass is about ninety seconds on a mailbox of twenty-eight thousand,
+        // and every command the window issues — listing a folder, counting
+        // anything, opening a message — waits on this same lock. Held for the
+        // duration it is a minute and a half of frozen app, on the first
+        // launch after an upgrade.
         {
-            if let Ok(mut store) = state.store.lock() {
-                match store.reindex_bodies(&state.blobs) {
-                    Ok(0) => {}
-                    Ok(n) => log_sync(&format!(
-                        "re-indexed {n} message(s) after an extraction change"
-                    )),
-                    Err(e) => log_sync(&format!("re-index failed: {e}")),
+            // Measured on a mailbox of twenty-eight thousand: about 650ms of
+            // work per slice, worst case 1.9s. That worst case is one unusually
+            // large message rather than the slice size — quartering the slice
+            // only took it to 1.5s — so there is nothing to win by going
+            // smaller, and it would cost a hundred and seventy more
+            // transactions to do it.
+            const SLICE: usize = 250;
+            let mut total = 0usize;
+            loop {
+                let outcome = match state.store.lock() {
+                    Ok(mut store) => store.reindex_batch(&state.blobs, SLICE),
+                    // Another thread panicked holding it; nothing to do here.
+                    Err(_) => break,
+                };
+                match outcome {
+                    Ok(p) => {
+                        total += p.done;
+                        if p.finished {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        log_sync(&format!("re-index failed: {e}"));
+                        break;
+                    }
                 }
+                // Hand the runtime back so a waiting command actually gets in.
+                // Without this the loop can re-take the lock before anything
+                // else is scheduled, which is the frozen window again with
+                // extra steps.
+                tokio::task::yield_now().await;
+            }
+            if total > 0 {
+                log_sync(&format!(
+                    "re-indexed {total} message(s) after an extraction change"
+                ));
             }
         }
 

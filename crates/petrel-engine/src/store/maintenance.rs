@@ -4,6 +4,15 @@
 //! Moved verbatim from mod.rs (Phase 1.5).
 use super::*;
 
+/// How far one slice of the re-extraction got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReindexProgress {
+    /// Messages rewritten by this slice.
+    pub done: usize,
+    /// True when there is nothing left and the version has been moved.
+    pub finished: bool,
+}
+
 impl Store {
     pub fn delete_message(&mut self, id: i64) -> Result<()> {
         let tx = self.conn.transaction()?;
@@ -75,23 +84,83 @@ impl Store {
     /// Does not re-thread. A conversation grouped under a garbled subject stays
     /// grouped; only the displayed and indexed text is repaired.
     pub fn reindex_bodies(&mut self, blobs: &crate::blob::BlobStore) -> Result<usize> {
-        let held: i64 = self
-            .settings()?
+        let mut total = 0usize;
+        loop {
+            let batch = self.reindex_batch(blobs, usize::MAX)?;
+            total += batch.done;
+            if batch.finished {
+                return Ok(total);
+            }
+        }
+    }
+
+    /// One slice of the re-extraction, so the caller can come up for air.
+    ///
+    /// The whole pass takes about ninety seconds on a mailbox of
+    /// twenty-eight thousand — measured, not guessed — and the shell holds the
+    /// store's lock for as long as it runs. Done in one call that is ninety
+    /// seconds in which the window cannot list a folder, count anything or
+    /// open a message: it is frozen, on the first launch after an upgrade, at
+    /// exactly the moment somebody is deciding whether the new version works.
+    ///
+    /// So it goes in slices, and where it got to survives being interrupted:
+    /// quitting halfway now costs the current slice rather than the whole
+    /// pass. `extraction_version` is only moved when the last row is done, so
+    /// a store abandoned mid-way is still marked as needing the work.
+    pub fn reindex_batch(
+        &mut self,
+        blobs: &crate::blob::BlobStore,
+        limit: usize,
+    ) -> Result<ReindexProgress> {
+        let settings = self.settings()?;
+        let held: i64 = settings
             .get("extraction_version")
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
         if held >= Self::EXTRACTION_VERSION {
-            return Ok(0);
+            return Ok(ReindexProgress {
+                done: 0,
+                finished: true,
+            });
         }
+        // Where the last slice stopped. Ordered by id so "after this one" is
+        // a stable place to resume from, whatever else arrives meanwhile.
+        let cursor: i64 = settings
+            .get("reindex_cursor")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
 
         let rows: Vec<(i64, String)> = {
             let mut stmt = self.conn.prepare(
                 "SELECT id, blob_hash FROM messages
-                 WHERE blob_hash IS NOT NULL AND deleted_at_ms IS NULL",
+                 WHERE blob_hash IS NOT NULL AND deleted_at_ms IS NULL AND id > ?1
+                 ORDER BY id LIMIT ?2",
             )?;
-            let it = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            let it = stmt.query_map(
+                params![cursor, i64::try_from(limit).unwrap_or(i64::MAX)],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
             it.collect::<std::result::Result<Vec<_>, _>>()?
         };
+
+        if rows.is_empty() {
+            // Nothing left: the pass is done.
+            //
+            // No FTS rebuild. The triggers on `fts_content` mirror every write
+            // into both indexes as it happens, so by the time the last slice
+            // commits there is nothing left to repair — and the rebuild was
+            // the single most expensive thing in the pass, 8.5 seconds on a
+            // real mailbox against about 650ms for a slice of work. It was the
+            // longest the lock was ever held, and it was rebuilding an index
+            // that was already correct.
+            self.set_setting("extraction_version", &Self::EXTRACTION_VERSION.to_string())?;
+            self.set_setting("reindex_cursor", "0")?;
+            return Ok(ReindexProgress {
+                done: 0,
+                finished: true,
+            });
+        }
+        let last_id = rows.last().map(|(id, _)| *id).unwrap_or(cursor);
 
         let tx = self.conn.transaction()?;
         let mut done = 0usize;
@@ -163,13 +232,24 @@ impl Store {
             }
         }
         tx.commit()?;
-        self.rebuild_fts()?;
-        self.set_setting("extraction_version", &Self::EXTRACTION_VERSION.to_string())?;
-        Ok(done)
+        // The cursor moves with the rows, in the same breath. A slice that
+        // committed its work and forgot where it reached would redo it on the
+        // next launch, for ever.
+        self.set_setting("reindex_cursor", &last_id.to_string())?;
+        Ok(ReindexProgress {
+            done,
+            finished: false,
+        })
     }
 
     /// Plants the columns an older extractor would have written, so a test can
-    /// ask `reindex_bodies` to repair them. Not a product path.
+    /// ask `reindex_bodies` to repair them.
+    ///
+    /// Behind a feature rather than trusted to its own doc comment: this
+    /// writes deliberately wrong values into the columns the list and the
+    /// search index read from, and a public method that corrupts a store on
+    /// purpose should not be reachable from a shipped build at all.
+    #[cfg(feature = "testkit")]
     pub fn overwrite_extracted(
         &mut self,
         id: i64,

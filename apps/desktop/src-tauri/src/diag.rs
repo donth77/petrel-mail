@@ -244,8 +244,38 @@ pub(crate) fn friendly_sync_error_for(host: &str, raw: &str) -> String {
                 is still on the server."
             .into();
     }
-    // Unknown: show the raw text rather than a reassuring guess.
+    // Anything not recognised above is shown only if it cannot be carrying
+    // mail. The old rule was the other way round — print the raw text and
+    // hope — and that is how a parse dump put somebody's subject line and
+    // correspondents on screen. Matching two substrings caught the dump we
+    // had seen; every other parser error still walked straight through.
+    //
+    // A verdict a server sends about a request is short and structural. A
+    // dump is long, and carries the bytes it choked on. Length is a blunt
+    // test and a sound one: there is no protocol answer that needs three
+    // hundred characters, and no mail content that fits in them next to an
+    // error code.
+    if looks_like_a_dump(raw) {
+        return "The server sent something Petrel could not read. Your mail is \
+                still on the server."
+            .into();
+    }
     raw.to_string()
+}
+
+/// Whether an error string is too big, or too structured, to be a verdict.
+///
+/// Erring towards silence. Saying less than we could costs somebody a detail
+/// they might have pasted into an issue; saying more than we should puts
+/// their correspondents on screen, and there is no taking that back.
+fn looks_like_a_dump(raw: &str) -> bool {
+    const LONGEST_PLAUSIBLE_VERDICT: usize = 300;
+    raw.len() > LONGEST_PLAUSIBLE_VERDICT
+        // The shapes a parser reaches for when it gives up: a byte array, a
+        // struct rendered by Debug, or a quoted copy of what it was reading.
+        || raw.contains("input:")
+        || raw.contains("Error {")
+        || raw.contains("FETCH (")
 }
 
 /// True when an error string is an IMAP parser dump rather than a protocol
@@ -339,5 +369,48 @@ mod sync_error_tests {
         // than a reassuring guess.
         let odd = friendly_sync_error_for("imap.example.com", "something nobody has seen before");
         assert_eq!(odd, "something nobody has seen before");
+    }
+}
+
+#[cfg(test)]
+mod parse_dump_tests {
+    use super::friendly_sync_error_for;
+
+    /// A parser dump carries the bytes it choked on, and those bytes are
+    /// somebody's mail. The first guard matched two substrings, which caught
+    /// the dump we had seen and let every other one through to the screen.
+    #[test]
+    fn a_dump_with_an_unfamiliar_error_code_still_does_not_reach_the_screen() {
+        // Not TakeWhile1, and no "during parsing" — the shape the old guard
+        // missed entirely.
+        let raw = "imap: Error { input: [42, 32, 49], code: Tag } parsing \
+                   \"* 1 FETCH (ENVELOPE (NIL \\\"Q3 invoice\\\" \
+                   ((\\\"Dana Wu\\\" NIL \\\"dana\\\" \\\"vendorco.example\\\"))))\"";
+        let msg = friendly_sync_error_for("imap.example.com", raw);
+        for leak in ["Dana Wu", "vendorco.example", "Q3 invoice", "FETCH ("] {
+            assert!(!msg.contains(leak), "leaked {leak:?} in: {msg}");
+        }
+    }
+
+    #[test]
+    fn a_very_long_error_is_summarised_rather_than_repeated() {
+        let raw = format!("something unrecognised: {}", "x".repeat(400));
+        let msg = friendly_sync_error_for("imap.example.com", &raw);
+        assert!(msg.len() < 200, "repeated a 400-character error: {msg}");
+    }
+
+    /// The other direction matters too. A short protocol verdict is exactly
+    /// what somebody needs to see, and hiding it would make every unusual
+    /// failure indistinguishable from every other.
+    #[test]
+    fn a_short_server_verdict_is_still_shown_in_full() {
+        for verdict in [
+            "NO [OVERQUOTA] Mailbox is full",
+            "BAD Invalid command",
+            "NO [SERVERBUG] Internal error occurred",
+        ] {
+            let msg = friendly_sync_error_for("imap.example.com", verdict);
+            assert_eq!(msg, verdict, "hid a verdict worth reading");
+        }
     }
 }

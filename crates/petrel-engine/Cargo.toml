@@ -14,7 +14,15 @@ serde_json.workspace = true
 thiserror.workspace = true
 petrel-mime = { path = "../petrel-mime" }
 
+# Helpers that exist only so a test can stage a broken store. Off by default,
+# so nothing in a shipped build can reach them; the dev-dependency below turns
+# them on for this crate's own tests, which link as an outside consumer and so
+# cannot see `cfg(test)`.
+[features]
+testkit = []
+
 [dev-dependencies]
+petrel-engine = { path = ".", features = ["testkit"] }
 blake3.workspace = true
 zstd.workspace = true
 tempfile.workspace = true
