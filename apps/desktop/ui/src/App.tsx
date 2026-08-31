@@ -13,6 +13,7 @@ import { t, type StringId } from './lib/strings';
 import { Search } from 'lucide-react';
 import { SortMenu } from './components/SortMenu';
 import { DEFAULT_SORT, SEARCH_SORT, effectiveSort, wireSort, type Sort } from './lib/sort';
+import { repaintTag } from './lib/tag-paint';
 import { mergeOrder } from './lib/reorder';
 import { Rail } from './components/Rail';
 import { useKeyboard } from './lib/useKeyboard';
@@ -1510,7 +1511,15 @@ export function App() {
           // Painted at once. A colour is a glance-level thing; waiting a round
           // trip to see it is the whole cost of the gesture.
           const was = tags.find((x) => x.id === id)?.colour;
-          setTags((prev) => prev.map((x) => (x.id === id ? { ...x, colour } : x)));
+          // The rail reads the tag list, but a row carries its own copy of the
+          // tag, so repainting only the rail left every chip in the list on the
+          // old colour until something reloaded the rows. The rename beside
+          // this one already had to learn that; the recolour did not.
+          const repaint = (to: string) => {
+            setTags((prev) => prev.map((x) => (x.id === id ? { ...x, colour: to } : x)));
+            setItems((prev) => repaintTag(prev, id, to));
+          };
+          repaint(colour);
           void api
             .setTagColour(id, colour)
             .then(() => api.tags().then(setTags))
@@ -1518,9 +1527,7 @@ export function App() {
               // And unpainted if the write is refused. This said "kept if the
               // write succeeds" and then kept it either way, so a failed
               // colour survived on screen until something reloaded the tags.
-              if (was !== undefined) {
-                setTags((prev) => prev.map((x) => (x.id === id ? { ...x, colour: was } : x)));
-              }
+              if (was !== undefined) repaint(was);
               setToast(t('tag-rename-failed', { error: String(e) }));
             });
         }}
