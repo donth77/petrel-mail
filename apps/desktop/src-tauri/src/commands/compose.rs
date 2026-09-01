@@ -438,9 +438,9 @@ pub fn schedule_send(
     store
         .schedule_send(draft_id, at_ms)
         .map_err(|e| e.to_string())?;
-    // Wake the worker: a message due in the past should not wait for the next
-    // poll just because it was scheduled after the fact.
-    state.drain_signal.notify_one();
+    // Wake the send worker: a message due in the past should not wait for
+    // the next drain just because it was scheduled after the fact.
+    state.send_signal.notify_one();
     Ok(())
 }
 

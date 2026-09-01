@@ -33,17 +33,36 @@ async fn wait_store(state: &AppState) -> Option<MutexGuard<'_, Store>> {
     None
 }
 
-/// Wakes the drain worker when a queued message's time comes.
+/// Sends whatever is due, without waiting for IMAP drain.
 ///
-/// Nothing else in the system is clock-driven. The drain runs when a triage
-/// action asks for it or when the sync loop comes round — and with IDLE the
-/// sync loop sleeps until the server pushes something, so a message scheduled
-/// for twenty seconds out waited for *unrelated mail to arrive*. Observed on
-/// the live account: due at t+20s, still untouched at t+64s.
+/// Send now used to raise the drain signal. The drain worker always finished
+/// `drain_actions` first, so a mailbox with a backlog of STORE/MOVE held SMTP
+/// for as long as that backlog took — two minutes, live, for fifteen actions.
+/// This worker is the other half of that split: triage still has its signal;
+/// a send wakes this one.
+pub(crate) fn spawn_send_worker(state: Arc<AppState>, account: i64) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            state.send_signal.notified().await;
+            // Two rows marked due a few milliseconds apart should be one pass.
+            // Not the drain's 900ms: that is for triage bursts, and it is the
+            // wait this worker exists to avoid.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            send_due(Arc::clone(&state), account).await;
+        }
+    });
+}
+
+/// Wakes the send worker when a queued message's time comes.
+///
+/// Nothing else in the system is clock-driven. The send used to ride the
+/// drain, and with IDLE the sync loop sleeps until the server pushes
+/// something, so a message scheduled for twenty seconds out waited for
+/// *unrelated mail to arrive*. Observed on the live account: due at t+20s,
+/// still untouched at t+64s.
 ///
 /// Sleeps to the exact instant rather than polling, so an empty outbox costs
-/// nothing; re-checked after every drain, because a drain is what changes the
-/// answer. The one-minute cap is for the clock being wrong — a laptop lid
+/// nothing. The one-minute cap is for the clock being wrong — a laptop lid
 /// closed through the scheduled time — not for accuracy: the send happens on
 /// the rung, not a minute late.
 pub(crate) fn spawn_outbox_clock(state: Arc<AppState>, account: i64) {
@@ -72,9 +91,9 @@ pub(crate) fn spawn_outbox_clock(state: Arc<AppState>, account: i64) {
             };
             tokio::time::sleep(std::time::Duration::from_millis(wait_ms as u64)).await;
             if next.is_some_and(|at| at <= now_ms()) {
-                state.drain_signal.notify_one();
-                // Give the drain its head before asking again, or this loop
-                // sees the same due row and fires a second time for nothing.
+                state.send_signal.notify_one();
+                // Give the send worker its head before asking again, or this
+                // loop sees the same due row and fires a second time for nothing.
                 tokio::time::sleep(std::time::Duration::from_millis(2_000)).await;
             }
         }
@@ -336,6 +355,24 @@ pub(crate) async fn sent_folder_evidence(
 /// either way is held for a person and is never picked up here again.
 pub(crate) async fn send_due(state: Arc<AppState>, account: i64) {
     use petrel_engine::outbox::{AttemptOutcome, SendState, ServerEvidence, reconcile};
+
+    // Two overlapping passes would both read the same due rows and transmit
+    // each twice. The loser returns; the caller that raised send_signal
+    // leaves a permit, so the worker comes back when this one drops.
+    if state
+        .sending
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
+    struct SendingGuard(Arc<AppState>);
+    impl Drop for SendingGuard {
+        fn drop(&mut self) {
+            self.0.sending.store(false, Ordering::SeqCst);
+        }
+    }
+    let _guard = SendingGuard(Arc::clone(&state));
 
     let due = {
         let Some(store) = wait_store(&state).await else {

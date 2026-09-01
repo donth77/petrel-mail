@@ -29,9 +29,17 @@ pub(crate) struct AppState {
     /// come round — which, with IDLE holding a connection open, could be
     /// twenty minutes.
     pub(crate) drain_signal: Arc<tokio::sync::Notify>,
+    /// Raised when a queued send should go now. Send now, the outbox clock,
+    /// and a scheduled send wake this; triage does not. Sharing the drain
+    /// signal put SMTP behind every pending IMAP STORE/MOVE — observed live
+    /// as two minutes of "still in the outbox" while fifteen actions drained.
+    pub(crate) send_signal: Arc<tokio::sync::Notify>,
     /// One drain at a time. Two overlapping passes would both read the same
     /// queued rows and deliver each change twice.
     pub(crate) draining: AtomicBool,
+    /// One `send_due` at a time. Two overlapping passes would both claim the
+    /// same row and transmit it twice.
+    pub(crate) sending: AtomicBool,
     /// Drafts edited since their last push to the server, for the 30-second
     /// debounce. A draft in here has exactly one push task sleeping on it.
     pub(crate) draft_dirty: Mutex<std::collections::HashSet<i64>>,
