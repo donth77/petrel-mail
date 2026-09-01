@@ -4,7 +4,6 @@ import {
   type Folder,
   type OutboxRow,
   type Status,
-  type Thread,
 } from './lib/api';
 import { chips, folderScopeName, hasToken, scopeFor, toggleToken } from './lib/search-chips';
 import { arrangementFor, countFor, countModes, visibleMailboxes } from './lib/mailboxes';
@@ -12,7 +11,7 @@ import { count as fmtCount, fileSize } from './lib/format';
 import { t, type StringId } from './lib/strings';
 import { Search } from 'lucide-react';
 import { SortMenu } from './components/SortMenu';
-import { DEFAULT_SORT, SEARCH_SORT, effectiveSort, wireSort, type Sort } from './lib/sort';
+import { DEFAULT_SORT, SEARCH_SORT, effectiveSort, type Sort } from './lib/sort';
 import { repaintTag } from './lib/tag-paint';
 import { mergeOrder } from './lib/reorder';
 import { Rail } from './components/Rail';
@@ -56,6 +55,8 @@ import { useMessageLinks, type HomographRisk } from './lib/links';
 import { RowMenu } from './components/RowMenu';
 import { Toast } from './components/Toast';
 import { MessageList } from './components/MessageList';
+import { useThreadWindow } from './lib/useThreadWindow';
+import { LIST_PAGE } from './lib/list-page';
 import { Reader } from './components/Reader';
 import { Outbox } from './components/Outbox';
 import { Onboarding } from './components/Onboarding';
@@ -73,7 +74,6 @@ export function App() {
   // together rather than each noticing separately or, worse, some not
   // noticing at all. The name is about where it came from, not its only use.
   const [accountEpoch, setAccountEpoch] = useState(0);
-  const [items, setItems] = useState<Thread[]>([]);
   const [query, setQuery] = useState('');
   // Best match or newest, for a search. Not a saved preference: it answers a
   // different question about one search — "find the thing" against "retrace the
@@ -113,8 +113,18 @@ export function App() {
   const [activeId, setActiveId] = useState<number | null>(null);
   const [view, setView] = useState('inbox');
 
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const listFetchers = useMemo(
+    () => ({ threads: api.threads, search: api.search }),
+    [],
+  );
+  const { items, setItems, loading, error, loadMore } = useThreadWindow({
+    query,
+    view,
+    sort: activeSort,
+    accountEpoch,
+    messageCount: status?.count,
+    fetchers: listFetchers,
+  });
   const searchRef = useRef<HTMLInputElement>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -187,36 +197,13 @@ export function App() {
     };
   }, []);
 
-  // Debounced as-you-type search; an empty box falls back to the listing.
+  // Highlight and selection follow the loaded window. A full replace (view
+  // change, search) may drop the current row; paging and new mail at the
+  // top must not steal the highlight just because the array is new.
   useEffect(() => {
-    let live = true;
-    const run = () => {
-      const wire = wireSort(activeSort);
-      const p = query.trim()
-        ? api.search(query, wire.key, wire.ascending)
-        : api.threads(view, 0, 500, wire.key, wire.ascending);
-      p.then((rows: Thread[]) => {
-        if (!live) return;
-        setError(null);
-        setItems(rows);
-        setLoading(false);
-        setActiveId((cur) => (rows.some((r: Thread) => r.id === cur) ? cur : (rows[0]?.id ?? null)));
-        // A selection pointing at rows that have gone would make the next
-        // action target nothing and look broken.
-        setSelected((cur) => (cur.size === 0 ? cur : prune(cur, rows.map((r: Thread) => r.id))));
-      }).catch((err: unknown) => {
-        if (!live) return;
-        setLoading(false);
-        setError(String(err));
-        api.log(`list/search failed: ${err}`);
-      });
-    };
-    const h = setTimeout(run, query ? 100 : 0);
-    return () => {
-      live = false;
-      clearTimeout(h);
-    };
-  }, [query, view, activeSort, status?.count, status?.seeding, accountEpoch]);
+    setActiveId((cur) => (items.some((r) => r.id === cur) ? cur : (items[0]?.id ?? null)));
+    setSelected((cur) => (cur.size === 0 ? cur : prune(cur, items.map((r) => r.id))));
+  }, [items]);
 
   // A new query starts at the top.
   //
@@ -793,7 +780,7 @@ export function App() {
       setDraft((cur) => (cur ? { ...cur, savedId: id } : cur));
       setToast(t('compose-saved'));
       // The Drafts view is a query, so it only changes when the list reloads.
-      if (view === 'drafts') api.threads(view, 0, 500).then(setItems).catch(() => {});
+      if (view === 'drafts') api.threads(view, 0, LIST_PAGE).then(setItems).catch(() => {});
       return id;
     } catch (e) {
       setToast(t('compose-save-failed', { error: String(e) }));
@@ -1257,7 +1244,24 @@ export function App() {
     return () => {
       live = false;
     };
-  }, [view, accountEpoch, status?.count]);
+  }, [view, accountEpoch]);
+
+  // The footer number is the whole mailbox, not the loaded page. Recounted
+  // when mail arrives, but not by wiping the last number first — that made
+  // the status line blink on every ingest tick.
+  useEffect(() => {
+    let live = true;
+    const timer = window.setTimeout(() => {
+      api
+        .viewCount(view)
+        .then((n) => live && setViewTotal(n))
+        .catch(() => {});
+    }, 300);
+    return () => {
+      live = false;
+      window.clearTimeout(timer);
+    };
+  }, [status?.count, view, accountEpoch]);
 
   // A message that needs a decision raises a notification, once.
   //
@@ -1353,7 +1357,7 @@ export function App() {
       live = false;
       window.clearTimeout(t);
     };
-  }, [status?.count, status?.seeding, arrangement, items, accountEpoch, setAccounts, setTags]);
+  }, [status?.count, status?.seeding, arrangement, accountEpoch, setAccounts, setTags]);
 
   // First run: no account can sign in, so there is nothing to show but the
   // way to add one. Decided from the status the app reports, not from an
@@ -1805,6 +1809,7 @@ export function App() {
             }}
             onDragStart={startDrag}
             dropRow={drag?.overRow ?? null}
+            onNearEnd={loadMore}
             onContextMenu={(id, x, y) => {
               // Right-clicking inside a selection acts on all of it; on a row
               // outside one, the selection is dropped and only that row is in

@@ -14,6 +14,7 @@ pub fn list_threads(
     limit: u32,
     sort: Option<String>,
     ascending: Option<bool>,
+    before: Option<(i64, i64)>,
     state: State<Arc<AppState>>,
 ) -> Result<Vec<ThreadListing>, String> {
     let _t = Timed::new("list_threads");
@@ -28,9 +29,15 @@ pub fn list_threads(
         ascending: ascending.unwrap_or(false),
     };
     let store = state.store()?;
-    store
-        .list_threads(&view, offset, limit.min(2000), sort)
-        .map_err(|e| e.to_string())
+    // A hundred is the page the list asks for. The UI used to ask for 500
+    // and the cap was 2000; both held the store lock for a mailbox-sized
+    // amount of work while the window tried to scroll.
+    let limit = limit.min(100);
+    match before {
+        Some((d, k)) => store.list_threads_after(&view, limit, sort, d, k),
+        None => store.list_threads(&view, offset, limit, sort),
+    }
+    .map_err(|e| e.to_string())
 }
 
 /// One conversation by id, for a window that was opened onto it.

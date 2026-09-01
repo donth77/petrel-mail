@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
 import { Composite, CompositeItem, useCompositeStore } from '@ariakit/react';
 import { useVirtualizer, defaultRangeExtractor, type Range } from '@tanstack/react-virtual';
 import { Archive, Check, Clock, Mail, MailOpen, Paperclip, Star } from 'lucide-react';
@@ -8,6 +8,7 @@ import { initials, listTime, fullTime } from '../lib/format';
 import { t } from '../lib/strings';
 import { Tip } from './Tip';
 import { key } from '../lib/keys';
+import { shouldRequestNextPage } from '../lib/list-page';
 
 type Props = {
   items: Thread[];
@@ -26,6 +27,8 @@ type Props = {
   /** Right-click. The pointer position comes along because a context menu is
    *  anchored to where you clicked, not to the row. */
   onContextMenu: (threadId: number, x: number, y: number) => void;
+  /** Near the loaded tail — ask for the next page of conversations. */
+  onNearEnd?: () => void;
   /** The row a dragged tag is currently over, so it can light up. */
   dropRow: number | null;
   /** Begins a possible drag from this row. */
@@ -57,7 +60,7 @@ function Snippet({ text }: { text: string }) {
   );
 }
 
-export function MessageList({
+export const MessageList = memo(function MessageList({
   items,
   activeId,
   selected,
@@ -70,6 +73,7 @@ export function MessageList({
   onContextMenu,
   onDragStart,
   dropRow,
+  onNearEnd,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const composite = useCompositeStore({
@@ -84,10 +88,8 @@ export function MessageList({
   // An estimate only — rows carry chips when they have attachments or tags, so
   // real heights vary and the virtualizer measures each mounted row.
   const rowHeight = density === 'compact' ? 30 : 74;
-  const activeIndex = useMemo(
-    () => items.findIndex((m) => m.id === activeId),
-    [items, activeId],
-  );
+  const idIndex = useMemo(() => new Map(items.map((m, i) => [m.id, i])), [items]);
+  const activeIndex = activeId == null ? -1 : (idIndex.get(activeId) ?? -1);
 
   // Keep the active row mounted even when scrolled out of view — otherwise
   // aria-activedescendant points at an element that no longer exists.
@@ -113,7 +115,9 @@ export function MessageList({
     getItemKey: (index) => items[index]?.id ?? index,
     overscan: 8,
     rangeExtractor,
-    measureElement: (el) => el.getBoundingClientRect().height,
+    ...(density === 'relaxed'
+      ? { measureElement: (el: Element) => el.getBoundingClientRect().height }
+      : {}),
   });
 
   // Movement lives here rather than in Ariakit's composite navigation, because
@@ -166,7 +170,7 @@ export function MessageList({
         const fromId = focusedItem?.id?.startsWith('msg-')
           ? Number(focusedItem.id.slice(4))
           : activeId;
-        const at = items.findIndex((m) => m.id === fromId);
+        const at = fromId == null ? -1 : (idIndex.get(fromId) ?? -1);
         const nextIndex = at < 0 ? 0 : at + (down ? 1 : -1);
         const target = items[nextIndex];
         if (!target) return;
@@ -186,7 +190,7 @@ export function MessageList({
     // than stepping from wherever the composite happens to be.
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [composite, items, activeId, onActivate]);
+  }, [composite, idIndex, items, activeId, onActivate]);
 
   // Give the list focus once it has something to show, so arrow keys work
   // without a click first. Only when nothing else has been focused deliberately.
@@ -231,6 +235,16 @@ export function MessageList({
   }, [activeId, activeIndex, virtualizer]);
 
   const virtualRows = virtualizer.getVirtualItems();
+  const lastVisibleIndex =
+    virtualRows.length > 0 ? virtualRows[virtualRows.length - 1].index : -1;
+
+  // Pagination is driven from the virtual window, not from scroll events that
+  // fire on every pointer move.
+  useEffect(() => {
+    if (!onNearEnd) return;
+    const scrollTop = scrollRef.current?.scrollTop ?? 0;
+    if (shouldRequestNextPage(lastVisibleIndex, items.length, scrollTop)) onNearEnd();
+  }, [lastVisibleIndex, items.length, onNearEnd]);
 
   return (
     <Composite
@@ -279,7 +293,7 @@ export function MessageList({
               // row does not listen for anything itself.
               data-drop-row={m.id}
               data-drop-over={dropRow === m.id || undefined}
-              ref={virtualizer.measureElement}
+              ref={density === 'relaxed' ? virtualizer.measureElement : undefined}
               style={{ transform: `translateY(${v.start}px)` }}
               onClick={(e: React.MouseEvent) => {
                 // Keep the composite's notion of "current" in step with the
@@ -524,4 +538,4 @@ export function MessageList({
       </div>
     </Composite>
   );
-}
+});

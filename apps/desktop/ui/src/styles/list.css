@@ -5,6 +5,11 @@
   flex-direction: column;
   min-inline-size: 0;
   min-block-size: 0;
+  /* The scroller is a flex child whose content is a tall spacer. Without a
+     clip here, overflow is visible and the pane grows with every loaded
+     row — which is exactly how virtualization dies: the "viewport" becomes
+     the whole list, and every row mounts. */
+  overflow: hidden;
   border-inline-end: 1px solid var(--hair);
   background: var(--surface);
 }
@@ -88,6 +93,12 @@
 
 .scroller {
   flex-grow: 1;
+  /* Load-bearing. Flex items default to min-height: auto, so this element
+     would refuse to shrink below the virtualizer's spacer (500 × 74px, or
+     worse). Overflow never kicks in, TanStack sees a viewport as tall as
+     the mailbox, and every row mounts. Zero lets the grid row's height
+     win, and overflow-y actually scrolls. */
+  min-block-size: 0;
   overflow-y: auto;
   overflow-x: hidden;
   position: relative;

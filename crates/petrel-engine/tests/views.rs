@@ -708,3 +708,103 @@ fn a_list_can_be_ordered_by_date_sender_or_subject() {
         ["Zebras", "Mangoes", "Apples"]
     );
 }
+
+/// The next page starts after a row the caller already has, not after a
+/// numeric skip — so new mail at the top does not shift every later page.
+#[test]
+fn a_list_page_resumes_after_the_last_row() {
+    use petrel_engine::store::Sort;
+    let mut store = Store::open_in_memory().unwrap();
+    let account = store.ensure_test_account().unwrap();
+    let msgs: Vec<NewMessage> = (0..8)
+        .map(|i| NewMessage {
+            account_id: account,
+            date_ms: 1_000 + i,
+            from_addr: "a@example.com".into(),
+            from_display: "A".into(),
+            to_addr: "me@example.com".into(),
+            subject: format!("m{i}"),
+            body_text: "body".into(),
+        })
+        .collect();
+    let ids = store.insert_messages(&msgs).unwrap();
+    inbox_all(&store, account, &ids);
+
+    let sort = Sort::default();
+    let all = store.list_threads(&ListView::Inbox, 0, 50, sort).unwrap();
+    assert_eq!(all.len(), 8);
+    assert_eq!(
+        store.conversations_in(&ListView::Inbox).unwrap(),
+        8,
+        "the placement-based count must agree with the listing"
+    );
+
+    let first = store.list_threads(&ListView::Inbox, 0, 3, sort).unwrap();
+    assert_eq!(first.len(), 3);
+    let rest = store
+        .list_threads_after(
+            &ListView::Inbox,
+            3,
+            sort,
+            first[2].date_ms,
+            first[2].thread_id,
+        )
+        .unwrap();
+    assert_eq!(rest.len(), 3);
+    let first_ids: Vec<i64> = first.iter().map(|r| r.thread_id).collect();
+    let rest_ids: Vec<i64> = rest.iter().map(|r| r.thread_id).collect();
+    for id in &rest_ids {
+        assert!(
+            !first_ids.contains(id),
+            "a later page must not repeat a conversation already shown"
+        );
+    }
+    assert_eq!(
+        first_ids
+            .iter()
+            .chain(rest_ids.iter())
+            .copied()
+            .collect::<Vec<_>>(),
+        all.iter().take(6).map(|r| r.thread_id).collect::<Vec<_>>(),
+    );
+
+    let past_end = store
+        .list_threads_after(&ListView::Inbox, 3, sort, all[7].date_ms, all[7].thread_id)
+        .unwrap();
+    assert!(past_end.is_empty(), "nothing follows the last row");
+}
+
+/// Folder counts start from placements, so a tiny mailbox (drafts, archive
+/// with nothing filed) must not take the "scan every message" plan and still
+/// has to agree with the list.
+#[test]
+fn a_small_folder_count_matches_its_list() {
+    let (store, account, ids) = seeded();
+    inbox_all(&store, account, &ids);
+    assert_eq!(
+        store
+            .conversations_in(&ListView::Folder("archive".into()))
+            .unwrap(),
+        store
+            .list_threads(
+                &ListView::Folder("archive".into()),
+                0,
+                50,
+                petrel_engine::store::Sort::default(),
+            )
+            .unwrap()
+            .len() as i64
+    );
+
+    let drafts = store.ensure_folder(account, "drafts", "Drafts").unwrap();
+    store.place_message(ids[0], drafts).unwrap();
+    store.place_message(ids[1], drafts).unwrap();
+    let draft_view = ListView::Folder("drafts".into());
+    assert_eq!(
+        store.conversations_in(&draft_view).unwrap(),
+        store
+            .list_threads(&draft_view, 0, 50, petrel_engine::store::Sort::default())
+            .unwrap()
+            .len() as i64
+    );
+}
