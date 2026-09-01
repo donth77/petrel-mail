@@ -551,6 +551,19 @@ impl Store {
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
+    /// Addresses on one message for a single header role, in header order.
+    fn addresses_with_role(&self, message_id: i64, role: &str) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT coalesce(nullif(display,''), addr_norm), addr_norm
+             FROM message_addresses
+             WHERE message_id = ?1 AND role = ?2 ORDER BY rowid",
+        )?;
+        let rows = stmt
+            .query_map(params![message_id, role], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// One conversation, message by message, with what the reading pane needs to
     /// draw a card per message: who it came from, who it went to, and its files.
     pub fn thread_detail(&self, thread_id: i64) -> Result<Vec<ThreadMessage>> {
@@ -605,18 +618,18 @@ impl Store {
             invite_response,
         ) in rows
         {
-            let mut to = self.conn.prepare_cached(
-                // message_addresses has no surrogate key; rowid preserves the
-                // order the parser inserted them, which is the header's order.
-                "SELECT coalesce(nullif(display,''), addr_norm), addr_norm
-                 FROM message_addresses
-                 WHERE message_id = ?1 AND role IN ('to','cc') ORDER BY rowid",
-            )?;
-            let pairs: Vec<(String, String)> = to
-                .query_map(params![id], |r| Ok((r.get(0)?, r.get(1)?)))?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            let recipients: Vec<String> = pairs.iter().map(|(d, _)| d.clone()).collect();
-            let recipient_addrs: Vec<String> = pairs.into_iter().map(|(_, a)| a).collect();
+            // message_addresses has no surrogate key; rowid preserves the
+            // order the parser inserted them, which is the header's order.
+            let to_pairs = self.addresses_with_role(id, "to")?;
+            let cc_pairs = self.addresses_with_role(id, "cc")?;
+            let to: Vec<String> = to_pairs.iter().map(|(d, _)| d.clone()).collect();
+            let cc: Vec<String> = cc_pairs.iter().map(|(d, _)| d.clone()).collect();
+            let recipients: Vec<String> = to.iter().chain(cc.iter()).cloned().collect();
+            let recipient_addrs: Vec<String> = to_pairs
+                .into_iter()
+                .chain(cc_pairs)
+                .map(|(_, a)| a)
+                .collect();
 
             let mut att = self.conn.prepare_cached(
                 "SELECT coalesce(filename,''), coalesce(size, 0), part_id, coalesce(mime,'')
@@ -645,6 +658,8 @@ impl Store {
                 unread: flags & flags::SEEN == 0,
                 has_calendar,
                 invite_response,
+                to,
+                cc,
                 recipients,
                 recipient_addrs,
                 attachments,

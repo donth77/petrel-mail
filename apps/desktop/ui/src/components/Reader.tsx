@@ -89,7 +89,8 @@ function Expanded({
           <span className="msg-who">
             <span className="msg-name">{m.from_display || m.from_addr}</span>
             <span className="msg-to">
-              {m.recipients.length > 0 && <>{t('reader-to', { who: m.recipients.join(', ') })} · </>}
+              {m.to.length > 0 && <>{t('reader-to', { who: m.to.join(', ') })} · </>}
+              {m.cc.length > 0 && <>{t('reader-cc', { who: m.cc.join(', ') })} · </>}
               <span className="mono">{m.from_addr}</span>
               {/* Next to the address, because the address is what it makes a
                   claim about. A mark anywhere else in the header is a mark

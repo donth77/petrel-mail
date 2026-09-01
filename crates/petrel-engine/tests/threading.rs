@@ -668,7 +668,92 @@ fn thread_detail_returns_recipients_and_files() {
         "Cc recipients count as recipients too: {:?}",
         m.recipients
     );
+    assert!(
+        m.to.iter().any(|r| r.contains("Dana")),
+        "To line is To, not Cc: {:?}",
+        m.to
+    );
+    assert!(
+        m.cc.iter().any(|r| r.contains("Legal")),
+        "Cc line is Cc, not folded into To: {:?}",
+        m.cc
+    );
+    assert!(
+        !m.to.iter().any(|r| r.contains("Legal")),
+        "Cc must not appear on To: {:?}",
+        m.to
+    );
     assert!(m.attachments.is_empty(), "this message carries no files");
+}
+
+#[test]
+fn thread_detail_keeps_every_cc_on_its_own_line() {
+    let (_d, mut store, blobs, account) = setup();
+    let raw = format!(
+        "From: Sam Ortiz <sam@vendorco.example>\r\n\
+         To: me@example.com\r\n\
+         Cc: one@example.com, two@example.com, three@example.com, \
+four@example.com, five@example.com\r\n\
+         Subject: Many copies\r\n\
+         Message-ID: <detail-cc-5@x>\r\n\
+         Date: {}\r\n\r\nbody text\r\n",
+        httpdate(T0)
+    );
+    let ing = store
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(inboxed(&store, account)),
+            None,
+            raw.as_bytes(),
+        )
+        .unwrap();
+    let tid = store
+        .thread_of(ing.message_id)
+        .unwrap()
+        .unwrap_or(-ing.message_id);
+    let m = &store.thread_detail(tid).unwrap()[0];
+    assert_eq!(
+        m.cc,
+        [
+            "one@example.com",
+            "two@example.com",
+            "three@example.com",
+            "four@example.com",
+            "five@example.com"
+        ]
+    );
+    assert_eq!(m.to, ["me@example.com"]);
+}
+
+#[test]
+fn thread_detail_keeps_stacked_cc_headers() {
+    let (_d, mut store, blobs, account) = setup();
+    let raw = format!(
+        "From: Sam Ortiz <sam@vendorco.example>\r\n\
+         To: me@example.com\r\n\
+         Cc: first@example.com\r\n\
+         Cc: second@example.com\r\n\
+         Subject: Stacked copies\r\n\
+         Message-ID: <detail-cc-stack@x>\r\n\
+         Date: {}\r\n\r\nbody text\r\n",
+        httpdate(T0)
+    );
+    let ing = store
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(inboxed(&store, account)),
+            None,
+            raw.as_bytes(),
+        )
+        .unwrap();
+    let tid = store
+        .thread_of(ing.message_id)
+        .unwrap()
+        .unwrap_or(-ing.message_id);
+    let m = &store.thread_detail(tid).unwrap()[0];
+    assert_eq!(m.cc, ["first@example.com", "second@example.com"]);
 }
 
 #[test]

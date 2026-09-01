@@ -25,6 +25,7 @@ import { Picker, type PickerOption } from './components/Picker';
 import { Compose, addresses, type Draft } from './components/Compose';
 import { snoozeOptions } from './lib/snooze';
 import { promisesMissingAttachment } from './lib/compose-checks';
+import { draftFromRecord } from './lib/draft-record';
 import { replyTargets } from './lib/reply';
 import { forwardBody, replyBody } from './lib/quote';
 import { dropMeaning } from './lib/dnd';
@@ -714,14 +715,7 @@ export function App() {
     try {
       const d = await api.loadDraft(id);
       attachmentWarned.current = false;
-      setDraft({
-        to: d.to,
-        cc: '',
-        subject: d.subject,
-        body: d.body,
-        html: d.html,
-        savedId: d.id,
-      });
+      setDraft(draftFromRecord(d));
       // Asked as the draft opens, not at save time: the person is about to
       // continue from one of two versions, and should choose before typing
       // into the wrong one. The data layer kept both; that is what makes
@@ -2038,7 +2032,7 @@ export function App() {
             setPicker(null);
             if (!d) return;
             void api
-              .saveDraft(d.savedId ?? null, d.to, d.subject, d.body, d.html)
+              .saveDraft(d.savedId ?? null, d.to, d.subject, d.body, d.html, envelopeOf(d))
               .then((saved) => api.scheduleSend(saved, id))
               .then(() => {
                 setDraft(null);

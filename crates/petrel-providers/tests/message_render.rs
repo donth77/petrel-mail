@@ -69,6 +69,37 @@ fn recipients_include_cc_because_the_envelope_needs_them() {
     assert_eq!(m.recipients(), vec!["you@example.com", "cc@example.com"]);
 }
 
+/// Sent-folder ingest parses Cc with mail-parser, which only kept the last
+/// header when we wrote one Cc: line per address. Every recipient has to
+/// survive the round trip.
+#[test]
+fn many_cc_addresses_survive_render_and_parse() {
+    let cc_addrs = [
+        "cc-one@example.com",
+        "cc-two@example.com",
+        "cc-three@example.com",
+        "cc-four@example.com",
+        "cc-five@example.com",
+    ];
+    let mut m = base();
+    m.cc = cc_addrs.iter().map(|a| (*a).into()).collect();
+
+    let (_, bytes) = m.render("example.com");
+    let raw = text(&bytes);
+
+    // One Cc field with a comma-separated list — not five stacked headers.
+    let cc_line_count = raw
+        .lines()
+        .filter(|line| line.starts_with("Cc:") || line.starts_with("CC:"))
+        .count();
+    assert_eq!(cc_line_count, 1, "expected one Cc header line, got:\n{raw}");
+    assert!(raw.contains("Cc:"), "Cc header missing:\n{raw}");
+
+    let parsed = petrel_mime::parse_message(&bytes).expect("parses");
+    let got: Vec<&str> = parsed.cc.iter().map(|(_, addr)| addr.as_str()).collect();
+    assert_eq!(got, cc_addrs, "Cc round-trip lost addresses");
+}
+
 #[test]
 fn a_non_ascii_subject_survives_the_trip() {
     let mut m = base();
