@@ -160,6 +160,30 @@ fn the_message_id_is_kept_across_states() {
 }
 
 #[test]
+fn an_interrupted_transmit_is_held_for_a_person() {
+    // Transmitting is not due, and the UI has no button for it. A process
+    // that died mid-SMTP would otherwise leave the row there forever. The
+    // body may already have gone, so this is NeedsAttention rather than a
+    // retry the engine cannot prove safe.
+    let store = Store::open_in_memory().unwrap();
+    let account = store.ensure_test_account().unwrap();
+    let id = queued(&store, account, 1_000);
+    store
+        .set_send_state(id, SendState::Transmitting, None, None, Some("<m@x>"))
+        .unwrap();
+    assert!(store.due_sends(account, i64::MAX).unwrap().is_empty());
+
+    assert_eq!(store.recover_interrupted_sends().unwrap(), 1);
+    assert!(store.due_sends(account, i64::MAX).unwrap().is_empty());
+    let rows = store.outbox(account).unwrap();
+    assert_eq!(rows[0].state, "NeedsAttention");
+    assert_eq!(
+        store.conn_query_send_message_id(id).unwrap().as_deref(),
+        Some("<m@x>")
+    );
+}
+
+#[test]
 fn the_clock_knows_when_to_wake() {
     // The drain is not clock-driven on its own: it runs when a triage action
     // asks or when the sync comes round, and with IDLE the sync sleeps until

@@ -359,6 +359,25 @@ impl Store {
             .flatten())
     }
 
+    /// A send that was in flight when the process died is an unknown outcome.
+    ///
+    /// `Transmitting` is not on `due_sends`'s allow-list, and the outbox row
+    /// offers no button for it, so a crash mid-SMTP left the message stuck
+    /// forever with no way out. The body may already have been accepted; a
+    /// silent retry could deliver it twice. Held for a person, the same way
+    /// a dropped acknowledgement is.
+    pub fn recover_interrupted_sends(&self) -> Result<usize> {
+        let n = self.conn.execute(
+            "UPDATE messages
+                SET send_state = 'NeedsAttention',
+                    send_error = 'interrupted before Petrel heard back'
+              WHERE send_after_ms IS NOT NULL
+                AND send_state = 'Transmitting'",
+            [],
+        )?;
+        Ok(n)
+    }
+
     /// Puts a message back on the queue to go at once, whatever state it was
     /// in. This is "Send now", "Try now" and "Send anyway": the person has
     /// looked and decided, which is the only thing that may move a message out
