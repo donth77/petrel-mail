@@ -359,6 +359,24 @@ impl Store {
             .flatten())
     }
 
+    /// A send that died while `Transmitting` is held for a person.
+    ///
+    /// `Transmitting` is not on `due_sends`'s allow-list, and the outbox row
+    /// offers no button for it, so a crash mid-SMTP left the message stuck
+    /// forever with no way out. `NeedsAttention` is the honest leftover:
+    /// we do not know whether the server accepted it.
+    pub fn recover_interrupted_sends(&self) -> Result<usize> {
+        let n = self.conn.execute(
+            "UPDATE messages
+                SET send_state = 'NeedsAttention',
+                    send_error = 'interrupted before Petrel heard back'
+              WHERE send_after_ms IS NOT NULL
+                AND send_state = 'Transmitting'",
+            [],
+        )?;
+        Ok(n)
+    }
+
     /// Puts a message back on the queue to go at once, whatever state it was
     /// in. This is "Send now", "Try now" and "Send anyway": the person has
     /// looked and decided, which is the only thing that may move a message out

@@ -1,12 +1,37 @@
 //! Sending: one attempt at a time, the outbox clock that schedules them, and the reconciliation that decides what an uncertain outcome was.
 
 use crate::commands::compose::guess_content_type;
-use crate::config::{imap_config, smtp_config_for};
+use crate::config::{imap_config_from_env, imap_config_from_servers};
 use crate::diag::log_sync;
 use crate::state::{AppState, now_ms};
 use crate::sync::drafts::drop_server_draft_using;
+use petrel_engine::store::Store;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::{MutexGuard, TryLockError};
+
+/// The store lock, without pinning a tokio worker on `Mutex::lock`.
+///
+/// Ingest and backfill hold this lock across FTS and fsync. A send that
+/// blocked on `lock()` sat in `Transmitting` with no SMTP socket and no
+/// timeout, because the worker was stuck in the kernel and could not poll
+/// the SMTP deadlines. Yielding between tries lets those deadlines run, and
+/// lets the inbox keep answering.
+async fn wait_store(state: &AppState) -> Option<MutexGuard<'_, Store>> {
+    for i in 0..500 {
+        match state.store.try_lock() {
+            Ok(g) => return Some(g),
+            Err(TryLockError::Poisoned(p)) => return Some(p.into_inner()),
+            Err(TryLockError::WouldBlock) => {}
+        }
+        if i == 0 {
+            log_sync("outbox: store is busy, waiting");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    log_sync("outbox: store stayed busy");
+    None
+}
 
 /// Wakes the drain worker when a queued message's time comes.
 ///
@@ -23,6 +48,17 @@ use std::sync::atomic::Ordering;
 /// the rung, not a minute late.
 pub(crate) fn spawn_outbox_clock(state: Arc<AppState>, account: i64) {
     tauri::async_runtime::spawn(async move {
+        {
+            let recovered = wait_store(&state)
+                .await
+                .and_then(|s| s.recover_interrupted_sends().ok())
+                .unwrap_or(0);
+            if recovered > 0 {
+                log_sync(&format!(
+                    "recovered {recovered} send(s) interrupted in-flight"
+                ));
+            }
+        }
         loop {
             let next = state
                 .store
@@ -91,6 +127,7 @@ fn cfg_password(cfg: &petrel_providers::imap::ImapConfig) -> &str {
 async fn attempt(
     state: &Arc<AppState>,
     account: i64,
+    cfg: &petrel_providers::imap::ImapConfig,
     to: Vec<String>,
     cc: Vec<String>,
     subject: String,
@@ -101,17 +138,17 @@ async fn attempt(
     attachments: Vec<String>,
 ) -> Result<Attempt, String> {
     use petrel_engine::outbox::AttemptOutcome;
-    use petrel_providers::smtp::{Attachment, Outgoing, SendResult, SmtpConfig, send_tls};
+    use petrel_providers::smtp::{Attachment, Outgoing, SendResult, SmtpConfig, send_tls_with};
 
-    let cfg = imap_config(state, account).ok_or("no account is configured")?;
-    // The SMTP host the account was set up with. Derived from the IMAP host
-    // only for the environment-driven account, which has no record of its own.
-    let smtp = state
-        .store
-        .lock()
-        .ok()
-        .and_then(|st| smtp_config_for(&st, account))
-        .unwrap_or_else(|| SmtpConfig::for_imap_host(&cfg.host, &cfg.user, cfg_password(&cfg)));
+    log_sync("outbox: assembling");
+    // Servers under the lock, password after it drops: a keychain consent
+    // dialog must not pin every other command behind the store.
+    let servers = wait_store(state)
+        .await
+        .and_then(|st| st.account_servers(account).ok().flatten());
+    let smtp = servers
+        .and_then(|s| crate::config::smtp_config_from_servers(account, s))
+        .unwrap_or_else(|| SmtpConfig::for_imap_host(&cfg.host, &cfg.user, cfg_password(cfg)));
     let domain = cfg
         .user
         .split('@')
@@ -120,7 +157,9 @@ async fn attempt(
         .to_string();
 
     let identity = {
-        let store = state.store()?;
+        let store = wait_store(state)
+            .await
+            .ok_or("could not read the account while the mailbox is busy")?;
         store.identity(account).ok()
     };
     // Read here rather than shuttled through the bridge. A 20MB file becomes a
@@ -155,9 +194,16 @@ async fn attempt(
     if msg.recipients().is_empty() {
         return Err("a message needs at least one recipient".into());
     }
-    let (message_id, raw) = msg.render(&domain);
+    let (message_id, raw) =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| msg.render(&domain)))
+            .map_err(|_| "could not assemble the message".to_string())?;
 
-    let (outcome, detail) = match send_tls(&smtp, &msg, &raw).await {
+    log_sync(&format!("outbox: connecting smtp :{}", smtp.port));
+    let (outcome, detail) = match send_tls_with(&smtp, &msg, &raw, |s| {
+        log_sync(&format!("outbox: smtp {s}"));
+    })
+    .await
+    {
         SendResult::Committed { response } => (AttemptOutcome::Accepted, response),
         SendResult::RejectedPermanently { response } => {
             log_sync(&format!("send rejected: {response}"));
@@ -191,18 +237,30 @@ async fn attempt(
 
     // Filed second, and separately: a failure here has not lost the message.
     let sent_path = {
-        let store = state.store()?;
-        store
-            .folder_for_role(account, "sent")
-            .ok()
-            .flatten()
-            .and_then(|fid| store.folder_path(fid).ok().flatten())
+        let store = wait_store(state).await;
+        store.and_then(|store| {
+            store
+                .folder_for_role(account, "sent")
+                .ok()
+                .flatten()
+                .and_then(|fid| store.folder_path(fid).ok().flatten())
+        })
     };
-    if let Some(path) = sent_path
-        && let Err(e) =
-            petrel_providers::imap::append_message(&cfg, &path, Some("(\\Seen)"), &raw).await
-    {
-        log_sync(&format!("sent, but could not file a copy in {path}: {e}"));
+    if let Some(path) = sent_path {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            petrel_providers::imap::append_message(cfg, &path, Some("(\\Seen)"), &raw),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                log_sync(&format!("sent, but could not file a copy in {path}: {e}"));
+            }
+            Err(_) => {
+                log_sync(&format!("sent, but filing a copy in {path} timed out"));
+            }
+        }
     }
     log_sync(&format!("sent {message_id}"));
     Ok(Attempt {
@@ -249,18 +307,12 @@ pub(crate) async fn sent_folder_evidence(
     message_id: &str,
 ) -> petrel_engine::outbox::ServerEvidence {
     use petrel_engine::outbox::ServerEvidence;
-    let sent = state
-        .store
-        .lock()
-        .ok()
-        .and_then(|s| s.folder_for_role(account, "sent").ok().flatten())
-        .and_then(|fid| {
-            state
-                .store
-                .lock()
-                .ok()
-                .and_then(|s| s.folder_path(fid).ok().flatten())
-        });
+    let sent = wait_store(state).await.and_then(|s| {
+        s.folder_for_role(account, "sent")
+            .ok()
+            .flatten()
+            .and_then(|fid| s.folder_path(fid).ok().flatten())
+    });
     let Some(path) = sent else {
         // No Sent folder known for this account: there is nowhere to look.
         return ServerEvidence::Indeterminate;
@@ -286,7 +338,7 @@ pub(crate) async fn send_due(state: Arc<AppState>, account: i64) {
     use petrel_engine::outbox::{AttemptOutcome, SendState, ServerEvidence, reconcile};
 
     let due = {
-        let Ok(store) = state.store.lock() else {
+        let Some(store) = wait_store(&state).await else {
             return;
         };
         store.due_sends(account, now_ms()).unwrap_or_default()
@@ -295,13 +347,30 @@ pub(crate) async fn send_due(state: Arc<AppState>, account: i64) {
         return;
     }
     log_sync(&format!("{} queued message(s) due", due.len()));
-    let Some(cfg) = imap_config(&state, account) else {
+    let cfg = {
+        let servers = wait_store(&state)
+            .await
+            .and_then(|s| s.account_servers(account).ok().flatten());
+        servers
+            .and_then(|s| imap_config_from_servers(account, s))
+            .or_else(imap_config_from_env)
+    };
+    let Some(cfg) = cfg else {
+        log_sync("outbox: no account configured, leaving the queue as-is");
         return;
     };
 
     for d in due {
         let id = d.id;
-        if let Ok(store) = state.store.lock() {
+        // Claim first. If the store stays busy we leave the row queued rather
+        // than transmit without a durable Transmitting mark, or mark it and
+        // then fail to start SMTP. The guard must die before the next await:
+        // MutexGuard is not Send.
+        {
+            let Some(store) = wait_store(&state).await else {
+                log_sync("outbox: store stayed busy, leaving the row queued");
+                continue;
+            };
             let _ = store.set_send_state(id, SendState::Transmitting, None, None, None);
         }
         let to: Vec<String> =
@@ -310,10 +379,8 @@ pub(crate) async fn send_due(state: Arc<AppState>, account: i64) {
                 .filter(|a| !a.is_empty())
                 .collect();
         let attempts = {
-            state
-                .store
-                .lock()
-                .ok()
+            wait_store(&state)
+                .await
                 .and_then(|s| s.outbox(account).ok())
                 .and_then(|rows| rows.into_iter().find(|r| r.id == id).map(|r| r.attempts))
                 .unwrap_or(0)
@@ -330,6 +397,7 @@ pub(crate) async fn send_due(state: Arc<AppState>, account: i64) {
         let result = attempt(
             &state,
             account,
+            &cfg,
             to,
             cc,
             d.subject,
@@ -361,9 +429,15 @@ pub(crate) async fn send_due(state: Arc<AppState>, account: i64) {
             ServerEvidence::Indeterminate
         };
         let next = reconcile(outcome, evidence);
+        log_sync(&format!("outbox: outcome {next:?}"));
 
-        let Ok(store) = state.store.lock() else {
-            continue;
+        // Must not leave Transmitting with no buttons. Keep asking until the
+        // store is free, then write the real outcome rather than guessing.
+        let store = loop {
+            if let Some(store) = wait_store(&state).await {
+                break store;
+            }
+            log_sync("outbox: could not record the send outcome, retrying");
         };
         match next {
             SendState::Sent => {
