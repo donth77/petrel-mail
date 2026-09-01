@@ -34,6 +34,11 @@ pub(crate) struct AppState {
     /// signal put SMTP behind every pending IMAP STORE/MOVE — observed live
     /// as two minutes of "still in the outbox" while fifteen actions drained.
     pub(crate) send_signal: Arc<tokio::sync::Notify>,
+    /// Aborts the outbox clock's sleep so it re-reads the next due time.
+    /// A new schedule used to land while the clock was in a 60s empty-outbox
+    /// nap, so the undo window expired and nothing sent until someone pressed
+    /// Send now.
+    pub(crate) clock_signal: Arc<tokio::sync::Notify>,
     /// One drain at a time. Two overlapping passes would both read the same
     /// queued rows and deliver each change twice.
     pub(crate) draining: AtomicBool,
@@ -78,6 +83,13 @@ pub(crate) struct AppState {
 }
 
 impl AppState {
+    /// A send was queued or marked due. Wake the worker, and the clock so it
+    /// sleeps until the new time rather than finishing an empty-outbox nap.
+    pub(crate) fn wake_send(&self) {
+        self.send_signal.notify_one();
+        self.clock_signal.notify_one();
+    }
+
     /// The store, or the one error every command reports when the lock is
     /// poisoned — a panic on another thread while it held the store.
     pub(crate) fn store(&self) -> Result<std::sync::MutexGuard<'_, Store>, String> {

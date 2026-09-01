@@ -212,7 +212,7 @@ pub fn respond_invitation(
             .map_err(|e| e.to_string())?;
         id
     };
-    state.send_signal.notify_one();
+    state.wake_send();
     log_sync(&format!(
         "invitation {message_id} answered {partstat}; reply queued as draft {draft_id}"
     ));

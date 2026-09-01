@@ -30,7 +30,7 @@ pub fn outbox_send_now(id: i64, state: State<Arc<AppState>>) -> Result<(), Strin
         store.resend_now(id, now_ms()).map_err(|e| e.to_string())?;
     }
     // Wake the send worker so "now" means now, not the next drain.
-    state.send_signal.notify_one();
+    state.wake_send();
     Ok(())
 }
 
@@ -74,7 +74,7 @@ pub async fn outbox_check(id: i64, state: State<'_, Arc<AppState>>) -> Result<St
         }
         SendState::RetryQueued => {
             let _ = store.resend_now(id, now_ms());
-            state.send_signal.notify_one();
+            state.wake_send();
         }
         _ => {}
     }

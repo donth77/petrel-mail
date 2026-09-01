@@ -62,9 +62,10 @@ pub(crate) fn spawn_send_worker(state: Arc<AppState>, account: i64) {
 /// still untouched at t+64s.
 ///
 /// Sleeps to the exact instant rather than polling, so an empty outbox costs
-/// nothing. The one-minute cap is for the clock being wrong — a laptop lid
-/// closed through the scheduled time — not for accuracy: the send happens on
-/// the rung, not a minute late.
+/// nothing. A new schedule aborts that sleep via `clock_signal` — without
+/// it, a send queued during the empty-outbox nap waited until the nap
+/// ended, or until someone pressed Send now. The one-minute cap is for the
+/// clock being wrong — a laptop lid closed through the scheduled time.
 pub(crate) fn spawn_outbox_clock(state: Arc<AppState>, account: i64) {
     tauri::async_runtime::spawn(async move {
         {
@@ -79,17 +80,18 @@ pub(crate) fn spawn_outbox_clock(state: Arc<AppState>, account: i64) {
             }
         }
         loop {
-            let next = state
-                .store
-                .lock()
-                .ok()
+            let next = wait_store(&state)
+                .await
                 .and_then(|s| s.next_due_ms(account).ok())
                 .flatten();
             let wait_ms = match next {
                 Some(at) => (at - now_ms()).clamp(0, 60_000),
                 None => 60_000,
             };
-            tokio::time::sleep(std::time::Duration::from_millis(wait_ms as u64)).await;
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_millis(wait_ms as u64)) => {}
+                _ = state.clock_signal.notified() => continue,
+            }
             if next.is_some_and(|at| at <= now_ms()) {
                 state.send_signal.notify_one();
                 // Give the send worker its head before asking again, or this

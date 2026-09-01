@@ -137,6 +137,7 @@ pub fn run() {
         sync_error: Mutex::new(None),
         drain_signal: Arc::new(tokio::sync::Notify::new()),
         send_signal: Arc::new(tokio::sync::Notify::new()),
+        clock_signal: Arc::new(tokio::sync::Notify::new()),
         draining: AtomicBool::new(false),
         sending: AtomicBool::new(false),
         draft_dirty: Mutex::new(std::collections::HashSet::new()),
