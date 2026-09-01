@@ -81,6 +81,11 @@ export function useThreadWindow(args: {
   error: string | null;
   hasMore: boolean;
   loadMore: () => void;
+  /** Bumps when the loaded window is replaced (view, query, sort, account)
+   *  or when the first mail lands in an empty list. Paging and new mail at
+   *  the head do not bump it — the highlight must not jump just because
+   *  the array is new. */
+  replaceEpoch: number;
 } {
   const { query, view, sort, accountEpoch, messageCount, fetchers } = args;
 
@@ -109,6 +114,7 @@ export function useThreadWindow(args: {
 
   const loadMoreInFlight = useRef(false);
   const messageCountRef = useRef(messageCount);
+  const [replaceEpoch, setReplaceEpoch] = useState(0);
 
   // Replace the window when the mailbox, query, sort, or account changes.
   useEffect(() => {
@@ -123,6 +129,7 @@ export function useThreadWindow(args: {
           setError(null);
           setItems(rows);
           setHasMore(more);
+          setReplaceEpoch((n) => n + 1);
           setLoading(false);
         })
         .catch((err: unknown) => {
@@ -161,7 +168,10 @@ export function useThreadWindow(args: {
         if (!live) return;
         const wasEmpty = itemsRef.current.length === 0;
         setItems((cur) => mergeHead(cur, rows));
-        if (wasEmpty) setHasMore(rows.length === LIST_PAGE);
+        if (wasEmpty) {
+          setHasMore(rows.length === LIST_PAGE);
+          setReplaceEpoch((n) => n + 1);
+        }
       })
       .catch((err: unknown) => {
         if (!live) return;
@@ -205,5 +215,5 @@ export function useThreadWindow(args: {
       });
   }, []);
 
-  return { items, setItems, loading, error, hasMore, loadMore };
+  return { items, setItems, loading, error, hasMore, loadMore, replaceEpoch };
 }

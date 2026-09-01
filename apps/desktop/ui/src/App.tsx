@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   api,
+  type ActionKind,
   type Folder,
   type OutboxRow,
   type Status,
@@ -117,7 +118,7 @@ export function App() {
     () => ({ threads: api.threads, search: api.search }),
     [],
   );
-  const { items, setItems, loading, error, loadMore } = useThreadWindow({
+  const { items, setItems, loading, error, loadMore, replaceEpoch } = useThreadWindow({
     query,
     view,
     sort: activeSort,
@@ -197,13 +198,15 @@ export function App() {
     };
   }, []);
 
-  // Highlight and selection follow the loaded window. A full replace (view
-  // change, search) may drop the current row; paging and new mail at the
-  // top must not steal the highlight just because the array is new.
+  // Highlight and selection follow a replaced window (view, query, sort,
+  // account, or the first mail into an empty list). Paging and new mail at
+  // the head keep the same highlight; those only change `items`.
   useEffect(() => {
     setActiveId((cur) => (items.some((r) => r.id === cur) ? cur : (items[0]?.id ?? null)));
     setSelected((cur) => (cur.size === 0 ? cur : prune(cur, items.map((r) => r.id))));
-  }, [items]);
+    // `items` is the array from the render that bumped replaceEpoch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [replaceEpoch]);
 
   // A new query starts at the top.
   //
@@ -697,7 +700,7 @@ export function App() {
   };
 
   /** Reopens a saved draft in the composer. */
-  const resumeDraft = async (id: number) => {
+  const resumeDraft = useCallback(async (id: number) => {
     try {
       const d = await api.loadDraft(id);
       attachmentWarned.current = false;
@@ -718,7 +721,68 @@ export function App() {
     } catch (e) {
       setToast(t('compose-resume-failed', { error: String(e) }));
     }
-  };
+  }, [locale]);
+
+  const onToggleSelect = useCallback((id: number) => {
+    setSelected((cur) => toggle(cur, id));
+    setAnchor(id);
+  }, []);
+
+  const onActivate = useCallback(
+    (id: number, mods: { toggle: boolean; range: boolean }) => {
+      // Cmd/ctrl adds or removes one; shift reaches back to where the
+      // selection started. Neither opens the conversation — picking
+      // several and having the last one fill the reading pane is how
+      // you accidentally mark something read while gathering a batch.
+      if (mods.toggle) {
+        setSelected((cur) => toggle(cur, id));
+        setAnchor(id);
+        return;
+      }
+      if (mods.range) {
+        setSelected((cur) => extend(cur, items.map((m) => m.id), anchor, id));
+        return;
+      }
+      // A plain click is "just this one", so it puts a selection away
+      // rather than quietly acting on rows still held from before.
+      if (selected.size > 0) setSelected(new Set());
+      setAnchor(id);
+      setActiveId(id);
+      // In Drafts, selecting one means resuming it. Showing an
+      // unfinished message in a reading pane is showing it to the
+      // person who wrote it, in the one form they cannot edit.
+      if (view === 'drafts') void resumeDraft(id);
+    },
+    [items, anchor, selected, view, resumeDraft],
+  );
+
+  const onListAction = useCallback(
+    (kind: ActionKind, threadId: number) => {
+      void triage.run(kind, threadId);
+    },
+    [triage.run],
+  );
+
+  const onSnoozeRow = useCallback((threadId: number) => {
+    setActiveId(threadId);
+    setPicker('snooze');
+  }, []);
+
+  const onRowContextMenu = useCallback(
+    (id: number, x: number, y: number) => {
+      // Right-clicking inside a selection acts on all of it; on a row
+      // outside one, the selection is dropped and only that row is in
+      // play. Anything else and the menu would quietly act on rows the
+      // user was no longer pointing at.
+      if (!selected.has(id)) {
+        setSelected(new Set());
+        setAnchor(null);
+        setActiveId(id);
+      }
+      setRowMenu({ id, x, y });
+    },
+    [selected],
+  );
 
   /** Settles a draft conflict the chosen way and shows it in the composer. */
   const settleDraftConflict = async (takeServer: boolean) => {
@@ -1772,56 +1836,16 @@ export function App() {
             items={items}
             activeId={activeId}
             selected={selected}
-            onToggleSelect={(id) => {
-              setSelected((cur) => toggle(cur, id));
-              setAnchor(id);
-            }}
+            onToggleSelect={onToggleSelect}
             density={settings.density}
             checkboxes={settings.checkboxes === 'on'}
-            onActivate={(id, mods) => {
-              // Cmd/ctrl adds or removes one; shift reaches back to where the
-              // selection started. Neither opens the conversation — picking
-              // several and having the last one fill the reading pane is how
-              // you accidentally mark something read while gathering a batch.
-              if (mods.toggle) {
-                setSelected((cur) => toggle(cur, id));
-                setAnchor(id);
-                return;
-              }
-              if (mods.range) {
-                setSelected((cur) => extend(cur, items.map((m) => m.id), anchor, id));
-                return;
-              }
-              // A plain click is "just this one", so it puts a selection away
-              // rather than quietly acting on rows still held from before.
-              if (selected.size > 0) setSelected(new Set());
-              setAnchor(id);
-              setActiveId(id);
-              // In Drafts, selecting one means resuming it. Showing an
-              // unfinished message in a reading pane is showing it to the
-              // person who wrote it, in the one form they cannot edit.
-              if (view === 'drafts') void resumeDraft(id);
-            }}
-            onAction={(kind, threadId) => void triage.run(kind, threadId)}
-            onSnooze={(threadId) => {
-              setActiveId(threadId);
-              setPicker('snooze');
-            }}
+            onActivate={onActivate}
+            onAction={onListAction}
+            onSnooze={onSnoozeRow}
             onDragStart={startDrag}
             dropRow={drag?.overRow ?? null}
             onNearEnd={loadMore}
-            onContextMenu={(id, x, y) => {
-              // Right-clicking inside a selection acts on all of it; on a row
-              // outside one, the selection is dropped and only that row is in
-              // play. Anything else and the menu would quietly act on rows the
-              // user was no longer pointing at.
-              if (!selected.has(id)) {
-                setSelected(new Set());
-                setAnchor(null);
-                setActiveId(id);
-              }
-              setRowMenu({ id, x, y });
-            }}
+            onContextMenu={onRowContextMenu}
           />
         )}
 

@@ -1,5 +1,13 @@
-import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
-import { Composite, CompositeItem, useCompositeStore } from '@ariakit/react';
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { Composite, CompositeItem, useCompositeStore, type CompositeStore } from '@ariakit/react';
 import { useVirtualizer, defaultRangeExtractor, type Range } from '@tanstack/react-virtual';
 import { Archive, Check, Clock, Mail, MailOpen, Paperclip, Star } from 'lucide-react';
 import type { ActionKind, Thread } from '../lib/api';
@@ -8,7 +16,13 @@ import { initials, listTime, fullTime } from '../lib/format';
 import { t } from '../lib/strings';
 import { Tip } from './Tip';
 import { key } from '../lib/keys';
-import { shouldRequestNextPage } from '../lib/list-page';
+import {
+  CHIP_ROW,
+  COMPACT_ROW,
+  RELAXED_ROW,
+  prependScrollDelta,
+  shouldRequestNextPage,
+} from '../lib/list-page';
 
 type Props = {
   items: Thread[];
@@ -40,6 +54,33 @@ type Props = {
   ) => void;
 };
 
+type MessageRowProps = {
+  thread: Thread;
+  virtualIndex: number;
+  start: number;
+  itemCount: number;
+  density: 'relaxed' | 'compact';
+  checkboxes: boolean;
+  isActive: boolean;
+  isSelected: boolean;
+  dropOver: boolean;
+  scrolling: boolean;
+  measureRef?: (el: Element | null) => void;
+  store: CompositeStore;
+  selected: ReadonlySet<number>;
+  onToggleSelect: (id: number) => void;
+  onActivate: (id: number, mods: { toggle: boolean; range: boolean }) => void;
+  onContextMenu: (threadId: number, x: number, y: number) => void;
+  onDragStart: (
+    e: React.PointerEvent,
+    rowId: number,
+    selected: ReadonlySet<number>,
+    subject: string,
+  ) => void;
+  onAction: (kind: ActionKind, threadId: number) => void;
+  onSnooze: (threadId: number) => void;
+};
+
 /** Marks up the engine's match markers as search hits.
  *
  * U+E000 and U+E001, not square brackets. Brackets are ordinary text in mail —
@@ -59,6 +100,302 @@ function Snippet({ text }: { text: string }) {
     </>
   );
 }
+
+const MessageRow = memo(function MessageRow({
+  thread: m,
+  virtualIndex,
+  start,
+  itemCount,
+  density,
+  checkboxes,
+  isActive,
+  isSelected,
+  dropOver,
+  scrolling,
+  measureRef,
+  store: composite,
+  selected,
+  onToggleSelect,
+  onActivate,
+  onContextMenu,
+  onDragStart,
+  onAction,
+  onSnooze,
+}: MessageRowProps) {
+  const [hovered, setHovered] = useState(false);
+  useEffect(() => {
+    if (scrolling) setHovered(false);
+  }, [scrolling]);
+  const showQuickActions = !scrolling && (hovered || isActive);
+
+  return (
+    <CompositeItem
+      store={composite}
+      id={`msg-${m.id}`}
+      role="option"
+      aria-selected={isActive}
+      // The whole point of these two: 30 rows are in the DOM out of
+      // 100,000, so without them a screen reader says "3 of 30" while
+      // the user is at message 4,187.
+      aria-setsize={itemCount}
+      aria-posinset={virtualIndex + 1}
+      aria-label={t('a11y-row', {
+        unread: m.unread ? t('a11y-unread-prefix') : '',
+        from: m.from_display || m.from_addr,
+        subject: m.subject || '(no subject)',
+        time: fullTime(m.date_ms),
+      })}
+      className="row"
+      data-active={isActive || undefined}
+      data-selected={isSelected || undefined}
+      data-unread={m.unread}
+      data-index={virtualIndex}
+      // A tag can be dropped here. The drag hit-tests for this, so the
+      // row does not listen for anything itself.
+      data-drop-row={m.id}
+      data-drop-over={dropOver || undefined}
+      ref={measureRef}
+      style={{ transform: `translateY(${start}px)` }}
+      onClick={(e: React.MouseEvent) => {
+        // Keep the composite's notion of "current" in step with the
+        // click, so the keyboard carries on from where the pointer left.
+        composite.setActiveId(`msg-${m.id}`);
+        onActivate(m.id, {
+          toggle: e.metaKey || e.ctrlKey,
+          range: e.shiftKey,
+        });
+      }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        composite.setActiveId(`msg-${m.id}`);
+        onContextMenu(m.id, e.clientX, e.clientY);
+      }}
+      // A press that travels far enough becomes a drag; anything
+      // shorter stays a click. The hook decides which, so the row does
+      // not have to know the threshold.
+      onPointerDown={(e) => onDragStart(e, m.id, selected, m.subject || '(no subject)')}
+      onPointerEnter={() => setHovered(true)}
+      onPointerLeave={() => setHovered(false)}
+    >
+      {/* The unread dot has its own grid column, so a read row does not
+          shift its avatar and text leftward to fill the gap. With the
+          checkbox column on it leaves the flow entirely — see the CSS. */}
+      <span className="row-dot" aria-hidden="true">
+        {m.unread && <span className="unread-dot" />}
+      </span>
+
+      {/* Compact has no avatar to click, so with the column off there
+          is nothing here to select with — which is exactly why the
+          checkbox has to render in both densities. A setting that
+          silently does nothing in one of them is worse than no
+          setting. */}
+      {density === 'compact' && checkboxes && (
+        <span
+          role="checkbox"
+          tabIndex={-1}
+          aria-checked={isSelected}
+          aria-label={t('list-select-row')}
+          className="row-check"
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleSelect(m.id);
+          }}
+        >
+          {isSelected && <Icon icon={Check} size={11} />}
+        </span>
+      )}
+      {density === 'compact' ? (
+        // Compact is a different row, not relaxed with things hidden:
+        // no avatar, one line, fixed-width sender and time so the
+        // subjects align into a column the eye can run down.
+        <span className="crow">
+          <span className="crow-from clip">
+            {m.message_count > 1 && m.participants
+              ? m.participants
+              : m.from_display || m.from_addr}
+          </span>
+          {/* Siblings, not inline children: an inline icon inside the
+              subject grows that span's line box and makes the row taller
+              than the density it is named for. */}
+          {m.starred && <Icon icon={Star} size={11} className="ic-star flat" />}
+          <span className="crow-subject clip">{m.subject || '(no subject)'}</span>
+          {m.attachment_name && <Icon icon={Paperclip} size={11} className="ic-clip" />}
+          {m.message_count > 1 && <span className="thread-count">{m.message_count}</span>}
+          <span className="crow-time">{listTime(m.date_ms)}</span>
+        </span>
+      ) : (
+        <>
+          {/* With the column on, the checkbox is the selection target
+              and the avatar goes back to being an avatar. Two targets
+              for one job is worse than either alone. */}
+          {checkboxes && (
+            <span
+              role="checkbox"
+              tabIndex={-1}
+              aria-checked={isSelected}
+              aria-label={t('list-select-row')}
+              className="row-check"
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleSelect(m.id);
+              }}
+            >
+              {isSelected && <Icon icon={Check} size={11} />}
+            </span>
+          )}
+          <span
+            className={checkboxes ? 'avatar' : 'avatar selectable'}
+            aria-hidden="true"
+            onClick={
+              checkboxes
+                ? undefined
+                : (e) => {
+                    e.stopPropagation();
+                    onToggleSelect(m.id);
+                  }
+            }
+          >
+            {!checkboxes && isSelected ? (
+              <Icon icon={Check} size={14} />
+            ) : (
+              initials(m.from_display, m.from_addr)
+            )}
+          </span>
+          <span className="row-main">
+            <span className="row-top">
+              {/* Participants once a conversation has more than one voice —
+                  "who is in this" matters more than "who spoke last". */}
+              <span className="row-from clip">
+                {m.message_count > 1 && m.participants
+                  ? m.participants
+                  : m.from_display || m.from_addr}
+              </span>
+              {m.message_count > 1 && <span className="thread-count">{m.message_count}</span>}
+              <span className="row-time">{listTime(m.date_ms)}</span>
+            </span>
+            <span className="row-subject clip">
+              {m.starred && <Icon icon={Star} size={12} className="ic-star" />}
+              {m.subject || '(no subject)'}
+            </span>
+            <span className="row-snippet clip">
+              {/* Why it matched, when it came from a search. The
+                  ordinary opening line is the same on every row and
+                  cannot say what the result was answering. */}
+              <Snippet text={m.match_snippet ?? m.snippet} />
+            </span>
+            {(m.attachment_name || m.tags.length > 0) && (
+              <span className="row-chips">
+                {m.attachment_name && (
+                  <span className="rchip">
+                    <Icon icon={Paperclip} size={10} />
+                    <span className="clip">{m.attachment_name}</span>
+                  </span>
+                )}
+                {/* The tag's colour rides a swatch and the border, not
+                    the text. It is the user's colour and can be any
+                    colour at all — as text at 10px it is a contrast
+                    failure waiting to happen (a red tag measured
+                    3.1:1), and the rail already solved this the same
+                    way. */}
+                {m.tags.map((tag) => (
+                  <span
+                    key={tag.name}
+                    className="rchip"
+                    style={tag.colour ? { borderColor: tag.colour } : undefined}
+                  >
+                    {tag.colour && (
+                      <span
+                        className="rchip-dot"
+                        style={{ background: tag.colour }}
+                        aria-hidden="true"
+                      />
+                    )}
+                    {tag.name}
+                  </span>
+                ))}
+              </span>
+            )}
+          </span>
+        </>
+      )}
+
+      {showQuickActions && (
+        <>
+          {/* Spans, not buttons: the row is already a button and nesting
+              interactive elements is invalid and unreachable by keyboard.
+              These are pointer affordances for what E, B and the palette
+              already do, so they are hidden from assistive tech.
+
+              Three, not four. The bar overlays the row's trailing edge, and
+              a fourth icon covered 37% of a 430px row — burying the
+              timestamp. "More" was the one to drop: its only job was to
+              open the palette, which already has its own shortcut and is a
+              first-class surface in this app. The reader header, which has
+              room, keeps it. */}
+          {/* Hidden from assistive technology on purpose: every verb here
+              has a key, and announcing three more controls on every row
+              would treble what a screen reader reads to reach the next
+              message. Hidden and focusable together is the one
+              combination to avoid, though — it puts a stop in the tab
+              order that nothing can name — so each is taken out of the
+              tab order below. The tooltip wrapper is what would
+              otherwise put them in it. */}
+          <span className="row-actions" aria-hidden="true">
+            {/* stopPropagation, or the click also lands on the row behind
+                and selects the conversation we are about to archive. */}
+            <Tip label={t('qact-archive')} keys={['E']}>
+              <span
+                className="qact"
+                tabIndex={-1}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onAction('archive', m.id);
+                }}
+              >
+                <Icon icon={Archive} size={14} />
+              </span>
+            </Tip>
+            {/* Second, not last: this is a triage verb, not an overflow
+                item. The icon names the *action* — an open envelope on an
+                unread row means "mark this read" — which is how Gmail and
+                Outlook read, and it stays in the same place whichever
+                direction you are going. A clickable unread dot cannot do
+                that: on a read row there is no dot to click, so the one
+                direction that matters — flagging something to come back
+                to — would have no target at all. */}
+            <Tip
+              label={m.unread ? t('qact-mark-read') : t('qact-mark-unread')}
+              keys={[m.unread ? key('read') : key('unread')]}
+            >
+              <span
+                className="qact"
+                tabIndex={-1}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onAction(m.unread ? 'mark_read' : 'mark_unread', m.id);
+                }}
+              >
+                <Icon icon={m.unread ? MailOpen : Mail} size={14} />
+              </span>
+            </Tip>
+            <Tip label={t('qact-snooze')} keys={['B']}>
+              <span
+                className="qact"
+                tabIndex={-1}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSnooze(m.id);
+                }}
+              >
+                <Icon icon={Clock} size={14} />
+              </span>
+            </Tip>
+          </span>
+        </>
+      )}
+    </CompositeItem>
+  );
+});
 
 export const MessageList = memo(function MessageList({
   items,
@@ -85,9 +422,6 @@ export const MessageList = memo(function MessageList({
     focusLoop: false,
   });
 
-  // An estimate only — rows carry chips when they have attachments or tags, so
-  // real heights vary and the virtualizer measures each mounted row.
-  const rowHeight = density === 'compact' ? 30 : 74;
   const idIndex = useMemo(() => new Map(items.map((m, i) => [m.id, i])), [items]);
   const activeIndex = activeId == null ? -1 : (idIndex.get(activeId) ?? -1);
 
@@ -104,21 +438,58 @@ export const MessageList = memo(function MessageList({
     [activeIndex],
   );
 
+  const estimateSize = useCallback(
+    (index: number) => {
+      if (density === 'compact') return COMPACT_ROW;
+      const item = items[index];
+      if (!item) return RELAXED_ROW;
+      if (item.attachment_name || item.tags.length > 0) return CHIP_ROW;
+      return RELAXED_ROW;
+    },
+    [density, items],
+  );
+
+  const getItemKey = useCallback(
+    (index: number) => items[index]?.id ?? index,
+    [items],
+  );
+
   const virtualizer = useVirtualizer({
     count: items.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => rowHeight,
+    estimateSize,
     // Identity for the measurement cache. Without it, measured heights are
     // cached by *index*: remove one row and every later row wears its old
     // neighbour's height — a gap and an overlap right where the dragged
     // conversation used to sit.
-    getItemKey: (index) => items[index]?.id ?? index,
+    getItemKey,
     overscan: 8,
     rangeExtractor,
-    ...(density === 'relaxed'
-      ? { measureElement: (el: Element) => el.getBoundingClientRect().height }
-      : {}),
+    // First-measure on upward scroll used to flushSync the whole tree inside
+    // ResizeObserver; async commit lets the browser paint between measures.
+    useFlushSync: false,
   });
+
+  const isScrolling = virtualizer.isScrolling;
+
+  const previousHeadIdRef = useRef<number | undefined>(items[0]?.id);
+
+  useLayoutEffect(() => {
+    const scroller = scrollRef.current;
+    if (!scroller) {
+      previousHeadIdRef.current = items[0]?.id;
+      return;
+    }
+    const rowHeight = density === 'compact' ? COMPACT_ROW : RELAXED_ROW;
+    const delta = prependScrollDelta({
+      previousHeadId: previousHeadIdRef.current,
+      items,
+      scrollTop: scroller.scrollTop,
+      rowHeight,
+    });
+    if (delta > 0) scroller.scrollTop += delta;
+    previousHeadIdRef.current = items[0]?.id;
+  }, [items, density]);
 
   // Movement lives here rather than in Ariakit's composite navigation, because
   // the app needs to know the selection changed — moving the highlight without
@@ -253,6 +624,7 @@ export const MessageList = memo(function MessageList({
       aria-label={t('a11y-message-list')}
       className={`scroller density-${density}`}
       ref={scrollRef}
+      data-scrolling={isScrolling || undefined}
     >
       <div
         className="rows"
@@ -267,272 +639,28 @@ export const MessageList = memo(function MessageList({
           const m = items[v.index];
           if (!m) return null;
           return (
-            <CompositeItem
+            <MessageRow
               key={m.id}
+              thread={m}
+              virtualIndex={v.index}
+              start={v.start}
+              itemCount={items.length}
+              density={density}
+              checkboxes={checkboxes}
+              isActive={m.id === activeId}
+              isSelected={selected.has(m.id)}
+              dropOver={dropRow === m.id}
+              scrolling={isScrolling}
+              measureRef={density === 'relaxed' ? virtualizer.measureElement : undefined}
               store={composite}
-              id={`msg-${m.id}`}
-              role="option"
-              aria-selected={m.id === activeId}
-              // The whole point of these two: 30 rows are in the DOM out of
-              // 100,000, so without them a screen reader says "3 of 30" while
-              // the user is at message 4,187.
-              aria-setsize={items.length}
-              aria-posinset={v.index + 1}
-              aria-label={t('a11y-row', {
-                unread: m.unread ? t('a11y-unread-prefix') : '',
-                from: m.from_display || m.from_addr,
-                subject: m.subject || '(no subject)',
-                time: fullTime(m.date_ms),
-              })}
-              className="row"
-              data-active={m.id === activeId}
-              data-selected={selected.has(m.id) || undefined}
-              data-unread={m.unread}
-              data-index={v.index}
-              // A tag can be dropped here. The drag hit-tests for this, so the
-              // row does not listen for anything itself.
-              data-drop-row={m.id}
-              data-drop-over={dropRow === m.id || undefined}
-              ref={density === 'relaxed' ? virtualizer.measureElement : undefined}
-              style={{ transform: `translateY(${v.start}px)` }}
-              onClick={(e: React.MouseEvent) => {
-                // Keep the composite's notion of "current" in step with the
-                // click, so the keyboard carries on from where the pointer left.
-                composite.setActiveId(`msg-${m.id}`);
-                onActivate(m.id, {
-                  toggle: e.metaKey || e.ctrlKey,
-                  range: e.shiftKey,
-                });
-              }}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                composite.setActiveId(`msg-${m.id}`);
-                onContextMenu(m.id, e.clientX, e.clientY);
-              }}
-              // A press that travels far enough becomes a drag; anything
-              // shorter stays a click. The hook decides which, so the row does
-              // not have to know the threshold.
-              onPointerDown={(e) =>
-                onDragStart(e, m.id, selected, m.subject || '(no subject)')
-              }
-            >
-              {/* The unread dot has its own grid column, so a read row does not
-                  shift its avatar and text leftward to fill the gap. With the
-                  checkbox column on it leaves the flow entirely — see the CSS. */}
-              <span className="row-dot" aria-hidden="true">
-                {m.unread && <span className="unread-dot" />}
-              </span>
-
-              {/* Compact has no avatar to click, so with the column off there
-                  is nothing here to select with — which is exactly why the
-                  checkbox has to render in both densities. A setting that
-                  silently does nothing in one of them is worse than no
-                  setting. */}
-              {density === 'compact' && checkboxes && (
-                <span
-                  role="checkbox"
-                  tabIndex={-1}
-                  aria-checked={selected.has(m.id)}
-                  aria-label={t('list-select-row')}
-                  className="row-check"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onToggleSelect(m.id);
-                  }}
-                >
-                  {selected.has(m.id) && <Icon icon={Check} size={11} />}
-                </span>
-              )}
-              {density === 'compact' ? (
-                // Compact is a different row, not relaxed with things hidden:
-                // no avatar, one line, fixed-width sender and time so the
-                // subjects align into a column the eye can run down.
-                <span className="crow">
-                  <span className="crow-from clip">
-                    {m.message_count > 1 && m.participants
-                      ? m.participants
-                      : m.from_display || m.from_addr}
-                  </span>
-                  {/* Siblings, not inline children: an inline icon inside the
-                      subject grows that span's line box and makes the row taller
-                      than the density it is named for. */}
-                  {m.starred && <Icon icon={Star} size={11} className="ic-star flat" />}
-                  <span className="crow-subject clip">{m.subject || '(no subject)'}</span>
-                  {m.attachment_name && <Icon icon={Paperclip} size={11} className="ic-clip" />}
-                  {m.message_count > 1 && (
-                    <span className="thread-count">{m.message_count}</span>
-                  )}
-                  <span className="crow-time">{listTime(m.date_ms)}</span>
-                </span>
-              ) : (
-                <>
-                  {/* With the column on, the checkbox is the selection target
-                      and the avatar goes back to being an avatar. Two targets
-                      for one job is worse than either alone. */}
-                  {checkboxes && (
-                    <span
-                      role="checkbox"
-                      tabIndex={-1}
-                      aria-checked={selected.has(m.id)}
-                      aria-label={t('list-select-row')}
-                      className="row-check"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onToggleSelect(m.id);
-                      }}
-                    >
-                      {selected.has(m.id) && <Icon icon={Check} size={11} />}
-                    </span>
-                  )}
-                  <span
-                    className={checkboxes ? 'avatar' : 'avatar selectable'}
-                    aria-hidden="true"
-                    onClick={
-                      checkboxes
-                        ? undefined
-                        : (e) => {
-                            e.stopPropagation();
-                            onToggleSelect(m.id);
-                          }
-                    }
-                  >
-                    {!checkboxes && selected.has(m.id) ? (
-                      <Icon icon={Check} size={14} />
-                    ) : (
-                      initials(m.from_display, m.from_addr)
-                    )}
-                  </span>
-                  <span className="row-main">
-                    <span className="row-top">
-                      {/* Participants once a conversation has more than one voice —
-                          "who is in this" matters more than "who spoke last". */}
-                      <span className="row-from clip">
-                        {m.message_count > 1 && m.participants
-                          ? m.participants
-                          : m.from_display || m.from_addr}
-                      </span>
-                      {m.message_count > 1 && (
-                        <span className="thread-count">{m.message_count}</span>
-                      )}
-                      <span className="row-time">{listTime(m.date_ms)}</span>
-                    </span>
-                    <span className="row-subject clip">
-                      {m.starred && <Icon icon={Star} size={12} className="ic-star" />}
-                      {m.subject || '(no subject)'}
-                    </span>
-                    <span className="row-snippet clip">
-                      {/* Why it matched, when it came from a search. The
-                          ordinary opening line is the same on every row and
-                          cannot say what the result was answering. */}
-                      <Snippet text={m.match_snippet ?? m.snippet} />
-                    </span>
-                    {(m.attachment_name || m.tags.length > 0) && (
-                      <span className="row-chips">
-                        {m.attachment_name && (
-                          <span className="rchip">
-                            <Icon icon={Paperclip} size={10} />
-                            <span className="clip">{m.attachment_name}</span>
-                          </span>
-                        )}
-                        {/* The tag's colour rides a swatch and the border, not
-                            the text. It is the user's colour and can be any
-                            colour at all — as text at 10px it is a contrast
-                            failure waiting to happen (a red tag measured
-                            3.1:1), and the rail already solved this the same
-                            way. */}
-                        {m.tags.map((tag) => (
-                          <span
-                            key={tag.name}
-                            className="rchip"
-                            style={tag.colour ? { borderColor: tag.colour } : undefined}
-                          >
-                            {tag.colour && (
-                              <span
-                                className="rchip-dot"
-                                style={{ background: tag.colour }}
-                                aria-hidden="true"
-                              />
-                            )}
-                            {tag.name}
-                          </span>
-                        ))}
-                      </span>
-                    )}
-                  </span>
-                </>
-              )}
-
-              {/* Spans, not buttons: the row is already a button and nesting
-                  interactive elements is invalid and unreachable by keyboard.
-                  These are pointer affordances for what E, B and the palette
-                  already do, so they are hidden from assistive tech.
-
-                  Three, not four. The bar overlays the row's trailing edge, and
-                  a fourth icon covered 37% of a 430px row — burying the
-                  timestamp. "More" was the one to drop: its only job was to
-                  open the palette, which already has its own shortcut and is a
-                  first-class surface in this app. The reader header, which has
-                  room, keeps it. */}
-              {/* Hidden from assistive technology on purpose: every verb here
-                  has a key, and announcing three more controls on every row
-                  would treble what a screen reader reads to reach the next
-                  message. Hidden and focusable together is the one
-                  combination to avoid, though — it puts a stop in the tab
-                  order that nothing can name — so each is taken out of the
-                  tab order below. The tooltip wrapper is what would
-                  otherwise put them in it. */}
-              <span className="row-actions" aria-hidden="true">
-                {/* stopPropagation, or the click also lands on the row behind
-                    and selects the conversation we are about to archive. */}
-                <Tip label={t('qact-archive')} keys={['E']}>
-                  <span
-                    className="qact"
-                    tabIndex={-1}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onAction('archive', m.id);
-                    }}
-                  >
-                    <Icon icon={Archive} size={14} />
-                  </span>
-                </Tip>
-                {/* Second, not last: this is a triage verb, not an overflow
-                    item. The icon names the *action* — an open envelope on an
-                    unread row means "mark this read" — which is how Gmail and
-                    Outlook read, and it stays in the same place whichever
-                    direction you are going. A clickable unread dot cannot do
-                    that: on a read row there is no dot to click, so the one
-                    direction that matters — flagging something to come back
-                    to — would have no target at all. */}
-                <Tip
-                  label={m.unread ? t('qact-mark-read') : t('qact-mark-unread')}
-                  keys={[m.unread ? key('read') : key('unread')]}
-                >
-                  <span
-                    className="qact"
-                    tabIndex={-1}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onAction(m.unread ? 'mark_read' : 'mark_unread', m.id);
-                    }}
-                  >
-                    <Icon icon={m.unread ? MailOpen : Mail} size={14} />
-                  </span>
-                </Tip>
-                <Tip label={t('qact-snooze')} keys={['B']}>
-                  <span
-                    className="qact"
-                    tabIndex={-1}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onSnooze(m.id);
-                    }}
-                  >
-                    <Icon icon={Clock} size={14} />
-                  </span>
-                </Tip>
-              </span>
-            </CompositeItem>
+              selected={selected}
+              onToggleSelect={onToggleSelect}
+              onActivate={onActivate}
+              onContextMenu={onContextMenu}
+              onDragStart={onDragStart}
+              onAction={onAction}
+              onSnooze={onSnooze}
+            />
           );
         })}
       </div>
