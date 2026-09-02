@@ -54,6 +54,7 @@ reader-reply-all = Responder a todos
 reader-forward = Encaminhar
 reader-failed = Não foi possível abrir esta conversa
 reader-to = para { $who }
+reader-cc = Cc { $who }
 reader-collapse = Recolher a mensagem de { $who }
 msg-reply = Responder a esta mensagem
 msg-reply-all = Responder a todos nesta mensagem

@@ -54,6 +54,7 @@ reader-reply-all = 全員に返信
 reader-forward = 転送
 reader-failed = このスレッドを開けませんでした
 reader-to = 宛先 { $who }
+reader-cc = Cc { $who }
 reader-collapse = { $who } からのメッセージを折りたたむ
 msg-reply = このメッセージに返信
 msg-reply-all = このメッセージの全員に返信

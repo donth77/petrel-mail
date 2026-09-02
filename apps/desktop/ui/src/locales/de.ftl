@@ -53,6 +53,7 @@ reader-reply-all = Allen antworten
 reader-forward = Weiterleiten
 reader-failed = Diese Konversation konnte nicht geöffnet werden
 reader-to = an { $who }
+reader-cc = Kopie { $who }
 reader-collapse = Nachricht von { $who } einklappen
 msg-reply = Auf diese Nachricht antworten
 msg-reply-all = Allen auf diese Nachricht antworten

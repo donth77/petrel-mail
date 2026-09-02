@@ -110,6 +110,10 @@ export type ThreadMessage = {
   snippet: string;
   date_ms: number;
   unread: boolean;
+  /** To, display names. */
+  to: string[];
+  /** Cc, display names. Empty when the message copied nobody. */
+  cc: string[];
   recipients: string[];
   recipient_addrs: string[];
   attachments: Attachment[];
@@ -170,15 +174,23 @@ export type Account = {
   folders: FolderMapping[];
 };
 
+export type DraftEnvelope = {
+  in_reply_to: string | null;
+  references: string[];
+  attachments: string[];
+};
+
 export type DraftRecord = {
   id: number;
   to: string;
+  cc: string;
   subject: string;
   /** Plain text: the snippet, the search index, and the text half that is sent. */
   body: string;
   /** The rich half; empty for a draft written before there was one. */
   html: string;
-};;
+  envelope: DraftEnvelope;
+};
 
 export type Identity = {
   address: string;
@@ -440,7 +452,15 @@ const mock = {
   }),
   setIdentity: async () => {},
   saveDraft: async () => 1,
-  loadDraft: async (): Promise<DraftRecord> => ({ id: 1, to: '', subject: '', body: '', html: '' }),
+  loadDraft: async (): Promise<DraftRecord> => ({
+    id: 1,
+    to: '',
+    cc: '',
+    subject: '',
+    body: '',
+    html: '',
+    envelope: { in_reply_to: null, references: [], attachments: [] },
+  }),
   deleteDraft: async () => {},
   scheduleSend: async () => {},
   popoutCompose: async () => {},
@@ -570,6 +590,7 @@ const mock = {
       id: 1, from_display: 'Dana Wu', from_addr: 'dana@northbay.example',
       subject: 'Q3 vendor contracts', snippet: 'Sending the draft ahead of Friday so you both have time…',
       date_ms: Date.now() - 3 * 86400000, unread: false,
+      to: ['Sam Ortiz', 'me'], cc: [],
       recipients: ['Sam Ortiz', 'me'], recipient_addrs: ['sam@example.com', 'you@example.com'], attachments: [],
       has_calendar: false, invite_response: null,
     },
@@ -577,6 +598,7 @@ const mock = {
       id: 2, from_display: 'Sam Ortiz', from_addr: 'sam@vendorco.example',
       subject: 'Re: Q3 vendor contracts', snippet: 'I have marked up section 4…',
       date_ms: Date.now() - 90 * 60000, unread: true,
+      to: ['Dana Wu', 'me'], cc: [],
       recipients: ['Dana Wu', 'me'],
       recipient_addrs: ['dana@example.com', 'you@example.com'],
       attachments: [

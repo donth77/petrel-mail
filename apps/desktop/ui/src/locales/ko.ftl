@@ -89,6 +89,7 @@ reader-reply-all = 전체 답장
 reader-forward = 전달
 reader-failed = 이 대화를 열 수 없습니다
 reader-to = { $who }에게
+reader-cc = 참조 { $who }
 reader-collapse = { $who }의 메시지 접기
 msg-reply = 이 메시지에 답장
 msg-reply-all = 이 메시지에 전체 답장

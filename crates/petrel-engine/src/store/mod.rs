@@ -171,7 +171,12 @@ pub struct ThreadMessage {
     pub snippet: String,
     pub date_ms: i64,
     pub unread: bool,
-    /// Display names, for reading — "to Sam Ortiz, Dana Wu".
+    /// To, display names — the reading pane's "to" line.
+    pub to: Vec<String>,
+    /// Cc, display names. Empty when the message copied nobody.
+    pub cc: Vec<String>,
+    /// Display names, To then Cc — "to Sam Ortiz, Dana Wu". Reply-all still
+    /// walks this combined list so original To people are not left off.
     pub recipients: Vec<String>,
     /// The same people as addresses, for replying to them. Kept separate
     /// because a reply-all built from display names sends to nobody.

@@ -304,11 +304,14 @@ impl Outgoing {
             });
         }
 
-        for addr in &self.to {
-            b = b.to(addr.as_str());
+        // One header per field. mail-builder appends a line on every call, and
+        // mail-parser keeps only the last — so a per-address loop drops every
+        // recipient but one after Sent-folder ingest.
+        if !self.to.is_empty() {
+            b = b.to(self.to.iter().map(|s| s.as_str()).collect::<Vec<_>>());
         }
-        for addr in &self.cc {
-            b = b.cc(addr.as_str());
+        if !self.cc.is_empty() {
+            b = b.cc(self.cc.iter().map(|s| s.as_str()).collect::<Vec<_>>());
         }
         if let Some(parent) = &self.in_reply_to {
             b = b.in_reply_to(parent.as_str());

@@ -52,6 +52,7 @@ export const STRING_IDS = [
   'reader-forward',
   'reader-failed',
   'reader-to',
+  'reader-cc',
   'reader-collapse',
   'msg-reply',
   'msg-reply-all',

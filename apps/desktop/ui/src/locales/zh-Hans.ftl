@@ -54,6 +54,7 @@ reader-reply-all = 回复全部
 reader-forward = 转发
 reader-failed = 无法打开此会话
 reader-to = 发给 { $who }
+reader-cc = 抄送 { $who }
 reader-collapse = 收起来自 { $who } 的邮件
 msg-reply = 回复此邮件
 msg-reply-all = 回复此邮件的全部收件人
