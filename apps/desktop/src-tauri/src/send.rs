@@ -41,9 +41,10 @@ async fn wait_store(state: &AppState) -> Option<MutexGuard<'_, Store>> {
 /// This worker is the other half of that split: triage still has its signal;
 /// a send wakes this one.
 pub(crate) fn spawn_send_worker(state: Arc<AppState>, account: i64) {
+    let signals = state.outbox_signals(account);
     tauri::async_runtime::spawn(async move {
         loop {
-            state.send_signal.notified().await;
+            signals.send.notified().await;
             // Two rows marked due a few milliseconds apart should be one pass.
             // Not the drain's 900ms: that is for triage bursts, and it is the
             // wait this worker exists to avoid.
@@ -62,23 +63,13 @@ pub(crate) fn spawn_send_worker(state: Arc<AppState>, account: i64) {
 /// still untouched at t+64s.
 ///
 /// Sleeps to the exact instant rather than polling, so an empty outbox costs
-/// nothing. A new schedule aborts that sleep via `clock_signal` — without
-/// it, a send queued during the empty-outbox nap waited until the nap
+/// nothing. A new schedule aborts that sleep via the account's clock signal —
+/// without it, a send queued during the empty-outbox nap waited until the nap
 /// ended, or until someone pressed Send now. The one-minute cap is for the
 /// clock being wrong — a laptop lid closed through the scheduled time.
 pub(crate) fn spawn_outbox_clock(state: Arc<AppState>, account: i64) {
+    let signals = state.outbox_signals(account);
     tauri::async_runtime::spawn(async move {
-        {
-            let recovered = wait_store(&state)
-                .await
-                .and_then(|s| s.recover_interrupted_sends().ok())
-                .unwrap_or(0);
-            if recovered > 0 {
-                log_sync(&format!(
-                    "recovered {recovered} send(s) interrupted in-flight"
-                ));
-            }
-        }
         loop {
             let next = wait_store(&state)
                 .await
@@ -90,10 +81,10 @@ pub(crate) fn spawn_outbox_clock(state: Arc<AppState>, account: i64) {
             };
             tokio::select! {
                 _ = tokio::time::sleep(std::time::Duration::from_millis(wait_ms as u64)) => {}
-                _ = state.clock_signal.notified() => continue,
+                _ = signals.clock.notified() => continue,
             }
             if next.is_some_and(|at| at <= now_ms()) {
-                state.send_signal.notify_one();
+                signals.send.notify_one();
                 // Give the send worker its head before asking again, or this
                 // loop sees the same due row and fires a second time for nothing.
                 tokio::time::sleep(std::time::Duration::from_millis(2_000)).await;
@@ -358,24 +349,10 @@ pub(crate) async fn sent_folder_evidence(
 pub(crate) async fn send_due(state: Arc<AppState>, account: i64) {
     use petrel_engine::outbox::{AttemptOutcome, SendState, ServerEvidence, reconcile};
 
-    // Two overlapping passes would both read the same due rows and transmit
-    // each twice. The loser returns; the caller that raised send_signal
-    // leaves a permit, so the worker comes back when this one drops.
-    if state
-        .sending
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        return;
-    }
-    struct SendingGuard(Arc<AppState>);
-    impl Drop for SendingGuard {
-        fn drop(&mut self) {
-            self.0.sending.store(false, Ordering::SeqCst);
-        }
-    }
-    let _guard = SendingGuard(Arc::clone(&state));
-
+    // One pass at a time per account, by construction: the account's send
+    // worker is the only caller, and it awaits each pass before taking the
+    // next wake-up. Two accounts may transmit at once; they hold different
+    // rows.
     let due = {
         let Some(store) = wait_store(&state).await else {
             return;

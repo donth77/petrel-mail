@@ -147,7 +147,7 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
         // Due mail goes out on the send worker while this drain runs. Waiting
         // until after drain_actions was the two-minute stall: Send now sat
         // behind fifteen IMAP actions.
-        state.send_signal.notify_one();
+        state.nudge_send(account);
 
         // Deliver before reading back. Draining first means the server's answer
         // already includes what the user did, so the fetch below confirms local
@@ -169,7 +169,7 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
         // waiting for whatever next wakes the worker. Notify, do not await:
         // send_due used to sit behind this drain, and a backlog of triage
         // made "Send now" look like the outbox had ignored the click.
-        state.send_signal.notify_one();
+        state.nudge_send(account);
 
         // One connection, one STATUS line per folder, fetch only what moved.
         // A relaunch over a warm store downloads nothing it already holds.
@@ -369,7 +369,7 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
                 account_is_gmail(&cfg),
             )
             .await;
-            state.send_signal.notify_one();
+            state.nudge_send(account);
             if sweeping {
                 tend_the_bin(&state, account).await;
                 if reconciled.elapsed() >= reconcile_every {

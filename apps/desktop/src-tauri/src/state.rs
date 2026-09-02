@@ -29,22 +29,17 @@ pub(crate) struct AppState {
     /// come round — which, with IDLE holding a connection open, could be
     /// twenty minutes.
     pub(crate) drain_signal: Arc<tokio::sync::Notify>,
-    /// Raised when a queued send should go now. Send now, the outbox clock,
-    /// and a scheduled send wake this; triage does not. Sharing the drain
-    /// signal put SMTP behind every pending IMAP STORE/MOVE — observed live
-    /// as two minutes of "still in the outbox" while fifteen actions drained.
-    pub(crate) send_signal: Arc<tokio::sync::Notify>,
-    /// Aborts the outbox clock's sleep so it re-reads the next due time.
-    /// A new schedule used to land while the clock was in a 60s empty-outbox
-    /// nap, so the undo window expired and nothing sent until someone pressed
-    /// Send now.
-    pub(crate) clock_signal: Arc<tokio::sync::Notify>,
+    /// One pair of outbox wake-ups per account, registered by the account's
+    /// sync when it starts. A single shared `Notify` looked simpler and was
+    /// wrong with two accounts: `notify_one` wakes whichever worker is first
+    /// in the queue, so a send queued on the other account waited for its
+    /// clock to nag. Per account, a wake is a permit for exactly the worker
+    /// that owns the row, and a worker mid-send finds it waiting when it
+    /// comes back.
+    pub(crate) outbox: Mutex<Vec<Arc<OutboxSignals>>>,
     /// One drain at a time. Two overlapping passes would both read the same
     /// queued rows and deliver each change twice.
     pub(crate) draining: AtomicBool,
-    /// One `send_due` at a time. Two overlapping passes would both claim the
-    /// same row and transmit it twice.
-    pub(crate) sending: AtomicBool,
     /// Drafts edited since their last push to the server, for the 30-second
     /// debounce. A draft in here has exactly one push task sleeping on it.
     pub(crate) draft_dirty: Mutex<std::collections::HashSet<i64>>,
@@ -82,12 +77,56 @@ pub(crate) struct AppState {
     pub(crate) data_dir: String,
 }
 
+/// The wake-ups for one account's outbox: its send worker and its clock.
+pub(crate) struct OutboxSignals {
+    pub(crate) account: i64,
+    /// Raised when a queued send should go now. Send now, the outbox clock,
+    /// and a scheduled send wake this; triage does not. Sharing the drain
+    /// signal put SMTP behind every pending IMAP STORE/MOVE — observed live
+    /// as two minutes of "still in the outbox" while fifteen actions drained.
+    pub(crate) send: tokio::sync::Notify,
+    /// Aborts the outbox clock's sleep so it re-reads the next due time.
+    /// A new schedule used to land while the clock was in a 60s empty-outbox
+    /// nap, so the undo window expired and nothing sent until someone pressed
+    /// Send now.
+    pub(crate) clock: tokio::sync::Notify,
+}
+
 impl AppState {
-    /// A send was queued or marked due. Wake the worker, and the clock so it
-    /// sleeps until the new time rather than finishing an empty-outbox nap.
+    /// The outbox wake-ups for an account, made on first use. The send
+    /// worker and the clock both ask, so whichever spawns first creates them.
+    pub(crate) fn outbox_signals(&self, account: i64) -> Arc<OutboxSignals> {
+        let mut all = self.outbox.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(s) = all.iter().find(|s| s.account == account) {
+            return Arc::clone(s);
+        }
+        let s = Arc::new(OutboxSignals {
+            account,
+            send: tokio::sync::Notify::new(),
+            clock: tokio::sync::Notify::new(),
+        });
+        all.push(Arc::clone(&s));
+        s
+    }
+
+    /// A send was queued or marked due. Wake every account's worker, and its
+    /// clock so it sleeps until the new time rather than finishing an
+    /// empty-outbox nap. Every account rather than one: the callers hold a
+    /// draft id, not an account, and a pass over an empty queue is one SELECT.
     pub(crate) fn wake_send(&self) {
-        self.send_signal.notify_one();
-        self.clock_signal.notify_one();
+        for s in self.outbox.lock().unwrap_or_else(|p| p.into_inner()).iter() {
+            s.send.notify_one();
+            s.clock.notify_one();
+        }
+    }
+
+    /// The drain or the sync loop has finished with the server: anything that
+    /// became due meanwhile goes out on this account's worker.
+    pub(crate) fn nudge_send(&self, account: i64) {
+        let all = self.outbox.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(s) = all.iter().find(|s| s.account == account) {
+            s.send.notify_one();
+        }
     }
 
     /// The store, or the one error every command reports when the lock is

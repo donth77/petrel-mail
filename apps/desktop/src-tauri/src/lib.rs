@@ -136,10 +136,8 @@ pub fn run() {
         source: Mutex::new("starting…".into()),
         sync_error: Mutex::new(None),
         drain_signal: Arc::new(tokio::sync::Notify::new()),
-        send_signal: Arc::new(tokio::sync::Notify::new()),
-        clock_signal: Arc::new(tokio::sync::Notify::new()),
+        outbox: Mutex::new(Vec::new()),
         draining: AtomicBool::new(false),
-        sending: AtomicBool::new(false),
         draft_dirty: Mutex::new(std::collections::HashSet::new()),
         pending_notify: Mutex::new(Vec::new()),
         last_sync_ms: std::sync::atomic::AtomicI64::new(0),
@@ -205,6 +203,18 @@ pub fn run() {
             let account_ids = match state.store.lock() {
                 Ok(store) => {
                     adopt_store_identity(&store);
+                    // A send that was mid-SMTP when the app last quit is
+                    // still marked Transmitting, which nothing picks up and no
+                    // button moves. Held for a person here, before any worker
+                    // exists, so recovery cannot mistake a fresh attempt for
+                    // a stale one.
+                    match store.recover_interrupted_sends() {
+                        Ok(n) if n > 0 => {
+                            log_sync(&format!("recovered {n} send(s) interrupted in-flight"))
+                        }
+                        Ok(_) => {}
+                        Err(e) => log_sync(&format!("could not recover interrupted sends: {e}")),
+                    }
                     store.account_ids().unwrap_or_default()
                 }
                 Err(_) => Vec::new(),
