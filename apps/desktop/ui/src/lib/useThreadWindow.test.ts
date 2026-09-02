@@ -117,22 +117,47 @@ describe('appendPage', () => {
 });
 
 describe('mergeHead', () => {
-  it('prepends new threads and patches overlaps without dropping the tail', () => {
-    const tail = thread({ thread_id: 3, subject: 'old tail' });
-    const prev = [
-      thread({ thread_id: 2, subject: 'stale', unread: true }),
-      tail,
-    ];
-    const incoming = [
-      thread({ thread_id: 1, subject: 'brand new' }),
-      thread({ thread_id: 2, subject: 'fresh', unread: false }),
-    ];
-    const merged = mergeHead(prev, incoming);
-    expect(merged.map((t) => t.thread_id)).toEqual([1, 2, 3]);
-    expect(merged[0].subject).toBe('brand new');
-    expect(merged[1].subject).toBe('fresh');
+  const page = (ids: number[], first = 10_000) =>
+    ids.map((tid, i) => thread({ thread_id: tid, date_ms: first - i }));
+  const byDate = { byDate: true, ascending: false };
+
+  it('leads with the fresh page and keeps the tail it does not cover', () => {
+    const tail = thread({ thread_id: 300, subject: 'old tail', date_ms: 1 });
+    const prev = [thread({ thread_id: 2, subject: 'stale', unread: true, date_ms: 9_999 }), tail];
+    const incoming = page([1, 2, ...Array.from({ length: LIST_PAGE - 2 }, (_, i) => i + 3)]);
+    const merged = mergeHead(prev, incoming, byDate);
+    expect(merged.length).toBe(LIST_PAGE + 1);
+    expect(merged[0].thread_id).toBe(1);
+    expect(merged[1].subject).toBe('Subject');
     expect(merged[1].unread).toBe(false);
-    expect(merged[2]).toBe(tail);
+    expect(merged[merged.length - 1]).toBe(tail);
+  });
+
+  it('moves a conversation with a new reply to where the fresh page puts it', () => {
+    const prev = page([5, 6, 7]);
+    const incoming = page([7, 5, 6, ...Array.from({ length: LIST_PAGE - 3 }, (_, i) => i + 8)]);
+    const merged = mergeHead(prev, incoming, byDate);
+    expect(merged.slice(0, 3).map((t) => t.thread_id)).toEqual([7, 5, 6]);
+    expect(merged.filter((t) => t.thread_id === 7).length).toBe(1);
+  });
+
+  it('drops a tail row the fresh page should have covered, by date', () => {
+    const incoming = page(Array.from({ length: LIST_PAGE }, (_, i) => i + 1));
+    const edge = incoming[incoming.length - 1].date_ms;
+    const gone = thread({ thread_id: 900, date_ms: edge + 5 });
+    const kept = thread({ thread_id: 901, date_ms: edge - 5 });
+    const merged = mergeHead([gone, kept], incoming, byDate);
+    expect(merged.some((t) => t.thread_id === 900)).toBe(false);
+    expect(merged[merged.length - 1]).toBe(kept);
+    // Not by date: there is no range to judge by, so both stay.
+    const bySender = mergeHead([gone, kept], incoming, { byDate: false, ascending: false });
+    expect(bySender.length).toBe(LIST_PAGE + 2);
+  });
+
+  it('treats a short page as the whole view', () => {
+    const prev = page([1, 2, 3]);
+    const incoming = page([1, 3]);
+    expect(mergeHead(prev, incoming, byDate).map((t) => t.thread_id)).toEqual([1, 3]);
   });
 });
 

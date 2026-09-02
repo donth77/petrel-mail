@@ -32,13 +32,28 @@ export function replaceLoadHasMore(query: string, rowCount: number): boolean {
   return !query.trim() && rowCount === LIST_PAGE;
 }
 
-/** New mail at the head: prepend unseen threads, patch overlaps, keep the tail. */
-export function mergeHead(prev: Thread[], incoming: Thread[]): Thread[] {
-  const incomingByThread = new Map(incoming.map((t) => [t.thread_id, t]));
-  const seen = new Set(prev.map((t) => t.thread_id));
-  const prepend = incoming.filter((t) => !seen.has(t.thread_id));
-  const rest = prev.map((t) => incomingByThread.get(t.thread_id) ?? t);
-  return [...prepend, ...rest];
+/** The mailbox changed under a loaded window: fold in a fresh first page.
+ *
+ *  The fresh page is the truth for everything it covers, so it goes first in
+ *  its own order — a conversation that just gained a reply moves to the top
+ *  rather than sitting where it was with a new dot on it — and the rows it
+ *  covers leave their old places in the tail. A short page is the whole view,
+ *  so the tail goes with it. A full page, sorted by date, also says which
+ *  tail rows have gone: anything newer than its last row that it does not
+ *  list was deleted or filed elsewhere by another client. Other sorts have no
+ *  such range, so their tails are kept as they were. */
+export function mergeHead(
+  prev: Thread[],
+  incoming: Thread[],
+  order: { byDate: boolean; ascending: boolean } = { byDate: false, ascending: false },
+): Thread[] {
+  if (incoming.length < LIST_PAGE) return incoming;
+  const covered = new Set(incoming.map((t) => t.thread_id));
+  const edge = incoming[incoming.length - 1].date_ms;
+  const insidePage = (t: Thread) =>
+    order.byDate && (order.ascending ? t.date_ms < edge : t.date_ms > edge);
+  const rest = prev.filter((t) => !covered.has(t.thread_id) && !insidePage(t));
+  return [...incoming, ...rest];
 }
 
 export function appendPage(
@@ -153,13 +168,15 @@ export function useThreadWindow(args: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, view, sort, accountEpoch]);
 
-  // Strictly higher count with no search running: merge fresh rows at the head.
+  // A changed count with no search running: fold a fresh first page into
+  // the window. Up is new mail; down is something deleted elsewhere, and the
+  // row it left behind should go the same way.
   useEffect(() => {
     if (messageCount === undefined || query.trim()) return;
 
     const prev = messageCountRef.current;
     messageCountRef.current = messageCount;
-    if (prev === undefined || messageCount <= prev) return;
+    if (prev === undefined || messageCount === prev) return;
 
     let live = true;
     fetchersRef.current
@@ -167,7 +184,10 @@ export function useThreadWindow(args: {
       .then((rows) => {
         if (!live) return;
         const wasEmpty = itemsRef.current.length === 0;
-        setItems((cur) => mergeHead(cur, rows));
+        const sort = sortRef.current;
+        setItems((cur) =>
+          mergeHead(cur, rows, { byDate: sort.key === 'date', ascending: sort.ascending }),
+        );
         if (wasEmpty) {
           setHasMore(rows.length === LIST_PAGE);
           setReplaceEpoch((n) => n + 1);

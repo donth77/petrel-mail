@@ -808,3 +808,73 @@ fn a_small_folder_count_matches_its_list() {
             .len() as i64
     );
 }
+
+/// The cursor row may not be there any more: another client archived it,
+/// and the store learned so on the next sync. The next page still has to
+/// follow from where that row *was*, or the list ends early.
+#[test]
+fn a_list_page_follows_a_cursor_that_has_gone() {
+    use petrel_engine::store::Sort;
+    let mut store = Store::open_in_memory().unwrap();
+    let account = store.ensure_test_account().unwrap();
+    let msgs: Vec<NewMessage> = (0..8)
+        .map(|i| NewMessage {
+            account_id: account,
+            date_ms: 1_000 + i,
+            from_addr: "a@example.com".into(),
+            from_display: "A".into(),
+            to_addr: "me@example.com".into(),
+            subject: format!("m{i}"),
+            body_text: "body".into(),
+        })
+        .collect();
+    let ids = store.insert_messages(&msgs).unwrap();
+    inbox_all(&store, account, &ids);
+
+    let sort = Sort::default();
+    let all = store.list_threads(&ListView::Inbox, 0, 50, sort).unwrap();
+    let first = store.list_threads(&ListView::Inbox, 0, 3, sort).unwrap();
+    let cursor = &first[2];
+    store
+        .apply_thread_action(
+            account,
+            cursor.thread_id,
+            ActionKind::Archive,
+            None,
+            PlacementPolicy::Exclusive,
+        )
+        .unwrap();
+
+    let rest = store
+        .list_threads_after(&ListView::Inbox, 3, sort, cursor.date_ms, cursor.thread_id)
+        .unwrap();
+    assert_eq!(
+        rest.iter().map(|r| r.thread_id).collect::<Vec<_>>(),
+        all[3..6].iter().map(|r| r.thread_id).collect::<Vec<_>>(),
+        "the page after a vanished cursor is the page that followed it"
+    );
+
+    // Oldest first, the same cursor rule read the other way round.
+    let asc = Sort {
+        key: petrel_engine::store::SortKey::Date,
+        ascending: true,
+    };
+    let all_asc = store.list_threads(&ListView::Inbox, 0, 50, asc).unwrap();
+    let first_asc = store.list_threads(&ListView::Inbox, 0, 3, asc).unwrap();
+    let rest_asc = store
+        .list_threads_after(
+            &ListView::Inbox,
+            3,
+            asc,
+            first_asc[2].date_ms,
+            first_asc[2].thread_id,
+        )
+        .unwrap();
+    assert_eq!(
+        rest_asc.iter().map(|r| r.thread_id).collect::<Vec<_>>(),
+        all_asc[3..6]
+            .iter()
+            .map(|r| r.thread_id)
+            .collect::<Vec<_>>()
+    );
+}

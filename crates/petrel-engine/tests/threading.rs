@@ -853,3 +853,61 @@ fn gmail_thread_ids_are_authoritative_where_known() {
     // Idempotent: nothing left to move.
     assert_eq!(store.regroup_gmail_threads(account).expect("again"), 0);
 }
+
+/// The cursor conversation may have moved since the page was loaded: a reply
+/// lands and it jumps to the top. The next page must follow from where the
+/// conversation *was*, not from its new place — "after it" from the top is
+/// the whole mailbox again, and every row of that page is already on screen.
+#[test]
+fn a_list_page_follows_a_cursor_that_gained_a_reply() {
+    use petrel_engine::store::Sort;
+    let (_d, mut store, blobs, account) = setup();
+    let inbox = inboxed(&store, account);
+    for i in 0..6 {
+        let raw = mail(
+            &format!("root-{i}"),
+            &format!("Thread {i}"),
+            &[],
+            T0 + i * DAY,
+            "hi",
+        );
+        store
+            .ingest_raw(&blobs, account, Some(inbox), None, &raw)
+            .unwrap();
+    }
+    let sort = Sort::default();
+    let before = store.list_threads(&ListView::Inbox, 0, 50, sort).unwrap();
+    let first = store.list_threads(&ListView::Inbox, 0, 3, sort).unwrap();
+    let cursor = &first[2];
+    let followers: Vec<i64> = before[3..6].iter().map(|r| r.thread_id).collect();
+
+    // A reply to the cursor conversation, newer than everything.
+    let reply = mail(
+        "reply-1",
+        "Re: Thread 3",
+        &["root-3"],
+        T0 + 9 * DAY,
+        "and again",
+    );
+    store
+        .ingest_raw(&blobs, account, Some(inbox), None, &reply)
+        .unwrap();
+    let after = store.list_threads(&ListView::Inbox, 0, 50, sort).unwrap();
+    assert_eq!(
+        after[0].thread_id, cursor.thread_id,
+        "the reply moved it to the top"
+    );
+
+    let next = store
+        .list_threads_after(&ListView::Inbox, 3, sort, cursor.date_ms, cursor.thread_id)
+        .unwrap();
+    assert_eq!(
+        next.iter().map(|r| r.thread_id).collect::<Vec<_>>(),
+        followers,
+        "the next page is still the three conversations that followed the cursor"
+    );
+    assert!(
+        !next.iter().any(|r| r.thread_id == cursor.thread_id),
+        "the moved conversation is not served again"
+    );
+}

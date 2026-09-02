@@ -212,7 +212,7 @@ impl Store {
             SortKey::Date => {
                 let dir = if sort.ascending { "ASC" } else { "DESC" };
                 format!(
-                    "SELECT {key} FROM messages
+                    "SELECT {key}, date_ms FROM messages
                      WHERE deleted_at_ms IS NULL AND account_id = {account} AND {inner}
                      ORDER BY date_ms {dir}, {key} {dir}"
                 )
@@ -229,7 +229,7 @@ impl Store {
                     _ => "lower(coalesce(nullif(n.subject,''), ''))",
                 };
                 format!(
-                    "SELECT n.k FROM (
+                    "SELECT n.k, n.d FROM (
                        SELECT {key} AS k,
                               max(date_ms) AS d,
                               from_display, from_addr, subject
@@ -258,42 +258,72 @@ impl Store {
         let mut rows = stmt.query(rusqlite::params_from_iter(
             supplied.into_iter().take(wanted),
         ))?;
-        // A cursor names a row the caller already has. Walking continues after
-        // that conversation rather than from a numeric offset, so new mail
-        // prepended at the top does not shift every later page. Filtering the
-        // SQL by date would look cheaper and is wrong: an older message of an
-        // already-listed thread would masquerade as a new row.
-        let after = before.map(|(_, thread_id)| thread_id);
-        let want = if after.is_some() {
+        // A cursor names a row the caller already has. Walking continues past
+        // it rather than from a numeric offset, so new mail prepended at the
+        // top does not shift every later page. The walk still starts from the
+        // newest message: filtering the SQL by date would look cheaper and is
+        // wrong, because an older message of an already-listed conversation
+        // would masquerade as a new row. Every conversation met on the way
+        // down goes into `seen`, and that is what keeps it out of the page.
+        //
+        // By date the cursor is a *position*, `(date_ms, key)` compared the
+        // way the query sorts, and the page starts at the first row past it.
+        // Looking for the cursor row itself was the version before this one,
+        // and it stranded the list twice over: a conversation that gained a
+        // reply had moved to the top, so "after it" was the whole mailbox
+        // again and the page came back full of rows already on screen; one
+        // archived by another client was not there at all, and an empty page
+        // read as the end of the list. By sender or subject there is no
+        // position to compare, so those still look for the row.
+        let want = if before.is_some() {
             limit as usize
         } else {
             (offset as usize).saturating_add(limit as usize)
         };
         let mut seen: std::collections::HashSet<i64> = Default::default();
         let mut ordered: Vec<i64> = Vec::with_capacity(want.min(1024));
-        let mut skipping = after.is_some();
-        let mut found_cursor = after.is_none();
+        let mut skipping = before.is_some();
+        let mut found_cursor = before.is_none();
         while let Some(row) = rows.next()? {
             let k: i64 = row.get(0)?;
+            let d: i64 = row.get(1)?;
             if !seen.insert(k) {
                 continue;
             }
             if skipping {
-                if Some(k) == after {
-                    skipping = false;
-                    found_cursor = true;
+                match (sort.key, before) {
+                    (SortKey::Date, Some((cursor_d, cursor_k))) => {
+                        let past = if sort.ascending {
+                            (d, k) > (cursor_d, cursor_k)
+                        } else {
+                            (d, k) < (cursor_d, cursor_k)
+                        };
+                        if !past {
+                            continue;
+                        }
+                        // This row is the first of the page.
+                        skipping = false;
+                        found_cursor = true;
+                    }
+                    (_, Some((_, cursor_k))) => {
+                        if k == cursor_k {
+                            skipping = false;
+                            found_cursor = true;
+                        }
+                        continue;
+                    }
+                    (_, None) => unreachable!("skipping only with a cursor"),
                 }
-                continue;
             }
             ordered.push(k);
             if ordered.len() >= want {
                 break;
             }
         }
-        if after.is_some() && !found_cursor {
+        if before.is_some() && !found_cursor {
             return Ok(Vec::new());
         }
-        if after.is_some() {
+        if before.is_some() {
             return Ok(ordered);
         }
         Ok(ordered.into_iter().skip(offset as usize).collect())
