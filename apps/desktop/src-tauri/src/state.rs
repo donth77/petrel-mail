@@ -29,9 +29,22 @@ pub(crate) struct AppState {
     /// come round — which, with IDLE holding a connection open, could be
     /// twenty minutes.
     pub(crate) drain_signal: Arc<tokio::sync::Notify>,
+    /// Raised when a queued send should go now. Send now, the outbox clock,
+    /// and a scheduled send wake this; triage does not. Sharing the drain
+    /// signal put SMTP behind every pending IMAP STORE/MOVE — observed live
+    /// as two minutes of "still in the outbox" while fifteen actions drained.
+    pub(crate) send_signal: Arc<tokio::sync::Notify>,
+    /// Aborts the outbox clock's sleep so it re-reads the next due time.
+    /// A new schedule used to land while the clock was in a 60s empty-outbox
+    /// nap, so the undo window expired and nothing sent until someone pressed
+    /// Send now.
+    pub(crate) clock_signal: Arc<tokio::sync::Notify>,
     /// One drain at a time. Two overlapping passes would both read the same
     /// queued rows and deliver each change twice.
     pub(crate) draining: AtomicBool,
+    /// One `send_due` at a time. Two overlapping passes would both claim the
+    /// same row and transmit it twice.
+    pub(crate) sending: AtomicBool,
     /// Drafts edited since their last push to the server, for the 30-second
     /// debounce. A draft in here has exactly one push task sleeping on it.
     pub(crate) draft_dirty: Mutex<std::collections::HashSet<i64>>,
@@ -70,6 +83,13 @@ pub(crate) struct AppState {
 }
 
 impl AppState {
+    /// A send was queued or marked due. Wake the worker, and the clock so it
+    /// sleeps until the new time rather than finishing an empty-outbox nap.
+    pub(crate) fn wake_send(&self) {
+        self.send_signal.notify_one();
+        self.clock_signal.notify_one();
+    }
+
     /// The store, or the one error every command reports when the lock is
     /// poisoned — a panic on another thread while it held the store.
     pub(crate) fn store(&self) -> Result<std::sync::MutexGuard<'_, Store>, String> {

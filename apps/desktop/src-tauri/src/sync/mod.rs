@@ -5,7 +5,7 @@ pub(crate) mod drafts;
 pub(crate) mod drain;
 
 use crate::diag::{friendly_sync_error_for, is_imap_parse_error, log_sync};
-use crate::send::{send_due, spawn_outbox_clock};
+use crate::send::{spawn_outbox_clock, spawn_send_worker};
 use crate::state::{AppState, now_ms};
 use crate::sync::backfill::spawn_backfill;
 use crate::sync::drain::{drain_actions, spawn_drain_worker};
@@ -19,6 +19,7 @@ use std::sync::atomic::Ordering;
 pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
     spawn_drain_worker(Arc::clone(&state), account, cfg.clone());
     spawn_outbox_clock(Arc::clone(&state), account);
+    spawn_send_worker(Arc::clone(&state), account);
     tauri::async_runtime::spawn(async move {
         *state.source.lock().unwrap() = format!("syncing {}…", cfg.host);
 
@@ -143,6 +144,11 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
             }
         }
 
+        // Due mail goes out on the send worker while this drain runs. Waiting
+        // until after drain_actions was the two-minute stall: Send now sat
+        // behind fifteen IMAP actions.
+        state.send_signal.notify_one();
+
         // Deliver before reading back. Draining first means the server's answer
         // already includes what the user did, so the fetch below confirms local
         // state instead of contradicting it — and anything still queued is
@@ -160,8 +166,10 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
         )
         .await;
         // A message due while the app was closed goes out now, rather than
-        // waiting for whatever next wakes the worker.
-        send_due(Arc::clone(&state), account).await;
+        // waiting for whatever next wakes the worker. Notify, do not await:
+        // send_due used to sit behind this drain, and a backlog of triage
+        // made "Send now" look like the outbox had ignored the click.
+        state.send_signal.notify_one();
 
         // One connection, one STATUS line per folder, fetch only what moved.
         // A relaunch over a warm store downloads nothing it already holds.
@@ -361,7 +369,7 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
                 account_is_gmail(&cfg),
             )
             .await;
-            send_due(Arc::clone(&state), account).await;
+            state.send_signal.notify_one();
             if sweeping {
                 tend_the_bin(&state, account).await;
                 if reconciled.elapsed() >= reconcile_every {

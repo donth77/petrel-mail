@@ -1,7 +1,6 @@
 //! Local changes reaching the server: the drain worker and the pass it runs.
 
 use crate::diag::log_sync;
-use crate::send::send_due;
 use crate::state::AppState;
 use petrel_providers::imap::ImapConfig;
 use std::sync::Arc;
@@ -65,7 +64,10 @@ pub(crate) fn spawn_drain_worker(state: Arc<AppState>, account: i64, cfg: ImapCo
             {
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             }
-            send_due(Arc::clone(&state), account).await;
+            // Triage is done. If anything became due while we were in IMAP,
+            // the send worker takes it — we must not await send_due here or
+            // the next Send now waits on the next backlog the same way.
+            state.send_signal.notify_one();
         }
     });
 }
