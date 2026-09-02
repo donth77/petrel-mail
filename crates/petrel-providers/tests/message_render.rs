@@ -4,7 +4,7 @@
 //! answers or starts a new one in every client that receives it — which is not
 //! something the sender can see, so it has to be pinned here.
 
-use petrel_providers::smtp::Outgoing;
+use petrel_providers::smtp::{Attachment, Outgoing};
 
 fn base() -> Outgoing {
     Outgoing {
@@ -476,4 +476,81 @@ mod deliverability {
         let out = rendered(&note(None));
         assert!(!out.contains("text/html"), "invented an HTML part");
     }
+}
+
+/// A calendar file as an attachment, with or without the line that says what
+/// it is for.
+fn calendar(method: Option<&str>) -> Attachment {
+    let mut ics = String::from("BEGIN:VCALENDAR\r\nVERSION:2.0\r\n");
+    if let Some(m) = method {
+        ics.push_str(&format!("METHOD:{m}\r\n"));
+    }
+    ics.push_str("BEGIN:VEVENT\r\nUID:1@example.com\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n");
+    Attachment {
+        filename: "reply.ics".into(),
+        content_type: "text/calendar".into(),
+        bytes: ics.into_bytes(),
+    }
+}
+
+/// The Content-Type line a part went out under, unfolded.
+fn part_header(rendered: &[u8], starts: &str) -> String {
+    let s = text(rendered).replace("\r\n ", " ").replace("\r\n\t", " ");
+    s.lines()
+        .find(|l| l.starts_with(starts))
+        .unwrap_or_else(|| panic!("no part starting {starts:?} in\n{s}"))
+        .to_string()
+}
+
+/// iMIP (RFC 6047) reads the method off the MIME part, not out of the file:
+/// a reply that goes out as a bare `text/calendar` is an attachment to some
+/// systems and an answer to none of them. The parameter has to match the
+/// METHOD line inside, and iCalendar is UTF-8, so the part says so.
+#[test]
+fn a_calendar_reply_names_its_method_on_the_wire() {
+    let mut m = base();
+    m.attachments = vec![calendar(Some("REPLY"))];
+    let (_, bytes) = m.render("example.com");
+    let line = part_header(&bytes, "Content-Type: text/calendar");
+    assert!(
+        line.contains("method=\"REPLY\"") || line.contains("method=REPLY"),
+        "{line}"
+    );
+    assert!(line.to_ascii_lowercase().contains("charset="), "{line}");
+}
+
+#[test]
+fn only_calendar_parts_carry_a_method() {
+    let mut m = base();
+    m.attachments = vec![
+        Attachment {
+            filename: "a.png".into(),
+            content_type: "image/png".into(),
+            bytes: vec![0x89, b'P', b'N', b'G'],
+        },
+        calendar(None),
+    ];
+    let (_, bytes) = m.render("example.com");
+    let png = part_header(&bytes, "Content-Type: image/png");
+    assert!(!png.contains("method="), "{png}");
+    let cal = part_header(&bytes, "Content-Type: text/calendar");
+    assert!(
+        !cal.contains("method="),
+        "no METHOD line, so no parameter: {cal}"
+    );
+    assert!(cal.to_ascii_lowercase().contains("charset="), "{cal}");
+}
+
+/// The tree is assembled by hand when a pasted image rides along; the
+/// calendar part must come out the same either way.
+#[test]
+fn a_calendar_part_keeps_its_method_beside_inline_images() {
+    let mut m = base();
+    m.body_html = Some("<p>Hi</p><img src=\"data:image/png;base64,iVBORw0KGgo=\">".into());
+    m.attachments = vec![calendar(Some("CANCEL"))];
+    let (_, bytes) = m.render("example.com");
+    let s = text(&bytes);
+    assert!(s.contains("multipart/related"), "{s}");
+    let cal = part_header(&bytes, "Content-Type: text/calendar");
+    assert!(cal.contains("CANCEL"), "{cal}");
 }

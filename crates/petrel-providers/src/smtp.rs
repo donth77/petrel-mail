@@ -61,6 +61,42 @@ pub struct Attachment {
     pub bytes: Vec<u8>,
 }
 
+/// The Content-Type an attachment goes out under.
+///
+/// A calendar file says what it is for in its own METHOD line, and iMIP
+/// (RFC 6047) wants the same word on the MIME part as a `method` parameter:
+/// it is what calendar systems read to tell an invitation from a reply or a
+/// cancellation, and Exchange treats a `text/calendar` part without one as an
+/// ordinary file. The charset is stated for the same reason: iCalendar is
+/// UTF-8 by definition, and a text part with no charset is read as US-ASCII.
+fn attachment_content_type(a: &Attachment) -> mail_builder::headers::content_type::ContentType<'_> {
+    use mail_builder::headers::content_type::ContentType;
+    let mut ct = ContentType::new(a.content_type.as_str());
+    if a.content_type.eq_ignore_ascii_case("text/calendar") {
+        if let Some(method) = ical_method(&a.bytes) {
+            ct = ct.attribute("method", method);
+        }
+        ct = ct.attribute("charset", "utf-8");
+    }
+    ct
+}
+
+/// The METHOD of an iCalendar object: REQUEST, REPLY, CANCEL and so on.
+fn ical_method(bytes: &[u8]) -> Option<String> {
+    let method = std::str::from_utf8(bytes)
+        .ok()?
+        .lines()
+        .map(|l| l.trim_end_matches('\r'))
+        .find_map(|l| l.strip_prefix("METHOD:"))?
+        .trim()
+        .to_ascii_uppercase();
+    let plain = !method.is_empty()
+        && method
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-');
+    plain.then_some(method)
+}
+
 /// Roughly what a file costs on the wire.
 ///
 /// base64 turns three bytes into four and wraps every 76 characters, so a file
@@ -260,7 +296,7 @@ impl Outgoing {
             }
             for a in &self.attachments {
                 b = b.attachment(
-                    a.content_type.as_str(),
+                    attachment_content_type(a),
                     a.filename.as_str(),
                     a.bytes.as_slice(),
                 );
@@ -302,7 +338,7 @@ impl Outgoing {
                 mixed.push(core);
                 for a in &self.attachments {
                     mixed.push(
-                        MimePart::new(a.content_type.as_str(), a.bytes.as_slice())
+                        MimePart::new(attachment_content_type(a), a.bytes.as_slice())
                             .attachment(a.filename.as_str()),
                     );
                 }
