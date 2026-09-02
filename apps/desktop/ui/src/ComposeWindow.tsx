@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from './lib/api';
+import { draftFromRecord } from './lib/draft-record';
 import { Compose, addresses, type Draft } from './components/Compose';
 import { Picker } from './components/Picker';
 import { ATTACHMENT_LIMIT, pickAttachments, stageDropped } from './lib/attachments';
@@ -39,7 +40,7 @@ export function ComposeWindow({ draftId }: { draftId: number }) {
       .loadDraft(draftId)
       .then((d) => {
         if (!live) return;
-        setDraft({ to: d.to, cc: '', subject: d.subject, body: d.body, html: d.html, savedId: d.id });
+        setDraft(draftFromRecord(d));
       })
       .catch((e) => live && setError(String(e)));
     api

@@ -211,22 +211,51 @@ impl Store {
         // the account had no archive at all: the Archive mailbox listed
         // nothing while ten thousand messages sat in the plain `Archive`
         // folder below it, and archiving invented a local folder rather than
-        // filing into the real one.
+        // filing into the real one. Other hosts skip \Sent or \Junk instead,
+        // and then a send has nowhere to APPEND a copy, or reporting spam
+        // has nowhere to file, even though `Sent` and `Junk` are sitting
+        // right there.
         //
-        // A top-level folder by the role's own name is that role by every
+        // A top-level folder by a conventional name is that role by every
         // convention, and it is already what the rail draws and what the move
         // picker files into. Adopting it here is what makes the view, the
-        // action and the drain agree with what the person can see.
-        for (role, conventional) in [("archive", "Archive"), ("trash", "Trash")] {
+        // action and the drain agree with what the person can see. Nested
+        // years (`Archive/2026`) keep their empty role: they are places, not
+        // the mailbox. First matching name wins when several exist.
+        const ADOPT: &[(&str, &[&str])] = &[
+            ("archive", &["Archive"]),
+            ("trash", &["Trash"]),
+            (
+                "sent",
+                &["Sent", "Sent Items", "Sent Messages", "[Gmail]/Sent Mail"],
+            ),
+            (
+                "spam",
+                &[
+                    "Spam",
+                    "Junk",
+                    "Junk E-mail",
+                    "Junk Email",
+                    "Junk Mail",
+                    "[Gmail]/Spam",
+                ],
+            ),
+        ];
+        for (role, names) in ADOPT {
             if self.folder_for_role(account_id, role)?.is_some() {
                 continue;
             }
-            self.conn.execute(
-                "UPDATE folders SET role = ?3
-                  WHERE account_id = ?1 AND coalesce(role,'') = ''
-                    AND path = ?2 COLLATE NOCASE",
-                params![account_id, conventional, role],
-            )?;
+            for name in *names {
+                let n = self.conn.execute(
+                    "UPDATE folders SET role = ?3
+                      WHERE account_id = ?1 AND coalesce(role,'') = ''
+                        AND path = ?2 COLLATE NOCASE",
+                    params![account_id, *name, role],
+                )?;
+                if n > 0 {
+                    break;
+                }
+            }
         }
 
         // Folders the server no longer lists are gone — renamed elsewhere,

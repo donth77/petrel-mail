@@ -24,17 +24,22 @@ static STORE_KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 /// to hold the same password; the moment they differed, one store would sign
 /// in with the other's secret, and deleting an account in one would take the
 /// other's password with it. Keyed by the store, that cannot happen.
-pub(crate) fn adopt_store_identity(store: &Store, account_ids: &[i64]) {
+pub(crate) fn adopt_store_identity(store: &Store) {
     let Ok(id) = store_identity(store) else {
         return;
     };
-    if STORE_KEY.set(id.clone()).is_err() {
-        return; // already set: nothing to do
-    }
-    // One-time move: a password sitting under the old shared name becomes
-    // this store's. The old item is left alone rather than deleted — another
-    // store may still be reading it, and this is not the code that gets to
-    // decide that.
+    // Already set: this process already named its store.
+    let _ = STORE_KEY.set(id);
+}
+
+/// Moves passwords from the old shared keychain names into this store's.
+///
+/// Call without the store lock: `get_password` can block on a consent dialog
+/// for as long as the person takes to notice it.
+pub(crate) fn adopt_legacy_keychain_items(account_ids: &[i64]) {
+    let Some(id) = STORE_KEY.get() else {
+        return;
+    };
     for account in account_ids {
         let new = keyring::Entry::new(KEYCHAIN_SERVICE, &format!("{id}/account-{account}"));
         let old = keyring::Entry::new(KEYCHAIN_SERVICE, &format!("account-{account}"));
@@ -163,7 +168,21 @@ fn account_password(account_id: i64) -> Option<String> {
 /// means this account was not set up here — which, today, means it is the
 /// developer row driven by the environment, and the caller falls back.
 pub(crate) fn imap_config_for(store: &Store, account_id: i64) -> Option<ImapConfig> {
-    let servers = store.account_servers(account_id).ok().flatten()?;
+    imap_config_from_servers(
+        account_id,
+        store.account_servers(account_id).ok().flatten()?,
+    )
+}
+
+/// The IMAP configuration given servers already read out of the store.
+///
+/// The password comes from the keychain (or the environment). Call this
+/// *without* the store lock: a consent dialog must not pin every other
+/// command behind it.
+pub(crate) fn imap_config_from_servers(
+    account_id: i64,
+    servers: petrel_engine::store::AccountServers,
+) -> Option<ImapConfig> {
     if servers.imap_host.is_empty() {
         return None;
     }
@@ -177,14 +196,14 @@ pub(crate) fn imap_config_for(store: &Store, account_id: i64) -> Option<ImapConf
     })
 }
 
-/// The SMTP half, for the same account. Explicit rather than derived from
-/// the IMAP host by string substitution: autoconfig answers both, and a
-/// provider like Namecheap uses one host for both while another uses two.
-pub(crate) fn smtp_config_for(
-    store: &Store,
+/// The SMTP configuration given servers already read out of the store.
+///
+/// The password comes from the keychain, so call this *without* the store
+/// lock — same rule as IMAP.
+pub(crate) fn smtp_config_from_servers(
     account_id: i64,
+    servers: petrel_engine::store::AccountServers,
 ) -> Option<petrel_providers::smtp::SmtpConfig> {
-    let servers = store.account_servers(account_id).ok().flatten()?;
     if servers.smtp_host.is_empty() {
         return None;
     }
@@ -200,11 +219,13 @@ pub(crate) fn smtp_config_for(
 /// The account's IMAP configuration from wherever it lives: the app's own
 /// setup first, the environment as the developer override.
 pub(crate) fn imap_config(state: &AppState, account_id: i64) -> Option<ImapConfig> {
-    state
+    let servers = state
         .store
         .lock()
         .ok()
-        .and_then(|s| imap_config_for(&s, account_id))
+        .and_then(|s| s.account_servers(account_id).ok().flatten());
+    servers
+        .and_then(|s| imap_config_from_servers(account_id, s))
         .or_else(imap_config_from_env)
 }
 

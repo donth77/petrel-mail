@@ -412,6 +412,19 @@ fn addr_list(value: Option<&Address<'_>>) -> Vec<(Option<String>, String)> {
     out
 }
 
+/// Collects every address from each header occurrence of the same name.
+///
+/// RFC 5322 still allows stacked To/Cc fields; real mail uses them, and
+/// `msg.to()` / `msg.cc()` answer with only the last one. Ingest must walk
+/// `all_to()` / `all_cc()` instead.
+fn addr_lists<'a>(values: impl Iterator<Item = &'a Address<'a>>) -> Vec<(Option<String>, String)> {
+    let mut out = Vec::new();
+    for value in values {
+        out.extend(addr_list(Some(value)));
+    }
+    out
+}
+
 fn id_list(value: &HeaderValue<'_>) -> Vec<String> {
     match value {
         HeaderValue::Text(t) => vec![t.to_string()],
@@ -458,8 +471,8 @@ pub fn parse_message(raw: &[u8]) -> Option<ParsedMessage> {
         subject: msg.subject().map(|s| s.to_string()),
         from_addr,
         from_display,
-        to: addr_list(msg.to()),
-        cc: addr_list(msg.cc()),
+        to: addr_lists(msg.all_to()),
+        cc: addr_lists(msg.all_cc()),
         date_ms: msg.date().map(|d| d.to_timestamp() * 1000),
         body_text: msg.body_text(0).map(|c| c.to_string()).unwrap_or_default(),
         body_html: msg.body_html(0).map(|c| c.to_string()),
@@ -502,6 +515,39 @@ Date: Tue, 18 Aug 2026 14:02:00 +0000\r\n\
 Message-ID: <abc123@example.com>\r\n\
 In-Reply-To: <parent@example.com>\r\n\r\n\
 Let's lock pricing before Friday.\r\n";
+
+    #[test]
+    fn stacked_cc_headers_yield_every_address() {
+        let raw = b"From: a@example.com\r\n\
+To: me@example.com\r\n\
+Cc: first@example.com\r\n\
+Cc: second@example.com\r\n\
+Subject: stacked cc\r\n\r\n\
+body\r\n";
+        let m = parse_message(raw).expect("parses");
+        let addrs: Vec<&str> = m.cc.iter().map(|(_, a)| a.as_str()).collect();
+        assert_eq!(
+            addrs,
+            vec!["first@example.com", "second@example.com"],
+            "stacked Cc must not drop the first header"
+        );
+    }
+
+    #[test]
+    fn stacked_to_headers_yield_every_address() {
+        let raw = b"From: a@example.com\r\n\
+To: first@example.com\r\n\
+To: second@example.com\r\n\
+Subject: stacked to\r\n\r\n\
+body\r\n";
+        let m = parse_message(raw).expect("parses");
+        let addrs: Vec<&str> = m.to.iter().map(|(_, a)| a.as_str()).collect();
+        assert_eq!(
+            addrs,
+            vec!["first@example.com", "second@example.com"],
+            "stacked To must not drop the first header"
+        );
+    }
 
     #[test]
     fn parses_headers_bodies_and_threading() {

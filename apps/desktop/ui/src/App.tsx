@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   api,
+  type ActionKind,
   type Folder,
   type OutboxRow,
   type Status,
-  type Thread,
 } from './lib/api';
 import { chips, folderScopeName, hasToken, scopeFor, toggleToken } from './lib/search-chips';
 import { arrangementFor, countFor, countModes, visibleMailboxes } from './lib/mailboxes';
@@ -12,7 +12,7 @@ import { count as fmtCount, fileSize } from './lib/format';
 import { t, type StringId } from './lib/strings';
 import { Search } from 'lucide-react';
 import { SortMenu } from './components/SortMenu';
-import { DEFAULT_SORT, SEARCH_SORT, effectiveSort, wireSort, type Sort } from './lib/sort';
+import { DEFAULT_SORT, SEARCH_SORT, effectiveSort, type Sort } from './lib/sort';
 import { repaintTag } from './lib/tag-paint';
 import { mergeOrder } from './lib/reorder';
 import { Rail } from './components/Rail';
@@ -26,6 +26,7 @@ import { Compose, addresses, type Draft } from './components/Compose';
 import { snoozeOptions } from './lib/snooze';
 import { promisesMissingAttachment } from './lib/compose-checks';
 import { opensComposer } from './lib/draft-view';
+import { draftFromRecord } from './lib/draft-record';
 import { replyTargets } from './lib/reply';
 import { forwardBody, replyBody } from './lib/quote';
 import { dropMeaning } from './lib/dnd';
@@ -57,6 +58,8 @@ import { useMessageLinks, type HomographRisk } from './lib/links';
 import { RowMenu } from './components/RowMenu';
 import { Toast } from './components/Toast';
 import { MessageList } from './components/MessageList';
+import { useThreadWindow } from './lib/useThreadWindow';
+import { LIST_PAGE } from './lib/list-page';
 import { Reader } from './components/Reader';
 import { Outbox } from './components/Outbox';
 import { Onboarding } from './components/Onboarding';
@@ -74,7 +77,6 @@ export function App() {
   // together rather than each noticing separately or, worse, some not
   // noticing at all. The name is about where it came from, not its only use.
   const [accountEpoch, setAccountEpoch] = useState(0);
-  const [items, setItems] = useState<Thread[]>([]);
   const [query, setQuery] = useState('');
   // Best match or newest, for a search. Not a saved preference: it answers a
   // different question about one search — "find the thing" against "retrace the
@@ -114,8 +116,18 @@ export function App() {
   const [activeId, setActiveId] = useState<number | null>(null);
   const [view, setView] = useState('inbox');
 
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const listFetchers = useMemo(
+    () => ({ threads: api.threads, search: api.search }),
+    [],
+  );
+  const { items, setItems, loading, error, loadMore, replaceEpoch } = useThreadWindow({
+    query,
+    view,
+    sort: activeSort,
+    accountEpoch,
+    messageCount: status?.count,
+    fetchers: listFetchers,
+  });
   const searchRef = useRef<HTMLInputElement>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -191,36 +203,15 @@ export function App() {
     };
   }, []);
 
-  // Debounced as-you-type search; an empty box falls back to the listing.
+  // Highlight and selection follow a replaced window (view, query, sort,
+  // account, or the first mail into an empty list). Paging and new mail at
+  // the head keep the same highlight; those only change `items`.
   useEffect(() => {
-    let live = true;
-    const run = () => {
-      const wire = wireSort(activeSort);
-      const p = query.trim()
-        ? api.search(query, wire.key, wire.ascending)
-        : api.threads(view, 0, 500, wire.key, wire.ascending);
-      p.then((rows: Thread[]) => {
-        if (!live) return;
-        setError(null);
-        setItems(rows);
-        setLoading(false);
-        setActiveId((cur) => (rows.some((r: Thread) => r.id === cur) ? cur : (rows[0]?.id ?? null)));
-        // A selection pointing at rows that have gone would make the next
-        // action target nothing and look broken.
-        setSelected((cur) => (cur.size === 0 ? cur : prune(cur, rows.map((r: Thread) => r.id))));
-      }).catch((err: unknown) => {
-        if (!live) return;
-        setLoading(false);
-        setError(String(err));
-        api.log(`list/search failed: ${err}`);
-      });
-    };
-    const h = setTimeout(run, query ? 100 : 0);
-    return () => {
-      live = false;
-      clearTimeout(h);
-    };
-  }, [query, view, activeSort, status?.count, status?.seeding, accountEpoch]);
+    setActiveId((cur) => (items.some((r) => r.id === cur) ? cur : (items[0]?.id ?? null)));
+    setSelected((cur) => (cur.size === 0 ? cur : prune(cur, items.map((r) => r.id))));
+    // `items` is the array from the render that bumped replaceEpoch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [replaceEpoch]);
 
   // A new query starts at the top.
   //
@@ -720,19 +711,12 @@ export function App() {
   };
 
   /** Reopens a saved draft in the composer. */
-  const resumeDraft = async (id: number) => {
+  const resumeDraft = useCallback(async (id: number) => {
     try {
       const d = await api.loadDraft(id);
       attachmentWarned.current = false;
       setComposeGen((n) => n + 1);
-      setDraft({
-        to: d.to,
-        cc: '',
-        subject: d.subject,
-        body: d.body,
-        html: d.html,
-        savedId: d.id,
-      });
+      setDraft(draftFromRecord(d));
       // Asked as the draft opens, not at save time: the person is about to
       // continue from one of two versions, and should choose before typing
       // into the wrong one. The data layer kept both; that is what makes
@@ -742,7 +726,68 @@ export function App() {
     } catch (e) {
       setToast(t('compose-resume-failed', { error: String(e) }));
     }
-  };
+  }, [locale]);
+
+  const onToggleSelect = useCallback((id: number) => {
+    setSelected((cur) => toggle(cur, id));
+    setAnchor(id);
+  }, []);
+
+  const onActivate = useCallback(
+    (id: number, mods: { toggle: boolean; range: boolean }) => {
+      // Cmd/ctrl adds or removes one; shift reaches back to where the
+      // selection started. Neither opens the conversation — picking
+      // several and having the last one fill the reading pane is how
+      // you accidentally mark something read while gathering a batch.
+      if (mods.toggle) {
+        setSelected((cur) => toggle(cur, id));
+        setAnchor(id);
+        return;
+      }
+      if (mods.range) {
+        setSelected((cur) => extend(cur, items.map((m) => m.id), anchor, id));
+        return;
+      }
+      // A plain click is "just this one", so it puts a selection away
+      // rather than quietly acting on rows still held from before.
+      if (selected.size > 0) setSelected(new Set());
+      setAnchor(id);
+      setActiveId(id);
+      // In Drafts, selecting one means resuming it. Showing an
+      // unfinished message in a reading pane is showing it to the
+      // person who wrote it, in the one form they cannot edit.
+      if (opensComposer(view)) void resumeDraft(id);
+    },
+    [items, anchor, selected, view, resumeDraft],
+  );
+
+  const onListAction = useCallback(
+    (kind: ActionKind, threadId: number) => {
+      void triage.run(kind, threadId);
+    },
+    [triage.run],
+  );
+
+  const onSnoozeRow = useCallback((threadId: number) => {
+    setActiveId(threadId);
+    setPicker('snooze');
+  }, []);
+
+  const onRowContextMenu = useCallback(
+    (id: number, x: number, y: number) => {
+      // Right-clicking inside a selection acts on all of it; on a row
+      // outside one, the selection is dropped and only that row is in
+      // play. Anything else and the menu would quietly act on rows the
+      // user was no longer pointing at.
+      if (!selected.has(id)) {
+        setSelected(new Set());
+        setAnchor(null);
+        setActiveId(id);
+      }
+      setRowMenu({ id, x, y });
+    },
+    [selected],
+  );
 
   /** Settles a draft conflict the chosen way and shows it in the composer. */
   const settleDraftConflict = async (takeServer: boolean) => {
@@ -804,7 +849,7 @@ export function App() {
       setDraft((cur) => (cur ? { ...cur, savedId: id } : cur));
       setToast(t('compose-saved'));
       // The Drafts view is a query, so it only changes when the list reloads.
-      if (view === 'drafts') api.threads(view, 0, 500).then(setItems).catch(() => {});
+      if (view === 'drafts') api.threads(view, 0, LIST_PAGE).then(setItems).catch(() => {});
       return id;
     } catch (e) {
       setToast(t('compose-save-failed', { error: String(e) }));
@@ -1268,7 +1313,24 @@ export function App() {
     return () => {
       live = false;
     };
-  }, [view, accountEpoch, status?.count]);
+  }, [view, accountEpoch]);
+
+  // The footer number is the whole mailbox, not the loaded page. Recounted
+  // when mail arrives, but not by wiping the last number first — that made
+  // the status line blink on every ingest tick.
+  useEffect(() => {
+    let live = true;
+    const timer = window.setTimeout(() => {
+      api
+        .viewCount(view)
+        .then((n) => live && setViewTotal(n))
+        .catch(() => {});
+    }, 300);
+    return () => {
+      live = false;
+      window.clearTimeout(timer);
+    };
+  }, [status?.count, view, accountEpoch]);
 
   // A message that needs a decision raises a notification, once.
   //
@@ -1364,7 +1426,7 @@ export function App() {
       live = false;
       window.clearTimeout(t);
     };
-  }, [status?.count, status?.seeding, arrangement, items, accountEpoch, setAccounts, setTags]);
+  }, [status?.count, status?.seeding, arrangement, accountEpoch, setAccounts, setTags]);
 
   // First run: no account can sign in, so there is nothing to show but the
   // way to add one. Decided from the status the app reports, not from an
@@ -1782,54 +1844,16 @@ export function App() {
             items={items}
             activeId={activeId}
             selected={selected}
-            onToggleSelect={(id) => {
-              setSelected((cur) => toggle(cur, id));
-              setAnchor(id);
-            }}
+            onToggleSelect={onToggleSelect}
             density={settings.density}
             checkboxes={settings.checkboxes === 'on'}
-            onActivate={(id, mods) => {
-              // Cmd/ctrl adds or removes one; shift reaches back to where the
-              // selection started. Neither opens the conversation — picking
-              // several and having the last one fill the reading pane is how
-              // you accidentally mark something read while gathering a batch.
-              if (mods.toggle) {
-                setSelected((cur) => toggle(cur, id));
-                setAnchor(id);
-                return;
-              }
-              if (mods.range) {
-                setSelected((cur) => extend(cur, items.map((m) => m.id), anchor, id));
-                return;
-              }
-              // A plain click is "just this one", so it puts a selection away
-              // rather than quietly acting on rows still held from before.
-              if (selected.size > 0) setSelected(new Set());
-              setAnchor(id);
-              setActiveId(id);
-              // Drafts resume in the composer. The reading pane stays closed:
-              // it is the one form the person who wrote the message cannot edit.
-              if (opensComposer(view)) void resumeDraft(id);
-            }}
-            onAction={(kind, threadId) => void triage.run(kind, threadId)}
-            onSnooze={(threadId) => {
-              setActiveId(threadId);
-              setPicker('snooze');
-            }}
+            onActivate={onActivate}
+            onAction={onListAction}
+            onSnooze={onSnoozeRow}
             onDragStart={startDrag}
             dropRow={drag?.overRow ?? null}
-            onContextMenu={(id, x, y) => {
-              // Right-clicking inside a selection acts on all of it; on a row
-              // outside one, the selection is dropped and only that row is in
-              // play. Anything else and the menu would quietly act on rows the
-              // user was no longer pointing at.
-              if (!selected.has(id)) {
-                setSelected(new Set());
-                setAnchor(null);
-                setActiveId(id);
-              }
-              setRowMenu({ id, x, y });
-            }}
+            onNearEnd={loadMore}
+            onContextMenu={onRowContextMenu}
           />
         )}
 
@@ -2057,7 +2081,7 @@ export function App() {
             setPicker(null);
             if (!d) return;
             void api
-              .saveDraft(d.savedId ?? null, d.to, d.subject, d.body, d.html)
+              .saveDraft(d.savedId ?? null, d.to, d.subject, d.body, d.html, envelopeOf(d))
               .then((saved) => api.scheduleSend(saved, id))
               .then(() => {
                 setDraft(null);

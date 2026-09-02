@@ -110,6 +110,10 @@ export type ThreadMessage = {
   snippet: string;
   date_ms: number;
   unread: boolean;
+  /** To, display names. */
+  to: string[];
+  /** Cc, display names. Empty when the message copied nobody. */
+  cc: string[];
   recipients: string[];
   recipient_addrs: string[];
   attachments: Attachment[];
@@ -170,15 +174,23 @@ export type Account = {
   folders: FolderMapping[];
 };
 
+export type DraftEnvelope = {
+  in_reply_to: string | null;
+  references: string[];
+  attachments: string[];
+};
+
 export type DraftRecord = {
   id: number;
   to: string;
+  cc: string;
   subject: string;
   /** Plain text: the snippet, the search index, and the text half that is sent. */
   body: string;
   /** The rich half; empty for a draft written before there was one. */
   html: string;
-};;
+  envelope: DraftEnvelope;
+};
 
 export type Identity = {
   address: string;
@@ -364,8 +376,16 @@ const mock = {
     seeding: false, count: 10000, server_total: 12500, source: 'tom@northbay.example',
     retention: 'mirror', data_dir: '~/Library/Application Support/Petrel',
   }),
-  threads: async (view: string, offset: number, limit: number, _sort?: string, _asc = false) => {
-    const rows = mockRows(Math.min(limit, 2000), offset);
+  threads: async (
+    view: string,
+    offset: number,
+    limit: number,
+    _sort?: string,
+    _asc = false,
+    _beforeDateMs?: number,
+    _beforeThreadId?: number,
+  ) => {
+    const rows = mockRows(Math.min(limit, 100), offset);
     // Enough fidelity to exercise the view switch: the browser mock is not the
     // engine, and pretending otherwise is what let an unimplemented view look
     // implemented.
@@ -440,7 +460,15 @@ const mock = {
   }),
   setIdentity: async () => {},
   saveDraft: async () => 1,
-  loadDraft: async (): Promise<DraftRecord> => ({ id: 1, to: '', subject: '', body: '', html: '' }),
+  loadDraft: async (): Promise<DraftRecord> => ({
+    id: 1,
+    to: '',
+    cc: '',
+    subject: '',
+    body: '',
+    html: '',
+    envelope: { in_reply_to: null, references: [], attachments: [] },
+  }),
   deleteDraft: async () => {},
   scheduleSend: async () => {},
   popoutCompose: async () => {},
@@ -570,6 +598,7 @@ const mock = {
       id: 1, from_display: 'Dana Wu', from_addr: 'dana@northbay.example',
       subject: 'Q3 vendor contracts', snippet: 'Sending the draft ahead of Friday so you both have time…',
       date_ms: Date.now() - 3 * 86400000, unread: false,
+      to: ['Sam Ortiz', 'me'], cc: [],
       recipients: ['Sam Ortiz', 'me'], recipient_addrs: ['sam@example.com', 'you@example.com'], attachments: [],
       has_calendar: false, invite_response: null,
     },
@@ -577,6 +606,7 @@ const mock = {
       id: 2, from_display: 'Sam Ortiz', from_addr: 'sam@vendorco.example',
       subject: 'Re: Q3 vendor contracts', snippet: 'I have marked up section 4…',
       date_ms: Date.now() - 90 * 60000, unread: true,
+      to: ['Dana Wu', 'me'], cc: [],
       recipients: ['Dana Wu', 'me'],
       recipient_addrs: ['dana@example.com', 'you@example.com'],
       attachments: [
@@ -614,8 +644,26 @@ invite_response: null,
 
 const real = {
   status: () => invoke<Status>('status'),
-  threads: (view: string, offset: number, limit: number, sort?: string, ascending = false) =>
-    invoke<Thread[]>('list_threads', { view, offset, limit, sort, ascending }),
+  threads: (
+    view: string,
+    offset: number,
+    limit: number,
+    sort?: string,
+    ascending = false,
+    beforeDateMs?: number,
+    beforeThreadId?: number,
+  ) =>
+    invoke<Thread[]>('list_threads', {
+      view,
+      offset,
+      limit,
+      sort,
+      ascending,
+      before:
+        beforeDateMs != null && beforeThreadId != null
+          ? [beforeDateMs, beforeThreadId]
+          : null,
+    }),
   threadById: (threadId: number) => invoke<Thread | null>('thread_by_id', { threadId }),
   openExternal: (url: string) => invoke<void>('open_external', { url }),
   discoverAccount: (address: string) => invoke<Discovered | null>('discover_account', { address }),
@@ -679,7 +727,7 @@ const real = {
   /** Absent `account` means the one on screen — see the Rust command. */
   folders: (account?: number) => invoke<Folder[]>('list_folders', { account: account ?? null }),
   createFolder: (path: string) => invoke<number>('create_folder', { path }),
-  /** The view's true conversation count — the list itself is a 500-row window. */
+  /** The view's true conversation count — the list itself is a page. */
   viewCount: (view: string) => invoke<number>('view_count', { view }),
   listRules: () => invoke<Rule[]>('list_rules'),
   saveRule: (

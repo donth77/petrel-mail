@@ -183,8 +183,14 @@ pub struct Outgoing {
 /// than either.
 fn as_document(html: &str) -> String {
     let head = html.trim_start();
-    let looks_whole = head.len() >= 5 && head[..5].eq_ignore_ascii_case("<html")
-        || head.len() >= 9 && head[..9].eq_ignore_ascii_case("<!doctype");
+    // Byte slices, not `len() >= n && &head[..n]`: a composer fragment is
+    // `<p>` plus CJK, and index 5 sits in the middle of a character.
+    let looks_whole = head
+        .get(..5)
+        .is_some_and(|p| p.eq_ignore_ascii_case("<html"))
+        || head
+            .get(..9)
+            .is_some_and(|p| p.eq_ignore_ascii_case("<!doctype"));
     if looks_whole {
         return html.to_string();
     }
@@ -304,11 +310,14 @@ impl Outgoing {
             });
         }
 
-        for addr in &self.to {
-            b = b.to(addr.as_str());
+        // One header per field. mail-builder appends a line on every call, and
+        // mail-parser keeps only the last — so a per-address loop drops every
+        // recipient but one after Sent-folder ingest.
+        if !self.to.is_empty() {
+            b = b.to(self.to.iter().map(|s| s.as_str()).collect::<Vec<_>>());
         }
-        for addr in &self.cc {
-            b = b.cc(addr.as_str());
+        if !self.cc.is_empty() {
+            b = b.cc(self.cc.iter().map(|s| s.as_str()).collect::<Vec<_>>());
         }
         if let Some(parent) = &self.in_reply_to {
             b = b.in_reply_to(parent.as_str());
@@ -558,6 +567,21 @@ fn commit_timeout() -> Duration {
 }
 
 pub async fn send_tls(cfg: &SmtpConfig, msg: &Outgoing, raw: &[u8]) -> SendResult {
+    send_tls_with(cfg, msg, raw, |_| {}).await
+}
+
+/// Same conversation as `send_tls`, with a hook at each stage.
+///
+/// The desktop logs these so a send that sits in `Transmitting` is not a
+/// blank: you can see whether it is still shaking hands, writing the body,
+/// or waiting for the server to accept it. The hook is told a stage name
+/// only — never a host, address, or anything from the message.
+pub async fn send_tls_with(
+    cfg: &SmtpConfig,
+    msg: &Outgoing,
+    raw: &[u8],
+    mut stage: impl FnMut(&'static str),
+) -> SendResult {
     use base64::Engine as _;
     use tokio::io::{AsyncWriteExt, BufReader};
 
@@ -570,6 +594,7 @@ pub async fn send_tls(cfg: &SmtpConfig, msg: &Outgoing, raw: &[u8]) -> SendResul
         };
     }
 
+    stage("connect");
     let stream = match tokio::time::timeout(
         connect_timeout(),
         crate::imap::tls_stream_for(&cfg.host, cfg.port),
@@ -600,15 +625,29 @@ pub async fn send_tls(cfg: &SmtpConfig, msg: &Outgoing, raw: &[u8]) -> SendResul
             reply
         }};
     }
+    // write_all of a few bytes can complete with the TLS record still in
+    // rustls's buffer. The plaintext path flushes; this one did not, and a
+    // DATA terminator that never left the buffer left the server waiting
+    // for the end of the message while the client waited ten minutes for
+    // a 250 that could not come.
     macro_rules! say {
         ($stage:expr, $line:expr) => {
-            if let Err(e) = tx.write_all($line.as_bytes()).await {
-                fail_before!($stage, e);
+            match tokio::time::timeout(reply_timeout(), async {
+                tx.write_all($line.as_bytes()).await?;
+                tx.flush().await
+            })
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => fail_before!($stage, e),
+                Err(_) => fail_before!($stage, "timed out sending to the server"),
             }
         };
     }
 
+    stage("greeting");
     expect!("greeting", 220);
+    stage("ehlo");
     say!("ehlo", format!("EHLO {}\r\n", cfg.host));
     expect!("ehlo", 250);
 
@@ -628,22 +667,39 @@ pub async fn send_tls(cfg: &SmtpConfig, msg: &Outgoing, raw: &[u8]) -> SendResul
             format!("AUTH XOAUTH2 {token}\r\n")
         }
     };
+    stage("auth");
     say!("auth", auth_line);
     expect!("auth", 235);
 
+    stage("mail");
     say!("mail", format!("MAIL FROM:<{}>\r\n", msg.from_addr));
     expect!("mail", 250);
     for rcpt in msg.recipients() {
+        stage("rcpt");
         say!("rcpt", format!("RCPT TO:<{rcpt}>\r\n"));
         expect!("rcpt", 250);
     }
+    stage("data");
     say!("data", "DATA\r\n".to_string());
     expect!("data", 354);
 
     // Past this point a failure is ambiguous rather than safe to retry: the
     // server may have committed the message even if we never hear so.
-    let dotted = dot_stuff(raw);
-    match tokio::time::timeout(body_write_timeout(), tx.write_all(&dotted)).await {
+    // Body and terminating dot in one write, then flush: a terminator that
+    // sat in the TLS buffer left the server in DATA and the client waiting
+    // the full ten-minute commit timeout.
+    stage("body");
+    let mut payload = dot_stuff(raw);
+    if !payload.ends_with(b"\r\n") {
+        payload.extend_from_slice(b"\r\n");
+    }
+    payload.extend_from_slice(b".\r\n");
+    match tokio::time::timeout(body_write_timeout(), async {
+        tx.write_all(&payload).await?;
+        tx.flush().await
+    })
+    .await
+    {
         Ok(Ok(())) => {}
         Ok(Err(e)) => {
             return SendResult::UnknownAfterTransmit {
@@ -656,19 +712,7 @@ pub async fn send_tls(cfg: &SmtpConfig, msg: &Outgoing, raw: &[u8]) -> SendResul
             };
         }
     }
-    match tokio::time::timeout(body_write_timeout(), tx.write_all(b"\r\n.\r\n")).await {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => {
-            return SendResult::UnknownAfterTransmit {
-                detail: e.to_string(),
-            };
-        }
-        Err(_) => {
-            return SendResult::UnknownAfterTransmit {
-                detail: "timed out ending the message".into(),
-            };
-        }
-    }
+    stage("confirm");
     let acknowledged = match tokio::time::timeout(commit_timeout(), read_reply(&mut reader)).await {
         Ok(r) => r,
         // The message went and the answer never came. Exactly the case the

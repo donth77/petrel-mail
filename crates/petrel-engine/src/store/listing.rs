@@ -56,6 +56,38 @@ impl Store {
                 bound: view.bound().map(str::to_string),
                 per_message: matches!(view, ListView::Folder(r) if r == "drafts"),
                 sort,
+                before: None,
+            },
+        )
+    }
+
+    /// The next page after a conversation the caller already has.
+    ///
+    /// Offset would mean "skip N", which shifts when new mail lands at the
+    /// top. Naming the last row keeps the rest of the list stable. The walk
+    /// still starts from the newest message — filtering by date would let an
+    /// older message of an already-listed thread look like a new row — and
+    /// stops one page after the named conversation.
+    pub fn list_threads_after(
+        &self,
+        view: &ListView,
+        limit: u32,
+        sort: Sort,
+        before_date_ms: i64,
+        before_thread_id: i64,
+    ) -> Result<Vec<ThreadListing>> {
+        let account = self.active_account()?.unwrap_or(-1);
+        self.listing_rows(
+            account,
+            ListingQuery {
+                inner: &view.predicate("messages"),
+                outer: &view.predicate("m"),
+                limit,
+                offset: 0,
+                bound: view.bound().map(str::to_string),
+                per_message: matches!(view, ListView::Folder(r) if r == "drafts"),
+                sort,
+                before: Some((before_date_ms, before_thread_id)),
             },
         )
     }
@@ -82,6 +114,7 @@ impl Store {
                 bound: Some(thread_id.to_string()),
                 per_message: false,
                 sort: Sort::default(),
+                before: None,
             },
         )?;
         Ok(rows.into_iter().next())
@@ -101,6 +134,10 @@ struct ListingQuery<'a> {
     /// Every other view groups into conversations.
     per_message: bool,
     sort: Sort,
+    /// Date-sort cursor: the last row's `(date_ms, thread_id)`. Sender and
+    /// subject sorts ignore it and keep walking from offset, because those
+    /// orders have no index to resume on.
+    before: Option<(i64, i64)>,
 }
 
 impl Store {
@@ -108,7 +145,7 @@ impl Store {
     ///
     /// Two steps, and the order is the whole performance story. Aggregating
     /// first and paging afterwards means grouping every message in the
-    /// mailbox — participants, counts, flags — to show fifty rows: at a
+    /// mailbox — participants, counts, flags — to show a page of rows: at a
     /// hundred thousand messages that measured 562ms to open a list, against
     /// a 150ms budget, and no index helps because the work is real. So the
     /// page is chosen first, by walking newest-first down an index and
@@ -147,9 +184,11 @@ impl Store {
             bound,
             per_message,
             sort,
+            before,
             ..
         } = q;
-        let (limit, offset, per_message, sort) = (*limit, *offset, *per_message, *sort);
+        let (limit, offset, per_message, sort, before) =
+            (*limit, *offset, *per_message, *sort, *before);
         let bound = bound.clone();
         let key = if per_message {
             "-id"
@@ -173,9 +212,9 @@ impl Store {
             SortKey::Date => {
                 let dir = if sort.ascending { "ASC" } else { "DESC" };
                 format!(
-                    "SELECT {key} FROM messages
+                    "SELECT {key}, date_ms FROM messages
                      WHERE deleted_at_ms IS NULL AND account_id = {account} AND {inner}
-                     ORDER BY date_ms {dir}"
+                     ORDER BY date_ms {dir}, {key} {dir}"
                 )
             }
             SortKey::Sender | SortKey::Subject => {
@@ -190,7 +229,7 @@ impl Store {
                     _ => "lower(coalesce(nullif(n.subject,''), ''))",
                 };
                 format!(
-                    "SELECT n.k FROM (
+                    "SELECT n.k, n.d FROM (
                        SELECT {key} AS k,
                               max(date_ms) AS d,
                               from_display, from_addr, subject
@@ -219,17 +258,73 @@ impl Store {
         let mut rows = stmt.query(rusqlite::params_from_iter(
             supplied.into_iter().take(wanted),
         ))?;
-        let want = (offset as usize).saturating_add(limit as usize);
+        // A cursor names a row the caller already has. Walking continues past
+        // it rather than from a numeric offset, so new mail prepended at the
+        // top does not shift every later page. The walk still starts from the
+        // newest message: filtering the SQL by date would look cheaper and is
+        // wrong, because an older message of an already-listed conversation
+        // would masquerade as a new row. Every conversation met on the way
+        // down goes into `seen`, and that is what keeps it out of the page.
+        //
+        // By date the cursor is a *position*, `(date_ms, key)` compared the
+        // way the query sorts, and the page starts at the first row past it.
+        // Looking for the cursor row itself was the version before this one,
+        // and it stranded the list twice over: a conversation that gained a
+        // reply had moved to the top, so "after it" was the whole mailbox
+        // again and the page came back full of rows already on screen; one
+        // archived by another client was not there at all, and an empty page
+        // read as the end of the list. By sender or subject there is no
+        // position to compare, so those still look for the row.
+        let want = if before.is_some() {
+            limit as usize
+        } else {
+            (offset as usize).saturating_add(limit as usize)
+        };
         let mut seen: std::collections::HashSet<i64> = Default::default();
         let mut ordered: Vec<i64> = Vec::with_capacity(want.min(1024));
+        let mut skipping = before.is_some();
+        let mut found_cursor = before.is_none();
         while let Some(row) = rows.next()? {
             let k: i64 = row.get(0)?;
-            if seen.insert(k) {
-                ordered.push(k);
-                if ordered.len() >= want {
-                    break;
+            let d: i64 = row.get(1)?;
+            if !seen.insert(k) {
+                continue;
+            }
+            if skipping {
+                match (sort.key, before) {
+                    (SortKey::Date, Some((cursor_d, cursor_k))) => {
+                        let past = if sort.ascending {
+                            (d, k) > (cursor_d, cursor_k)
+                        } else {
+                            (d, k) < (cursor_d, cursor_k)
+                        };
+                        if !past {
+                            continue;
+                        }
+                        // This row is the first of the page.
+                        skipping = false;
+                        found_cursor = true;
+                    }
+                    (_, Some((_, cursor_k))) => {
+                        if k == cursor_k {
+                            skipping = false;
+                            found_cursor = true;
+                        }
+                        continue;
+                    }
+                    (_, None) => unreachable!("skipping only with a cursor"),
                 }
             }
+            ordered.push(k);
+            if ordered.len() >= want {
+                break;
+            }
+        }
+        if before.is_some() && !found_cursor {
+            return Ok(Vec::new());
+        }
+        if before.is_some() {
+            return Ok(ordered);
         }
         Ok(ordered.into_iter().skip(offset as usize).collect())
     }
@@ -453,8 +548,8 @@ impl Store {
     }
 
     /// The whole of a view, counted — what the status line reports, where
-    /// the loaded list is a 500-row window and its length is not a fact
-    /// about the mailbox.
+    /// the loaded list is a page and its length is not a fact about the
+    /// mailbox.
     pub fn conversations_in(&self, view: &ListView) -> Result<i64> {
         self.count_view(view, true)
     }
@@ -462,6 +557,9 @@ impl Store {
     /// Conversations in a view: all of them, or only those holding something
     /// unread.
     fn count_view(&self, view: &ListView, total: bool) -> Result<i64> {
+        if let Some(n) = self.count_view_from_placements(view, total)? {
+            return Ok(n);
+        }
         let having = if total {
             String::new()
         } else {
@@ -498,9 +596,203 @@ impl Store {
         })
     }
 
+    /// Counts that can start from a folder's placements rather than from every
+    /// message with a correlated EXISTS. Inbox, the role folders, and user
+    /// folders are membership in a placement; scanning the whole mailbox to
+    /// ask each row whether it sits in INBOX is the slow form of the same join.
+    ///
+    /// The ids are materialized first. GROUP BY on `coalesce(thread_id, -id)`
+    /// otherwise makes SQLite drive from `idx_messages_account_thread` and
+    /// probe placements per row — at a couple of hundred thousand messages
+    /// that is a 300ms count of thirteen drafts.
+    fn count_view_from_placements(&self, view: &ListView, total: bool) -> Result<Option<i64>> {
+        let account = self.active_account()?.unwrap_or(-1);
+        let n = match view {
+            ListView::Inbox => self.count_from_message_ids(
+                account,
+                &format!(
+                    "SELECT p.message_id
+                       FROM folders f
+                       JOIN placements p ON p.folder_id = f.id
+                      WHERE f.account_id = {account} AND f.role = 'inbox'"
+                ),
+                &format!(
+                    "AND (m.snoozed_until_ms IS NULL OR m.snoozed_until_ms <= (strftime('%s','now') * 1000))
+                     AND {not_binned}",
+                    not_binned = not_binned("m"),
+                ),
+                "coalesce(m.thread_id, -m.id)",
+                total,
+                None,
+            )?,
+            ListView::UserFolder(id) => self.count_from_message_ids(
+                account,
+                &format!("SELECT message_id FROM placements WHERE folder_id = {id}"),
+                "",
+                "coalesce(m.thread_id, -m.id)",
+                total,
+                None,
+            )?,
+            ListView::Folder(role) if role == "drafts" => self.count_from_message_ids(
+                account,
+                &format!(
+                    "SELECT p.message_id
+                       FROM folders f
+                       JOIN placements p ON p.folder_id = f.id
+                      WHERE f.account_id = {account} AND f.role = ?3"
+                ),
+                "AND m.send_after_ms IS NULL",
+                "-m.id",
+                total,
+                Some(role.as_str()),
+            )?,
+            ListView::Folder(role) if role == "archive" => self.count_from_message_ids(
+                account,
+                &format!(
+                    "SELECT p.message_id
+                       FROM folders f
+                       JOIN placements p ON p.folder_id = f.id
+                      WHERE f.account_id = {account}
+                        AND (f.role = 'archive'
+                             OR EXISTS (SELECT 1 FROM folders af
+                                        WHERE af.role = 'archive'
+                                          AND af.account_id = f.account_id
+                                          AND (f.path LIKE af.path || '/%'
+                                               OR f.path LIKE af.path || '.%')))"
+                ),
+                "AND NOT EXISTS (SELECT 1 FROM placements p2
+                                 JOIN folders f2 ON f2.id = p2.folder_id
+                                 WHERE p2.message_id = m.id AND f2.role = 'inbox')",
+                "coalesce(m.thread_id, -m.id)",
+                total,
+                None,
+            )?,
+            ListView::Folder(role) => self.count_from_message_ids(
+                account,
+                &format!(
+                    "SELECT p.message_id
+                       FROM folders f
+                       JOIN placements p ON p.folder_id = f.id
+                      WHERE f.account_id = {account} AND f.role = ?3"
+                ),
+                "",
+                "coalesce(m.thread_id, -m.id)",
+                total,
+                Some(role.as_str()),
+            )?,
+            ListView::Starred => self.count_on_partial_index(
+                account,
+                "idx_messages_flagged",
+                &format!(
+                    "flags & {flagged} != 0 AND {binned}",
+                    flagged = flags::FLAGGED,
+                    binned = not_binned("messages"),
+                ),
+                total,
+            )?,
+            ListView::Snoozed => self.count_on_partial_index(
+                account,
+                "idx_messages_snoozed",
+                "snoozed_until_ms IS NOT NULL
+                 AND snoozed_until_ms > (strftime('%s','now') * 1000)",
+                total,
+            )?,
+            ListView::Outbox => self.count_on_partial_index(
+                account,
+                "idx_messages_send_after",
+                "send_after_ms IS NOT NULL",
+                total,
+            )?,
+            _ => return Ok(None),
+        };
+        Ok(Some(n))
+    }
+
+    fn count_from_message_ids(
+        &self,
+        account: i64,
+        ids_sql: &str,
+        extra_where: &str,
+        thread_key: &str,
+        total: bool,
+        bound: Option<&str>,
+    ) -> Result<i64> {
+        let having = if total {
+            String::new()
+        } else {
+            format!(
+                "HAVING max(CASE WHEN m.flags & {seen} = 0 THEN 1 ELSE 0 END) = 1",
+                seen = flags::SEEN
+            )
+        };
+        let sql = format!(
+            "WITH ids AS MATERIALIZED ({ids_sql})
+             SELECT count(*) FROM (
+               SELECT {thread_key} AS tid
+               FROM ids
+               JOIN messages m ON m.id = ids.message_id
+               WHERE m.deleted_at_ms IS NULL AND m.account_id = {account}
+                 {extra_where}
+               GROUP BY tid
+               {having}
+             )"
+        );
+        let mut stmt = self.conn.prepare_cached(&sql)?;
+        Ok(match bound {
+            Some(role) => stmt.query_row(
+                rusqlite::params![rusqlite::types::Null, rusqlite::types::Null, role],
+                |r| r.get(0),
+            )?,
+            None => stmt.query_row([], |r| r.get(0))?,
+        })
+    }
+
+    /// Walk a partial index instead of the account's live messages.
+    ///
+    /// `INDEXED BY` is load-bearing: at mailbox scale the planner prefers
+    /// `idx_messages_account_thread` for any `account_id = ?` filter, and a
+    /// count of zero snoozed conversations still reads every row.
+    fn count_on_partial_index(
+        &self,
+        account: i64,
+        index: &str,
+        pred: &str,
+        total: bool,
+    ) -> Result<i64> {
+        let having = if total {
+            String::new()
+        } else {
+            format!(
+                "HAVING max(CASE WHEN flags & {seen} = 0 THEN 1 ELSE 0 END) = 1",
+                seen = flags::SEEN
+            )
+        };
+        let sql = format!(
+            "SELECT count(*) FROM (
+               SELECT coalesce(thread_id, -id) AS tid
+               FROM messages INDEXED BY {index}
+               WHERE deleted_at_ms IS NULL AND account_id = {account}
+                 AND {pred}
+               GROUP BY tid
+               {having}
+             )"
+        );
+        let mut stmt = self.conn.prepare_cached(&sql)?;
+        Ok(stmt.query_row([], |r| r.get(0))?)
+    }
+
     /// The thread-row aggregate, restricted to a set of conversations.
     pub(super) fn threads_by_id(&self, thread_ids: &[i64]) -> Result<Vec<ThreadListing>> {
-        let holes = std::iter::repeat_n("?", thread_ids.len())
+        if thread_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Written into the SQL rather than bound: these are row ids this
+        // query just read out of the database, and the inner GROUP BY and
+        // the outer filter both name the same set — binding the list once
+        // left half the placeholders hungry.
+        let holes = thread_ids
+            .iter()
+            .map(|k| k.to_string())
             .collect::<Vec<_>>()
             .join(",");
         let tags_json = TAGS_JSON;
@@ -523,13 +815,14 @@ impl Store {
                       max(CASE WHEN flags & 4 != 0 THEN 1 ELSE 0 END) AS starred,
                       max(has_attachments) AS attach
                FROM messages WHERE deleted_at_ms IS NULL
+                 AND coalesce(thread_id, -id) IN ({holes})
                GROUP BY coalesce(thread_id, -id)
              ) t ON coalesce(m.thread_id, -m.id) = t.thread_id AND m.date_ms = t.md
              WHERE m.deleted_at_ms IS NULL AND coalesce(m.thread_id, -m.id) IN ({holes})
              GROUP BY coalesce(m.thread_id, -m.id)"
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(rusqlite::params_from_iter(thread_ids), |row| {
+        let rows = stmt.query_map([], |row| {
             Ok(ThreadListing {
                 thread_id: row.get(0)?,
                 id: row.get(1)?,
@@ -549,6 +842,19 @@ impl Store {
             })
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// Addresses on one message for a single header role, in header order.
+    fn addresses_with_role(&self, message_id: i64, role: &str) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT coalesce(nullif(display,''), addr_norm), addr_norm
+             FROM message_addresses
+             WHERE message_id = ?1 AND role = ?2 ORDER BY rowid",
+        )?;
+        let rows = stmt
+            .query_map(params![message_id, role], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     /// One conversation, message by message, with what the reading pane needs to
@@ -605,18 +911,18 @@ impl Store {
             invite_response,
         ) in rows
         {
-            let mut to = self.conn.prepare_cached(
-                // message_addresses has no surrogate key; rowid preserves the
-                // order the parser inserted them, which is the header's order.
-                "SELECT coalesce(nullif(display,''), addr_norm), addr_norm
-                 FROM message_addresses
-                 WHERE message_id = ?1 AND role IN ('to','cc') ORDER BY rowid",
-            )?;
-            let pairs: Vec<(String, String)> = to
-                .query_map(params![id], |r| Ok((r.get(0)?, r.get(1)?)))?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            let recipients: Vec<String> = pairs.iter().map(|(d, _)| d.clone()).collect();
-            let recipient_addrs: Vec<String> = pairs.into_iter().map(|(_, a)| a).collect();
+            // message_addresses has no surrogate key; rowid preserves the
+            // order the parser inserted them, which is the header's order.
+            let to_pairs = self.addresses_with_role(id, "to")?;
+            let cc_pairs = self.addresses_with_role(id, "cc")?;
+            let to: Vec<String> = to_pairs.iter().map(|(d, _)| d.clone()).collect();
+            let cc: Vec<String> = cc_pairs.iter().map(|(d, _)| d.clone()).collect();
+            let recipients: Vec<String> = to.iter().chain(cc.iter()).cloned().collect();
+            let recipient_addrs: Vec<String> = to_pairs
+                .into_iter()
+                .chain(cc_pairs)
+                .map(|(_, a)| a)
+                .collect();
 
             let mut att = self.conn.prepare_cached(
                 "SELECT coalesce(filename,''), coalesce(size, 0), part_id, coalesce(mime,'')
@@ -645,6 +951,8 @@ impl Store {
                 unread: flags & flags::SEEN == 0,
                 has_calendar,
                 invite_response,
+                to,
+                cc,
                 recipients,
                 recipient_addrs,
                 attachments,

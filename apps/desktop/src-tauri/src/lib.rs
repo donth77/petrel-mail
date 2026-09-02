@@ -34,7 +34,8 @@ mod state;
 mod sync;
 
 use config::{
-    adopt_store_identity, imap_config_for, imap_config_from_env, keychain_entry, remember_password,
+    adopt_legacy_keychain_items, adopt_store_identity, imap_config_from_env,
+    imap_config_from_servers, keychain_entry, remember_password,
 };
 use demo::{decorate_demo_store, reseed_demo_if_stale, spawn_demo_seeding};
 use diag::{DIAG, SELFTEST, data_dir, log_sync};
@@ -135,6 +136,7 @@ pub fn run() {
         source: Mutex::new("starting…".into()),
         sync_error: Mutex::new(None),
         drain_signal: Arc::new(tokio::sync::Notify::new()),
+        outbox: Mutex::new(Vec::new()),
         draining: AtomicBool::new(false),
         draft_dirty: Mutex::new(std::collections::HashSet::new()),
         pending_notify: Mutex::new(Vec::new()),
@@ -198,10 +200,30 @@ pub fn run() {
             // Which store this is, before any password is read: keychain items
             // are named per store, and a read under the wrong name is a
             // consent dialog for nothing.
-            if let Ok(store) = state.store.lock() {
-                let ids = store.account_ids().unwrap_or_default();
-                adopt_store_identity(&store, &ids);
-            }
+            let account_ids = match state.store.lock() {
+                Ok(store) => {
+                    adopt_store_identity(&store);
+                    // A send that was mid-SMTP when the app last quit is
+                    // still marked Transmitting, which nothing picks up and no
+                    // button moves. Held for a person here, before any worker
+                    // exists, so recovery cannot mistake a fresh attempt for
+                    // a stale one.
+                    match store.recover_interrupted_sends() {
+                        Ok(n) if n > 0 => {
+                            log_sync(&format!("recovered {n} send(s) interrupted in-flight"))
+                        }
+                        Ok(_) => {}
+                        Err(e) => log_sync(&format!("could not recover interrupted sends: {e}")),
+                    }
+                    store.account_ids().unwrap_or_default()
+                }
+                Err(_) => Vec::new(),
+            };
+            // Keychain after the lock is dropped. A cargo-run binary is a new
+            // "app" every time; get_password then blocks on a consent dialog
+            // that often never surfaces, and every IPC command that needs the
+            // store — including the list — waits behind it.
+            adopt_legacy_keychain_items(&account_ids);
             // The account set up in the app first; the environment as the developer
             // override when there is none. Before this every launch without the
             // variables was a demo — which is how demo tags ended up decorating a
@@ -219,40 +241,52 @@ pub fn run() {
             // Namecheap). If the environment names such an account's own address,
             // its credentials move into the keychain now, once, and it becomes an
             // ordinary configured account.
-            if let (Some(env), Ok(store)) = (imap_config_from_env(), state.store.lock()) {
-                for summary in store.accounts().unwrap_or_default() {
-                    let stored = imap_config_for(&store, summary.id).is_some()
-                        || store
-                            .account_servers(summary.id)
-                            .ok()
-                            .flatten()
-                            .is_some_and(|s| !s.imap_host.is_empty());
-                    if stored || !summary.email.eq_ignore_ascii_case(&env.user) {
-                        continue;
+            if let Some(env) = imap_config_from_env() {
+                let adopted: Vec<i64> = match state.store.lock() {
+                    Ok(store) => {
+                        let mut ids = Vec::new();
+                        for summary in store.accounts().unwrap_or_default() {
+                            let stored = store
+                                .account_servers(summary.id)
+                                .ok()
+                                .flatten()
+                                .is_some_and(|s| !s.imap_host.is_empty());
+                            if stored || !summary.email.eq_ignore_ascii_case(&env.user) {
+                                continue;
+                            }
+                            let smtp = petrel_providers::smtp::SmtpConfig::for_imap_host(
+                                &env.host,
+                                &env.user,
+                                env_pass(&env),
+                            );
+                            let servers = petrel_engine::store::AccountServers {
+                                imap_host: env.host.clone(),
+                                imap_port: env.port,
+                                smtp_host: smtp.host,
+                                smtp_port: smtp.port,
+                                username: env.user.clone(),
+                                provider: String::new(),
+                            };
+                            if let Err(e) = store.set_account_servers(summary.id, &servers) {
+                                eprintln!(
+                                    "[sync] could not adopt env servers for {}: {e}",
+                                    env.user
+                                );
+                                continue;
+                            }
+                            ids.push(summary.id);
+                        }
+                        ids
                     }
-                    let smtp = petrel_providers::smtp::SmtpConfig::for_imap_host(
-                        &env.host,
-                        &env.user,
-                        env_pass(&env),
-                    );
-                    let servers = petrel_engine::store::AccountServers {
-                        imap_host: env.host.clone(),
-                        imap_port: env.port,
-                        smtp_host: smtp.host,
-                        smtp_port: smtp.port,
-                        username: env.user.clone(),
-                        provider: String::new(),
-                    };
-                    if let Err(e) = store.set_account_servers(summary.id, &servers) {
-                        eprintln!("[sync] could not adopt env servers for {}: {e}", env.user);
-                        continue;
-                    }
-                    if let Ok(entry) = keychain_entry(summary.id) {
+                    Err(_) => Vec::new(),
+                };
+                for id in adopted {
+                    if let Ok(entry) = keychain_entry(id) {
                         // set_password refuses to overwrite on macOS; clear first.
                         let _ = entry.delete_credential();
                         match entry.set_password(env_pass(&env)) {
                             Ok(()) => {
-                                remember_password(summary.id, env_pass(&env));
+                                remember_password(id, env_pass(&env));
                                 log_sync(&format!(
                                     "adopted environment credentials for {} into the keychain",
                                     env.user
@@ -263,7 +297,7 @@ pub fn run() {
                     }
                 }
             }
-            let configs: Vec<(i64, ImapConfig)> = state
+            let server_rows: Vec<(i64, petrel_engine::store::AccountServers)> = state
                 .store
                 .lock()
                 .ok()
@@ -271,10 +305,17 @@ pub fn run() {
                     s.account_ids()
                         .unwrap_or_default()
                         .into_iter()
-                        .filter_map(|id| imap_config_for(&s, id).map(|c| (id, c)))
+                        .filter_map(|id| {
+                            let servers = s.account_servers(id).ok().flatten()?;
+                            (!servers.imap_host.is_empty()).then_some((id, servers))
+                        })
                         .collect()
                 })
                 .unwrap_or_default();
+            let configs: Vec<(i64, ImapConfig)> = server_rows
+                .into_iter()
+                .filter_map(|(id, servers)| imap_config_from_servers(id, servers).map(|c| (id, c)))
+                .collect();
             // Re-own the keychain items, once. A keychain item remembers the
             // app that created it, and these were created by ad-hoc builds —
             // a different "app" every rebuild — so even the signed build had

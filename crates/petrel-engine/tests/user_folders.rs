@@ -442,6 +442,130 @@ fn a_plain_archive_folder_is_the_archive() {
     assert_eq!(archive.role, "archive", "and keeps it across surveys");
 }
 
+/// The Sent mailbox on an account whose server marks no \Sent.
+///
+/// Some hosts flag \Archive and \Trash and leave Sent as a plain folder
+/// named `Sent` (or Outlook's `Sent Items`). The send path looks up
+/// `role = 'sent'` before it APPENDs a copy; without this adoption the
+/// copy never happens even though the folder is already there.
+#[test]
+fn a_plain_sent_folder_is_the_sent_mailbox() {
+    let (_dir, mut store, _blobs, account) = setup();
+    store
+        .sync_folders(
+            account,
+            &[
+                ("INBOX".into(), Some("inbox".into())),
+                ("Sent".into(), None),
+                ("Sent Items".into(), None),
+                ("Sent Messages".into(), None),
+                ("Archive".into(), Some("archive".into())),
+            ],
+        )
+        .unwrap();
+
+    let folders = store.folders(account).unwrap();
+    let sent = folders.iter().find(|f| f.path == "Sent").unwrap();
+    assert_eq!(sent.role, "sent", "the plain folder wears the role");
+    assert!(
+        folders.iter().filter(|f| f.role == "sent").count() == 1,
+        "Outlook aliases stay ordinary folders"
+    );
+
+    store
+        .sync_folders(
+            account,
+            &[
+                ("INBOX".into(), Some("inbox".into())),
+                ("Sent".into(), None),
+                ("Sent Items".into(), None),
+                ("Sent Messages".into(), None),
+                ("Archive".into(), Some("archive".into())),
+            ],
+        )
+        .unwrap();
+    let after = store.folders(account).unwrap();
+    let sent = after.iter().find(|f| f.path == "Sent").unwrap();
+    assert_eq!(sent.role, "sent", "and keeps it across surveys");
+}
+
+#[test]
+fn sent_items_is_the_sent_mailbox_when_nothing_is_named_sent() {
+    let (_dir, mut store, _blobs, account) = setup();
+    store
+        .sync_folders(
+            account,
+            &[
+                ("INBOX".into(), Some("inbox".into())),
+                ("Sent Items".into(), None),
+            ],
+        )
+        .unwrap();
+    let folders = store.folders(account).unwrap();
+    let sent = folders.iter().find(|f| f.path == "Sent Items").unwrap();
+    assert_eq!(sent.role, "sent");
+}
+
+/// The spam mailbox on an account whose server marks no \Junk.
+///
+/// Reporting spam looks up `role = 'spam'` before it files. Without this
+/// adoption the gesture invents a local folder (or nowhere) while `Junk`
+/// already holds the mail the server put there. `Junk Mail` stays ordinary
+/// when `Junk` itself is present.
+#[test]
+fn a_plain_junk_folder_is_the_spam_mailbox() {
+    let (_dir, mut store, _blobs, account) = setup();
+    store
+        .sync_folders(
+            account,
+            &[
+                ("INBOX".into(), Some("inbox".into())),
+                ("Junk".into(), None),
+                ("Junk Mail".into(), None),
+            ],
+        )
+        .unwrap();
+
+    let folders = store.folders(account).unwrap();
+    let junk = folders.iter().find(|f| f.path == "Junk").unwrap();
+    assert_eq!(junk.role, "spam", "the plain folder wears the role");
+    assert!(
+        folders.iter().filter(|f| f.role == "spam").count() == 1,
+        "Junk Mail stays an ordinary folder"
+    );
+
+    store
+        .sync_folders(
+            account,
+            &[
+                ("INBOX".into(), Some("inbox".into())),
+                ("Junk".into(), None),
+                ("Junk Mail".into(), None),
+            ],
+        )
+        .unwrap();
+    let after = store.folders(account).unwrap();
+    let junk = after.iter().find(|f| f.path == "Junk").unwrap();
+    assert_eq!(junk.role, "spam", "and keeps it across surveys");
+}
+
+#[test]
+fn junk_mail_is_the_spam_mailbox_when_nothing_is_named_junk() {
+    let (_dir, mut store, _blobs, account) = setup();
+    store
+        .sync_folders(
+            account,
+            &[
+                ("INBOX".into(), Some("inbox".into())),
+                ("Junk Mail".into(), None),
+            ],
+        )
+        .unwrap();
+    let folders = store.folders(account).unwrap();
+    let junk = folders.iter().find(|f| f.path == "Junk Mail").unwrap();
+    assert_eq!(junk.role, "spam");
+}
+
 /// Marking a whole folder read, and back again.
 ///
 /// One statement rather than a loop, because a real folder holds ten thousand

@@ -18,7 +18,7 @@ mod listing;
 mod maintenance;
 mod search;
 
-pub const SCHEMA_VERSION: i64 = 22;
+pub const SCHEMA_VERSION: i64 = 23;
 /// Bumped whenever text extraction changes; a mismatch forces reindexing.
 pub const EXTRACTOR_VERSION: i64 = 1;
 
@@ -171,7 +171,12 @@ pub struct ThreadMessage {
     pub snippet: String,
     pub date_ms: i64,
     pub unread: bool,
-    /// Display names, for reading — "to Sam Ortiz, Dana Wu".
+    /// To, display names — the reading pane's "to" line.
+    pub to: Vec<String>,
+    /// Cc, display names. Empty when the message copied nobody.
+    pub cc: Vec<String>,
+    /// Display names, To then Cc — "to Sam Ortiz, Dana Wu". Reply-all still
+    /// walks this combined list so original To people are not left off.
     pub recipients: Vec<String>,
     /// The same people as addresses, for replying to them. Kept separate
     /// because a reply-all built from display names sends to nobody.
@@ -951,11 +956,13 @@ impl ListView {
     fn predicate(&self, alias: &str) -> String {
         match self {
             ListView::Inbox => format!(
-                "{} AND coalesce({alias}.snoozed_until_ms, 0) <= (strftime('%s','now') * 1000)",
+                "{} AND ({alias}.snoozed_until_ms IS NULL OR {alias}.snoozed_until_ms <= (strftime('%s','now') * 1000))",
                 in_inbox(alias)
             ),
             ListView::Snoozed => {
-                format!("coalesce({alias}.snoozed_until_ms, 0) > (strftime('%s','now') * 1000)")
+                format!(
+                    "{alias}.snoozed_until_ms IS NOT NULL AND {alias}.snoozed_until_ms > (strftime('%s','now') * 1000)"
+                )
             }
             // A draft with a send time is not a draft any more, it is post. The
             // two views are the same rows split on that one column.
@@ -1133,6 +1140,9 @@ impl Store {
         }
         if ver < 22 {
             conn.execute_batch(include_str!("migrations/0022-tag-origin.sql"))?;
+        }
+        if ver < 23 {
+            conn.execute_batch(include_str!("migrations/0023-folder-role-index.sql"))?;
         }
         if ver < SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -1550,7 +1560,7 @@ impl Store {
     /// The index is built once, when a message arrives, so an improvement to
     /// extraction reaches only new mail — everything already held keeps
     /// whatever the old code produced. This is the version that says otherwise.
-    pub const EXTRACTION_VERSION: i64 = 4;
+    pub const EXTRACTION_VERSION: i64 = 5;
 
     /// The blob backing a message, for the reading pane to fetch and render.
     /// Who sent a message and when — the two facts an attribution line needs.

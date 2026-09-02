@@ -69,6 +69,37 @@ fn recipients_include_cc_because_the_envelope_needs_them() {
     assert_eq!(m.recipients(), vec!["you@example.com", "cc@example.com"]);
 }
 
+/// Sent-folder ingest parses Cc with mail-parser, which only kept the last
+/// header when we wrote one Cc: line per address. Every recipient has to
+/// survive the round trip.
+#[test]
+fn many_cc_addresses_survive_render_and_parse() {
+    let cc_addrs = [
+        "cc-one@example.com",
+        "cc-two@example.com",
+        "cc-three@example.com",
+        "cc-four@example.com",
+        "cc-five@example.com",
+    ];
+    let mut m = base();
+    m.cc = cc_addrs.iter().map(|a| (*a).into()).collect();
+
+    let (_, bytes) = m.render("example.com");
+    let raw = text(&bytes);
+
+    // One Cc field with a comma-separated list — not five stacked headers.
+    let cc_line_count = raw
+        .lines()
+        .filter(|line| line.starts_with("Cc:") || line.starts_with("CC:"))
+        .count();
+    assert_eq!(cc_line_count, 1, "expected one Cc header line, got:\n{raw}");
+    assert!(raw.contains("Cc:"), "Cc header missing:\n{raw}");
+
+    let parsed = petrel_mime::parse_message(&bytes).expect("parses");
+    let got: Vec<&str> = parsed.cc.iter().map(|(_, addr)| addr.as_str()).collect();
+    assert_eq!(got, cc_addrs, "Cc round-trip lost addresses");
+}
+
 #[test]
 fn a_non_ascii_subject_survives_the_trip() {
     let mut m = base();
@@ -79,6 +110,46 @@ fn a_non_ascii_subject_survives_the_trip() {
     assert!(
         s.contains("会議") || s.to_ascii_lowercase().contains("utf-8"),
         "subject was neither encoded nor preserved: {s}"
+    );
+}
+
+#[test]
+fn a_long_cjk_reply_subject_is_encoded_word_not_raw_bytes() {
+    // A forwarded Japanese subject is long, mixed ASCII (`Re: Fwd:`) and
+    // CJK, and often carries fullwidth brackets. RFC 5322 headers are 7-bit;
+    // raw UTF-8 there is what some submission servers stall on.
+    let mut m = base();
+    m.subject = "Re: Fwd: 【移行】お問い合わせいただきありがとうございます。".into();
+    m.body_html = Some("<p>了解しました。</p><blockquote><p>前文</p></blockquote>".into());
+    m.body_text = "了解しました。".into();
+    let (_, bytes) = m.render("example.com");
+    let raw = String::from_utf8_lossy(&bytes);
+    let headers = raw.split("\r\n\r\n").next().expect("headers");
+    assert!(
+        headers.bytes().all(|b| b < 128),
+        "8-bit bytes in the header block"
+    );
+    assert!(
+        headers.to_ascii_lowercase().contains("=?utf-8?"),
+        "CJK subject was not encoded-word"
+    );
+}
+
+#[test]
+fn a_long_cjk_html_reply_renders_without_panicking() {
+    let quoted = "<p>あいうえおかきくけこ</p>".repeat(2000);
+    let html = format!("<p>返信です。</p><blockquote>{quoted}</blockquote>");
+    let mut m = base();
+    m.subject = "Re: 会議".into();
+    m.body_html = Some(html);
+    m.body_text = "返信です。".into();
+    let (_, bytes) = m.render("example.com");
+    assert!(!bytes.is_empty());
+    let raw = String::from_utf8_lossy(&bytes);
+    assert!(
+        raw.contains("Content-Transfer-Encoding: base64")
+            || raw.contains("Content-Transfer-Encoding: quoted-printable"),
+        "CJK body went out 8-bit"
     );
 }
 
@@ -347,6 +418,37 @@ mod deliverability {
         );
         assert!(out.contains("<p>Hello there.</p>"));
         assert!(out.contains("</body></html>"));
+    }
+
+    #[test]
+    fn a_cjk_fragment_is_wrapped_rather_than_panicking() {
+        // `<p>` is three bytes; the next character is three more. Slicing
+        // `[..5]` to look for `<html` used to panic on a char boundary.
+        let (_, bytes) = note(Some("<p>会議について</p>")).render("example.com");
+        let raw = String::from_utf8_lossy(&bytes);
+        // Non-ASCII HTML goes out base64, so the wrapper is not visible as
+        // markup in the raw source. Decode the html half.
+        let encoded = raw
+            .split("Content-Transfer-Encoding: base64")
+            .nth(1)
+            .and_then(|s| s.split("\r\n\r\n").nth(1))
+            .and_then(|s| s.split("--").next())
+            .unwrap_or("")
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>();
+        use base64::Engine as _;
+        let html = String::from_utf8(
+            base64::engine::general_purpose::STANDARD
+                .decode(&encoded)
+                .expect("html half was not base64"),
+        )
+        .expect("html half was not utf-8");
+        assert!(
+            html.contains("<html><head><meta charset=\"utf-8\"></head><body>"),
+            "no document wrapper in:\n{html}"
+        );
+        assert!(html.contains("会議について"), "{html}");
     }
 
     #[test]
