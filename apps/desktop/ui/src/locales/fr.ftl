@@ -72,6 +72,8 @@ reader-earlier = { $count ->
 }
 reader-none-title = Rien de sélectionné
 reader-none-body = Choisissez une conversation avec J et K, ou appuyez sur Entrée pour en ouvrir une.
+drafts-none-title = Aucun brouillon ouvert
+drafts-none-body = Choisissez un brouillon avec J et K, ou appuyez sur Entrée pour continuer à l'écrire.
 empty-inbox-title = La boîte de réception est vide
 empty-view-title = Rien dans { $view }
 empty-view-body = Les conversations que vous déplacez ici apparaîtront dans cette liste.

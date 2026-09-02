@@ -532,9 +532,13 @@
     install_update: function () { return null; },
     restart_for_update: function () { return null; },
     load_draft: function (a) {
+      // The shape load_draft really returns: cc and the envelope included.
+      // Without the envelope, resuming a draft threw before the composer
+      // opened, and the harness could not prove the Drafts view at all.
+      var envelope = { in_reply_to: null, references: [], attachments: [] };
       return window.__CONFLICT_DONE__
-        ? { id: a.id, to: 'sam@example.com', subject: 'plans, revised', body: 'second thoughts', html: '' }
-        : { id: a.id, to: 'sam@example.com', subject: 'plans', body: 'first words', html: '' };
+        ? { id: a.id, to: 'sam@example.com', cc: '', subject: 'plans, revised', body: 'second thoughts', html: '', envelope: envelope }
+        : { id: a.id, to: 'sam@example.com', cc: '', subject: 'plans', body: 'first words', html: '', envelope: envelope };
     },
     attachment_is_executable: function (a) {
       return /\.(exe|bat|sh|js|jar|dmg|app|py)$/i.test(String(a.filename || ''));

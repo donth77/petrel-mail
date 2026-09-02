@@ -141,8 +141,10 @@ export function App() {
   // Where a range grows from, so reversing direction shrinks it again.
   const [anchor, setAnchor] = useState<number | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
-  // Remounts the editor when a different draft opens. Saving the same one
-  // must not, or the caret jumps on the first Cmd+S.
+  // Keys the composer. The editor keeps the body it was created with, so a
+  // different message needs a fresh one: every way a message opens for
+  // writing bumps this, and the old editor goes with it. Saving the same
+  // draft must not, or the caret jumps on the first Cmd+S.
   const [composeGen, setComposeGen] = useState(0);
   // Reset per composer, so each message gets its own single warning.
   const attachmentWarned = useRef(false);
@@ -337,10 +339,14 @@ export function App() {
    *  copy unthinkable, and one of the three had already drifted: the palette
    *  forgot to clear the attachment warning, so a composer opened from there
    *  had used up its one warning before it began. */
-  const startCompose = () => {
+  const openComposer = useCallback((d: Draft) => {
     attachmentWarned.current = false;
     setComposeGen((n) => n + 1);
-    setDraft({
+    setDraft(d);
+  }, []);
+
+  const startCompose = () => {
+    openComposer({
       to: '',
       cc: '',
       subject: '',
@@ -639,12 +645,11 @@ export function App() {
         messages[messages.length - 1];
       if (!last) return;
       const { to, cc } = replyTargets(last, identity?.address ?? '', all);
-      attachmentWarned.current = false;
       // The original, quoted. Fetched rather than taken from the row, which
       // carries a 120-character snippet — a reply quoting a preview would be
       // worse than one quoting nothing.
       const quoted = await api.quoteMessage(last.id).catch(() => null);
-      setDraft({
+      openComposer({
         to: to.join(', '),
         cc: cc.join(', '),
         // Threading rides on the headers, not the subject; the Re: is only
@@ -685,10 +690,9 @@ export function App() {
         (targetId != null ? messages.find((m) => m.id === targetId) : undefined) ??
         messages[messages.length - 1];
       if (!target) return;
-      attachmentWarned.current = false;
       const quoted = await api.quoteMessage(target.id).catch(() => null);
       const subject = quoted?.subject?.trim() || row.subject;
-      setDraft({
+      openComposer({
         to: '',
         cc: '',
         subject: subject.match(/^fwd:/i) ? subject : `Fwd: ${subject}`,
@@ -714,9 +718,7 @@ export function App() {
   const resumeDraft = useCallback(async (id: number) => {
     try {
       const d = await api.loadDraft(id);
-      attachmentWarned.current = false;
-      setComposeGen((n) => n + 1);
-      setDraft(draftFromRecord(d));
+      openComposer(draftFromRecord(d));
       // Asked as the draft opens, not at save time: the person is about to
       // continue from one of two versions, and should choose before typing
       // into the wrong one. The data layer kept both; that is what makes
@@ -726,7 +728,7 @@ export function App() {
     } catch (e) {
       setToast(t('compose-resume-failed', { error: String(e) }));
     }
-  }, [locale]);
+  }, [locale, openComposer]);
 
   const onToggleSelect = useCallback((id: number) => {
     setSelected((cur) => toggle(cur, id));
@@ -1357,8 +1359,7 @@ export function App() {
   useMessageLinks(
     useCallback(
       (addr: string) => {
-        attachmentWarned.current = false;
-        setDraft({
+        openComposer({
           to: addr,
           cc: '',
           subject: '',
@@ -1366,7 +1367,7 @@ export function App() {
           html: startingHtml(identity, false),
         });
       },
-      [identity],
+      [identity, openComposer],
     ),
     // A link whose spelling hides where it goes gets a question first. The
     // question names both spellings, because the whole trick is that one of
@@ -1609,16 +1610,7 @@ export function App() {
         tags={tags}
         railRef={railRef}
         collapsed={settings.railCollapsed === 'on'}
-        onCompose={() => {
-          attachmentWarned.current = false;
-          setDraft({
-            to: '',
-            cc: '',
-            subject: '',
-            body: startingBody(identity, false),
-            html: startingHtml(identity, false),
-          });
-        }}
+        onCompose={startCompose}
         onToggleCollapsed={() =>
           set('railCollapsed', settings.railCollapsed === 'on' ? 'off' : 'on')
         }
@@ -1897,7 +1889,12 @@ export function App() {
       )}
 
       {opensComposer(view) && settings.layout !== 'off' && !draft && (
-        <div className="reader" />
+        <section className="reader" aria-label={t('drafts-none-title')}>
+          <div className="empty">
+            <h2>{t('drafts-none-title')}</h2>
+            <p>{t('drafts-none-body')}</p>
+          </div>
+        </section>
       )}
 
       {(settings.layout !== 'off' || readerOverlay) && !opensComposer(view) && (
@@ -1906,8 +1903,7 @@ export function App() {
           view={view}
           onToast={setToast}
           onComposeMailto={(to, subject) => {
-            attachmentWarned.current = false;
-            setDraft({
+            openComposer({
               to,
               cc: '',
               subject,

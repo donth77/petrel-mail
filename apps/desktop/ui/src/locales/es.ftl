@@ -93,6 +93,8 @@ reader-earlier = { $count ->
 }
 reader-none-title = Nada seleccionado
 reader-none-body = Elige una conversación con J y K, o pulsa Intro para abrir una.
+drafts-none-title = Ningún borrador abierto
+drafts-none-body = Elige un borrador con J y K, o pulsa Intro para seguir escribiéndolo.
 empty-inbox-title = La bandeja de entrada está vacía
 empty-view-title = No hay nada en { $view }
 empty-view-body = Las conversaciones que muevas aquí aparecerán en esta lista.

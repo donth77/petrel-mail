@@ -72,6 +72,8 @@ reader-earlier = { $count ->
 }
 reader-none-title = Nothing selected
 reader-none-body = Pick a conversation with J and K, or press Enter to open one.
+drafts-none-title = No draft open
+drafts-none-body = Pick a draft with J and K, or press Enter to keep writing it.
 empty-inbox-title = Inbox is clear
 empty-view-title = Nothing in { $view }
 empty-view-body = Conversations you move here will show up in this list.

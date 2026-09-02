@@ -65,6 +65,8 @@ export const STRING_IDS = [
   'reader-earlier',
   'reader-none-title',
   'reader-none-body',
+  'drafts-none-title',
+  'drafts-none-body',
   'empty-inbox-title',
   'empty-view-title',
   'empty-view-body',

@@ -72,6 +72,8 @@ reader-earlier = { $count ->
 }
 reader-none-title = Nichts ausgewählt
 reader-none-body = Wählen Sie mit J und K eine Konversation, oder öffnen Sie eine mit der Eingabetaste.
+drafts-none-title = Kein Entwurf geöffnet
+drafts-none-body = Wählen Sie mit J und K einen Entwurf, oder schreiben Sie mit der Eingabetaste daran weiter.
 empty-inbox-title = Der Posteingang ist leer
 empty-view-title = Nichts in { $view }
 empty-view-body = Konversationen, die Sie hierher verschieben, erscheinen in dieser Liste.

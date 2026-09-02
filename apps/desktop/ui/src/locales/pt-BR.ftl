@@ -73,6 +73,8 @@ reader-earlier = { $count ->
 }
 reader-none-title = Nada selecionado
 reader-none-body = Escolha uma conversa com J e K, ou pressione Enter para abrir uma.
+drafts-none-title = Nenhum rascunho aberto
+drafts-none-body = Escolha um rascunho com J e K, ou pressione Enter para continuar escrevendo.
 empty-inbox-title = A caixa de entrada está vazia
 empty-view-title = Nada em { $view }
 empty-view-body = As conversas que você mover para cá vão aparecer nesta lista.
