@@ -24,13 +24,14 @@ mkdir -p "$out"
 cp -R "$ui/dist/." "$out/"
 cp "$root/scripts/harness/shim.js" "$out/shim.js"
 cp "$root/scripts/harness/msg.html" "$out/msg.html"
+cp "$root/scripts/harness/scroll-probe.js" "$out/scroll-probe.js"
 
 # Inject the shim ahead of the module script. A classic script tag runs during
 # parsing, so window.__TAURI_INTERNALS__ exists before the deferred module ever
 # evaluates — which is the only ordering that works.
-python3 - "$out/index.html" "$out/shim.js" <<'PY'
+python3 - "$out/index.html" "$out/shim.js" "$out/scroll-probe.js" <<'PY'
 import hashlib, re, sys
-path, shim = sys.argv[1], sys.argv[2]
+path, shim, probe = sys.argv[1], sys.argv[2], sys.argv[3]
 html = open(path).read()
 if 'shim.js' not in html:
     # Stamped with the shim's own hash. Without it the browser keeps the copy
@@ -40,8 +41,13 @@ if 'shim.js' not in html:
     tag = hashlib.blake2s(open(shim, 'rb').read(), digest_size=6).hexdigest()
     html = re.sub(r'(<script type="module")',
                   f'<script src="./shim.js?v={tag}"></script>\n    \\1', html, count=1)
-    open(path, 'w').write(html)
     print(f"shim injected (v={tag})")
+if 'scroll-probe.js' not in html:
+    ptag = hashlib.blake2s(open(probe, 'rb').read(), digest_size=6).hexdigest()
+    html = re.sub(r'(<script type="module")',
+                  f'<script src="./scroll-probe.js?v={ptag}"></script>\n    \\1', html, count=1)
+    print(f"scroll-probe injected (v={ptag})")
+open(path, 'w').write(html)
 PY
 
 echo "serving $out on http://localhost:$port"

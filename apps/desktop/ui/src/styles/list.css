@@ -5,6 +5,11 @@
   flex-direction: column;
   min-inline-size: 0;
   min-block-size: 0;
+  /* The scroller is a flex child whose content is a tall spacer. Without a
+     clip here, overflow is visible and the pane grows with every loaded
+     row — which is exactly how virtualization dies: the "viewport" becomes
+     the whole list, and every row mounts. */
+  overflow: hidden;
   border-inline-end: 1px solid var(--hair);
   background: var(--surface);
 }
@@ -88,8 +93,19 @@
 
 .scroller {
   flex-grow: 1;
+  /* Load-bearing. Flex items default to min-height: auto, so this element
+     would refuse to shrink below the virtualizer's spacer (500 × 74px, or
+     worse). Overflow never kicks in, TanStack sees a viewport as tall as
+     the mailbox, and every row mounts. Zero lets the grid row's height
+     win, and overflow-y actually scrolls. */
+  min-block-size: 0;
   overflow-y: auto;
   overflow-x: hidden;
+  /* TanStack writes scrollTop when a row above the fold first measures
+     taller than its estimate. The browser's overflow anchor does the same
+     job on the opposite assumption, and the two fight — worse when
+     scrolling up, which is when those rows appear. */
+  overflow-anchor: none;
   position: relative;
   outline: none;
 }
@@ -97,11 +113,14 @@
 .rows {
   position: relative;
   inline-size: 100%;
+  overflow-anchor: none;
 }
 
 .row {
   position: absolute;
   inset-inline: 0;
+  inset-block-start: 0;
+  contain: layout paint;
   display: grid;
   grid-template-columns: 8px 30px 1fr;
   gap: 10px;
@@ -366,6 +385,14 @@
   opacity: 1;
   transform: none;
   pointer-events: auto;
+}
+
+/* Rows slide under the pointer during a flick. Starting and stopping the
+   overlay transition on every one of them is paint the scroll cannot spare. */
+.scroller[data-scrolling] .row-actions {
+  transition: none;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .row[data-active='true'] .row-actions {

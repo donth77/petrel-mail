@@ -376,8 +376,16 @@ const mock = {
     seeding: false, count: 10000, server_total: 12500, source: 'tom@northbay.example',
     retention: 'mirror', data_dir: '~/Library/Application Support/Petrel',
   }),
-  threads: async (view: string, offset: number, limit: number, _sort?: string, _asc = false) => {
-    const rows = mockRows(Math.min(limit, 2000), offset);
+  threads: async (
+    view: string,
+    offset: number,
+    limit: number,
+    _sort?: string,
+    _asc = false,
+    _beforeDateMs?: number,
+    _beforeThreadId?: number,
+  ) => {
+    const rows = mockRows(Math.min(limit, 100), offset);
     // Enough fidelity to exercise the view switch: the browser mock is not the
     // engine, and pretending otherwise is what let an unimplemented view look
     // implemented.
@@ -636,8 +644,26 @@ invite_response: null,
 
 const real = {
   status: () => invoke<Status>('status'),
-  threads: (view: string, offset: number, limit: number, sort?: string, ascending = false) =>
-    invoke<Thread[]>('list_threads', { view, offset, limit, sort, ascending }),
+  threads: (
+    view: string,
+    offset: number,
+    limit: number,
+    sort?: string,
+    ascending = false,
+    beforeDateMs?: number,
+    beforeThreadId?: number,
+  ) =>
+    invoke<Thread[]>('list_threads', {
+      view,
+      offset,
+      limit,
+      sort,
+      ascending,
+      before:
+        beforeDateMs != null && beforeThreadId != null
+          ? [beforeDateMs, beforeThreadId]
+          : null,
+    }),
   threadById: (threadId: number) => invoke<Thread | null>('thread_by_id', { threadId }),
   openExternal: (url: string) => invoke<void>('open_external', { url }),
   discoverAccount: (address: string) => invoke<Discovered | null>('discover_account', { address }),
@@ -701,7 +727,7 @@ const real = {
   /** Absent `account` means the one on screen — see the Rust command. */
   folders: (account?: number) => invoke<Folder[]>('list_folders', { account: account ?? null }),
   createFolder: (path: string) => invoke<number>('create_folder', { path }),
-  /** The view's true conversation count — the list itself is a 500-row window. */
+  /** The view's true conversation count — the list itself is a page. */
   viewCount: (view: string) => invoke<number>('view_count', { view }),
   listRules: () => invoke<Rule[]>('list_rules'),
   saveRule: (

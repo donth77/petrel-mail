@@ -33,7 +33,7 @@ is blank.**
 
 1. `petrel-engine` owns everything trusted: protocols, TLS, OAuth tokens, storage, search,
    MIME parsing, sanitization. The UI never touches the network or secrets.
-2. UI ↔ engine only via typed IPC: commands, paged queries (≤50 rows), change events.
+2. UI ↔ engine only via typed IPC: commands, paged queries (≤100 rows), change events.
    Never bulk data over IPC; bulk bytes go over a custom protocol with single-use tokens.
 3. Message HTML is hostile input: parse → sanitize (allowlist) → render only inside a
    sandboxed, no-script, no-network frame. Fail closed to text.

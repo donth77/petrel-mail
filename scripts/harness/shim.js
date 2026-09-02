@@ -29,7 +29,11 @@
     ['Alex Rivera', 'alex@example.com'],
     ['Priya Nair', 'priya@example.com'],
   ];
-  var rows = Array.from({ length: 40 }, function (_, i) {
+  // The ordinary harness stays at forty so existing fixtures keep their
+  // indexes. The scroll probe needs a list taller than the window — otherwise
+  // every row mounts and the clip CSS cannot fail.
+  var ROW_N = /[?&]probe=scroll(?:&|$)/.test(String(location.search)) ? 400 : 40;
+  var rows = Array.from({ length: ROW_N }, function (_, i) {
     return {
       // Negative thread ids on purpose: real unthreaded mail is keyed by
       // coalesce(thread_id, -id), and a fixture with tidy positive ids would
@@ -51,7 +55,11 @@
       unread: i % 3 === 0,
       starred: false,
       has_attachments: false,
-      tags: [],
+      // Extra probe rows include chips so first-measure is not a no-op:
+      // the estimate is taller, which is the case that used to hitch on
+      // the way up. The original forty keep empty tags until the loop
+      // below files a few of them.
+      tags: i >= 40 && i % 7 === 0 ? [{ id: 11, name: 'Urgent', colour: '#A8544B' }] : [],
       attachment_name: '',
       // Where the engine would have filed it; '' means still in the inbox.
       filed: '',
@@ -273,7 +281,31 @@
       // which is the exact failure this harness exists to catch.
       var view = a.view || 'inbox';
       var now = Date.now();
-      return sorted(pick(), a);
+      var out = sorted(pick(), a);
+      // The live command pages. The scroll probe asks for the whole tall
+      // list in one go so it can measure clip without racing load-more.
+      var limit = a.limit;
+      var page = typeof limit === 'number' && limit > 0;
+      if (/[?&]probe=scroll(?:&|$)/.test(String(location.search))) page = false;
+      if (page) {
+        var before = a.before;
+        if (before && before.length === 2) {
+          var bd = before[0];
+          var bk = before[1];
+          var at = -1;
+          for (var i = 0; i < out.length; i += 1) {
+            if (out[i].date_ms === bd && out[i].thread_id === bk) {
+              at = i;
+              break;
+            }
+          }
+          out = at >= 0 ? out.slice(at + 1) : [];
+        } else if (a.offset) {
+          out = out.slice(a.offset);
+        }
+        out = out.slice(0, limit);
+      }
+      return out;
 
       function pick() {
         if (view === 'inbox') {
@@ -405,10 +437,14 @@
           id: row.id,
           from_display: row.from_display,
           from_addr: row.from_addr,
-          to_display: 'me',
+          to: ['me'],
+          cc: [],
+          snippet: row.snippet,
+          unread: !!row.unread,
           date_ms: row.date_ms,
           subject: row.subject,
-          recipients: '',
+          recipients: ['me'],
+          recipient_addrs: ['you@example.com'],
           // Two files, one previewable and one not, so both verbs and the
           // executable warning can be exercised in the browser.
           attachments: [
