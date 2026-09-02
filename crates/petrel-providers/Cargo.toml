@@ -40,7 +40,6 @@ tempfile.workspace = true
 path = "../petrel-engine"
 
 [dev-dependencies]
-petrel-mime = { path = "../petrel-mime" }
 tokio = { version = "1", features = ["full"] }
 # The RFC 7636 worked example is checked by hashing it here too.
 sha2 = "0.10"
