@@ -47,12 +47,22 @@ function Row({
   now,
   onChange,
   onDiscard,
+  onEdit,
 }: {
   row: OutboxRow;
   now: number;
   onChange: () => void;
   onDiscard: (row: OutboxRow) => void;
+  onEdit?: (id: number) => void;
 }) {
+  const edit = () =>
+    void api
+      .outboxEdit(row.id)
+      .then(() => {
+        onEdit?.(row.id);
+        onChange();
+      })
+      .catch(onChange);
   const [checking, setChecking] = useState<string | null>(null);
   const act = (p: Promise<unknown>) => void p.then(onChange).catch(onChange);
 
@@ -116,7 +126,7 @@ function Row({
       <div className="outbox-acts">
         {pending && (
           <>
-            <button type="button" className="reply" onClick={() => act(api.outboxEdit(row.id))}>
+            <button type="button" className="reply" onClick={edit}>
               {t('outbox-undo')} <span className="kbd">Z</span>
             </button>
             <button type="button" className="reply primary" onClick={() => act(api.outboxSendNow(row.id))}>
@@ -131,7 +141,7 @@ function Row({
         )}
         {(waiting || rejected) && (
           <>
-            <button type="button" className="reply" onClick={() => act(api.outboxEdit(row.id))}>
+            <button type="button" className="reply" onClick={edit}>
               {t('outbox-edit')}
             </button>
             <button type="button" className="reply danger" onClick={() => onDiscard(row)}>
@@ -178,10 +188,13 @@ function Row({
 export function Outbox({
   onDiscard,
   onCountChange,
+  onEdit,
 }: {
   onDiscard: (row: OutboxRow) => void;
   /** Told how many need a person, so the rail can turn amber. */
   onCountChange?: (total: number, needsAttention: number) => void;
+  /** After the send is pulled back: open the composer on that draft. */
+  onEdit?: (id: number) => void;
 }) {
   const [rows, setRows] = useState<OutboxRow[]>([]);
   const [now, setNow] = useState(() => Date.now());
@@ -218,7 +231,14 @@ export function Outbox({
     <section className="outbox" aria-label={t('outbox-title')}>
       <h2 className="outbox-title">{t('outbox-title')}</h2>
       {rows.map((r) => (
-        <Row key={r.id} row={r} now={now} onChange={() => setTick((n) => n + 1)} onDiscard={onDiscard} />
+        <Row
+          key={r.id}
+          row={r}
+          now={now}
+          onChange={() => setTick((n) => n + 1)}
+          onDiscard={onDiscard}
+          onEdit={onEdit}
+        />
       ))}
     </section>
   );
