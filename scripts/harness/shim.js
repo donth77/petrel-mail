@@ -33,6 +33,8 @@
   // indexes. The scroll probe needs a list taller than the window — otherwise
   // every row mounts and the clip CSS cannot fail.
   var ROW_N = /[?&]probe=scroll(?:&|$)/.test(String(location.search)) ? 400 : 40;
+  // The last triage, so undo_triage can reverse it. See triage below.
+  var lastTriage = null;
   var rows = Array.from({ length: ROW_N }, function (_, i) {
     return {
       // Negative thread ids on purpose: real unthreaded mail is keyed by
@@ -599,6 +601,14 @@
       // triage action shows what the real one would show.
       var row = rows.filter(function (r) { return r.thread_id === a.threadId; })[0];
       if (row) {
+        // Remembered for undo_triage, which puts the row back the way the
+        // engine restores prior state. Without it the recount after an undo
+        // reported the action's state, and the badge proof could not close.
+        lastTriage = {
+          row: row,
+          before: Object.assign({}, row, { tags: row.tags.slice() }),
+          at: rows.indexOf(row),
+        };
         if (a.kind === 'archive') row.filed = 'archive';
         else if (a.kind === 'trash') row.filed = 'trash';
         else if (a.kind === 'spam') row.filed = 'spam';
@@ -643,6 +653,11 @@
       };
     },
     undo_triage: function () {
+      if (!lastTriage) return false;
+      var u = lastTriage;
+      lastTriage = null;
+      if (rows.indexOf(u.row) < 0) rows.splice(Math.min(u.at, rows.length), 0, u.row);
+      Object.assign(u.row, u.before);
       return true;
     },
     list_folders: function () {

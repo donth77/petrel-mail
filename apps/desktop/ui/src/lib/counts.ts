@@ -82,6 +82,19 @@ export function countDeltas(opts: {
   const modeOf = (key: string) => modes[key] ?? defaultCount(key);
   const out: Record<string, number> = {};
 
+  // Reading and unreading move nothing in or out; they change whether this
+  // conversation is one the number counts. So the unread number of the view
+  // you are in moves by one, the way the list header already does, and a
+  // total does not move at all. Only the view in hand: a row carries no
+  // placement, so no other number can be named from here.
+  if (kind === 'mark_read' || kind === 'mark_unread') {
+    if (COUNTED.has(view) && modeOf(view) === 'unread') {
+      if (kind === 'mark_read' && unread) out[view] = -1;
+      if (kind === 'mark_unread' && !unread) out[view] = 1;
+    }
+    return out;
+  }
+
   const to = destination(kind, toRole);
   // `to !== view` is what stops trashing from the bin, or archiving from the
   // archive, claiming the conversation arrived somewhere it already was.

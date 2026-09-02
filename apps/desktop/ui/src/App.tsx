@@ -77,6 +77,9 @@ export function App() {
   // together rather than each noticing separately or, worse, some not
   // noticing at all. The name is about where it came from, not its only use.
   const [accountEpoch, setAccountEpoch] = useState(0);
+  // Bumped when a triage or an undo has settled. The rail's recount keys on
+  // it, so every action is followed by one recount once the burst is over.
+  const [triageEpoch, setTriageEpoch] = useState(0);
   const [query, setQuery] = useState('');
   // Best match or newest, for a search. Not a saved preference: it answers a
   // different question about one search — "find the thing" against "retrace the
@@ -284,6 +287,7 @@ export function App() {
       }),
     countModes: countModes(arrangement),
     folderRole: (id) => folders.find((f) => f.id === id)?.role ?? undefined,
+    onSettled: () => setTriageEpoch((n) => n + 1),
   });
 
   // Which conversations a confirmed delete would remove. Captured when the
@@ -1381,9 +1385,14 @@ export function App() {
   // the rows in view told the inbox badge whatever the *current* view's unread
   // count was, so opening Spam relabelled the inbox with Spam's number.
   //
-  // Recounted after every triage as well as every sync, because archiving the
-  // last unread message and watching the badge keep its old number is the kind
-  // of small lie that makes the whole rail untrustworthy.
+  // Recounted after every triage and undo as well as every sync, because
+  // archiving the last unread message and watching the badge keep its old
+  // number is the kind of small lie that makes the whole rail untrustworthy.
+  // The trigger is an epoch bumped when an action settles. It used to be the
+  // loaded rows, which every triage patched, until paging made the rows
+  // change on every scroll and they were taken out of the list — and the
+  // recount after a triage went with them: reading a conversation and moving
+  // it left the inbox's number where it was until new mail arrived.
   // Debounced, because the triggers arrive in bursts: an account switch
   // changes the epoch, the status, and the items within a few hundred
   // milliseconds, and each firing held the store lock for a third of a
@@ -1427,7 +1436,7 @@ export function App() {
       live = false;
       window.clearTimeout(t);
     };
-  }, [status?.count, status?.seeding, arrangement, accountEpoch, setAccounts, setTags]);
+  }, [status?.count, status?.seeding, arrangement, accountEpoch, triageEpoch, setAccounts, setTags]);
 
   // First run: no account can sign in, so there is nothing to show but the
   // way to add one. Decided from the status the app reports, not from an

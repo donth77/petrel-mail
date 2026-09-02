@@ -94,3 +94,29 @@ describe('countDeltas', () => {
     expect(from('snooze', { unread: false })).toEqual({ snoozed: 1 });
   });
 });
+
+describe('countDeltas for reading', () => {
+  it('takes one off the unread number of the view when an unread conversation is read', () => {
+    expect(from('mark_read', { removes: false })).toEqual({ inbox: -1 });
+  });
+
+  it('gives one back when a read conversation is marked unread', () => {
+    expect(from('mark_unread', { unread: false, removes: false })).toEqual({ inbox: 1 });
+  });
+
+  it('moves nothing when the state does not change', () => {
+    expect(from('mark_read', { unread: false, removes: false })).toEqual({});
+    expect(from('mark_unread', { unread: true, removes: false })).toEqual({});
+  });
+
+  it('moves nothing where the number is a total, or off', () => {
+    expect(from('mark_read', { removes: false, modes: { inbox: 'total' } })).toEqual({});
+    expect(from('mark_read', { removes: false, modes: { inbox: 'off' } })).toEqual({});
+  });
+
+  it('moves nothing in a view that carries no number here', () => {
+    expect(from('mark_read', { view: 'folder:3', removes: false })).toEqual({});
+    expect(from('mark_read', { view: 'tag:Urgent', removes: false })).toEqual({});
+  });
+});
+

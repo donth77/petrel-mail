@@ -114,6 +114,9 @@ export function useTriage(opts: {
   countModes?: Record<string, CountMode>;
   /** The role of a folder a `move` names, so the inbox's number can move. */
   folderRole?: (folderId: number) => string | undefined;
+  /** Called once an action has settled either way, and after an undo — the
+   *  moment the store can be asked for the real numbers. */
+  onSettled?: () => void;
 }) {
   const {
     items,
@@ -127,6 +130,7 @@ export function useTriage(opts: {
     onViewCount,
     countModes = {},
     folderRole,
+    onSettled,
   } = opts;
   const [pending, setPending] = useState(false);
   // The last thing done, so Z has something to reverse without the caller
@@ -263,6 +267,7 @@ export function useTriage(opts: {
         onMessage(t('triage-failed', { error: String(err) }));
       } finally {
         setPending(false);
+        onSettled?.();
       }
     },
     [
@@ -277,6 +282,7 @@ export function useTriage(opts: {
       onViewCount,
       countModes,
       folderRole,
+      onSettled,
     ],
   );
 
@@ -305,9 +311,10 @@ export function useTriage(opts: {
         if (target.viewDelta) onViewCount?.(negated(target.viewDelta));
       }
       onMessage(ok ? t('undo-done') : t('undo-too-late'));
+      onSettled?.();
       return ok;
     },
-    [setItems, setActiveId, onMessage, onTagCount, onViewCount],
+    [setItems, setActiveId, onMessage, onTagCount, onViewCount, onSettled],
   );
 
   /** S toggles, as it does everywhere else — one key, not two. */
