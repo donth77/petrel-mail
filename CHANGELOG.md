@@ -11,7 +11,7 @@ goes through a service in the middle.
 ### Mail
 
 - IMAP and SMTP. As many accounts as you want.
-- Type your email address and Petrel works out the server settings. It knows 16
+- Type your email address and Petrel works out the server settings. It knows 18
   providers by name, and falls back to looking them up.
 - Gmail and iCloud work with app passwords.
 - Messages are grouped into conversations. On Gmail it uses Gmail's own conversation
@@ -65,7 +65,10 @@ goes through a service in the middle.
   silences Petrel only.
 - Import mbox files and `.eml` files. Export any folder to mbox.
 - Updates are signed, and only install when you ask. Petrel never checks on its own.
-- Works with a keyboard alone, and with a screen reader.
+- Works with a keyboard alone. Every control is labelled for a screen reader.
+- Eight languages: English, German, Spanish, French, Japanese, Korean, Brazilian
+  Portuguese and Simplified Chinese. Petrel follows your system language, and you
+  can pick another in Settings.
 
 ### What is missing
 
@@ -76,9 +79,7 @@ Worth knowing before you install:
   Gmail prefers its API and may tighten IMAP access later.
 - Notifications have no buttons on them. The macOS notification API Petrel uses does
   not offer any.
-- English only. The text is all in one place ready for translation, but adding a
-  language still needs a code change.
 
 ### Requirements
 
-macOS 10.15 or later.
+macOS 11 or later.

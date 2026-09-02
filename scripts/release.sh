@@ -131,7 +131,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleVersion</key>           <string>$VERSION</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundlePackageType</key>       <string>APPL</string>
-  <key>LSMinimumSystemVersion</key>    <string>10.15</string>
+  <key>LSMinimumSystemVersion</key>    <string>11.0</string>
   <key>NSHighResolutionCapable</key>   <true/>
   <key>LSApplicationCategoryType</key> <string>public.app-category.productivity</string>
   <key>NSHumanReadableCopyright</key>  <string>Petrel</string>

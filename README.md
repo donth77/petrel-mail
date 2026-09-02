@@ -37,7 +37,7 @@ by default.
 
 **Mail**
 - IMAP and SMTP, multiple accounts
-- Autodiscovery for 16 providers
+- Autodiscovery for 18 providers
 - Gmail and iCloud
 - Conversation threading
 - Instant arrival, no polling
@@ -70,7 +70,8 @@ by default.
 - Notifications, with pause
 - mbox and `.eml` import, mbox export
 - Signed updates
-- Keyboard and screen reader accessible
+- Keyboard accessible. Every control is labelled for a screen reader.
+- Eight languages
 - QRESYNC and CONDSTORE where the server has them
 
 </details>

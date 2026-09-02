@@ -27,6 +27,9 @@
     "category": "Productivity",
     "shortDescription": "A fast, local-first desktop email client.",
     "longDescription": "Petrel talks straight to your mail server over IMAP and SMTP. Your mail stays on your own machine, in SQLite and ordinary files.",
+    "macOS": {
+      "minimumSystemVersion": "11.0"
+    },
     "linux": {
       "deb": {
         "depends": [

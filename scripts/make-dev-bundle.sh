@@ -19,7 +19,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleVersion</key>           <string>0.0.1</string>
   <key>CFBundleShortVersionString</key><string>0.0.1</string>
   <key>CFBundlePackageType</key>       <string>APPL</string>
-  <key>LSMinimumSystemVersion</key>    <string>10.15</string>
+  <key>LSMinimumSystemVersion</key>    <string>11.0</string>
   <key>NSHighResolutionCapable</key>   <true/>
 </dict>
 </plist>
