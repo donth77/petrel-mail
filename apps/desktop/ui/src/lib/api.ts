@@ -3,6 +3,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import type { RuleField, RuleOp } from './rules';
+import { clampThreadLimit, THREAD_PAGE } from './reader-window';
 
 export type Listing = {
   id: number;
@@ -100,6 +101,16 @@ export type RemoteStatus = {
   /** Allowed because the user has written to them, not by an explicit choice —
    *  so there is nothing in the trusted list to find or undo. */
   because_written_to: boolean;
+};
+
+/** Slim conversation card. Recipients and attachments arrive on open. */
+export type ThreadIndexRow = {
+  id: number;
+  from_display: string;
+  from_addr: string;
+  snippet: string;
+  date_ms: number;
+  unread: boolean;
 };
 
 export type ThreadMessage = {
@@ -321,6 +332,121 @@ const SUBJECTS = [
   'Issue 214 — what the rate cut means', 'Your order has shipped',
   'Notes from Tuesday', '東京支社の会議について',
 ];
+function mockFatMessage(id: number, n: number, base: number): ThreadMessage {
+  const [display, addr] = NAMES[id % NAMES.length];
+  return {
+    id,
+    from_display: display,
+    from_addr: addr,
+    subject: SUBJECTS[id % SUBJECTS.length],
+    snippet: `Synthetic message ${id} in a ${n}-message probe thread.`,
+    date_ms: base + id * 60_000,
+    unread: id === n,
+    to: ['Reader'],
+    cc: [],
+    recipients: ['Reader'],
+    recipient_addrs: ['reader@example.test'],
+    attachments: [],
+    has_calendar: false,
+    invite_response: null,
+  };
+}
+
+/** Synthetic thread_detail pages for leftover fat callers and the harness. */
+function mockThreadMessages(
+  n: number,
+  opts?: { limit?: number; beforeDateMs?: number; beforeId?: number },
+): ThreadMessage[] {
+  const limit = clampThreadLimit(opts?.limit ?? THREAD_PAGE);
+  const base = Date.now() - n * 60_000;
+  const all: ThreadMessage[] = Array.from({ length: n }, (_, i) =>
+    mockFatMessage(i + 1, n, base),
+  );
+
+  let slice = all;
+  if (opts?.beforeDateMs != null && opts.beforeId != null) {
+    const at = all.findIndex((m) => m.date_ms === opts.beforeDateMs && m.id === opts.beforeId);
+    slice = at > 0 ? all.slice(0, at) : [];
+  }
+  return slice.slice(-limit);
+}
+
+function slimIndexRow(m: Pick<ThreadMessage, keyof ThreadIndexRow>): ThreadIndexRow {
+  return {
+    id: m.id,
+    from_display: m.from_display,
+    from_addr: m.from_addr,
+    snippet: m.snippet,
+    date_ms: m.date_ms,
+    unread: m.unread,
+  };
+}
+
+function mockThreadIndex(n: number): ThreadIndexRow[] {
+  const base = Date.now() - n * 60_000;
+  return Array.from({ length: n }, (_, i) => slimIndexRow(mockFatMessage(i + 1, n, base)));
+}
+
+function threadProbeActive(): boolean {
+  if (typeof window === 'undefined') return false;
+  if ((window as Window & { __PETREL_THREAD_PROBE__?: number }).__PETREL_THREAD_PROBE__ === 500) {
+    return true;
+  }
+  return /[?&]probe=thread(?:=|&|$)/.test(window.location.search);
+}
+
+function threadProbeSize(): number {
+  if (typeof window === 'undefined') return 500;
+  const m = /[?&]probe=thread=(\d+)/.exec(window.location.search);
+  if (m) return Math.max(1, Number(m[1]) || 500);
+  const global = (window as Window & { __PETREL_THREAD_PROBE__?: number }).__PETREL_THREAD_PROBE__;
+  if (typeof global === 'number' && global > 0) return global;
+  return 500;
+}
+
+const MOCK_THREAD_DETAIL = [
+  {
+    id: 1,
+    from_display: 'Dana Wu',
+    from_addr: 'dana@northbay.example',
+    subject: 'Q3 vendor contracts',
+    snippet: 'Sending the draft ahead of Friday so you both have time…',
+    date_ms: Date.now() - 3 * 86400000,
+    unread: false,
+    to: ['Sam Ortiz', 'me'],
+    cc: [],
+    recipients: ['Sam Ortiz', 'me'],
+    recipient_addrs: ['sam@example.com', 'you@example.com'],
+    attachments: [],
+    has_calendar: false,
+    invite_response: null,
+  },
+  {
+    id: 2,
+    from_display: 'Sam Ortiz',
+    from_addr: 'sam@vendorco.example',
+    subject: 'Re: Q3 vendor contracts',
+    snippet: 'I have marked up section 4…',
+    date_ms: Date.now() - 90 * 60000,
+    unread: true,
+    to: ['Dana Wu', 'me'],
+    cc: [],
+    recipients: ['Dana Wu', 'me'],
+    recipient_addrs: ['dana@example.com', 'you@example.com'],
+    attachments: [
+      { filename: 'contract-v3.pdf', size: 2202009, part: 0, mime: 'application/pdf' },
+      {
+        filename: 'annex-logistics.xlsx',
+        size: 49152,
+        part: 1,
+        mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      },
+    ],
+    has_calendar: false,
+    invite_response: null,
+  },
+] satisfies ThreadMessage[];
+
 function mockRows(n: number, offset = 0): Thread[] {
   return Array.from({ length: n }, (_, i) => {
     const k = offset + i;
@@ -593,30 +719,38 @@ const mock = {
   },
   threadById: async (threadId: number): Promise<Thread | null> =>
     mockRows(500).find((r: Thread) => r.thread_id === threadId) ?? null,
-  threadDetail: async (): Promise<ThreadMessage[]> => [
-    {
-      id: 1, from_display: 'Dana Wu', from_addr: 'dana@northbay.example',
-      subject: 'Q3 vendor contracts', snippet: 'Sending the draft ahead of Friday so you both have time…',
-      date_ms: Date.now() - 3 * 86400000, unread: false,
-      to: ['Sam Ortiz', 'me'], cc: [],
-      recipients: ['Sam Ortiz', 'me'], recipient_addrs: ['sam@example.com', 'you@example.com'], attachments: [],
-      has_calendar: false, invite_response: null,
-    },
-    {
-      id: 2, from_display: 'Sam Ortiz', from_addr: 'sam@vendorco.example',
-      subject: 'Re: Q3 vendor contracts', snippet: 'I have marked up section 4…',
-      date_ms: Date.now() - 90 * 60000, unread: true,
-      to: ['Dana Wu', 'me'], cc: [],
-      recipients: ['Dana Wu', 'me'],
-      recipient_addrs: ['dana@example.com', 'you@example.com'],
-      attachments: [
-        { filename: 'contract-v3.pdf', size: 2202009, part: 0, mime: 'application/pdf' },
-        { filename: 'annex-logistics.xlsx', size: 49152, part: 1, mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
-      ],
-has_calendar: false,
-invite_response: null,
-    },
-  ],
+  threadDetail: async (
+    threadId: number,
+    opts?: { limit?: number; beforeDateMs?: number; beforeId?: number },
+  ): Promise<ThreadMessage[]> => {
+    void threadId;
+    const limit = clampThreadLimit(opts?.limit ?? THREAD_PAGE);
+    if (threadProbeActive()) {
+      return mockThreadMessages(threadProbeSize(), { ...opts, limit });
+    }
+    let rows = MOCK_THREAD_DETAIL;
+    if (opts?.beforeDateMs != null && opts.beforeId != null) {
+      const at = rows.findIndex(
+        (m) => m.date_ms === opts.beforeDateMs && m.id === opts.beforeId,
+      );
+      rows = at > 0 ? rows.slice(0, at) : [];
+    }
+    return rows.slice(-limit);
+  },
+  threadIndex: async (threadId: number): Promise<ThreadIndexRow[]> => {
+    void threadId;
+    if (threadProbeActive()) return mockThreadIndex(threadProbeSize());
+    return MOCK_THREAD_DETAIL.map(slimIndexRow);
+  },
+  threadMessage: async (messageId: number): Promise<ThreadMessage | null> => {
+    if (threadProbeActive()) {
+      const n = threadProbeSize();
+      const base = Date.now() - n * 60_000;
+      if (messageId < 1 || messageId > n) return null;
+      return mockFatMessage(messageId, n, base);
+    }
+    return MOCK_THREAD_DETAIL.find((m) => m.id === messageId) ?? null;
+  },
   // A real document carrying the same injected script the petrel-msg: handler
   // adds, so the browser reproduces the app's structure — including a focused
   // frame that would otherwise swallow every shortcut. Returning '' meant the
@@ -812,8 +946,20 @@ const real = {
     invoke<void>('set_account_archive', { accountId, enabled }),
   getSettings: () => invoke<Record<string, string>>('get_settings'),
   setSetting: (key: string, value: string) => invoke<void>('set_setting', { key, value }),
-  threadDetail: (threadId: number) =>
-    invoke<ThreadMessage[]>('thread_detail', { threadId }),
+  threadDetail: (
+    threadId: number,
+    opts?: { limit?: number; beforeDateMs?: number; beforeId?: number },
+  ) =>
+    invoke<ThreadMessage[]>('thread_detail', {
+      threadId,
+      limit: opts?.limit,
+      beforeDateMs: opts?.beforeDateMs,
+      beforeId: opts?.beforeId,
+    }),
+  threadIndex: (threadId: number) =>
+    invoke<ThreadIndexRow[]>('thread_index', { threadId }),
+  threadMessage: (messageId: number) =>
+    invoke<ThreadMessage | null>('thread_message', { messageId }),
   search: (query: string, sort?: string, ascending = false) =>
     invoke<Thread[]>('search_messages', { query, sort, ascending }),
 

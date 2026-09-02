@@ -126,9 +126,19 @@
   min-block-size: 0;
   overflow-y: auto;
   padding: 16px 22px 22px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+}
+
+.reader-stack {
+  position: relative;
+  inline-size: 100%;
+}
+
+.msg-slot {
+  position: absolute;
+  inset-inline: 0;
+  inset-block-start: 0;
+  inline-size: 100%;
+  padding-block-end: 12px;
 }
 
 .msg-frame {

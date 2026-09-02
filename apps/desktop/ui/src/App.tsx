@@ -67,6 +67,27 @@ import { syncState } from './lib/sync-status';
 import { Dialog } from '@ariakit/react';
 import { PaneResize } from './components/PaneResize';
 
+/** Whether a status poll should re-render the tree.
+ *
+ *  The poll always returns a new object. Setting it unconditionally re-rendered
+ *  the whole window every five seconds, and every 400ms while seeding. Notify
+ *  is drained on read, so a non-empty list must always land. */
+function statusNeedsRender(prev: Status | null, next: Status): boolean {
+  if (!prev) return true;
+  if ((next.notify?.length ?? 0) > 0) return true;
+  return (
+    prev.configured !== next.configured ||
+    prev.demo !== next.demo ||
+    prev.seeding !== next.seeding ||
+    prev.count !== next.count ||
+    prev.server_total !== next.server_total ||
+    prev.source !== next.source ||
+    prev.retention !== next.retention ||
+    prev.sync_error !== next.sync_error ||
+    prev.last_sync_ms !== next.last_sync_ms
+  );
+}
+
 export function App() {
   const { settings, locale, set } = useSettings();
   const [status, setStatus] = useState<Status | null>(null);
@@ -189,7 +210,7 @@ export function App() {
     const tick = () =>
       api.status().then((s) => {
         if (!live) return;
-        setStatus(s);
+        setStatus((prev) => (statusNeedsRender(prev, s) ? s : prev));
         // Keep asking after the first sync finishes, not just during it. The
         // engine polls the server every couple of minutes; if the window stops
         // listening once seeding ends, mail arrives into the store and nothing
@@ -633,10 +654,10 @@ export function App() {
     const row = items.find((m) => m.id === id);
     if (!row) return;
     try {
-      const messages = await api.threadDetail(row.thread_id);
       const last =
-        (targetId != null ? messages.find((m) => m.id === targetId) : undefined) ??
-        messages[messages.length - 1];
+        targetId != null
+          ? await api.threadMessage(targetId)
+          : (await api.threadDetail(row.thread_id, { limit: 1 })).at(-1);
       if (!last) return;
       const { to, cc } = replyTargets(last, identity?.address ?? '', all);
       attachmentWarned.current = false;
@@ -680,10 +701,10 @@ export function App() {
     const row = items.find((m) => m.id === id);
     if (!row) return;
     try {
-      const messages = await api.threadDetail(row.thread_id);
       const target =
-        (targetId != null ? messages.find((m) => m.id === targetId) : undefined) ??
-        messages[messages.length - 1];
+        targetId != null
+          ? await api.threadMessage(targetId)
+          : (await api.threadDetail(row.thread_id, { limit: 1 })).at(-1);
       if (!target) return;
       attachmentWarned.current = false;
       const quoted = await api.quoteMessage(target.id).catch(() => null);

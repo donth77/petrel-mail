@@ -1,7 +1,7 @@
 //! Reading mail: the conversation list, one conversation, search, and the views' counts.
 
 use crate::state::{AppState, Timed, note_ui_touch};
-use petrel_engine::store::{ListView, TagSummary, ThreadListing, ThreadMessage};
+use petrel_engine::store::{ListView, TagSummary, ThreadIndexRow, ThreadListing, ThreadMessage};
 use std::sync::Arc;
 use tauri::{Manager, State};
 
@@ -55,15 +55,54 @@ pub fn thread_by_id(
 }
 
 /// The messages of one conversation, for the reading pane.
+///
+/// Paged like the list: a hundred is the IPC cap, fifty is what the pane
+/// asks for. Without a limit the old path returned every message and a
+/// twenty-thousand-message thread froze the window.
 #[tauri::command]
 pub fn thread_detail(
     thread_id: i64,
+    limit: Option<u32>,
+    before_date_ms: Option<i64>,
+    before_id: Option<i64>,
     state: State<Arc<AppState>>,
 ) -> Result<Vec<ThreadMessage>, String> {
     let _t = Timed::new("thread_detail");
     note_ui_touch(&state);
     let store = state.store()?;
-    store.thread_detail(thread_id).map_err(|e| e.to_string())
+    let limit = limit.unwrap_or(50).min(100);
+    let before = match (before_date_ms, before_id) {
+        (Some(d), Some(k)) => Some((d, k)),
+        _ => None,
+    };
+    store
+        .thread_detail_page(thread_id, Some(limit), before)
+        .map_err(|e| e.to_string())
+}
+
+/// Slim cards for one conversation: sender, snippet, date. No recipients,
+/// no attachments, no IPC page cap — a long thread is still one SELECT.
+#[tauri::command]
+pub fn thread_index(
+    thread_id: i64,
+    state: State<Arc<AppState>>,
+) -> Result<Vec<ThreadIndexRow>, String> {
+    let _t = Timed::new("thread_index");
+    note_ui_touch(&state);
+    let store = state.store()?;
+    store.thread_index(thread_id).map_err(|e| e.to_string())
+}
+
+/// One message, hydrated. The pane calls this when a card is opened.
+#[tauri::command]
+pub fn thread_message(
+    message_id: i64,
+    state: State<Arc<AppState>>,
+) -> Result<Option<ThreadMessage>, String> {
+    let _t = Timed::new("thread_message");
+    note_ui_touch(&state);
+    let store = state.store()?;
+    store.thread_message(message_id).map_err(|e| e.to_string())
 }
 
 /// The numbers beside the rail's mailboxes.

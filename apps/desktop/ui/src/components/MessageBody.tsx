@@ -77,11 +77,12 @@ export function MessageBody({ messageId, title }: { messageId: number; title: st
       // the frame: a banner in there could say what happened but never offer to
       // undo it — the frame has no IPC and no same-origin access by design.
       const b = (data as { petrelBlocked?: unknown })?.petrelBlocked;
-      if (typeof b === 'number') setBlocked(b);
+      if (typeof b === 'number') setBlocked((prev) => (prev === b ? prev : b));
 
       const h = data?.petrelHeight;
       if (typeof h === 'number' && h > 0 && h < 20000) {
-        setHeight(Math.ceil(h));
+        const ceil = Math.ceil(h);
+        setHeight((prev) => (prev === ceil ? prev : ceil));
       }
 
       // A focused frame swallows keydown, so every shortcut in the app dies the

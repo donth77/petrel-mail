@@ -93,9 +93,9 @@ pub fn invitation(
             .find(|a| a.id == account)
             .map(|a| a.email);
         let responded = store
-            .thread_detail(-message_id)
+            .thread_message(message_id)
             .ok()
-            .and_then(|msgs| msgs.into_iter().find(|m| m.id == message_id))
+            .flatten()
             .and_then(|m| m.invite_response);
         (email, responded)
     };

@@ -17,6 +17,10 @@ pub(crate) struct AppState {
     /// to offer, and treating demo mode as a first run hid the demo entirely.
     pub(crate) demo: AtomicBool,
     pub(crate) seeded: AtomicUsize,
+    /// Last successful `status` count. Lock failure must not fall back to
+    /// `seeded` — that counter climbs during backfill and made the UI think
+    /// the mailbox size was jumping, so it refetched the list on every poll.
+    pub(crate) status_count: AtomicUsize,
     pub(crate) source: Mutex<String>,
     /// Set when a sync fails. Separate from `source` because a failure has to
     /// reach the screen, and `source` is a label the UI is free to ignore —

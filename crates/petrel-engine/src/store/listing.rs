@@ -4,6 +4,8 @@
 //! Moved verbatim from mod.rs (Phase 1.5). The listing SQL and the counts
 //! share the ListView predicates, which stay in mod.rs with the enum.
 use super::*;
+use rusqlite::OptionalExtension;
+use std::collections::HashMap;
 
 /// The tags a row wears, as one JSON array per conversation.
 ///
@@ -18,6 +20,54 @@ const TAGS_JSON: &str = "(SELECT json_group_array(
                            JOIN messages mm ON mm.id = mt.message_id
                            WHERE coalesce(mm.thread_id, -mm.id) = t.thread_id) d
                      JOIN tags tg ON tg.id = d.tag_id) AS tags_json";
+
+type ThreadDetailRow = (
+    i64,
+    String,
+    String,
+    String,
+    String,
+    i64,
+    i64,
+    bool,
+    Option<String>,
+);
+
+/// SQLite allows 999 bound variables. Stay well under that for the
+/// address and attachment `IN` lists on a fat hydrate.
+const HYDRATE_IN_CHUNK: usize = 400;
+
+fn thread_detail_row(r: &rusqlite::Row) -> rusqlite::Result<ThreadDetailRow> {
+    Ok((
+        r.get(0)?,
+        r.get(1)?,
+        r.get(2)?,
+        r.get(3)?,
+        r.get(4)?,
+        r.get(5)?,
+        r.get(6)?,
+        r.get(7)?,
+        r.get(8)?,
+    ))
+}
+
+/// Display name and addr_norm, in header order, split by role.
+#[derive(Clone, Default)]
+struct MessageAddrs {
+    to: Vec<(String, String)>,
+    cc: Vec<(String, String)>,
+}
+
+fn sql_in_marks(n: usize) -> String {
+    let mut s = String::with_capacity(n.saturating_mul(2));
+    for i in 0..n {
+        if i > 0 {
+            s.push(',');
+        }
+        s.push('?');
+    }
+    s
+}
 
 impl Store {
     pub fn list_threads(
@@ -844,60 +894,192 @@ impl Store {
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
-    /// Addresses on one message for a single header role, in header order.
-    fn addresses_with_role(&self, message_id: i64, role: &str) -> Result<Vec<(String, String)>> {
-        let mut stmt = self.conn.prepare_cached(
-            "SELECT coalesce(nullif(display,''), addr_norm), addr_norm
-             FROM message_addresses
-             WHERE message_id = ?1 AND role = ?2 ORDER BY rowid",
-        )?;
-        let rows = stmt
-            .query_map(params![message_id, role], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(rows)
+    /// One conversation, every message. Invitations and tests still need the
+    /// whole thread; the reading pane must not call this.
+    pub fn thread_detail(&self, thread_id: i64) -> Result<Vec<ThreadMessage>> {
+        self.thread_detail_page(thread_id, None, None)
     }
 
-    /// One conversation, message by message, with what the reading pane needs to
-    /// draw a card per message: who it came from, who it went to, and its files.
-    pub fn thread_detail(&self, thread_id: i64) -> Result<Vec<ThreadMessage>> {
+    /// Sender, snippet and date for every surviving message in a conversation.
+    ///
+    /// One query, no recipients or attachments. The reading pane virtualizes
+    /// these rows and hydrates a body only when a card is opened.
+    pub fn thread_index(&self, thread_id: i64) -> Result<Vec<ThreadIndexRow>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT id, coalesce(from_display,''), coalesce(from_addr,''),
+                    coalesce(snippet,''), date_ms, flags
+             FROM messages
+             WHERE coalesce(thread_id, -id) = ?1 AND deleted_at_ms IS NULL
+             ORDER BY date_ms ASC, id ASC",
+        )?;
+        let rows = stmt.query_map(params![thread_id], |r| {
+            let flags: i64 = r.get(5)?;
+            Ok(ThreadIndexRow {
+                id: r.get(0)?,
+                from_display: r.get(1)?,
+                from_addr: r.get(2)?,
+                snippet: r.get(3)?,
+                date_ms: r.get(4)?,
+                unread: flags & flags::SEEN == 0,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// One message, fully hydrated — the reading pane asks for this when a
+    /// card is opened. Missing or deleted is `None`, not an error.
+    pub fn thread_message(&self, message_id: i64) -> Result<Option<ThreadMessage>> {
+        const COLS: &str = "SELECT id, coalesce(from_display,''), coalesce(from_addr,''),
                     coalesce(subject,''), coalesce(snippet,''), date_ms, flags,
                     EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = messages.id
                               AND (a.mime LIKE '%calendar%' OR a.mime = 'application/ics'
                                    OR lower(coalesce(a.filename,'')) LIKE '%.ics')),
                     invite_response
              FROM messages
-             WHERE coalesce(thread_id, -id) = ?1 AND deleted_at_ms IS NULL
-             ORDER BY date_ms ASC",
-        )?;
-        type Row = (
-            i64,
-            String,
-            String,
-            String,
-            String,
-            i64,
-            i64,
-            bool,
-            Option<String>,
-        );
-        let rows: Vec<Row> = stmt
-            .query_map(params![thread_id], |r| {
-                Ok((
-                    r.get(0)?,
-                    r.get(1)?,
-                    r.get(2)?,
-                    r.get(3)?,
-                    r.get(4)?,
-                    r.get(5)?,
-                    r.get(6)?,
-                    r.get(7)?,
-                    r.get(8)?,
-                ))
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+             WHERE id = ?1 AND deleted_at_ms IS NULL";
+        let mut stmt = self.conn.prepare_cached(COLS)?;
+        let row = stmt
+            .query_row(params![message_id], thread_detail_row)
+            .optional()?;
+        match row {
+            Some(r) => Ok(self.hydrate_thread_messages(vec![r])?.into_iter().next()),
+            None => Ok(None),
+        }
+    }
 
+    /// One conversation, a page at a time.
+    ///
+    /// Newest-first when `limit` is set. `before` is the oldest row already
+    /// shown (`date_ms`, `id`), exclusive, walking older. Rows come back
+    /// oldest-first so a caller can prepend without re-sorting. The reading
+    /// pane uses [`Self::thread_index`]; this stays for invitations and tests.
+    pub fn thread_detail_page(
+        &self,
+        thread_id: i64,
+        limit: Option<u32>,
+        before: Option<(i64, i64)>,
+    ) -> Result<Vec<ThreadMessage>> {
+        const COLS: &str = "SELECT id, coalesce(from_display,''), coalesce(from_addr,''),
+                    coalesce(subject,''), coalesce(snippet,''), date_ms, flags,
+                    EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = messages.id
+                              AND (a.mime LIKE '%calendar%' OR a.mime = 'application/ics'
+                                   OR lower(coalesce(a.filename,'')) LIKE '%.ics')),
+                    invite_response
+             FROM messages
+             WHERE coalesce(thread_id, -id) = ?1 AND deleted_at_ms IS NULL";
+
+        let rows: Vec<ThreadDetailRow> = match (limit, before) {
+            (None, None) => {
+                let mut stmt = self
+                    .conn
+                    .prepare_cached(&format!("{COLS} ORDER BY date_ms ASC, id ASC"))?;
+                stmt.query_map(params![thread_id], thread_detail_row)?
+                    .collect::<std::result::Result<Vec<_>, _>>()?
+            }
+            (Some(n), None) => {
+                let mut stmt = self
+                    .conn
+                    .prepare_cached(&format!("{COLS} ORDER BY date_ms DESC, id DESC LIMIT ?2"))?;
+                let mut page = stmt
+                    .query_map(params![thread_id, n], thread_detail_row)?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                page.reverse();
+                page
+            }
+            (n, Some((date_ms, id))) => {
+                let take = n.unwrap_or(u32::MAX);
+                let mut stmt = self.conn.prepare_cached(&format!(
+                    "{COLS} AND (date_ms < ?2 OR (date_ms = ?2 AND id < ?3))
+                     ORDER BY date_ms DESC, id DESC LIMIT ?4"
+                ))?;
+                let mut page = stmt
+                    .query_map(params![thread_id, date_ms, id, take], thread_detail_row)?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                page.reverse();
+                page
+            }
+        };
+
+        self.hydrate_thread_messages(rows)
+    }
+
+    fn addresses_for_messages(&self, ids: &[i64]) -> Result<HashMap<i64, MessageAddrs>> {
+        let mut out: HashMap<i64, MessageAddrs> = HashMap::new();
+        for chunk in ids.chunks(HYDRATE_IN_CHUNK) {
+            if chunk.is_empty() {
+                continue;
+            }
+            let sql = format!(
+                "SELECT message_id, role, coalesce(nullif(display,''), addr_norm), addr_norm
+                 FROM message_addresses
+                 WHERE message_id IN ({})
+                 ORDER BY message_id, rowid",
+                sql_in_marks(chunk.len())
+            );
+            let mut stmt = self.conn.prepare_cached(&sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter()), |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })?;
+            for row in rows {
+                let (message_id, role, display, addr) = row?;
+                let entry = out.entry(message_id).or_default();
+                if role == "to" {
+                    entry.to.push((display, addr));
+                } else if role == "cc" {
+                    entry.cc.push((display, addr));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn attachments_for_messages(&self, ids: &[i64]) -> Result<HashMap<i64, Vec<Attachment>>> {
+        let mut out: HashMap<i64, Vec<Attachment>> = HashMap::new();
+        for chunk in ids.chunks(HYDRATE_IN_CHUNK) {
+            if chunk.is_empty() {
+                continue;
+            }
+            let sql = format!(
+                "SELECT message_id, coalesce(filename,''), coalesce(size, 0), part_id,
+                        coalesce(mime,'')
+                 FROM attachments
+                 WHERE message_id IN ({})
+                   AND filename IS NOT NULL AND filename <> ''
+                 ORDER BY message_id, id",
+                sql_in_marks(chunk.len())
+            );
+            let mut stmt = self.conn.prepare_cached(&sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter()), |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    Attachment {
+                        filename: r.get(1)?,
+                        size: r.get(2)?,
+                        part: r.get(3)?,
+                        mime: r.get(4)?,
+                    },
+                ))
+            })?;
+            for row in rows {
+                let (message_id, att) = row?;
+                out.entry(message_id).or_default().push(att);
+            }
+        }
+        Ok(out)
+    }
+
+    fn hydrate_thread_messages(&self, rows: Vec<ThreadDetailRow>) -> Result<Vec<ThreadMessage>> {
+        if rows.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids: Vec<i64> = rows.iter().map(|r| r.0).collect();
+        let addrs = self.addresses_for_messages(&ids)?;
+        let files = self.attachments_for_messages(&ids)?;
         let mut out = Vec::with_capacity(rows.len());
         for (
             id,
@@ -911,35 +1093,17 @@ impl Store {
             invite_response,
         ) in rows
         {
-            // message_addresses has no surrogate key; rowid preserves the
-            // order the parser inserted them, which is the header's order.
-            let to_pairs = self.addresses_with_role(id, "to")?;
-            let cc_pairs = self.addresses_with_role(id, "cc")?;
-            let to: Vec<String> = to_pairs.iter().map(|(d, _)| d.clone()).collect();
-            let cc: Vec<String> = cc_pairs.iter().map(|(d, _)| d.clone()).collect();
+            let buckets = addrs.get(&id).cloned().unwrap_or_default();
+            let to: Vec<String> = buckets.to.iter().map(|(d, _)| d.clone()).collect();
+            let cc: Vec<String> = buckets.cc.iter().map(|(d, _)| d.clone()).collect();
             let recipients: Vec<String> = to.iter().chain(cc.iter()).cloned().collect();
-            let recipient_addrs: Vec<String> = to_pairs
+            let recipient_addrs: Vec<String> = buckets
+                .to
                 .into_iter()
-                .chain(cc_pairs)
+                .chain(buckets.cc)
                 .map(|(_, a)| a)
                 .collect();
-
-            let mut att = self.conn.prepare_cached(
-                "SELECT coalesce(filename,''), coalesce(size, 0), part_id, coalesce(mime,'')
-                 FROM attachments
-                 WHERE message_id = ?1 AND filename IS NOT NULL AND filename <> ''
-                 ORDER BY id",
-            )?;
-            let attachments: Vec<Attachment> = att
-                .query_map(params![id], |r| {
-                    Ok(Attachment {
-                        filename: r.get(0)?,
-                        size: r.get(1)?,
-                        part: r.get(2)?,
-                        mime: r.get(3)?,
-                    })
-                })?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
+            let attachments = files.get(&id).cloned().unwrap_or_default();
 
             out.push(ThreadMessage {
                 id,

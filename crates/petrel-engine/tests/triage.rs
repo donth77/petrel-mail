@@ -596,6 +596,128 @@ fn pending_actions_come_back_in_the_order_they_were_made() {
     assert!(queued.iter().all(|p| p.folder_path == "INBOX"));
 }
 
+/// A mark_read of an already-read conversation must not queue a no-op, or a
+/// 22k-message thread you merely reopen rebuilds a multi-megabyte undo snapshot.
+#[test]
+fn mark_read_on_an_already_read_thread_queues_nothing() {
+    let (store, account, ids) = seeded();
+    store.set_flags(ids[0], flags::SEEN, 0).unwrap();
+    let receipt = store
+        .apply_thread_action(
+            account,
+            thread_of(&store, ids[0]),
+            ActionKind::MarkRead,
+            None,
+            PlacementPolicy::Exclusive,
+        )
+        .unwrap();
+    assert_eq!(receipt.action_id, 0);
+    assert_eq!(receipt.message_count, 0);
+    assert!(store.pending_actions(account).unwrap().is_empty());
+    assert_eq!(store.flags_of(ids[0]).unwrap() & flags::SEEN, flags::SEEN);
+}
+
+/// Only the messages whose SEEN bit actually changes go on the queue.
+#[test]
+fn mark_read_skips_messages_already_seen() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&dir.path().join("t.db")).unwrap();
+    let blobs = petrel_engine::blob::BlobStore::open(&dir.path().join("blobs")).unwrap();
+    let account = store.ensure_test_account().unwrap();
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+    let ids = ingest_reply_chain(&mut store, &blobs, account, inbox, 3);
+    store.set_flags(ids[0], flags::SEEN, 0).unwrap();
+    let thread = store.thread_of(ids[0]).unwrap().unwrap();
+
+    let receipt = store
+        .apply_thread_action(
+            account,
+            thread,
+            ActionKind::MarkRead,
+            None,
+            PlacementPolicy::Exclusive,
+        )
+        .unwrap();
+    assert_eq!(receipt.message_count, 2);
+    let pending = store.pending_actions(account).unwrap();
+    let queued: Vec<i64> = pending.iter().map(|p| p.message_id).collect();
+    assert!(!queued.contains(&ids[0]));
+    assert!(queued.contains(&ids[1]));
+    assert!(queued.contains(&ids[2]));
+}
+
+/// Drain used to clone the undo JSON onto every action_messages row.
+#[test]
+fn pending_actions_share_one_payload_per_action() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&dir.path().join("t.db")).unwrap();
+    let blobs = petrel_engine::blob::BlobStore::open(&dir.path().join("blobs")).unwrap();
+    let account = store.ensure_test_account().unwrap();
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+    let ids = ingest_reply_chain(&mut store, &blobs, account, inbox, 8);
+    let thread = store.thread_of(ids[0]).unwrap().unwrap();
+    store
+        .apply_thread_action(
+            account,
+            thread,
+            ActionKind::MarkRead,
+            None,
+            PlacementPolicy::Exclusive,
+        )
+        .unwrap();
+
+    let pending = store.pending_actions(account).unwrap();
+    assert_eq!(pending.len(), 8);
+    let first = &pending[0].payload_json;
+    assert!(
+        pending
+            .iter()
+            .all(|p| std::sync::Arc::ptr_eq(&p.payload_json, first)),
+        "one undo snapshot, not one copy per message"
+    );
+}
+
+fn ingest_reply_chain(
+    store: &mut Store,
+    blobs: &petrel_engine::blob::BlobStore,
+    account: i64,
+    inbox: i64,
+    n: usize,
+) -> Vec<i64> {
+    let mut ids = Vec::with_capacity(n);
+    for i in 0..n {
+        let reply = if i == 0 {
+            String::new()
+        } else {
+            format!("In-Reply-To: <m{}@x>\r\nReferences: <m0@x>\r\n", i - 1)
+        };
+        let raw = format!(
+            "From: a@example.com\r\nTo: b@example.com\r\nSubject: shared chain\r\n\
+             Message-ID: <m{i}@x>\r\n{reply}\
+             MIME-Version: 1.0\r\nContent-Type: text/plain\r\n\r\nbody\r\n"
+        );
+        let m = store
+            .ingest_raw(
+                blobs,
+                account,
+                Some(inbox),
+                Some(100 + i as u32),
+                raw.as_bytes(),
+            )
+            .unwrap();
+        ids.push(m.message_id);
+    }
+    let thread = store.thread_of(ids[0]).unwrap().unwrap();
+    for id in &ids {
+        assert_eq!(
+            store.thread_of(*id).unwrap().unwrap(),
+            thread,
+            "reply chain must be one conversation"
+        );
+    }
+    ids
+}
+
 /// Permanent delete is the one action with no way back, and every layer has to
 /// agree about that — a client that offers undo and then cannot deliver it is
 /// worse than one that never offered.
