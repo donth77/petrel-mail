@@ -645,6 +645,32 @@ body.resizing {
   box-shadow: none;
 }
 
+/* Drafts: the composer is the reading pane, not a card over an empty list. */
+.compose[data-pane] {
+  position: static;
+  inset: auto;
+  inline-size: auto;
+  max-block-size: none;
+  min-inline-size: 0;
+  min-block-size: 0;
+  block-size: auto;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  z-index: auto;
+  grid-column: 4;
+  grid-row: 1;
+}
+
+.shell[data-layout='below'] .compose[data-pane] {
+  grid-column: 2;
+  grid-row: 2;
+}
+
+.compose[data-pane] .compose-head {
+  cursor: default;
+}
+
 /* The one filled button in the rail. Everything else there is a place to go;
    this is a thing to do, and it should not have to be found among them. */
 .compose-new {

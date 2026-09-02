@@ -25,6 +25,7 @@ import { Picker, type PickerOption } from './components/Picker';
 import { Compose, addresses, type Draft } from './components/Compose';
 import { snoozeOptions } from './lib/snooze';
 import { promisesMissingAttachment } from './lib/compose-checks';
+import { opensComposer } from './lib/draft-view';
 import { replyTargets } from './lib/reply';
 import { forwardBody, replyBody } from './lib/quote';
 import { dropMeaning } from './lib/dnd';
@@ -128,6 +129,9 @@ export function App() {
   // Where a range grows from, so reversing direction shrinks it again.
   const [anchor, setAnchor] = useState<number | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
+  // Remounts the editor when a different draft opens. Saving the same one
+  // must not, or the caret jumps on the first Cmd+S.
+  const [composeGen, setComposeGen] = useState(0);
   // Reset per composer, so each message gets its own single warning.
   const attachmentWarned = useRef(false);
   // The picker awaits, so the draft may have moved on by the time it returns.
@@ -344,6 +348,7 @@ export function App() {
    *  had used up its one warning before it began. */
   const startCompose = () => {
     attachmentWarned.current = false;
+    setComposeGen((n) => n + 1);
     setDraft({
       to: '',
       cc: '',
@@ -376,6 +381,11 @@ export function App() {
 
   useKeyboard({
     openConversation: () => {
+      // Drafts have no reading pane. Enter is resume, same as a click.
+      if (opensComposer(view) && activeId != null) {
+        void resumeDraft(activeId);
+        return;
+      }
       // Enter opens what the list has focused; with the reading pane off it is
       // the only way to see a message at all.
       if (settings.layout === 'off') setReaderOverlay(true);
@@ -714,6 +724,7 @@ export function App() {
     try {
       const d = await api.loadDraft(id);
       attachmentWarned.current = false;
+      setComposeGen((n) => n + 1);
       setDraft({
         to: d.to,
         cc: '',
@@ -1400,7 +1411,7 @@ export function App() {
         data-layout={
           // Only while something is open. Filling the window with an empty
           // reading pane would hide the list to show nothing.
-          readerFull && active && settings.layout !== 'off'
+          readerFull && active && settings.layout !== 'off' && !opensComposer(view)
             ? 'reader-only'
             : settings.layout === 'off'
               ? 'no-reader'
@@ -1750,7 +1761,10 @@ export function App() {
           // Its own component, not conversation rows. An outbox row is a
           // message in one of five states, and the row's job is to say which
           // in plain words and offer only the actions that state allows.
-          <Outbox onDiscard={(row) => setDiscarding(row)} />
+          <Outbox
+            onDiscard={(row) => setDiscarding(row)}
+            onEdit={(id) => void resumeDraft(id)}
+          />
         ) : loading || (status?.seeding && items.length === 0) ? (
           // A sync in flight with nothing ingested yet is not an empty mailbox,
           // and saying "Inbox is clear" while mail is arriving is the most
@@ -1793,10 +1807,9 @@ export function App() {
               if (selected.size > 0) setSelected(new Set());
               setAnchor(id);
               setActiveId(id);
-              // In Drafts, selecting one means resuming it. Showing an
-              // unfinished message in a reading pane is showing it to the
-              // person who wrote it, in the one form they cannot edit.
-              if (view === 'drafts') void resumeDraft(id);
+              // Drafts resume in the composer. The reading pane stays closed:
+              // it is the one form the person who wrote the message cannot edit.
+              if (opensComposer(view)) void resumeDraft(id);
             }}
             onAction={(kind, threadId) => void triage.run(kind, threadId)}
             onSnooze={(threadId) => {
@@ -1859,7 +1872,11 @@ export function App() {
         />
       )}
 
-      {(settings.layout !== 'off' || readerOverlay) && (
+      {opensComposer(view) && settings.layout !== 'off' && !draft && (
+        <div className="reader" />
+      )}
+
+      {(settings.layout !== 'off' || readerOverlay) && !opensComposer(view) && (
         <Reader
           thread={active}
           view={view}
@@ -1939,6 +1956,8 @@ export function App() {
 
       {draft && (
         <Compose
+          key={composeGen}
+          pane={opensComposer(view) && settings.layout !== 'off'}
           draft={draft}
           account={activeAccount?.email ?? ''}
           onChange={setDraft}

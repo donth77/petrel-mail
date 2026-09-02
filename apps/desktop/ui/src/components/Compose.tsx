@@ -43,6 +43,8 @@ type Props = {
   onPopOut: () => void;
   /** Passing notes to the toast — a refused paste, and nothing graver. */
   onNotice?: (text: string) => void;
+  /** Fills the reading-pane slot instead of floating over it. */
+  pane?: boolean;
 };
 
 /** Splits a recipient field into addresses.
@@ -59,12 +61,13 @@ export { splitRecipients as addresses } from '../lib/recipients';
  * are reading, and taking over the screen to write two lines loses the thing
  * being replied to. Popping out is a deliberate escalation, not the default.
  */
-export function Compose({ draft, account, onChange, onClose, onSend, onAttach, onDropFiles, onSaveDraft, onSendLater, onPopOut, onNotice }: Props) {
+export function Compose({ draft, account, onChange, onClose, onSend, onAttach, onDropFiles, onSaveDraft, onSendLater, onPopOut, onNotice, pane }: Props) {
   const { over: dropping, dropProps } = useFileDropZone(onDropFiles);
   const toRef = useRef<HTMLInputElement>(null);
   const [showCc, setShowCc] = useState(draft.cc.length > 0);
   // Draggable by its header. The pop-out button is still the way to get a
   // real OS window; this is for nudging it off whatever it is covering.
+  // A pane composer already has a place; dragging it would leave the slot.
   const drag = useDragWindow();
 
   // Focus where the work is: a fresh message needs a recipient, a reply already
@@ -81,9 +84,10 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
   return (
     <section
       className="compose"
-      ref={drag.ref as React.RefObject<HTMLElement>}
-      style={drag.style}
+      ref={pane ? undefined : (drag.ref as React.RefObject<HTMLElement>)}
+      style={pane ? undefined : drag.style}
       aria-label={t('compose-title')}
+      data-pane={pane || undefined}
       data-dropping={dropping || undefined}
       {...dropProps}
       onKeyDown={(e) => {
@@ -121,7 +125,7 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
         </div>
       )}
 
-      <header className="compose-head" {...drag.handleProps}>
+      <header className="compose-head" {...(pane ? {} : drag.handleProps)}>
         <span className="compose-title">{draft.inReplyTo ? t('compose-reply') : t('compose-new')}</span>
         {/* Closing keeps the message. Discarding what someone wrote because
             they hit the wrong corner is unforgivable, and a confirmation
