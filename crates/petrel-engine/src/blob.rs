@@ -61,7 +61,17 @@ impl BlobStore {
             return Ok((hash, meta.len()));
         }
         fs::create_dir_all(final_path.parent().expect("blob path has parent"))?;
-        let tmp = self.root.join("tmp").join(format!("{hash}.part"));
+        // A name no other write can be using. Two syncs fetching the same
+        // message — the same bytes, so the same hash — met in this file:
+        // one truncated it while the other was reading its own write back,
+        // and the rename published a short blob under a hash it did not
+        // match. The counter is per process, the pid separates processes.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = self
+            .root
+            .join("tmp")
+            .join(format!("{hash}.{}.{n}.part", std::process::id()));
         {
             let mut f = fs::File::create(&tmp)?;
             let compressed = zstd::encode_all(bytes, 3)?;

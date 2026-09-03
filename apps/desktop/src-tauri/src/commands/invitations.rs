@@ -1,6 +1,7 @@
 //! Calendar invitations: the card's data, and the answer sent back.
 
-use crate::diag::{data_dir, log_sync};
+use crate::commands::clean_header;
+use crate::diag::{create_private_dir, data_dir, log_sync};
 use crate::state::active_account;
 use crate::state::{AppState, note_ui_touch, now_ms};
 use petrel_engine::store::DraftEnvelope;
@@ -74,7 +75,7 @@ fn load_invitation(state: &Arc<AppState>, message_id: i64) -> Result<Invitation,
 }
 
 /// The invitation a message carries, if any.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn invitation(
     message_id: i64,
     state: State<Arc<AppState>>,
@@ -137,7 +138,7 @@ pub fn invitation(
 
 /// Answers an invitation: ACCEPTED, TENTATIVE or DECLINED, as a
 /// METHOD:REPLY sent to the organizer through the outbox like any mail.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn respond_invitation(
     message_id: i64,
     response: String,
@@ -158,6 +159,7 @@ pub fn respond_invitation(
         .organizer
         .as_ref()
         .and_then(|o| o.email.clone())
+        .map(|o| clean_header(&o))
         .ok_or("the invitation names no organizer")?;
     let uid = inv.uid.clone().ok_or("the invitation carries no UID")?;
 
@@ -180,7 +182,7 @@ pub fn respond_invitation(
 
     let ics = build_reply_ics(&inv, &uid, &organizer, &me, &my_name, partstat);
     let dir = data_dir().join("staged");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    create_private_dir(&dir).map_err(|e| e.to_string())?;
     let path = dir.join(format!(
         "{}-invite-reply.ics",
         std::time::SystemTime::now()
@@ -190,7 +192,11 @@ pub fn respond_invitation(
     ));
     std::fs::write(&path, ics.as_bytes()).map_err(|e| e.to_string())?;
 
-    let event = inv.summary.as_deref().unwrap_or("the event");
+    // The summary is text an organiser wrote, and it reaches this subject
+    // with no window in between: pressing Accept on a crafted invitation was
+    // enough to send a message whose headers the organiser had chosen. A
+    // newline in a SUMMARY is legitimate iCalendar and never a subject.
+    let event = clean_header(inv.summary.as_deref().unwrap_or("the event"));
     let subject = format!("{verb}: {event}");
     let draft_id = {
         let store = state.store()?;
@@ -402,6 +408,38 @@ mod tests {
             due.iter().any(|d| d.id == draft),
             "the reply must be due to send; queued with {:?} it was not",
             reply_send_at(now)
+        );
+    }
+
+    /// The invitation path with no UI at all: a SUMMARY carrying a newline
+    /// reaches the reply's Subject, and mail-builder writes header values as
+    /// it is given them. The reply must never carry a header the organiser
+    /// wrote.
+    #[test]
+    fn a_summary_with_a_newline_cannot_write_the_replys_headers() {
+        let hostile = "Standup\nBcc: attacker@example.com";
+        let subject = format!("Accepted: {}", clean_header(hostile));
+        assert_eq!(subject, "Accepted: StandupBcc: attacker@example.com");
+        assert!(!subject.contains('\n'));
+
+        let out = petrel_providers::smtp::Outgoing {
+            from_addr: "me@example.com".into(),
+            from_name: "Me".into(),
+            to: vec![clean_header("org@example.com")],
+            cc: vec![],
+            subject,
+            body_text: "hello".into(),
+            body_html: None,
+            in_reply_to: None,
+            references: vec![],
+            attachments: vec![],
+        };
+        let (_, raw) = out.render("example.com");
+        let text = String::from_utf8_lossy(&raw);
+        let head = text.split("\r\n\r\n").next().unwrap_or_default();
+        assert!(
+            !head.lines().any(|l| l.starts_with("Bcc:")),
+            "an injected header survived: {head}"
         );
     }
 

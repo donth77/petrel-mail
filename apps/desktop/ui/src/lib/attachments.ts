@@ -38,16 +38,20 @@ export function fits(existing: Attached[], addition: number): boolean {
  *
  * Returns null when the picker was cancelled, which is an answer rather than
  * a failure and must not be reported as one.
+ *
+ * The picker is the shell's, not the webview's. A path only ever reaches a
+ * command from a panel the shell itself opened, so nothing rendered from a
+ * message can name a file on disk.
  */
 export async function pickAttachments(
   existing: readonly Attached[],
   info: (paths: string[]) => Promise<Attached[]>,
+  pick: () => Promise<string[]>,
 ): Promise<{ kept: Attached[]; rejected: string[] } | null> {
-  const { open } = await import('@tauri-apps/plugin-dialog');
-  const picked = await open({ multiple: true });
-  if (!picked) return null;
+  const picked = await pick();
+  if (picked.length === 0) return null;
 
-  const files = await info(Array.isArray(picked) ? picked : [picked]);
+  const files = await info(picked);
   const kept = [...existing];
   const rejected: string[] = [];
   for (const f of files) {

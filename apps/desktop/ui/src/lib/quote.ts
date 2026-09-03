@@ -14,12 +14,19 @@
  * whose words these are.
  */
 
+import { t } from './strings';
+
 /** Escapes text for placing inside HTML. */
 function escape(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-/** "On 4 March 2026 at 14:12, Dana Wu wrote:" — the form every client uses. */
+/** "On 4 March 2026 at 14:12, Dana Wu wrote:" — the form every client uses.
+ *
+ *  The sentence comes from the bundle, not from here. These words go out in
+ *  the message: someone writing in French sent a reply whose only English
+ *  was the line Petrel added to it. The date is formatted with the same
+ *  language, which is what `locale` has always been for. */
 export function attribution(from: string, dateMs: number, locale?: string): string {
   const when = new Date(dateMs);
   const date = when.toLocaleDateString(locale, {
@@ -28,7 +35,7 @@ export function attribution(from: string, dateMs: number, locale?: string): stri
     year: 'numeric',
   });
   const time = when.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' });
-  return `On ${date} at ${time}, ${from} wrote:`;
+  return t('quote-attribution', { date, time, who: from });
 }
 
 /**
@@ -85,18 +92,18 @@ export function forwardBody(
   });
   const time = when.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' });
   const lines = [
-    `From: ${escape(from)}`,
-    `Date: ${escape(`${date} at ${time}`)}`,
-    `Subject: ${escape(subject)}`,
+    `${t('quote-from')} ${escape(from)}`,
+    `${t('quote-date')} ${escape(`${date} ${time}`)}`,
+    `${t('quote-subject')} ${escape(subject)}`,
     // Omitted rather than left blank when the original had no visible
     // recipients — a header line reading "To:" with nothing after it looks
     // like the forward lost something.
-    ...(to.trim() ? [`To: ${escape(to)}`] : []),
+    ...(to.trim() ? [`${t('quote-to')} ${escape(to)}`] : []),
   ];
   return [
     '<p></p>',
     signature,
-    `<p>---------- Forwarded message ----------<br>${lines.join('<br>')}</p>`,
+    `<p>${escape(t('quote-forwarded'))}<br>${lines.join('<br>')}</p>`,
     originalHtml,
   ].join('');
 }

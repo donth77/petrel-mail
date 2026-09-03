@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { looksLikeAddress, splitRecipients } from './recipients';
+import { addressOf, looksLikeAddress, splitRecipients } from './recipients';
 
 describe('splitRecipients', () => {
   it('takes the separators people actually type', () => {
@@ -40,5 +40,42 @@ describe('looksLikeAddress', () => {
     ]) {
       expect(looksLikeAddress(bad), bad).toBe(false);
     }
+  });
+});
+
+describe('splitRecipients with quoted names', () => {
+  it('keeps a comma inside double quotes as part of the name', () => {
+    // The form every other client pastes for a surname-first contact. It
+    // used to become two chips, one of them an address of `"Wu`.
+    expect(splitRecipients('"Wu, Dana" <dana@example.com>, sam@example.com')).toEqual([
+      '"Wu, Dana" <dana@example.com>',
+      'sam@example.com',
+    ]);
+  });
+
+  it('still splits on the separators outside quotes', () => {
+    expect(splitRecipients('"A; B" <ab@example.com>; c@example.com')).toEqual([
+      '"A; B" <ab@example.com>',
+      'c@example.com',
+    ]);
+  });
+
+  it('does not lose the rest of the field to an unclosed quote', () => {
+    expect(splitRecipients('"Dana <dana@example.com>')).toEqual(['"Dana <dana@example.com>']);
+  });
+});
+
+describe('looksLikeAddress with a display name', () => {
+  it('judges the address inside the angle brackets', () => {
+    expect(looksLikeAddress('Dana Wu <dana@example.com>')).toBe(true);
+    expect(looksLikeAddress('"Wu, Dana" <dana@example.com>')).toBe(true);
+    expect(looksLikeAddress('Dana Wu <dana@example>')).toBe(false);
+    expect(looksLikeAddress('Dana Wu <>')).toBe(false);
+  });
+
+  it('reads the address out of an entry', () => {
+    expect(addressOf('Dana Wu <dana@example.com>')).toBe('dana@example.com');
+    expect(addressOf('dana@example.com')).toBe('dana@example.com');
+    expect(addressOf('  dana@example.com  ')).toBe('dana@example.com');
   });
 });

@@ -465,8 +465,22 @@ impl Store {
         let cutoff = now_ms.saturating_sub(grace_days.saturating_mul(crate::retention::MS_PER_DAY));
 
         let tx = self.conn.transaction()?;
+        // Not while the queue still names it. Deleting forever tombstones the
+        // row here and queues the expunge for the server; a machine kept
+        // offline past the grace period had the row purged out from under
+        // the action, which took the action with it (the rows cascade) and
+        // left the server copy in place for good. The row waits until the
+        // drain has delivered or given up on it, which is at most a few
+        // cycles once there is a network again.
         let purged = tx.execute(
-            "DELETE FROM messages WHERE deleted_at_ms IS NOT NULL AND deleted_at_ms <= ?1",
+            "DELETE FROM messages
+             WHERE deleted_at_ms IS NOT NULL AND deleted_at_ms <= ?1
+               AND NOT EXISTS (SELECT 1 FROM action_messages am
+                               JOIN actions a ON a.id = am.action_id
+                               WHERE am.message_id = messages.id
+                                 AND a.state = 'queued'
+                                 AND am.delivered_ms IS NULL
+                                 AND am.dropped_ms IS NULL)",
             params![cutoff],
         )?;
 

@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { attribution, forwardBody, replyBody } from './quote';
+import { setLocale } from './strings';
 
 const WHEN = Date.UTC(2026, 2, 4, 14, 12);
 
@@ -73,5 +74,35 @@ describe('forwardBody', () => {
     const out = forwardBody('', '<script>x</script>', '', 'a & b', 0, html, 'en-GB');
     expect(out).not.toContain('<script>');
     expect(out).toContain('a &amp; b');
+  });
+});
+
+/* These words leave the machine. Somebody writing in French sent replies
+   whose only English was the line Petrel put at the top of the quote, and a
+   forward whose header block was English over a French message. */
+describe('the quoted headers speak the language the user chose', () => {
+  afterEach(() => setLocale('en'));
+
+  it('writes the attribution in that language', () => {
+    setLocale('fr');
+    const line = attribution('Dana Wu', WHEN, 'fr');
+    expect(line).toContain('a écrit');
+    expect(line).not.toContain('wrote');
+    expect(line).toContain('Dana Wu');
+  });
+
+  it('writes the forward header block in that language', () => {
+    setLocale('de');
+    const body = forwardBody('', 'Dana Wu', 'sam@example.com', 'Vertrag', WHEN, '<p>x</p>', 'de');
+    expect(body).toContain('Weitergeleitete Nachricht');
+    expect(body).toContain('Von:');
+    expect(body).toContain('Betreff:');
+    expect(body).not.toContain('Forwarded message');
+  });
+
+  it('still says it in English for an English reader', () => {
+    setLocale('en');
+    expect(attribution('Dana Wu', WHEN, 'en-GB')).toMatch(/wrote:$/);
+    expect(forwardBody('', 'D', '', 'S', WHEN, '', 'en-GB')).toContain('Forwarded message');
   });
 });

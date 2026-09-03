@@ -3,7 +3,7 @@ import { Paperclip, X } from 'lucide-react';
 import { fileSize } from '../lib/format';
 import type { Attached } from '../lib/attachments';
 import { Icon } from './Icon';
-import { Recipients } from './Recipients';
+import { Recipients, type RecipientsHandle } from './Recipients';
 import { RichText } from './RichText';
 import { plainTextFromDoc } from '../lib/plain-text';
 import { key } from '../lib/keys';
@@ -33,14 +33,17 @@ type Props = {
   account: string;
   onChange: (d: Draft) => void;
   onClose: () => void;
-  onSend: () => void;
+  /** These three are handed the draft as it stands at the keystroke, with any
+   *  recipient still being typed committed. The parent's own copy is a render
+   *  behind by then, and a send read from it went out without that address. */
+  onSend: (d: Draft) => void;
   onAttach: () => void;
   /** Files dragged in from the desktop. Separate from `onAttach`, which opens
       the picker: these arrive as bytes and have to be written down first. */
   onDropFiles: (files: FileList) => void;
-  onSaveDraft: () => void;
+  onSaveDraft: (d: Draft) => void;
   onSendLater: () => void;
-  onPopOut: () => void;
+  onPopOut: (d: Draft) => void;
   /** Passing notes to the toast — a refused paste, and nothing graver. */
   onNotice?: (text: string) => void;
   /** Fills the reading-pane slot instead of floating over it. */
@@ -65,7 +68,25 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
   const { over: dropping, dropProps } = useFileDropZone(onDropFiles);
   const toRef = useRef<HTMLInputElement>(null);
   const ccRef = useRef<HTMLInputElement>(null);
+  const toField = useRef<RecipientsHandle>(null);
+  const ccField = useRef<RecipientsHandle>(null);
   const [showCc, setShowCc] = useState(draft.cc.length > 0);
+  // Decided once, as the composer opens. It used to follow the draft, so
+  // committing the first To recipient flipped it and the editor took focus
+  // away from the field the person was still typing in.
+  const [bodyFocus] = useState(() => Boolean(draft.to));
+
+  /** The draft with anything still being typed in a recipient field made a
+   *  recipient. Returned as well as reported, because the caller acts on it
+   *  in the same keystroke. */
+  const settled = (): Draft => {
+    const to = toField.current?.flush() ?? null;
+    const cc = ccField.current?.flush() ?? null;
+    if (to == null && cc == null) return draft;
+    const next = { ...draft, to: to ?? draft.to, cc: cc ?? draft.cc };
+    onChange(next);
+    return next;
+  };
   // The Cc button unmounts itself when clicked, and focus fell to the body:
   // the next letters typed were single-key shortcuts, so "eve@" archived the
   // conversation being replied to and opened Move. Asking for the field
@@ -106,24 +127,27 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
         if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key === 'Enter') {
           e.preventDefault();
           e.stopPropagation();
-          onSend();
+          onSend(settled());
         }
         if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 'Enter') {
           e.preventDefault();
           e.stopPropagation();
+          // The picker reads the draft when a time is chosen, by which
+          // point the commit above has landed.
+          settled();
           onSendLater();
           return;
         }
         if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'o') {
           e.preventDefault();
           e.stopPropagation();
-          onPopOut();
+          onPopOut(settled());
           return;
         }
         if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
           e.preventDefault();
           e.stopPropagation();
-          onSaveDraft();
+          onSaveDraft(settled());
         }
       }}
     >
@@ -162,6 +186,7 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
           value={draft.to}
           onChange={(v) => field('to', v)}
           inputRef={toRef}
+          handle={toField}
         />
         {!showCc && (
           <button
@@ -185,6 +210,7 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
             value={draft.cc}
             onChange={(v) => field('cc', v)}
             inputRef={ccRef}
+            handle={ccField}
           />
         </div>
       )}
@@ -204,7 +230,7 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
           later would mean two descriptions of one message that can disagree. */}
       <RichText
         html={draft.html}
-        autoFocus={Boolean(draft.to)}
+        autoFocus={bodyFocus}
         onChange={(html, doc) => onChange({ ...draft, html, body: plainTextFromDoc(doc) })}
         onNotice={onNotice}
       />
@@ -235,7 +261,7 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
       )}
 
       <footer className="compose-foot">
-        <button type="button" className="reply primary" onClick={onSend}>
+        <button type="button" className="reply primary" onClick={() => onSend(settled())}>
           {t('compose-send')} <span className="kbd on-accent">{key('send')}</span>
         </button>
         <button type="button" className="reply" onClick={onAttach}>

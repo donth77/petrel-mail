@@ -133,6 +133,10 @@ impl Store {
         // addressed at the queue-time source whenever that placement is
         // gone, and carries one row per message.
         let mut collapsed: Vec<PendingAction> = Vec::with_capacity(out.len());
+        // Whether the last row pushed was addressed at its queue-time source.
+        // Such a row is final: a later placement row for the same message is
+        // a place the message still sits, not the place the change is about.
+        let mut last_pinned = false;
         for row in out {
             let moves = matches!(
                 serde_json::from_str::<crate::actions::ActionKind>(&row.kind_json),
@@ -143,6 +147,7 @@ impl Store {
             );
             if !moves {
                 collapsed.push(row);
+                last_pinned = false;
                 continue;
             }
             let same_message = collapsed.last().is_some_and(|last| {
@@ -152,6 +157,7 @@ impl Store {
                 // A second placement of a message this action already
                 // addresses. Keep whichever row has an address.
                 if let Some(last) = collapsed.last_mut()
+                    && !last_pinned
                     && last.uid.is_none()
                     && row.uid.is_some()
                 {
@@ -167,8 +173,9 @@ impl Store {
                         .prior
                         .iter()
                         .find(|p| p.message_id == row.message_id)
-                        .and_then(|p| Some((p.source_path.clone()?, p.source_uid?)))
+                        .and_then(|p| Some((p.source_path.clone()?, p.source_uid)))
                 });
+            let mut pinned = false;
             if let Some((path, uid)) = source {
                 let still_there: bool = self
                     .conn
@@ -182,12 +189,22 @@ impl Store {
                     .optional()?
                     .unwrap_or(false);
                 if !still_there {
-                    row.uid = Some(uid);
+                    // A source with no number is still the folder the change
+                    // is about: the drain asks it for the number, and a
+                    // folder that does not hold the message has nothing to
+                    // change — which is an outcome, not a place to look next.
+                    row.candidate_paths = if uid.is_none() {
+                        vec![path.clone()]
+                    } else {
+                        Vec::new()
+                    };
+                    row.uid = uid;
                     row.folder_path = path;
-                    row.candidate_paths.clear();
+                    pinned = true;
                 }
             }
             collapsed.push(row);
+            last_pinned = pinned;
         }
         Ok(collapsed)
     }
@@ -306,8 +323,33 @@ impl Store {
         // the conversation, wherever it sat, and the drain then moved your
         // Sent copy to Archive on the server. Bins are exclusive whatever the
         // provider, so Trash and Spam still take everything.
-        let kept_where_they_are: Vec<i64> =
-            if matches!(kind, ActionKind::Archive | ActionKind::Move) {
+        //
+        // Where folders are labels, archiving is one thing: taking the Inbox
+        // label off. Your own reply carries it too — Gmail puts a reply in
+        // the conversation's inbox — and a reply exempted for sitting in
+        // Sent kept its inbox placement, so the conversation stayed listed
+        // here and stayed labelled there, and could not be archived at all.
+        // So there the members an archive touches are exactly those holding
+        // an inbox placement, Sent or not; the rest have nothing to lose and
+        // are left alone, which is also what keeps the drain from moving a
+        // Sent copy anywhere.
+        let kept_where_they_are: Vec<i64> = match (kind, policy) {
+            (ActionKind::Archive, crate::actions::PlacementPolicy::Labels) => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT m.id FROM messages m
+                     WHERE coalesce(m.thread_id, -m.id) = ?1 AND m.deleted_at_ms IS NULL
+                       AND (EXISTS (SELECT 1 FROM placements p
+                                    JOIN folders f ON f.id = p.folder_id
+                                    WHERE p.message_id = m.id
+                                      AND f.role IN ('drafts','trash','spam'))
+                            OR NOT EXISTS (SELECT 1 FROM placements p
+                                           JOIN folders f ON f.id = p.folder_id
+                                           WHERE p.message_id = m.id AND f.role = 'inbox'))",
+                )?;
+                stmt.query_map(params![thread_id], |r| r.get(0))?
+                    .collect::<std::result::Result<Vec<_>, _>>()?
+            }
+            (ActionKind::Archive | ActionKind::Move, _) => {
                 let mut stmt = self.conn.prepare(
                     "SELECT DISTINCT m.id FROM messages m
                      JOIN placements p ON p.message_id = m.id
@@ -317,9 +359,9 @@ impl Store {
                 )?;
                 stmt.query_map(params![thread_id], |r| r.get(0))?
                     .collect::<std::result::Result<Vec<_>, _>>()?
-            } else {
-                Vec::new()
-            };
+            }
+            _ => Vec::new(),
+        };
         let exclude = |column: &str| {
             if kept_where_they_are.is_empty() {
                 String::new()
@@ -354,7 +396,13 @@ impl Store {
         // the same message. One pass per table, not one query per message —
         // a 22k-message mark_read used to hold the store lock for fifteen
         // seconds while status waited.
-        let prior = self.capture_thread_priors(thread_id, &bare_filter, &aliased_filter)?;
+        // Where archiving is one label coming off, the change is about the
+        // inbox placement whether or not it carries a number. Everywhere
+        // else an archive is a move, and a move needs an address it can use.
+        let address_at_inbox =
+            matches!(kind, ActionKind::Archive) && !policy.archive_clears_everything();
+        let prior =
+            self.capture_thread_priors(thread_id, address_at_inbox, &bare_filter, &aliased_filter)?;
 
         // Queue rows before the local flag flip. The INSERT SELECT reuses the
         // same unread/read filter; if SEEN is already set, it would insert
@@ -442,17 +490,28 @@ impl Store {
                 }
                 ActionKind::Tag => self.tag_message(*id, target.expect("checked above"))?,
                 ActionKind::Untag => self.untag_message(*id, target.expect("checked above"))?,
+                // Every exclusive move below clears the placements the
+                // message had *other than* one already in the destination.
+                // A member the user filed there earlier keeps that row, and
+                // with it the UID the server knows it by; replacing the row
+                // left the placement with no number, which the server could
+                // neither flag nor prune, and which STATUS disagreed with
+                // every cycle until a refetch healed it.
                 ActionKind::Move => {
                     let dest = target.expect("checked above");
-                    self.conn
-                        .execute("DELETE FROM placements WHERE message_id = ?1", params![id])?;
+                    self.conn.execute(
+                        "DELETE FROM placements WHERE message_id = ?1 AND folder_id != ?2",
+                        params![id, dest],
+                    )?;
                     self.place_message(*id, dest)?;
                 }
                 ActionKind::Archive => {
                     let dest = self.ensure_folder(account_id, "archive", "archive")?;
                     if policy.archive_clears_everything() {
-                        self.conn
-                            .execute("DELETE FROM placements WHERE message_id = ?1", params![id])?;
+                        self.conn.execute(
+                            "DELETE FROM placements WHERE message_id = ?1 AND folder_id != ?2",
+                            params![id, dest],
+                        )?;
                     } else {
                         // Labels: archiving removes the message from the inbox
                         // and leaves every other label alone. Clearing them all
@@ -473,8 +532,10 @@ impl Store {
                     let dest = self.ensure_folder(account_id, role, role)?;
                     // Binning is exclusive on both providers: a message in the
                     // trash is not still sitting in your inbox under a label.
-                    self.conn
-                        .execute("DELETE FROM placements WHERE message_id = ?1", params![id])?;
+                    self.conn.execute(
+                        "DELETE FROM placements WHERE message_id = ?1 AND folder_id != ?2",
+                        params![id, dest],
+                    )?;
                     self.place_message(*id, dest)?;
                 }
             }
@@ -540,11 +601,16 @@ impl Store {
         let tags = matches!(payload.kind, ActionKind::Tag | ActionKind::Untag);
         let snooze = matches!(payload.kind, ActionKind::Snooze | ActionKind::Unsnooze);
 
+        // One transaction: an undo that fails halfway used to leave the
+        // placements cleared and nothing put back, with the action still
+        // queued — the message in no folder at all, and the drain about to
+        // deliver the move the user had just cancelled.
+        let tx = self.conn.unchecked_transaction()?;
         for p in &payload.prior {
             if let Some(bit) = flag_bit {
                 // The one bit, as it was: a star set since survives undoing a
                 // mark-read, and the other way round.
-                self.conn.execute(
+                tx.execute(
                     "UPDATE messages SET flags = (flags & ~?2) | (?3 & ?2) WHERE id = ?1",
                     params![p.message_id, bit, p.flags],
                 )?;
@@ -554,18 +620,37 @@ impl Store {
                     self.restore_tags(p)?;
                 }
                 if snooze {
-                    self.conn.execute(
+                    tx.execute(
                         "UPDATE messages SET snoozed_until_ms = ?2 WHERE id = ?1",
                         params![p.message_id, p.snoozed_until],
                     )?;
                 }
                 continue;
             }
-            self.conn.execute(
+            // Only into folders that still exist. A folder the survey has
+            // since forgotten cannot take a placement, and a message that
+            // can be put back nowhere keeps the placement it has rather than
+            // being left with none.
+            let mut restorable: Vec<i64> = Vec::with_capacity(p.folder_ids.len());
+            for f in &p.folder_ids {
+                let exists: bool = tx
+                    .query_row("SELECT 1 FROM folders WHERE id = ?1", params![f], |_| {
+                        Ok(true)
+                    })
+                    .optional()?
+                    .unwrap_or(false);
+                if exists {
+                    restorable.push(*f);
+                }
+            }
+            if restorable.is_empty() {
+                continue;
+            }
+            tx.execute(
                 "DELETE FROM placements WHERE message_id = ?1",
                 params![p.message_id],
             )?;
-            for f in &p.folder_ids {
+            for f in &restorable {
                 // With its UID where the UID is known. Restored without one,
                 // the placement could not take a flag change from the server,
                 // was never pruned when the server dropped the message, and
@@ -579,10 +664,11 @@ impl Store {
             }
         }
 
-        self.conn.execute(
+        tx.execute(
             "UPDATE actions SET state = 'undone' WHERE id = ?1",
             params![action_id],
         )?;
+        tx.commit()?;
         Ok(true)
     }
 
@@ -628,9 +714,15 @@ impl Store {
         )?)
     }
 
+    /// Only a queued action moves. The drain snapshots the queue once and
+    /// delivers from the snapshot, so an action undone while a cycle was in
+    /// flight still arrives here a moment later — and 'undone' overwritten
+    /// with 'sent' is a change the user cancelled, recorded as delivered.
+    /// What is undone stays undone; the drain checks `action_state` before
+    /// each item as well, and this is the belt under that.
     pub fn mark_action_state(&self, action_id: i64, state: &str) -> Result<()> {
         self.conn.execute(
-            "UPDATE actions SET state = ?2 WHERE id = ?1",
+            "UPDATE actions SET state = ?2 WHERE id = ?1 AND state = 'queued'",
             params![action_id, state],
         )?;
         Ok(())
@@ -664,6 +756,12 @@ impl Store {
         message_id: i64,
         delivered: bool,
     ) -> Result<bool> {
+        // An action that is no longer queued has nothing to settle: undone
+        // between the drain's snapshot and its delivery, it stays undone,
+        // and its rows keep no record of a delivery the user cancelled.
+        if self.action_state(action_id)?.as_deref() != Some("queued") {
+            return Ok(false);
+        }
         let column = if delivered {
             "delivered_ms"
         } else {
@@ -702,6 +800,7 @@ impl Store {
     fn capture_thread_priors(
         &self,
         thread_id: i64,
+        address_at_inbox: bool,
         bare_filter: &str,
         aliased_filter: &str,
     ) -> Result<Vec<crate::actions::PriorState>> {
@@ -778,31 +877,47 @@ impl Store {
         {
             // Inbox first so a message in two folders keeps the same address
             // the per-row query used to pick.
+            //
+            // A labels archive is addressed at the inbox placement whether
+            // or not that placement has a number: the inbox is what the
+            // archive takes the message out of, and a placement the label
+            // sweep made has none. Addressed at the next best placement
+            // instead — the Sent copy, say — the drain moved that copy on
+            // the server, which is a different change from the one that was
+            // asked for. With no number the drain asks the inbox which of
+            // its numbers carries the Message-ID, as it does after a
+            // renumbering. Every other action wants an address it can use at
+            // once, so those keep to numbered placements.
+            let addressed_only = if address_at_inbox {
+                ""
+            } else {
+                " AND p.uid IS NOT NULL"
+            };
             let sql = format!(
                 "SELECT p.message_id, f.path, p.uid, (f.role = 'inbox'), p.folder_id
                  FROM placements p
                  JOIN folders f ON f.id = p.folder_id
                  JOIN messages m ON m.id = p.message_id
                  WHERE coalesce(m.thread_id, -m.id) = ?1 AND m.deleted_at_ms IS NULL
-                   AND p.uid IS NOT NULL{aliased_filter}
-                 ORDER BY p.message_id, (f.role = 'inbox') DESC"
+                   {addressed_only}{aliased_filter}
+                 ORDER BY p.message_id, (f.role = 'inbox') DESC, (p.uid IS NOT NULL) DESC"
             );
             let mut stmt = self.conn.prepare(&sql)?;
             let rows = stmt.query_map(params![thread_id], |r| {
                 Ok((
                     r.get::<_, i64>(0)?,
                     r.get::<_, String>(1)?,
-                    r.get::<_, i64>(2)?,
+                    r.get::<_, Option<i64>>(2)?,
                     r.get::<_, i64>(4)?,
                 ))
             })?;
             for row in rows {
                 let (id, path, uid, folder) = row?;
                 if let Some(p) = by_id.get_mut(&id)
-                    && p.source_uid.is_none()
+                    && p.source_path.is_none()
                 {
                     p.source_path = Some(path);
-                    p.source_uid = Some(uid as u32);
+                    p.source_uid = uid.map(|u| u as u32);
                     p.source_folder = Some(folder);
                 }
             }
@@ -1213,6 +1328,42 @@ impl Store {
         account_id: i64,
         labelled: &[(String, Vec<String>)],
     ) -> Result<usize> {
+        self.file_by_gmail_labels(
+            account_id,
+            labelled
+                .iter()
+                .map(|(m, l)| (m.as_str(), l.as_slice(), None)),
+        )
+    }
+
+    /// `apply_gmail_labels`, with each message's UID in INBOX where the
+    /// caller knows it.
+    ///
+    /// A sweep over All Mail learns All Mail's numbers, and the inbox
+    /// placement it makes carries none: the inbox sweep can never prune it,
+    /// a flag change from the server cannot find it, and an archive of it
+    /// has to ask the server for the number first. Given the number — from
+    /// a listing of INBOX's `(UID, Message-ID)` pairs, the way the All Mail
+    /// walk lists All Mail — the placement is as good as a fetched one. A
+    /// number already held is kept when none is given.
+    pub fn apply_gmail_labels_at(
+        &self,
+        account_id: i64,
+        labelled: &[(String, Vec<String>, Option<u32>)],
+    ) -> Result<usize> {
+        self.file_by_gmail_labels(
+            account_id,
+            labelled
+                .iter()
+                .map(|(m, l, uid)| (m.as_str(), l.as_slice(), *uid)),
+        )
+    }
+
+    fn file_by_gmail_labels<'a>(
+        &self,
+        account_id: i64,
+        labelled: impl Iterator<Item = (&'a str, &'a [String], Option<u32>)>,
+    ) -> Result<usize> {
         // The label arrives quoted and how many backslashes survive is a detail
         // of the parser, so match on the name rather than the escaping — and
         // on the whole name. A suffix match kept every message under a user
@@ -1232,7 +1383,7 @@ impl Store {
             .collect();
         let mut changed = 0usize;
 
-        for (msg_id, labels) in labelled {
+        for (msg_id, labels, inbox_uid) in labelled {
             let existing: Option<i64> = self
                 .conn
                 .query_row(
@@ -1259,7 +1410,10 @@ impl Store {
                 "DELETE FROM placements WHERE message_id = ?1 AND folder_id = ?2",
                 params![id, drop],
             )?;
-            self.place_message(id, add)?;
+            match inbox_uid {
+                Some(uid) if in_inbox => self.place_message_at(id, add, uid)?,
+                _ => self.place_message(id, add)?,
+            }
 
             // Starred is a flag rather than a place, and the same sweep carries
             // it — which is the whole reason a star on old mail was invisible.

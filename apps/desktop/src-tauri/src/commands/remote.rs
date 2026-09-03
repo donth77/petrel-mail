@@ -20,7 +20,7 @@ pub(crate) struct RemoteStatus {
     because_written_to: bool,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn remote_status(message_id: i64, state: State<Arc<AppState>>) -> Result<RemoteStatus, String> {
     let store = state.store()?;
     let from = store
@@ -48,7 +48,7 @@ pub fn remote_status(message_id: i64, state: State<Arc<AppState>>) -> Result<Rem
 }
 
 /// Shows this one message's remote content, for as long as the app is running.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn show_remote_once(message_id: i64, state: State<Arc<AppState>>) -> Result<(), String> {
     state
         .shown_once
@@ -59,7 +59,7 @@ pub fn show_remote_once(message_id: i64, state: State<Arc<AppState>>) -> Result<
 }
 
 /// Trusts this message's sender from now on.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn trust_sender(message_id: i64, state: State<Arc<AppState>>) -> Result<String, String> {
     let store = state.store()?;
     let Some(account) = store.active_account().map_err(|e| e.to_string())? else {
@@ -78,7 +78,7 @@ pub fn trust_sender(message_id: i64, state: State<Arc<AppState>>) -> Result<Stri
     Ok(from)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn trusted_senders(state: State<Arc<AppState>>) -> Result<Vec<String>, String> {
     let store = state.store()?;
     let Some(account) = store.active_account().map_err(|e| e.to_string())? else {
@@ -87,7 +87,7 @@ pub fn trusted_senders(state: State<Arc<AppState>>) -> Result<Vec<String>, Strin
     store.trusted_senders(account).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn untrust_sender(addr: String, state: State<Arc<AppState>>) -> Result<(), String> {
     let store = state.store()?;
     let Some(account) = store.active_account().map_err(|e| e.to_string())? else {
@@ -143,7 +143,7 @@ fn word(v: Option<petrel_mime::AuthVerdict>) -> Option<String> {
 }
 
 /// Reads the sender authentication verdicts for one message.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn authentication_info(
     message_id: i64,
     state: State<Arc<AppState>>,
@@ -174,7 +174,7 @@ fn raw_message_of(state: &AppState, message_id: i64) -> Result<Vec<u8>, String> 
 }
 
 /// Reads the List-Unsubscribe offer for one message, if it makes one.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn unsubscribe_info(
     message_id: i64,
     state: State<Arc<AppState>>,
@@ -207,14 +207,102 @@ pub async fn unsubscribe_one_click(
         .map_err(|e| e.to_string())?
 }
 
-/// The POST itself: the fixed form body RFC 8058 specifies, over https only.
+/// Why a one-click URL will not be posted to, if it will not be.
+///
+/// The URL comes out of a message, which means a stranger chose it, and this
+/// runs from inside the person's network. `http://169.254.169.254/…` is a
+/// cloud metadata service; `http://10.0.0.1/admin/reset` is somebody's
+/// router. Neither is a mailing list, and neither should be reachable by
+/// opening mail. The name is resolved here rather than trusted, because
+/// `unsubscribe.example.com` can point wherever its owner likes.
+fn refuse_reason(url: &str) -> Option<&'static str> {
+    let Ok(parsed) = url.parse::<tauri::Url>() else {
+        return Some("that unsubscribe link could not be read");
+    };
+    if parsed.scheme() != "https" {
+        return Some("one-click unsubscribe must be https");
+    }
+    let Some(host) = parsed.host_str() else {
+        return Some("that unsubscribe link names no host");
+    };
+    let port = parsed.port().unwrap_or(443);
+    if resolves_inside(host, port) {
+        return Some("that unsubscribe link points inside this network");
+    }
+    None
+}
+
+/// Whether a host lands anywhere on this machine or this network. A name
+/// that resolves to nothing counts: there is nothing to post to, and it is
+/// not worth finding out later.
+fn resolves_inside(host: &str, port: u16) -> bool {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
+
+    fn v4_inside(ip: Ipv4Addr) -> bool {
+        let [a, b, ..] = ip.octets();
+        ip.is_private()
+            || ip.is_loopback()
+            || ip.is_link_local()
+            || ip.is_broadcast()
+            || ip.is_documentation()
+            || ip.is_unspecified()
+            // 0.0.0.0/8, and the carrier-grade NAT range.
+            || a == 0
+            || (a == 100 && (64..128).contains(&b))
+    }
+    fn v6_inside(ip: Ipv6Addr) -> bool {
+        if let Some(mapped) = ip.to_ipv4_mapped() {
+            return v4_inside(mapped);
+        }
+        let first = ip.segments()[0];
+        ip.is_loopback()
+            || ip.is_unspecified()
+            // Unique local (fc00::/7) and link local (fe80::/10).
+            || (first & 0xfe00) == 0xfc00
+            || (first & 0xffc0) == 0xfe80
+    }
+
+    match (host, port).to_socket_addrs() {
+        Ok(addrs) => {
+            let mut seen = false;
+            for addr in addrs {
+                seen = true;
+                let inside = match addr.ip() {
+                    IpAddr::V4(v4) => v4_inside(v4),
+                    IpAddr::V6(v6) => v6_inside(v6),
+                };
+                // Any address inside is enough: a name that answers with one
+                // public and one private address is the classic way round a
+                // check that only looks at the first.
+                if inside {
+                    return true;
+                }
+            }
+            !seen
+        }
+        Err(_) => true,
+    }
+}
+
+/// The POST itself: the fixed form body RFC 8058 specifies, over https, to
+/// somewhere outside, and with redirects refused.
+///
+/// A redirect is the other way to reach the router: the list's own host
+/// answers 302 to `http://192.168.1.1/…` and a client that follows it has
+/// made the request anyway. There is nothing an unsubscribe needs a redirect
+/// for, so the answer is the answer.
 fn post_one_click(url: &str) -> Result<(), String> {
-    if !url.to_ascii_lowercase().starts_with("https://") && !cfg!(test) {
-        return Err("one-click unsubscribe must be https".into());
+    // The loopback the test posts to is exactly what the guard refuses, so
+    // the guard is exercised in `refuse_reason` and skipped here.
+    if !cfg!(test)
+        && let Some(why) = refuse_reason(url)
+    {
+        return Err(why.into());
     }
     ureq::post(url)
         .config()
         .timeout_global(Some(std::time::Duration::from_secs(15)))
+        .max_redirects(0)
         .build()
         .header("Content-Type", "application/x-www-form-urlencoded")
         .send("List-Unsubscribe=One-Click")
@@ -224,8 +312,34 @@ fn post_one_click(url: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod unsubscribe_tests {
-    use super::post_one_click;
+    use super::{post_one_click, refuse_reason};
     use std::io::{Read, Write};
+
+    /// The link is a stranger's, and this runs inside the person's network.
+    #[test]
+    fn a_link_pointing_inside_this_network_is_refused() {
+        for inside in [
+            "https://127.0.0.1/unsub",
+            "https://localhost/unsub",
+            "https://[::1]/unsub",
+            "https://10.0.0.1/unsub",
+            "https://192.168.1.1/admin",
+            "https://172.16.4.4/unsub",
+            // The cloud metadata service, which is the whole reason this
+            // check exists.
+            "https://169.254.169.254/latest/meta-data/",
+            "https://0.0.0.0/unsub",
+        ] {
+            assert!(refuse_reason(inside).is_some(), "{inside} was allowed");
+        }
+        // And the other ways round it.
+        assert!(refuse_reason("http://lists.example.com/unsub").is_some());
+        assert!(refuse_reason("ftp://lists.example.com/unsub").is_some());
+        assert!(refuse_reason("not a url at all").is_some());
+        assert!(refuse_reason("https://").is_some());
+        // A name nobody can resolve is nothing to post to either.
+        assert!(refuse_reason("https://petrel-no-such-host.invalid/unsub").is_some());
+    }
 
     /// The exact bytes RFC 8058 asks for, proven against a listening socket.
     #[test]

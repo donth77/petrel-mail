@@ -60,9 +60,33 @@ fn current_notes() -> Option<String> {
 }
 
 /// Sorts an updater failure into something the pane can phrase.
+///
+/// The plugin's own verdicts first, by variant, and the text only for what
+/// it does not name. A platform missing from the manifest is the one worth
+/// singling out: it means no release is published for this build at all —
+/// Windows and Linux today — and "there may be no release yet" is the wrong
+/// thing to tell someone who will never get one this way.
+fn classify_error(e: &tauri_plugin_updater::Error) -> &'static str {
+    use tauri_plugin_updater::Error;
+    match e {
+        Error::TargetNotFound(_)
+        | Error::TargetsNotFound(_)
+        | Error::UnsupportedOs
+        | Error::UnsupportedArch => "unsupported",
+        other => classify(&other.to_string()),
+    }
+}
+
+/// The text-only half of `classify_error`, for errors that arrive as words.
 fn classify(e: &str) -> &'static str {
     let low = e.to_lowercase();
-    if low.contains("secure protocol") || low.contains("not configured") {
+    if low.contains("not found in the response")
+        || low.contains("fallback platforms")
+        || low.contains("unsupported os")
+        || low.contains("unsupported application architecture")
+    {
+        "unsupported"
+    } else if low.contains("secure protocol") || low.contains("not configured") {
         "not-configured"
     } else if low.contains("dns")
         || low.contains("connect")
@@ -86,6 +110,25 @@ fn classify(e: &str) -> &'static str {
 
 fn current_version(app: &tauri::AppHandle) -> String {
     app.package_info().version.to_string()
+}
+
+/// What the pane can say before anyone presses the button: this version and
+/// its notes, and nothing from the network.
+///
+/// The pane used to ask `check_update` on open, which is a request to GitHub
+/// every time Settings › Updates is looked at — in the one pane whose whole
+/// promise is that nothing phones home unasked. This answers the same shape
+/// with the fields a check would fill left empty, so the pane has something
+/// to show and the check stays behind the button.
+#[tauri::command]
+pub fn app_version(app: tauri::AppHandle) -> UpdateStatus {
+    UpdateStatus {
+        current: current_version(&app),
+        available: None,
+        notes: None,
+        current_notes: current_notes(),
+        error: None,
+    }
 }
 
 /// The updater, pointed at a different feed when one is named.
@@ -153,9 +196,40 @@ pub async fn check_update(app: tauri::AppHandle) -> Result<UpdateStatus, String>
                 available: None,
                 notes: None,
                 current_notes: current_notes(),
-                error: Some(classify(&e.to_string())),
+                error: Some(classify_error(&e)),
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod classify_tests {
+    use super::{classify, classify_error};
+    use tauri_plugin_updater::Error;
+
+    /// A platform the manifest does not list is its own answer. It used to
+    /// fall through to "unknown", and the pane told a Windows user there
+    /// might be no release yet — when there will never be one this way.
+    #[test]
+    fn a_platform_missing_from_the_manifest_is_unsupported_not_unknown() {
+        let e = Error::TargetNotFound("windows-x86_64".into());
+        assert_eq!(classify_error(&e), "unsupported");
+        assert_eq!(classify(&e.to_string()), "unsupported");
+        let e = Error::TargetsNotFound(vec!["linux-x86_64".into()]);
+        assert_eq!(classify_error(&e), "unsupported");
+        assert_eq!(classify_error(&Error::UnsupportedOs), "unsupported");
+        assert_eq!(classify_error(&Error::UnsupportedArch), "unsupported");
+    }
+
+    #[test]
+    fn the_other_verdicts_keep_their_categories() {
+        assert_eq!(
+            classify_error(&Error::InsecureTransportProtocol),
+            "not-configured"
+        );
+        assert_eq!(classify_error(&Error::ReleaseNotFound), "malformed");
+        assert_eq!(classify("dns error"), "offline");
+        assert_eq!(classify("something else entirely"), "unknown");
     }
 }
 

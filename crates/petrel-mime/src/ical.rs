@@ -290,12 +290,25 @@ fn parse_time(params: &[(String, String)], value: &str) -> IcalTime {
 /// no timezone crate needed for a value that is already UTC.
 fn utc_ms(v: &str) -> Option<i64> {
     let b = v.as_bytes();
+    // Digits and one `T`, checked before anything is sliced: the slices
+    // below are by byte, and a value with a multi-byte character in it —
+    // fifteen bytes long, `T` in the right place — put an index inside that
+    // character and panicked, from inside the invitation command, with no
+    // handler above it. The digit rule also rules out signs and a fifth
+    // year digit, neither of which is a date this can represent.
     if b.len() != 15 || b[8] != b'T' {
         return None;
     }
-    let num = |s: &str| s.parse::<i64>().ok();
-    let (y, mo, d) = (num(&v[0..4])?, num(&v[4..6])?, num(&v[6..8])?);
-    let (h, mi, s) = (num(&v[9..11])?, num(&v[11..13])?, num(&v[13..15])?);
+    if !b
+        .iter()
+        .enumerate()
+        .all(|(i, c)| i == 8 || c.is_ascii_digit())
+    {
+        return None;
+    }
+    let num = |s: Option<&str>| s?.parse::<i64>().ok();
+    let (y, mo, d) = (num(v.get(0..4))?, num(v.get(4..6))?, num(v.get(6..8))?);
+    let (h, mi, s) = (num(v.get(9..11))?, num(v.get(11..13))?, num(v.get(13..15))?);
     if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || s > 60 {
         return None;
     }
@@ -307,4 +320,51 @@ fn utc_ms(v: &str) -> Option<i64> {
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     let days = era * 146_097 + doe - 719_468;
     Some((days * 86_400 + h * 3_600 + mi * 60 + s) * 1_000)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A DTSTART that is fifteen bytes long with a `T` in the right place, and
+    /// a multi-byte character somewhere in it, put a byte index inside that
+    /// character. The panic came out of the synchronous `invitation` command,
+    /// where there is nothing to catch it: opening the message took the whole
+    /// app down. A value we cannot read is not a time, and that is all.
+    #[test]
+    fn a_non_ascii_dtstart_is_not_a_time_rather_than_a_panic() {
+        let ics = |value: &str| {
+            format!(
+                "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:u1\r\n\
+                 DTSTART:{value}\r\nSUMMARY:x\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+            )
+        };
+        // "00€abcT000000Z": fifteen bytes once the Z is off, T at index 8.
+        let hostile = "00\u{20ac}abcT000000Z";
+        let inv = parse_invitation(&ics(hostile)).expect("still an invitation");
+        assert!(
+            matches!(inv.start, Some(IcalTime::Local { .. })),
+            "unreadable as an instant, kept as it was written: {:?}",
+            inv.start
+        );
+
+        // Anything else that is not fifteen digits and a T is refused the same
+        // way rather than parsed into a wrong date.
+        for value in [
+            "2026010\u{e9}T000000Z",
+            "-0001231T000000Z",
+            "2026 101T00000Z",
+        ] {
+            let inv = parse_invitation(&ics(value)).expect("still an invitation");
+            assert!(
+                !matches!(inv.start, Some(IcalTime::Utc(_))),
+                "{value} is not an instant: {:?}",
+                inv.start
+            );
+        }
+
+        // And the ordinary form still reads as one.
+        let inv = parse_invitation(&ics("20260315T100000Z")).unwrap();
+        assert_eq!(inv.start, Some(IcalTime::Utc(1_773_568_800_000)));
+    }
 }

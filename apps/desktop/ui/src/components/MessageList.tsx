@@ -33,7 +33,7 @@ type Props = {
   /** Modifiers come along: cmd/ctrl toggles one, shift reaches back to the
    *  anchor, and a plain click means "just this one". Decided above, because
    *  the anchor and the selection live there. */
-  onActivate: (id: number, mods: { toggle: boolean; range: boolean }) => void;
+  onActivate: (id: number, mods: { toggle: boolean; range: boolean; keyboard?: boolean }) => void;
   /** A checkbox column down the left, from settings. */
   checkboxes: boolean;
   onAction: (kind: ActionKind, threadId: number) => void;
@@ -69,7 +69,7 @@ type MessageRowProps = {
   store: CompositeStore;
   selected: ReadonlySet<number>;
   onToggleSelect: (id: number) => void;
-  onActivate: (id: number, mods: { toggle: boolean; range: boolean }) => void;
+  onActivate: (id: number, mods: { toggle: boolean; range: boolean; keyboard?: boolean }) => void;
   onContextMenu: (threadId: number, x: number, y: number) => void;
   onDragStart: (
     e: React.PointerEvent,
@@ -549,8 +549,10 @@ export const MessageList = memo(function MessageList({
         scrollRef.current?.focus({ preventScroll: true });
         composite.setActiveId(`msg-${target.id}`);
         // Keyboard movement is a plain move: J and K walk the list, and the
-        // selection keys (X, ⇧J/K) are what act on more than one.
-        onActivate(target.id, { toggle: false, range: false });
+        // selection keys (X, ⇧J/K) are what act on more than one. Marked as
+        // a keyboard move so it leaves a selection alone — a click means
+        // "just this one", a walk down the list does not.
+        onActivate(target.id, { toggle: false, range: false, keyboard: true });
       }
     };
     // Bubble phase, deliberately. With virtualFocus Ariakit re-dispatches the

@@ -1,10 +1,24 @@
 //! Local changes reaching the server: the drain worker and the pass it runs.
 
 use crate::diag::log_sync;
-use crate::state::AppState;
+use crate::state::{AppState, stopped};
+use petrel_engine::store::Store;
 use petrel_providers::imap::ImapConfig;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+
+/// Whether an action is still waiting to go, asked immediately before it
+/// does.
+///
+/// The drain reads the queue once and then works through it, and a pass over
+/// a real backlog takes seconds. An undo that lands meanwhile pulls the row
+/// out of the queue and puts the message back — and the drain, holding its
+/// stale list, delivered the cancelled change anyway about a second later.
+/// So every item is asked again at the moment of delivery, and anything that
+/// has left the queue is left alone.
+fn still_queued(store: &Store, action_id: i64) -> bool {
+    matches!(store.action_state(action_id), Ok(Some(ref s)) if s == "queued")
+}
 
 /// How many times a permanently-refused action is asked again before it is
 /// put out of the queue.
@@ -87,9 +101,13 @@ fn permanent_refusal(error: &str) -> bool {
 /// archives a few hundred milliseconds apart, and one connection carrying all
 /// of them beats one connection each. A second of latency is invisible to the
 /// person doing it and saves a login per keystroke.
-pub(crate) fn spawn_drain_worker(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
+pub(crate) fn spawn_drain_worker(
+    state: Arc<AppState>,
+    account: i64,
+    cfg: ImapConfig,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+) {
     let signals = state.outbox_signals(account);
-    let mut stop = state.stop_signal(account);
     tauri::async_runtime::spawn(async move {
         loop {
             if *stop.borrow() {
@@ -97,7 +115,7 @@ pub(crate) fn spawn_drain_worker(state: Arc<AppState>, account: i64, cfg: ImapCo
             }
             tokio::select! {
                 _ = signals.drain.notified() => {}
-                _ = stop.changed() => break,
+                _ = stopped(&mut stop) => break,
             }
             tokio::time::sleep(std::time::Duration::from_millis(900)).await;
             let caps = state.caps(account);
@@ -202,6 +220,16 @@ pub(crate) async fn drain_actions(
         let Ok(kind) = serde_json::from_str::<ActionKind>(&item.kind_json) else {
             continue;
         };
+        // Undone, or settled by another path, since the list was read: not
+        // ours to deliver any more.
+        let queued = state
+            .store
+            .lock()
+            .map(|s| still_queued(&s, item.action_id))
+            .unwrap_or(false);
+        if !queued {
+            continue;
+        }
         // No UID survived locally — a move destroyed the placement that held
         // it, or a UIDVALIDITY reset declared the number a lie. Before giving
         // up, ask the server the question recovery asks, scoped to this one
@@ -274,7 +302,7 @@ pub(crate) async fn drain_actions(
             | ActionKind::Star
             | ActionKind::Unstar => {
                 let (flag, add) = flag_op(&kind).expect("flag kind");
-                let group = consecutive_flag_uids(
+                let mut group = consecutive_flag_uids(
                     &pending,
                     idx,
                     &item.kind_json,
@@ -282,6 +310,11 @@ pub(crate) async fn drain_actions(
                     uid,
                     petrel_providers::imap::STORE_FLAG_BATCH,
                 );
+                // The same question for every row riding along in the batch:
+                // one STORE must not carry a change somebody has undone.
+                if let Ok(store) = state.store.lock() {
+                    group.retain(|(i, action_id, _)| *i == idx || still_queued(&store, *action_id));
+                }
                 let uids: Vec<u32> = group.iter().map(|(_, _, u)| *u).collect();
                 let result =
                     petrel_providers::imap::store_flags(&cfg, &folder, &uids, flag, add).await;
@@ -536,6 +569,68 @@ mod refusal_tests {
     #[test]
     fn anything_unrecognised_is_retried_rather_than_discarded() {
         assert!(!permanent_refusal("server said something new and strange"));
+    }
+}
+
+#[cfg(test)]
+mod recheck_tests {
+    use super::still_queued;
+    use petrel_engine::actions::{ActionKind, PlacementPolicy};
+    use petrel_engine::store::{NewMessage, Store};
+
+    fn store_with_one_message() -> (Store, i64, i64) {
+        let mut store = Store::open_in_memory().unwrap();
+        let account = store.ensure_test_account().unwrap();
+        let ids = store
+            .insert_messages(&[NewMessage {
+                account_id: account,
+                date_ms: 1_000,
+                from_addr: "a@example.com".into(),
+                from_display: "A".into(),
+                to_addr: "me@example.com".into(),
+                subject: "m".into(),
+                body_text: "body".into(),
+            }])
+            .unwrap();
+        let thread = store.thread_of(ids[0]).unwrap().unwrap_or(-ids[0]);
+        (store, account, thread)
+    }
+
+    /// The race this closes: the drain snapshots the queue, the person
+    /// presses undo, and the drain delivers the cancelled change from its
+    /// stale list. Asked again at delivery time, an undone action is skipped.
+    #[test]
+    fn an_action_undone_after_the_queue_was_read_is_not_delivered() {
+        let (store, account, thread) = store_with_one_message();
+        let receipt = store
+            .apply_thread_action(
+                account,
+                thread,
+                ActionKind::Star,
+                None,
+                PlacementPolicy::Exclusive,
+            )
+            .unwrap();
+        // What the drain's snapshot would say.
+        assert!(still_queued(&store, receipt.action_id));
+        assert!(store.undo_action(receipt.action_id).unwrap());
+        assert!(
+            !still_queued(&store, receipt.action_id),
+            "an undone action must read as gone at delivery time"
+        );
+        // Settled by another path — the same answer.
+        let again = store
+            .apply_thread_action(
+                account,
+                thread,
+                ActionKind::Star,
+                None,
+                PlacementPolicy::Exclusive,
+            )
+            .unwrap();
+        store.mark_action_state(again.action_id, "sent").unwrap();
+        assert!(!still_queued(&store, again.action_id));
+        assert!(!still_queued(&store, 9_999), "an id that never existed");
     }
 }
 

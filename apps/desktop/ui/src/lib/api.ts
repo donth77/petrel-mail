@@ -132,6 +132,11 @@ export type ThreadMessage = {
   has_calendar: boolean;
   /** The recorded answer: accepted, tentative, declined. */
   invite_response: string | null;
+  /** The message's own Message-ID, bare — no angle brackets. A reply names it
+   *  in In-Reply-To, which is what other clients thread by. */
+  msgid: string | null;
+  /** Its References, bare ids in order. A reply carries them on, plus msgid. */
+  references: string[];
 };
 
 /** When an invitation's event happens, in the only forms honestly showable. */
@@ -313,6 +318,10 @@ export type Status = {
   data_dir: string;
   /** Arrivals a rule marked notify-anyway: [who, subject], said once. */
   notify?: [string, string][];
+  /** Something that happened to the user's own mail and has to be said, by
+   *  key: today only `sent-copy-failed`. Drained on read, like `notify`, so
+   *  each one arrives once. */
+  alerts?: string[];
   last_sync_ms: number;
 };
 
@@ -349,6 +358,8 @@ function mockFatMessage(id: number, n: number, base: number): ThreadMessage {
     attachments: [],
     has_calendar: false,
     invite_response: null,
+    msgid: `probe-${id}@example.test`,
+    references: id > 1 ? [`probe-${id - 1}@example.test`] : [],
   };
 }
 
@@ -420,6 +431,8 @@ const MOCK_THREAD_DETAIL = [
     attachments: [],
     has_calendar: false,
     invite_response: null,
+    msgid: 'q3-1@northbay.example',
+    references: [],
   },
   {
     id: 2,
@@ -444,6 +457,8 @@ const MOCK_THREAD_DETAIL = [
     ],
     has_calendar: false,
     invite_response: null,
+    msgid: 'q3-2@vendorco.example',
+    references: ['q3-1@northbay.example'],
   },
 ] satisfies ThreadMessage[];
 
@@ -637,6 +652,18 @@ const mock = {
     current_notes: null,
     error: 'updates are not configured in the browser harness',
   }),
+  appVersion: async (): Promise<UpdateStatus> => ({
+    current: '0.0.1',
+    available: null,
+    notes: null,
+    current_notes: null,
+    error: null,
+  }),
+  pickFiles: async (_purpose: 'attach' | 'mail' | 'settings'): Promise<string[]> => [],
+  pickSavePath: async (
+    _suggested: string,
+    _purpose: 'attachment' | 'mbox' | 'settings',
+  ): Promise<string | null> => null,
   installUpdate: async () => {},
   restartForUpdate: async () => {},
   setDockBadge: async () => {},
@@ -811,8 +838,12 @@ const real = {
     invoke<boolean>('attachment_is_executable', { filename }),
   saveAttachment: (messageId: number, part: number, path: string) =>
     invoke<void>('save_attachment', { messageId, part, path }),
-  openAttachment: (messageId: number, part: number) =>
-    invoke<void>('open_attachment', { messageId, part }),
+  /** `confirmed` says the user was warned that this file can run and chose
+   *  to open it anyway. The shell decides what counts as executable, on the
+   *  sanitised name, and refuses one that was never confirmed — so the flag
+   *  is the answer to its question, not a hint. */
+  openAttachment: (messageId: number, part: number, confirmed = false) =>
+    invoke<void>('open_attachment', { messageId, part, confirmed }),
   attachmentUrl: (messageId: number, part: number) =>
     invoke<string>('attachment_url', { messageId, part }),
   outbox: () => invoke<OutboxRow[]>('list_outbox'),
@@ -836,6 +867,16 @@ const real = {
   trashFolderContents: (folderId: number) =>
     invoke<number>('trash_folder_contents', { folderId }),
   checkUpdate: () => invoke<UpdateStatus>('check_update'),
+  /** The running build's version and notes, with no network: what the
+   *  Updates pane can say before anyone asks it to look further. */
+  appVersion: () => invoke<UpdateStatus>('app_version'),
+  /** The shell's own file panels. Every command that takes a path accepts
+   *  only paths these produced, so nothing rendered from a message can name
+   *  a file on disk. Empty and null mean cancelled. */
+  pickFiles: (purpose: 'attach' | 'mail' | 'settings') =>
+    invoke<string[]>('pick_files', { purpose }),
+  pickSavePath: (suggested: string, purpose: 'attachment' | 'mbox' | 'settings') =>
+    invoke<string | null>('pick_save_path', { suggested, purpose }),
   installUpdate: () => invoke<void>('install_update'),
   restartForUpdate: () => invoke<void>('restart_for_update'),
   setDockBadge: (count: number | null) => invoke<void>('set_dock_badge', { count }),

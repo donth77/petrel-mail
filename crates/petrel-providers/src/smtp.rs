@@ -206,6 +206,107 @@ pub struct Outgoing {
     pub attachments: Vec<Attachment>,
 }
 
+/// A header value with everything that could end the line taken out.
+///
+/// A header *is* a line: a CR or LF inside a value ends it early, and whatever
+/// follows becomes a header of somebody else's choosing. mail-builder writes
+/// most values through verbatim, so a subject that decoded from
+/// `=?utf-8?q?Hi=0D=0AReply-To:=20attacker?=` and was carried into a reply
+/// went out with the attacker's own `Reply-To:` on it — and with two of them,
+/// their own body. Every other control character goes too: none belongs in a
+/// header, and each is a chance for something downstream to disagree about
+/// where the line ends.
+///
+/// This is the last line rather than the only one. The shell scrubs at its own
+/// entry points; this is what makes it true of anything that reaches the wire.
+fn clean_header(value: &str) -> String {
+    value.chars().filter(|c| !c.is_control()).collect()
+}
+
+/// A Message-ID with its angle brackets off.
+///
+/// mail-builder writes its own, so an id that arrives wrapped comes out
+/// `<<id@host>>` — which matches nothing, and threads with nobody. Both shapes
+/// arrive: the shell wraps its ids and the composer passes them bare.
+fn bare_id(id: &str) -> String {
+    clean_header(id)
+        .trim()
+        .trim_start_matches('<')
+        .trim_end_matches('>')
+        .trim()
+        .to_string()
+}
+
+/// One recipient, split into what the header shows and where the mail goes.
+struct Recipient {
+    display: Option<String>,
+    address: String,
+}
+
+/// Whether an address can be written into `RCPT TO:<…>` as it stands.
+///
+/// Everything refused here would either end the command early or start a
+/// second one: whitespace splits it, an angle bracket closes the envelope, a
+/// comma or semicolon reads as a list, and a control character begins a new
+/// line. Such a recipient is dropped rather than escaped — the string was
+/// never an address, and inventing what the sender meant is worse than
+/// sending to the people who were named properly.
+fn envelope_safe(address: &str) -> bool {
+    !address.is_empty()
+        && address.contains('@')
+        && !address
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '<' | '>' | ',' | ';'))
+}
+
+/// Splits a recipient as typed into a display name and an addr-spec.
+///
+/// `Jane <jane@example.com>`, `"Doe, Jane" <jane@example.com>` and a bare
+/// `jane@example.com` are all written by hand into the same field. The header
+/// gets both halves, so mail-builder can quote the name properly; the envelope
+/// gets the address alone, because `RCPT TO:<Jane <jane@example.com>>` is not
+/// an address and every server refuses it — which is how a pasted
+/// `Name <addr>` came back as "rejected".
+fn parse_recipient(raw: &str) -> Option<Recipient> {
+    let trimmed = raw.trim();
+    // A control character *inside* a recipient means it was never one address:
+    // it is two lines, and the second was going to be a command. Splicing the
+    // halves into `victim@example.comDATA` would only send the message to a
+    // name nobody has, so the whole entry goes.
+    if trimmed.chars().any(|c| c.is_control()) {
+        return None;
+    }
+    let (display, address) = match trimmed.rfind('<') {
+        Some(open) if trimmed.ends_with('>') => {
+            (&trimmed[..open], &trimmed[open + 1..trimmed.len() - 1])
+        }
+        _ => ("", trimmed),
+    };
+    let address = address.trim();
+    if !envelope_safe(address) {
+        return None;
+    }
+    let display = display.trim().trim_matches('"').trim();
+    Some(Recipient {
+        display: (!display.is_empty()).then(|| display.to_string()),
+        address: address.to_string(),
+    })
+}
+
+fn parse_recipients(list: &[String]) -> Vec<Recipient> {
+    list.iter().filter_map(|r| parse_recipient(r)).collect()
+}
+
+/// The pairs as one address-list header.
+fn address_list(list: &[Recipient]) -> mail_builder::headers::address::Address<'_> {
+    use mail_builder::headers::address::Address;
+    Address::new_list(
+        list.iter()
+            .map(|r| Address::new_address(r.display.as_deref(), r.address.as_str()))
+            .collect(),
+    )
+}
+
 /// Wraps an HTML body in a document, if it is not one already.
 ///
 /// The composer produces a fragment — `<p>…</p>`, the contenteditable's own
@@ -263,10 +364,32 @@ impl Outgoing {
     pub fn render_with_id(&self, message_id: &str) -> Vec<u8> {
         use mail_builder::MessageBuilder;
 
+        // Every header value is scrubbed before it is handed over, and the
+        // scrubbed copies live until the message is written: mail-builder
+        // borrows what it is given.
+        let from_name = clean_header(&self.from_name);
+        let from_addr = clean_header(&self.from_addr);
+        let subject = clean_header(&self.subject);
+        let message_id = bare_id(message_id);
+        let to = parse_recipients(&self.to);
+        let cc = parse_recipients(&self.cc);
+        let in_reply_to = self.in_reply_to.as_deref().map(bare_id);
+        let references: Vec<String> = self
+            .references
+            .iter()
+            .map(|r| bare_id(r))
+            .filter(|r| !r.is_empty())
+            .collect();
+        let filenames: Vec<String> = self
+            .attachments
+            .iter()
+            .map(|a| clean_header(&a.filename))
+            .collect();
+
         let mut b = MessageBuilder::new()
-            .from((self.from_name.as_str(), self.from_addr.as_str()))
-            .subject(self.subject.as_str())
-            .message_id(message_id)
+            .from((from_name.as_str(), from_addr.as_str()))
+            .subject(subject.as_str())
+            .message_id(message_id.as_str())
             // Named, but not versioned. Every ordinary client says what wrote
             // the message and mail carrying no such header is slightly the
             // odder thing; a version number would only tell a stranger which
@@ -280,7 +403,7 @@ impl Outgoing {
         // the markup the composer produced rather than a document it did not.
         let (html, inline) = match &self.body_html {
             Some(html) => {
-                let (rewritten, inline) = extract_inline_images(html, message_id);
+                let (rewritten, inline) = extract_inline_images(html, &message_id);
                 (Some(as_document(&rewritten)), inline)
             }
             None => (None, Vec::new()),
@@ -294,10 +417,10 @@ impl Outgoing {
             if let Some(html) = &html {
                 b = b.html_body(html.as_str());
             }
-            for a in &self.attachments {
+            for (index, a) in self.attachments.iter().enumerate() {
                 b = b.attachment(
                     attachment_content_type(a),
-                    a.filename.as_str(),
+                    filenames[index].as_str(),
                     a.bytes.as_slice(),
                 );
             }
@@ -336,10 +459,10 @@ impl Outgoing {
             } else {
                 let mut mixed = Vec::with_capacity(self.attachments.len() + 1);
                 mixed.push(core);
-                for a in &self.attachments {
+                for (index, a) in self.attachments.iter().enumerate() {
                     mixed.push(
                         MimePart::new(attachment_content_type(a), a.bytes.as_slice())
-                            .attachment(a.filename.as_str()),
+                            .attachment(filenames[index].as_str()),
                     );
                 }
                 MimePart::new("multipart/mixed", mixed)
@@ -349,30 +472,41 @@ impl Outgoing {
         // One header per field. mail-builder appends a line on every call, and
         // mail-parser keeps only the last — so a per-address loop drops every
         // recipient but one after Sent-folder ingest.
-        if !self.to.is_empty() {
-            b = b.to(self.to.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+        if !to.is_empty() {
+            b = b.to(address_list(&to));
         }
-        if !self.cc.is_empty() {
-            b = b.cc(self.cc.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+        if !cc.is_empty() {
+            b = b.cc(address_list(&cc));
         }
-        if let Some(parent) = &self.in_reply_to {
-            b = b.in_reply_to(parent.as_str());
+        if let Some(parent) = in_reply_to.as_deref().filter(|p| !p.is_empty()) {
+            b = b.in_reply_to(parent);
         }
-        if !self.references.is_empty() {
-            b = b.references(
-                self.references
-                    .iter()
-                    .map(|r| r.as_str())
-                    .collect::<Vec<_>>(),
-            );
+        if !references.is_empty() {
+            b = b.references(references.iter().map(|r| r.as_str()).collect::<Vec<_>>());
         }
 
         b.write_to_vec().unwrap_or_default()
     }
 
     /// Every address the envelope has to name.
+    ///
+    /// Addr-specs only, and only ones that can go on the wire as they stand.
+    /// A recipient whose text is not an address is dropped here rather than
+    /// escaped; a message with nobody left to send to is refused by the caller
+    /// rather than sent into the void.
     pub fn recipients(&self) -> Vec<String> {
-        self.to.iter().chain(self.cc.iter()).cloned().collect()
+        self.to
+            .iter()
+            .chain(self.cc.iter())
+            .filter_map(|raw| parse_recipient(raw).map(|r| r.address))
+            .collect()
+    }
+
+    /// The address the envelope says the mail is from, if it can be sent as
+    /// one. `MAIL FROM` is a command like any other: a newline in it would be
+    /// the start of a second.
+    pub fn sender(&self) -> Option<String> {
+        parse_recipient(&self.from_addr).map(|r| r.address)
     }
 }
 
@@ -485,12 +619,30 @@ pub struct SmtpConfig {
     pub credential: crate::imap::Credential,
 }
 
+/// The port that speaks TLS from its first byte.
+///
+/// Everything else is submission in the clear until STARTTLS upgrades it,
+/// which is the only thing iCloud and Outlook offer: neither has anything
+/// listening on 465 at all, so the implicit-TLS-only client could receive
+/// their mail and never send any.
+const IMPLICIT_TLS_PORT: u16 = 465;
+
+/// What Petrel calls itself at EHLO.
+///
+/// An address literal, not the server's own hostname — which is what this used
+/// to send, and is a small lie: EHLO names the *client*. A machine behind NAT
+/// has no name worth stating, and RFC 5321 §4.1.4 provides the literal form
+/// for exactly that case.
+const EHLO_NAME: &str = "[127.0.0.1]";
+
 impl SmtpConfig {
     /// The submission endpoint for an IMAP host, where the two are the same
     /// provider — which is the only case Petrel currently configures.
     ///
-    /// Implicit TLS on 465 rather than STARTTLS on 587: there is no cleartext
-    /// phase to strip, so a downgrade attack has nothing to attack.
+    /// Implicit TLS on 465 where the guess has nothing better to go on: there
+    /// is no cleartext phase to strip, so a downgrade attack has nothing to
+    /// attack. A port from the provider table wins over this, and providers
+    /// that only offer 587 get STARTTLS.
     pub fn for_imap_host(imap_host: &str, user: &str, pass: &str) -> Self {
         let host = imap_host.replacen("imap.", "smtp.", 1);
         SmtpConfig {
@@ -500,6 +652,330 @@ impl SmtpConfig {
             credential: crate::imap::Credential::password(pass),
         }
     }
+}
+
+/// Where a submission conversation stopped before the body was written.
+///
+/// Kept apart from `SendResult` because the same handshake serves the
+/// onboarding check, which reports in words rather than outcomes.
+enum OpenError {
+    Failed {
+        stage: &'static str,
+        detail: String,
+    },
+    Rejected(String),
+    /// The credential was refused. Its own case because it is not a fact about
+    /// the message: the message is fine and will send once the account can
+    /// sign in again, so dead-lettering it loses mail over an expired password.
+    Auth(String),
+}
+
+impl OpenError {
+    fn into_send_result(self) -> SendResult {
+        match self {
+            OpenError::Failed { stage, detail } => SendResult::FailedBeforeCommit { stage, detail },
+            OpenError::Rejected(response) => SendResult::RejectedPermanently { response },
+            OpenError::Auth(detail) => SendResult::FailedBeforeCommit {
+                stage: "auth",
+                detail,
+            },
+        }
+    }
+
+    /// The same failure as a line for the setup form.
+    fn into_message(self) -> String {
+        match self {
+            OpenError::Failed { stage, detail } => format!("{stage}: {}", detail.trim()),
+            OpenError::Rejected(response) => response.trim().to_string(),
+            OpenError::Auth(detail) => format!("sign-in refused: {}", detail.trim()),
+        }
+    }
+}
+
+/// A submission connection past its handshake: encrypted, greeted, and with
+/// the sign-in methods the server named.
+struct Wire {
+    reader: BufReader<tokio::io::ReadHalf<TlsStream>>,
+    writer: tokio::io::WriteHalf<TlsStream>,
+    /// The mechanisms from the post-TLS `250-AUTH` line, uppercased.
+    auth: Vec<String>,
+}
+
+/// The stream every shipping send runs on, whichever port opened it.
+type TlsStream = tokio_rustls::client::TlsStream<TcpStream>;
+
+/// One reply, checked for the code this stage expects.
+async fn expect_reply<R: AsyncBufReadExt + Unpin>(
+    reader: &mut R,
+    stage: &'static str,
+    want: u16,
+) -> std::result::Result<String, OpenError> {
+    let reply = match tokio::time::timeout(reply_timeout(), read_reply(reader)).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => {
+            return Err(OpenError::Failed {
+                stage,
+                detail: e.to_string(),
+            });
+        }
+        Err(_) => {
+            return Err(OpenError::Failed {
+                stage,
+                detail: "timed out waiting for the server".into(),
+            });
+        }
+    };
+    let code = code_of(&reply);
+    if code == want {
+        return Ok(reply);
+    }
+    // 535 is "bad credentials" and 530 "authentication required"; both are
+    // about the account, not the message.
+    if stage == "auth" && matches!(code, 530 | 535) {
+        return Err(OpenError::Auth(reply));
+    }
+    if code / 100 == 5 {
+        return Err(OpenError::Rejected(reply));
+    }
+    Err(OpenError::Failed {
+        stage,
+        detail: reply,
+    })
+}
+
+/// One command line, written and flushed.
+async fn say_line<W: AsyncWriteExt + Unpin>(
+    writer: &mut W,
+    stage: &'static str,
+    line: &str,
+) -> std::result::Result<(), OpenError> {
+    match tokio::time::timeout(reply_timeout(), async {
+        writer.write_all(line.as_bytes()).await?;
+        writer.flush().await
+    })
+    .await
+    {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(OpenError::Failed {
+            stage,
+            detail: e.to_string(),
+        }),
+        Err(_) => Err(OpenError::Failed {
+            stage,
+            detail: "timed out sending to the server".into(),
+        }),
+    }
+}
+
+/// Whether an EHLO reply advertises a keyword.
+///
+/// Matched as a whole token, not a prefix: the first line of an EHLO reply is
+/// the server's own hostname, and a host called `starttls.example.net` would
+/// otherwise be read as an offer to upgrade — which is exactly the mistake
+/// that must not be made in this direction.
+fn ehlo_offers(ehlo: &str, keyword: &str) -> bool {
+    ehlo.lines().any(|line| {
+        line.get(4..)
+            .and_then(|k| k.split_whitespace().next())
+            .is_some_and(|k| k.eq_ignore_ascii_case(keyword))
+    })
+}
+
+/// The mechanisms named on the EHLO reply's AUTH line.
+///
+/// Both spellings are still out there: `250-AUTH PLAIN LOGIN` and the older
+/// `250-AUTH=PLAIN`. A server that names none gets the benefit of the doubt
+/// from the caller rather than a refusal here.
+fn auth_mechanisms(ehlo: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in ehlo.lines() {
+        let keyword = line.get(4..).unwrap_or("").trim().to_ascii_uppercase();
+        let list = match keyword
+            .strip_prefix("AUTH ")
+            .or_else(|| keyword.strip_prefix("AUTH="))
+        {
+            Some(list) => list,
+            None => continue,
+        };
+        out.extend(list.split_whitespace().map(|m| m.to_string()));
+    }
+    out
+}
+
+/// The 587 half: greet in the clear, ask for STARTTLS, and hand back a socket
+/// that is encrypted before anything worth stealing crosses it.
+///
+/// A server that does not offer STARTTLS is refused outright. There is no
+/// fallback to plaintext submission, because the fallback is the attack: a
+/// stripped capability line would otherwise put the password on the wire.
+async fn starttls_stream(cfg: &SmtpConfig) -> std::result::Result<TlsStream, OpenError> {
+    let tcp = match tokio::time::timeout(
+        connect_timeout(),
+        TcpStream::connect((cfg.host.as_str(), cfg.port)),
+    )
+    .await
+    {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
+            return Err(OpenError::Failed {
+                stage: "connect",
+                detail: e.to_string(),
+            });
+        }
+        Err(_) => {
+            return Err(OpenError::Failed {
+                stage: "connect",
+                detail: "timed out".into(),
+            });
+        }
+    };
+    let (rx, mut tx) = tcp.into_split();
+    let mut reader = BufReader::new(rx);
+    expect_reply(&mut reader, "greeting", 220).await?;
+    say_line(&mut tx, "ehlo", &format!("EHLO {EHLO_NAME}\r\n")).await?;
+    let ehlo = expect_reply(&mut reader, "ehlo", 250).await?;
+    if !ehlo_offers(&ehlo, "STARTTLS") {
+        return Err(OpenError::Failed {
+            stage: "starttls",
+            detail: "this port offers no STARTTLS, so the password cannot be sent safely".into(),
+        });
+    }
+    say_line(&mut tx, "starttls", "STARTTLS\r\n").await?;
+    expect_reply(&mut reader, "starttls", 220).await?;
+    // Nothing may be waiting in the buffer: bytes sent before the handshake
+    // are not part of it, and carrying them across would mean trusting
+    // plaintext the upgrade exists to end.
+    if !reader.buffer().is_empty() {
+        return Err(OpenError::Failed {
+            stage: "starttls",
+            detail: "the server sent data before the TLS handshake".into(),
+        });
+    }
+    let tcp = reader
+        .into_inner()
+        .reunite(tx)
+        .map_err(|e| OpenError::Failed {
+            stage: "starttls",
+            detail: e.to_string(),
+        })?;
+    crate::imap::tls_upgrade(&cfg.host, tcp)
+        .await
+        .map_err(|e| OpenError::Failed {
+            stage: "starttls",
+            detail: e.to_string(),
+        })
+}
+
+/// Opens a submission connection and gets as far as the post-TLS EHLO.
+///
+/// Implicit TLS on 465, STARTTLS everywhere else — and either way what comes
+/// back is encrypted, so there is one path from here on and no way to reach
+/// AUTH without TLS underneath it.
+async fn open_submission(
+    cfg: &SmtpConfig,
+    stage: &mut impl FnMut(&'static str),
+) -> std::result::Result<Wire, OpenError> {
+    stage("connect");
+    let (stream, greeted) = if cfg.port == IMPLICIT_TLS_PORT {
+        let stream = match tokio::time::timeout(
+            connect_timeout(),
+            crate::imap::tls_stream_for(&cfg.host, cfg.port),
+        )
+        .await
+        {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => {
+                return Err(OpenError::Failed {
+                    stage: "connect",
+                    detail: e.to_string(),
+                });
+            }
+            Err(_) => {
+                return Err(OpenError::Failed {
+                    stage: "connect",
+                    detail: "timed out".into(),
+                });
+            }
+        };
+        (stream, false)
+    } else {
+        stage("starttls");
+        (starttls_stream(cfg).await?, true)
+    };
+
+    let (rx, mut writer) = tokio::io::split(stream);
+    let mut reader = BufReader::new(rx);
+    if !greeted {
+        stage("greeting");
+        expect_reply(&mut reader, "greeting", 220).await?;
+    }
+    // A second EHLO after STARTTLS is not politeness: the capability list from
+    // before the upgrade is not to be trusted, and AUTH usually only appears
+    // in the second one.
+    stage("ehlo");
+    say_line(&mut writer, "ehlo", &format!("EHLO {EHLO_NAME}\r\n")).await?;
+    let ehlo = expect_reply(&mut reader, "ehlo", 250).await?;
+    Ok(Wire {
+        auth: auth_mechanisms(&ehlo),
+        reader,
+        writer,
+    })
+}
+
+/// Signs in with a mechanism this server actually offers.
+///
+/// PLAIN where it is offered — one round trip — and LOGIN where it is not:
+/// Outlook's submission server names `LOGIN XOAUTH2` and refuses PLAIN
+/// outright, which is why hard-coding PLAIN meant no Outlook account could
+/// ever send. A server that named nothing gets PLAIN, which is what it almost
+/// certainly speaks.
+async fn authenticate<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    cfg: &SmtpConfig,
+    mechanisms: &[String],
+) -> std::result::Result<(), OpenError>
+where
+    R: AsyncBufReadExt + Unpin,
+    W: AsyncWriteExt + Unpin,
+{
+    use base64::Engine as _;
+    let b64 = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
+    let offers = |m: &str| mechanisms.iter().any(|a| a == m);
+
+    match &cfg.credential {
+        // A token has exactly one way onto the wire, whatever was advertised.
+        crate::imap::Credential::Bearer(token) => {
+            let payload = b64(&crate::imap::xoauth2_payload(&cfg.user, token));
+            say_line(writer, "auth", &format!("AUTH XOAUTH2 {payload}\r\n")).await?;
+            expect_reply(reader, "auth", 235).await?;
+        }
+        crate::imap::Credential::Password(pass) => {
+            if offers("PLAIN") || mechanisms.is_empty() {
+                let payload = b64(&format!("\0{}\0{}", cfg.user, pass));
+                say_line(writer, "auth", &format!("AUTH PLAIN {payload}\r\n")).await?;
+                expect_reply(reader, "auth", 235).await?;
+            } else if offers("LOGIN") {
+                // Three round trips, each answered with a 334 carrying the
+                // base64 of "Username:" and then "Password:". The prompts are
+                // not read: they are decoration, and a client that matched on
+                // their wording would break on the first server that phrased
+                // them differently.
+                say_line(writer, "auth", "AUTH LOGIN\r\n").await?;
+                expect_reply(reader, "auth", 334).await?;
+                say_line(writer, "auth", &format!("{}\r\n", b64(&cfg.user))).await?;
+                expect_reply(reader, "auth", 334).await?;
+                say_line(writer, "auth", &format!("{}\r\n", b64(pass))).await?;
+                expect_reply(reader, "auth", 235).await?;
+            } else {
+                return Err(OpenError::Auth(format!(
+                    "the server accepts none of the sign-in methods Petrel can use ({})",
+                    mechanisms.join(" ")
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Connects, signs in and hangs up.
@@ -524,47 +1000,21 @@ pub async fn login_check(cfg: &SmtpConfig) -> std::result::Result<(), String> {
 }
 
 async fn login_check_inner(cfg: &SmtpConfig) -> std::result::Result<(), String> {
-    use base64::Engine as _;
-    use tokio::io::{AsyncWriteExt, BufReader};
-    let tls = crate::imap::tls_stream_for(&cfg.host, cfg.port)
+    // The same handshake and the same mechanism choice a real send makes:
+    // onboarding has to test what the account will actually do, or a token
+    // account passes its setup check and fails on the first message.
+    let mut wire = open_submission(cfg, &mut |_| {})
         .await
-        .map_err(|e| e.to_string())?;
-    let (r, mut w) = tokio::io::split(tls);
-    let mut reader = BufReader::new(r);
-    let banner = read_reply(&mut reader).await.map_err(|e| e.to_string())?;
-    if !banner.starts_with("220") {
-        return Err(format!("greeting: {}", banner.trim()));
-    }
-    w.write_all(b"EHLO petrel\r\n")
+        .map_err(OpenError::into_message)?;
+    let Wire {
+        ref mut reader,
+        ref mut writer,
+        ref auth,
+    } = wire;
+    authenticate(reader, writer, cfg, auth)
         .await
-        .map_err(|e| e.to_string())?;
-    let ehlo = read_reply(&mut reader).await.map_err(|e| e.to_string())?;
-    if !ehlo.starts_with("250") {
-        return Err(format!("EHLO: {}", ehlo.trim()));
-    }
-    // The same choice `send_tls` makes, for the same reason: onboarding has to
-    // test the credential the account will actually send with, or a token
-    // account passes its setup check and then fails on the first message.
-    let auth_line = match &cfg.credential {
-        crate::imap::Credential::Password(pass) => {
-            let plain = base64::engine::general_purpose::STANDARD
-                .encode(format!("\0{}\0{}", cfg.user, pass));
-            format!("AUTH PLAIN {plain}\r\n")
-        }
-        crate::imap::Credential::Bearer(bearer) => {
-            let token = base64::engine::general_purpose::STANDARD
-                .encode(crate::imap::xoauth2_payload(&cfg.user, bearer));
-            format!("AUTH XOAUTH2 {token}\r\n")
-        }
-    };
-    w.write_all(auth_line.as_bytes())
-        .await
-        .map_err(|e| e.to_string())?;
-    let auth = read_reply(&mut reader).await.map_err(|e| e.to_string())?;
-    if !auth.starts_with("235") {
-        return Err(format!("sign-in refused: {}", auth.trim()));
-    }
-    let _ = w.write_all(b"QUIT\r\n").await;
+        .map_err(OpenError::into_message)?;
+    let _ = writer.write_all(b"QUIT\r\n").await;
     Ok(())
 }
 
@@ -638,9 +1088,6 @@ pub async fn send_tls_with(
     raw: &[u8],
     mut stage: impl FnMut(&'static str),
 ) -> SendResult {
-    use base64::Engine as _;
-    use tokio::io::{AsyncWriteExt, BufReader};
-
     macro_rules! fail_before {
         ($stage:expr, $e:expr) => {
             return SendResult::FailedBeforeCommit {
@@ -650,19 +1097,22 @@ pub async fn send_tls_with(
         };
     }
 
-    stage("connect");
-    let stream = match tokio::time::timeout(
-        connect_timeout(),
-        crate::imap::tls_stream_for(&cfg.host, cfg.port),
-    )
-    .await
-    {
-        Ok(Ok(s)) => s,
-        Ok(Err(e)) => fail_before!("connect", e),
-        Err(_) => fail_before!("connect", "timed out"),
+    // Connect, upgrade if the port needs it, greet, EHLO — and sign in with a
+    // mechanism this server named rather than the one mechanism this used to
+    // know.
+    let wire = match open_submission(cfg, &mut stage).await {
+        Ok(w) => w,
+        Err(e) => return e.into_send_result(),
     };
-    let (rx, mut tx) = tokio::io::split(stream);
-    let mut reader = BufReader::new(rx);
+    let Wire {
+        mut reader,
+        writer: mut tx,
+        auth,
+    } = wire;
+    stage("auth");
+    if let Err(e) = authenticate(&mut reader, &mut tx, cfg, &auth).await {
+        return e.into_send_result();
+    }
 
     macro_rules! expect {
         ($stage:expr, $want:expr) => {{
@@ -701,34 +1151,17 @@ pub async fn send_tls_with(
         };
     }
 
-    stage("greeting");
-    expect!("greeting", 220);
-    stage("ehlo");
-    say!("ehlo", format!("EHLO {}\r\n", cfg.host));
-    expect!("ehlo", 250);
-
-    // Two mechanisms, one shape: a base64 blob on the AUTH line. PLAIN is
-    // \0user\0pass; XOAUTH2 is the same string IMAP sends, which is why it
-    // comes from there rather than being spelled twice. Only ever over TLS,
-    // which is why this function has no plaintext sibling.
-    let auth_line = match &cfg.credential {
-        crate::imap::Credential::Password(pass) => {
-            let token = base64::engine::general_purpose::STANDARD
-                .encode(format!("\0{}\0{}", cfg.user, pass));
-            format!("AUTH PLAIN {token}\r\n")
-        }
-        crate::imap::Credential::Bearer(bearer) => {
-            let token = base64::engine::general_purpose::STANDARD
-                .encode(crate::imap::xoauth2_payload(&cfg.user, bearer));
-            format!("AUTH XOAUTH2 {token}\r\n")
-        }
-    };
-    stage("auth");
-    say!("auth", auth_line);
-    expect!("auth", 235);
-
     stage("mail");
-    say!("mail", format!("MAIL FROM:<{}>\r\n", msg.from_addr));
+    // The envelope carries addr-specs and nothing else. A sender or recipient
+    // that is not one never reaches the wire: it would be a second command,
+    // written by whoever supplied the string.
+    let Some(sender) = msg.sender() else {
+        fail_before!(
+            "mail",
+            "the account's own address is not one that can be sent from"
+        );
+    };
+    say!("mail", format!("MAIL FROM:<{sender}>\r\n"));
     expect!("mail", 250);
     for rcpt in msg.recipients() {
         stage("rcpt");
@@ -809,4 +1242,169 @@ fn dot_stuff(raw: &[u8]) -> Vec<u8> {
         at_line_start = b == b'\n';
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::imap::Credential;
+
+    const OUTLOOK_EHLO: &str = "250-DUB01.prod.protection.outlook.com Hello\r\n\
+                                250-SIZE 157286400\r\n\
+                                250-PIPELINING\r\n\
+                                250-AUTH LOGIN XOAUTH2\r\n\
+                                250 SMTPUTF8";
+
+    #[test]
+    fn the_auth_line_is_read_off_the_ehlo_reply() {
+        assert_eq!(auth_mechanisms(OUTLOOK_EHLO), vec!["LOGIN", "XOAUTH2"]);
+        // The older spelling, one mechanism per line, and lowercase.
+        assert_eq!(
+            auth_mechanisms("250-mail\r\n250-auth=plain\r\n250 SIZE 10"),
+            vec!["PLAIN"]
+        );
+        // A server that names nothing is not the same as one that offers
+        // nothing: the caller falls back to PLAIN rather than refusing.
+        assert!(auth_mechanisms("250-mail\r\n250 SIZE 10").is_empty());
+        assert!(ehlo_offers(
+            "250-mail\r\n250-STARTTLS\r\n250 SIZE 1",
+            "STARTTLS"
+        ));
+        assert!(!ehlo_offers(OUTLOOK_EHLO, "STARTTLS"));
+        // The greeting text is not a capability list, whatever it contains.
+        assert!(!ehlo_offers("220 starttls.example ESMTP", "STARTTLS"));
+    }
+
+    /// Drives `authenticate` against a scripted peer and reports what the
+    /// client said.
+    async fn exchange(mechanisms: &[&str], scripted: &[&str], cred: Credential) -> Vec<String> {
+        let (client, server) = tokio::io::duplex(4096);
+        let script: Vec<String> = scripted.iter().map(|s| s.to_string()).collect();
+        let heard = tokio::spawn(async move {
+            let (rx, mut tx) = tokio::io::split(server);
+            let mut reader = BufReader::new(rx);
+            let mut said = Vec::new();
+            for reply in script {
+                let mut line = String::new();
+                if reader.read_line(&mut line).await.unwrap_or(0) == 0 {
+                    break;
+                }
+                said.push(line.trim_end().to_string());
+                if tx.write_all(reply.as_bytes()).await.is_err() {
+                    break;
+                }
+            }
+            said
+        });
+        let (rx, mut tx) = tokio::io::split(client);
+        let mut reader = BufReader::new(rx);
+        let cfg = SmtpConfig {
+            host: "mail.example".into(),
+            port: 587,
+            user: "tom@example.com".into(),
+            credential: cred,
+        };
+        let mechanisms: Vec<String> = mechanisms.iter().map(|m| m.to_string()).collect();
+        authenticate(&mut reader, &mut tx, &cfg, &mechanisms)
+            .await
+            .map_err(OpenError::into_message)
+            .expect("the scripted server accepts");
+        heard.await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_server_without_plain_is_signed_in_to_with_auth_login() {
+        use base64::Engine as _;
+        let b64 = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
+        // Outlook's own shape: LOGIN and XOAUTH2, no PLAIN. Sending PLAIN here
+        // earned a 504 and no account could send.
+        let said = exchange(
+            &["LOGIN", "XOAUTH2"],
+            &[
+                &format!("334 {}\r\n", b64("Username:")),
+                &format!("334 {}\r\n", b64("Password:")),
+                "235 2.7.0 Authentication successful\r\n",
+            ],
+            Credential::password("s3cret"),
+        )
+        .await;
+        assert_eq!(
+            said,
+            vec![
+                "AUTH LOGIN".to_string(),
+                b64("tom@example.com"),
+                b64("s3cret"),
+            ],
+            "the two prompts are answered in order, each base64"
+        );
+    }
+
+    #[tokio::test]
+    async fn plain_is_preferred_where_it_is_offered_and_assumed_where_nothing_is() {
+        use base64::Engine as _;
+        let b64 = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
+        let expected = format!("AUTH PLAIN {}", b64("\0tom@example.com\0s3cret"));
+        let said = exchange(
+            &["PLAIN", "LOGIN"],
+            &["235 ok\r\n"],
+            Credential::password("s3cret"),
+        )
+        .await;
+        assert_eq!(
+            said,
+            vec![expected.clone()],
+            "one round trip where it can be"
+        );
+        let said = exchange(&[], &["235 ok\r\n"], Credential::password("s3cret")).await;
+        assert_eq!(said, vec![expected]);
+    }
+
+    #[tokio::test]
+    async fn a_token_goes_out_as_xoauth2_whatever_was_advertised() {
+        use base64::Engine as _;
+        let said = exchange(
+            &["LOGIN"],
+            &["235 ok\r\n"],
+            Credential::Bearer("ya29.TOKEN".into()),
+        )
+        .await;
+        let payload = base64::engine::general_purpose::STANDARD.encode(
+            crate::imap::xoauth2_payload("tom@example.com", "ya29.TOKEN"),
+        );
+        assert_eq!(said, vec![format!("AUTH XOAUTH2 {payload}")]);
+    }
+
+    /// A refused password is not a bad message. Dead-lettering it — which is
+    /// what a plain 5xx does — loses mail because a token expired.
+    #[tokio::test]
+    async fn a_refused_credential_is_reported_as_a_sign_in_failure_not_a_rejection() {
+        let (client, server) = tokio::io::duplex(4096);
+        tokio::spawn(async move {
+            let (rx, mut tx) = tokio::io::split(server);
+            let mut reader = BufReader::new(rx);
+            let mut line = String::new();
+            let _ = reader.read_line(&mut line).await;
+            let _ = tx
+                .write_all(b"535 5.7.3 Authentication unsuccessful\r\n")
+                .await;
+        });
+        let (rx, mut tx) = tokio::io::split(client);
+        let mut reader = BufReader::new(rx);
+        let cfg = SmtpConfig {
+            host: "mail.example".into(),
+            port: 587,
+            user: "tom@example.com".into(),
+            credential: Credential::password("wrong"),
+        };
+        let err = authenticate(&mut reader, &mut tx, &cfg, &["PLAIN".to_string()])
+            .await
+            .expect_err("535 is a refusal");
+        match err.into_send_result() {
+            SendResult::FailedBeforeCommit { stage, detail } => {
+                assert_eq!(stage, "auth");
+                assert!(detail.contains("535"), "{detail}");
+            }
+            other => panic!("a refused password must not dead-letter the message: {other:?}"),
+        }
+    }
 }

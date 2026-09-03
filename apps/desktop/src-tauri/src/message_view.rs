@@ -16,6 +16,58 @@ use tauri::http::{Request, Response};
 
 const VIEW_TOKEN_CAP: usize = 256;
 
+/// The origin message documents are served from, spelled the way this
+/// platform's webview understands it.
+///
+/// macOS and Linux register `petrel-msg` as a real scheme, so a document
+/// lives at `petrel-msg://localhost/…`. WebView2 on Windows (and the Android
+/// webview) cannot register one, so wry answers the same handler at
+/// `http://petrel-msg.localhost/…` instead — and rewrites only the URL a
+/// window is *created* with. An iframe `src`, or a URL handed to the page over
+/// IPC, gets no such help: the raw scheme is simply unknown to the webview
+/// there, and the reading pane, the attachment preview and print were all
+/// blank on Windows for exactly that reason. Every URL the app hands a webview
+/// is built on this.
+pub fn message_origin() -> &'static str {
+    if cfg!(any(windows, target_os = "android")) {
+        "http://petrel-msg.localhost"
+    } else {
+        "petrel-msg://localhost"
+    }
+}
+
+/// Who may embed a message frame: the app's own window, in every spelling
+/// the platforms give it.
+///
+/// Not `'self'`. In a frame-ancestors directive `'self'` is the *frame's*
+/// origin — `petrel-msg://localhost` — and the app window embedding it is
+/// `tauri://localhost` on macOS and Linux and `http://tauri.localhost` on
+/// Windows. WebKit let that through; Chromium refused the embedder, and the
+/// reading pane was blank. The origins are named outright so the answer is
+/// the same everywhere.
+const FRAME_ANCESTORS: &str = "tauri://localhost http://tauri.localhost https://tauri.localhost";
+
+/// The per-response policy for a message document.
+///
+/// Its own function so the string can be tested: a CSP is exactly the kind of
+/// text that reads as fine and is wrong, and this one decides both what a
+/// message may reach and who may show it.
+fn message_csp(img_src: &str, nonce: &str) -> String {
+    // A dev build's window is the Vite server, which is another origin
+    // again; a shipped build never sees it.
+    let ancestors = if cfg!(dev) {
+        format!("{FRAME_ANCESTORS} http://localhost:*")
+    } else {
+        FRAME_ANCESTORS.to_string()
+    };
+    format!(
+        "default-src 'none'; img-src {img_src}; \
+         style-src 'unsafe-inline'; style-src-attr 'unsafe-inline'; script-src 'nonce-{nonce}'; \
+         form-action 'none'; base-uri 'none'; frame-ancestors {ancestors}; \
+         upgrade-insecure-requests"
+    )
+}
+
 /// Single-use, unguessable token gating access to a message body. Without this
 /// any document rendered in the app could name another message's URL.
 pub struct ViewTokens {
@@ -217,6 +269,14 @@ fn print_document(
 </header>
 <div id="petrel-box"><div id="petrel-fit">{body}</div></div>
 <script nonce="{nonce}">
+  // Links go nowhere from here. This window is a top-level page, not a
+  // sandboxed frame, so a click would replace the message with whatever the
+  // sender linked to — a live web page loaded in a Petrel window. The print
+  // page has nothing to open links with, so it opens none.
+  document.addEventListener('click', function (e) {{
+    var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+    if (a) {{ e.preventDefault(); }}
+  }}, true);
   // Give images a beat to arrive, then fit the message to the page before the
   // dialog freezes it. Without this a message laid out at 600 or 700px — which
   // is most marketing mail — printed at its natural width and ran off the
@@ -612,12 +672,7 @@ pub fn handle(
     // The upgrade skips potentially-trustworthy origins, which is why the
     // `http://petrel-msg.localhost` that Tauri serves the reading pane from on
     // Windows and Linux is left alone. macOS does not use that form at all.
-    let csp = format!(
-        "default-src 'none'; img-src {img_src}; \
-         style-src 'unsafe-inline'; style-src-attr 'unsafe-inline'; script-src 'nonce-{nonce}'; \
-         form-action 'none'; base-uri 'none'; frame-ancestors 'self'; \
-         upgrade-insecure-requests"
-    );
+    let csp = message_csp(img_src, &nonce);
 
     Response::builder()
         .status(200)
@@ -835,6 +890,68 @@ mod tests {
             assert!(policy.contains("cid:"), "allow={allow}: {policy}");
             assert!(policy.contains("petrel-msg:"), "allow={allow}: {policy}");
         }
+    }
+
+    /// The spelling the platform's webview actually resolves. Windows has no
+    /// custom schemes, so wry serves the handler at an http origin there and
+    /// the raw scheme is unknown to it; everywhere else the scheme is real.
+    #[cfg(windows)]
+    #[test]
+    fn the_message_origin_is_the_http_form_where_schemes_cannot_be_registered() {
+        assert_eq!(super::message_origin(), "http://petrel-msg.localhost");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn the_message_origin_is_the_real_scheme_where_one_can_be_registered() {
+        assert_eq!(super::message_origin(), "petrel-msg://localhost");
+    }
+
+    /// The embedder is named outright, in every spelling the platforms give
+    /// it. `'self'` is the frame's own origin, which no app window matches,
+    /// and Chromium refused the reading pane on the strength of it.
+    #[test]
+    fn the_frame_policy_names_every_spelling_of_the_app_window() {
+        let csp = super::message_csp(img_src(false), "n0nce");
+        let ancestors = csp
+            .split(';')
+            .map(str::trim)
+            .find(|d| d.starts_with("frame-ancestors "))
+            .expect("a frame-ancestors directive");
+        for origin in [
+            "tauri://localhost",
+            "http://tauri.localhost",
+            "https://tauri.localhost",
+        ] {
+            assert!(
+                ancestors.split_whitespace().any(|s| s == origin),
+                "{origin} missing from {ancestors}"
+            );
+        }
+        assert!(!ancestors.contains("'self'"), "{ancestors}");
+        // And the rest of the policy still lists both spellings of the
+        // message origin, so inline parts load on every platform.
+        assert!(csp.contains("petrel-msg:"), "{csp}");
+        assert!(csp.contains("http://petrel-msg.localhost"), "{csp}");
+        assert!(csp.contains("script-src 'nonce-n0nce'"), "{csp}");
+        assert!(csp.contains("default-src 'none'"), "{csp}");
+    }
+
+    /// The print page is a top-level window, so a link click there would
+    /// navigate it. The page catches every click before it can.
+    #[test]
+    fn the_printed_page_never_follows_a_link() {
+        let doc = super::print_document(
+            "<p><a href=\"https://example.com\">go</a></p>",
+            "Subject",
+            "a@example.com",
+            "me@example.com",
+            "",
+            "Tue, 18 Aug 2026",
+            "n0nce",
+        );
+        assert!(doc.contains("closest('a[href]')"), "{doc}");
+        assert!(doc.contains("e.preventDefault()"), "{doc}");
     }
 
     #[test]

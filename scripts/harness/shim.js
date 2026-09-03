@@ -79,6 +79,8 @@
         attachments: [],
         has_calendar: false,
         invite_response: null,
+        msgid: 'probe-' + id + '@example.test',
+        references: id > 1 ? ['probe-' + (id - 1) + '@example.test'] : [],
       };
     });
     var slice = all;
@@ -130,6 +132,8 @@
       attachments: [],
       has_calendar: false,
       invite_response: null,
+      msgid: 'probe-' + messageId + '@example.test',
+      references: messageId > 1 ? ['probe-' + (messageId - 1) + '@example.test'] : [],
     };
   }
 
@@ -358,6 +362,17 @@
           }
           return [];
         })(),
+        // Set localStorage.__petrel_alert to a key — `sent-copy-failed` is
+        // the one the engine emits today — to exercise the alert toast.
+        // Drained on read, as the engine drains it, so it is said once.
+        alerts: (function () {
+          try {
+            var key = localStorage.getItem('__petrel_alert');
+            if (!key) return [];
+            localStorage.removeItem('__petrel_alert');
+            return [key];
+          } catch (e) { return []; }
+        })(),
         configured: configured,
         // Set localStorage.__petrel_demo to model synthetic-mail mode, where
         // the window shows the mailbox instead of onboarding.
@@ -566,6 +581,10 @@
           ],
           has_calendar: true,
           invite_response: null,
+          // The message's own id and the chain it arrived with, bare, as
+          // the command hands them over: a reply has to carry both on.
+          msgid: 'msg-' + row.id + '@example.com',
+          references: ['thread-root@example.com'],
         },
       ];
     },
@@ -611,6 +630,8 @@
         ],
         has_calendar: true,
         invite_response: null,
+        msgid: 'msg-' + row.id + '@example.com',
+        references: ['thread-root@example.com'],
       };
     },
     invitation: function (a) {
@@ -685,6 +706,12 @@
                  current_notes: running, error: null };
       }
       return { current: '0.0.1', available: null, notes: null, current_notes: running, error: null };
+    },
+    // The build's own version, with no network behind it: what the pane
+    // shows on open. Only the button asks check_update.
+    app_version: function () {
+      return { current: '0.0.1', available: null, notes: null,
+               current_notes: handlers.check_update().current_notes, error: null };
     },
     install_update: function () { return null; },
     restart_for_update: function () { return null; },
@@ -883,13 +910,16 @@
       folders.push({ id: id, role: '', path: a.path });
       return id;
     },
-    // The dialog plugin's commands, so the attach and export flows can be
-    // driven without a real file panel. Set window.__PETREL_PICK__ to the
-    // paths a pick should return, or null to simulate cancelling.
-    'plugin:dialog|open': function () {
-      return window.__PETREL_PICK__ === undefined ? null : window.__PETREL_PICK__;
+    // The shell's file panels, so the attach and export flows can be driven
+    // without a real one. Set window.__PETREL_PICK__ to the paths a pick
+    // should return (unset or [] is a cancel) and window.__PETREL_SAVE__ to
+    // the path a save panel should return (unset or null is a cancel). The
+    // purpose is recorded with the call, so a proof can see which panel the
+    // UI asked for.
+    pick_files: function () {
+      return Array.isArray(window.__PETREL_PICK__) ? window.__PETREL_PICK__ : [];
     },
-    'plugin:dialog|save': function () {
+    pick_save_path: function () {
       return window.__PETREL_SAVE__ === undefined ? null : window.__PETREL_SAVE__;
     },
     attachment_info: function (a) {
@@ -1023,6 +1053,12 @@
       return nextDraftId;
     },
     delete_draft: function () { return null; },
+    // The outbox's side of a send. Without these the send path rejected at
+    // the last step and the composer put the draft back — correct behaviour
+    // for a failed queue, and indistinguishable from a send that never
+    // reached the outbox at all.
+    schedule_send: function (a) { window.__PETREL_SCHEDULED__ = a; return null; },
+    popout_compose: function (a) { window.__PETREL_POPPED__ = a; return null; },
     create_tag: function (a) {
       var id = 300 + tags.length;
       tags.push({ id: id, name: a.name, colour: '', thread_count: 0 });

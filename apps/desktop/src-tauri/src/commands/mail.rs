@@ -1,5 +1,6 @@
 //! Reading mail: the conversation list, one conversation, search, and the views' counts.
 
+use crate::message_view::message_origin;
 use crate::state::{AppState, Timed, note_ui_touch};
 use petrel_engine::store::{ListView, TagSummary, ThreadIndexRow, ThreadListing, ThreadMessage};
 use std::sync::Arc;
@@ -7,7 +8,7 @@ use tauri::{Manager, State};
 
 /// The list shows conversations, not messages — the count chip is the thread
 /// size (docs 06). Flags are rolled up across the thread by the engine.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_threads(
     view: Option<String>,
     offset: u32,
@@ -45,7 +46,7 @@ pub fn list_threads(
 /// Separate from `list_threads` because a popped-out window has an id and no
 /// view: it cannot say which mailbox to look in, and guessing is what made it
 /// claim that starred and archived conversations no longer existed.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn thread_by_id(
     thread_id: i64,
     state: State<Arc<AppState>>,
@@ -59,7 +60,7 @@ pub fn thread_by_id(
 /// Paged like the list: a hundred is the IPC cap, fifty is what the pane
 /// asks for. Without a limit the old path returned every message and a
 /// twenty-thousand-message thread froze the window.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn thread_detail(
     thread_id: i64,
     limit: Option<u32>,
@@ -82,7 +83,7 @@ pub fn thread_detail(
 
 /// Slim cards for one conversation: sender, snippet, date. No recipients,
 /// no attachments, no IPC page cap — a long thread is still one SELECT.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn thread_index(
     thread_id: i64,
     state: State<Arc<AppState>>,
@@ -94,7 +95,7 @@ pub fn thread_index(
 }
 
 /// One message, hydrated. The pane calls this when a card is opened.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn thread_message(
     message_id: i64,
     state: State<Arc<AppState>>,
@@ -114,7 +115,7 @@ pub fn thread_message(
 /// and the rest, plus `folders` for every folder they made. Anything absent
 /// falls to the engine's own rule for that mailbox, so a fresh install sends
 /// nothing and still gets sensible numbers.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn view_counts(
     modes: std::collections::HashMap<String, String>,
     state: State<Arc<AppState>>,
@@ -130,7 +131,7 @@ pub fn view_counts(
 }
 
 /// Every conversation in a view, counted — not the loaded window's length.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn view_count(view: Option<String>, state: State<Arc<AppState>>) -> Result<i64, String> {
     let _t = Timed::new("view_count");
     note_ui_touch(&state);
@@ -142,7 +143,7 @@ pub fn view_count(view: Option<String>, state: State<Arc<AppState>>) -> Result<i
 /// `sort` absent means best match — the order the ranking produced, which is
 /// the one thing a list cannot offer because a list has nothing to be relevant
 /// to. Any other value is the same key a list would take.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn search_messages(
     query: String,
     sort: Option<String>,
@@ -161,12 +162,15 @@ pub fn search_messages(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+/// A one-message URL for the reading pane, spelled for this platform's
+/// webview — see `message_origin` for why the spelling varies.
+#[tauri::command(async)]
 pub fn message_url(message_id: i64, state: State<Arc<AppState>>) -> Result<String, String> {
     let store = state.store()?;
     match store.blob_hash_for(message_id).map_err(|e| e.to_string())? {
         Some(_) => Ok(format!(
-            "petrel-msg://localhost/message/{}",
+            "{}/message/{}",
+            message_origin(),
             state.tokens.issue(message_id)
         )),
         None => Err("message has no stored body".into()),
@@ -180,7 +184,7 @@ pub fn message_url(message_id: i64, state: State<Arc<AppState>>) -> Result<Strin
 /// loads the message's printable document over the same protocol, so the
 /// same sanitizer, the same CSP and the same remote-content policy govern
 /// what lands on paper — and the page opens straight into the print dialog.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn print_message(
     message_id: i64,
     app: tauri::AppHandle,
@@ -200,11 +204,15 @@ pub fn print_message(
         let _ = existing.set_focus();
         return Ok(());
     }
-    let url: tauri::Url = format!("petrel-msg://localhost/print/{token}")
+    let url: tauri::Url = format!("{}/print/{token}", message_origin())
         .parse()
         .map_err(|e| format!("{e}"))?;
     WebviewWindowBuilder::new(&app, &label, WebviewUrl::External(url))
         .title("Print")
+        // The printed page is a top-level document: nothing it links to may
+        // load in its place. Its own script swallows clicks; this is the
+        // webview refusing whatever gets past that.
+        .on_navigation(crate::print_navigation_allowed)
         // Wide enough for the sheet the print document draws — a 174mm column
         // plus its padding — rather than exactly the old 700px, which left the
         // preview with no margin at all and measured a page wider than paper.
@@ -216,7 +224,7 @@ pub fn print_message(
 
 /// Tags for the rail. Comes from the account, not from whatever rows happen to
 /// be loaded — a tag with no conversation in the current page still exists.
-#[tauri::command]
+#[tauri::command(async)]
 /// `account` names one explicitly; absent it means the account on screen. See
 /// the note on `list_folders`.
 pub fn list_tags(

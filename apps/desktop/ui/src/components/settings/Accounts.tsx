@@ -7,7 +7,13 @@ import { Confirm } from '../Confirm';
 const COLORS = ['#0E7C86', '#9A6B1F', '#6B7F87', '#3B6EA5', '#6B5CA5', '#5E7C4A'];
 const ROLES = ['archive', 'sent', 'drafts', 'spam', 'trash'] as const;
 
-export function Accounts({ onAddAccount }: { onAddAccount: () => void }) {
+export function Accounts({
+  onAddAccount,
+  onAccountRemoved,
+}: {
+  onAddAccount: () => void;
+  onAccountRemoved: (wasActive: boolean) => void;
+}) {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [removing, setRemoving] = useState<Account | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
@@ -84,7 +90,7 @@ export function Accounts({ onAddAccount }: { onAddAccount: () => void }) {
           <section className="field">
             <div className="flabel">{account.email}</div>
             <p className="fhelp">
-              {t('accounts-storage', { count: fmtCount(account.message_count) })}
+              {t('accounts-storage', { count: account.message_count })}
             </p>
             <div className="box">
               <div className="row2">
@@ -200,7 +206,12 @@ export function Accounts({ onAddAccount }: { onAddAccount: () => void }) {
           if (!a) return;
           void api
             .removeAccount(a.id)
-            .then(() => load())
+            .then(() => {
+              // Told before the list reloads: the window behind this pane
+              // may be showing the account that just went.
+              onAccountRemoved(a.active);
+              return load();
+            })
             .catch((e) => setError(String(e)));
         }}
       />

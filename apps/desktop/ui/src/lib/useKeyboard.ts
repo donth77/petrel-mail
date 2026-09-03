@@ -28,16 +28,19 @@ export type KeyActions = {
   undo: () => void;
 };
 
-/** True while a modal is up. Single-key commands must not reach the list
- *  behind it: archiving a conversation you cannot see, with the toast hidden
- *  under the dialog, is the worst possible version of a shortcut firing.
+/** True while a modal or a menu is up. Single-key commands must not reach the
+ *  list behind it: archiving a conversation you cannot see, with the toast
+ *  hidden under the dialog, is the worst possible version of a shortcut
+ *  firing. A menu counts for the same reason — a right-click menu offering
+ *  Archive was open over the row while E archived it underneath, and the menu
+ *  then acted on a row that had already gone.
  *
- *  The `:not([hidden])` is load-bearing. Ariakit keeps every dialog mounted and
- *  marks the closed ones `hidden`, so a bare `[role="dialog"]` matches even
- *  when nothing is open — a guard that would silently disable every shortcut in
- *  the app, permanently. */
+ *  The `:not([hidden])` is load-bearing. Ariakit keeps every dialog and menu
+ *  mounted and marks the closed ones `hidden`, so a bare `[role="dialog"]`
+ *  matches even when nothing is open — a guard that would silently disable
+ *  every shortcut in the app, permanently. */
 function modalOpen(): boolean {
-  return document.querySelector('[role="dialog"]:not([hidden])') !== null;
+  return document.querySelector('[role="dialog"]:not([hidden]), [role="menu"]:not([hidden])') !== null;
 }
 
 /** Where a keystroke means text, not a command. */

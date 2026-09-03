@@ -113,6 +113,7 @@ export function Rules({ onMessage }: { onMessage: (text: string) => void }) {
                 void api
                   .saveRule(r.id, r.name, e.target.checked, r.conditions, r.actions)
                   .then(reload)
+                  .catch((err) => onMessage(t('rule-failed', { error: String(err) })))
               }
             />
             <button type="button" className="rule-name" onClick={() => setEditing(r)}>
@@ -122,20 +123,35 @@ export function Rules({ onMessage }: { onMessage: (text: string) => void }) {
             <button
               type="button" className="act-icon" aria-label={t('rule-up')}
               disabled={i === 0}
-              onClick={() => void api.moveRule(r.id, true).then(reload)}
+              onClick={() =>
+                void api
+                  .moveRule(r.id, true)
+                  .then(reload)
+                  .catch((err) => onMessage(t('rule-failed', { error: String(err) })))
+              }
             >
               <Icon icon={ArrowUp} size={13} />
             </button>
             <button
               type="button" className="act-icon" aria-label={t('rule-down')}
               disabled={i === rules.length - 1}
-              onClick={() => void api.moveRule(r.id, false).then(reload)}
+              onClick={() =>
+                void api
+                  .moveRule(r.id, false)
+                  .then(reload)
+                  .catch((err) => onMessage(t('rule-failed', { error: String(err) })))
+              }
             >
               <Icon icon={ArrowDown} size={13} />
             </button>
             <button
               type="button" className="act-icon" aria-label={t('rule-delete')}
-              onClick={() => void api.deleteRule(r.id).then(reload)}
+              onClick={() =>
+                void api
+                  .deleteRule(r.id)
+                  .then(reload)
+                  .catch((err) => onMessage(t('rule-failed', { error: String(err) })))
+              }
             >
               <Icon icon={Trash2} size={13} />
             </button>

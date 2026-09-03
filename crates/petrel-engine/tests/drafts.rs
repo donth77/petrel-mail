@@ -572,3 +572,64 @@ fn a_draft_can_be_found_by_its_words() {
         "a sent or discarded draft leaves the index"
     );
 }
+
+/// A draft belongs to the account it was written in.
+///
+/// The composer follows an account switch, so a save can arrive naming the
+/// account on screen rather than the one the draft was started in. The row
+/// decides: its account never changes, and its placement stays in that
+/// account's Drafts.
+mod account_home {
+    use petrel_engine::store::{DraftEnvelope, ListView, Sort, Store};
+
+    #[test]
+    fn saving_under_another_account_updates_the_row_where_it_lives() {
+        let store = Store::open_in_memory().unwrap();
+        let a = store.ensure_test_account().unwrap();
+        let b = store.ensure_test_account().unwrap();
+        let id = store
+            .save_draft(
+                a,
+                None,
+                "dana@example.com",
+                "Written in A",
+                "first words",
+                "",
+            )
+            .unwrap();
+        assert_eq!(store.account_of_message(id).unwrap(), Some(a));
+
+        // The window switched to B before the autosave fired.
+        let same = store
+            .save_draft_full(
+                b,
+                Some(id),
+                "dana@example.com",
+                "",
+                "Written in A",
+                "more words",
+                "",
+                &DraftEnvelope::default(),
+            )
+            .unwrap();
+        assert_eq!(same, id);
+        assert_eq!(store.account_of_message(id).unwrap(), Some(a));
+        assert_eq!(store.load_draft(id).unwrap().body, "more words");
+
+        // Listed under A, and only under A.
+        store.set_active_account(a).unwrap();
+        let in_a = store
+            .list_threads(&ListView::Folder("drafts".into()), 0, 10, Sort::default())
+            .unwrap();
+        assert_eq!(in_a.len(), 1);
+        store.set_active_account(b).unwrap();
+        let in_b = store
+            .list_threads(&ListView::Folder("drafts".into()), 0, 10, Sort::default())
+            .unwrap();
+        assert!(in_b.is_empty(), "B has no draft: {in_b:?}");
+        assert!(
+            store.folder_for_role(b, "drafts").unwrap().is_none(),
+            "nothing was filed in B, so B needed no Drafts folder"
+        );
+    }
+}

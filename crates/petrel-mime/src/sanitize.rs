@@ -83,20 +83,47 @@ const ALLOWED_CSS: &[&str] = &[
     "list-style-type",
 ];
 
-fn is_remote(url: &str) -> bool {
-    // Read the way the browser reads it: URL parsing strips ASCII tab and
-    // newlines anywhere in the input, so "ht<TAB>tps://" is https to the
-    // frame and has to be https here, or it loads uncounted.
-    let u: String = url
-        .trim()
+/// The URL as a browser would read it, before anyone decides anything about
+/// it: leading and trailing space gone, and ASCII tabs and newlines removed
+/// from anywhere inside, exactly as URL parsing does. `ht<TAB>tps://` is https
+/// to the frame, so it has to be https here or it loads uncounted.
+fn as_the_browser_reads_it(url: &str) -> String {
+    url.trim()
         .chars()
         .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
-        .collect::<String>()
-        .to_ascii_lowercase();
-    u.starts_with("http://") || u.starts_with("https://") || u.starts_with("//")
+        .collect()
 }
 
-/// Gives a protocol-relative URL a scheme of its own.
+/// Whether the value is a `data:` URL at all.
+fn is_data_uri(url: &str) -> bool {
+    as_the_browser_reads_it(url)
+        .to_ascii_lowercase()
+        .starts_with("data:")
+}
+
+/// Whether it is one carrying a picture, which is the only kind admitted.
+fn is_data_image(url: &str) -> bool {
+    as_the_browser_reads_it(url)
+        .to_ascii_lowercase()
+        .starts_with("data:image/")
+}
+
+fn is_remote(url: &str) -> bool {
+    let cleaned = as_the_browser_reads_it(url);
+    // Protocol-relative first: it has no scheme of its own to parse, and the
+    // frame would give it one.
+    if cleaned.starts_with("//") {
+        return true;
+    }
+    // Parsed rather than prefix-matched, because a browser accepts far more
+    // shapes than `https://` as https: `https:evil.example`, `https:/evil`
+    // and `HTTPS:\\evil` are all the same fetch, and each used to be counted
+    // as local — the CSP blocked them, so the picture was right and the
+    // "3 trackers blocked" underneath it was wrong.
+    url::Url::parse(&cleaned).is_ok_and(|u| matches!(u.scheme(), "http" | "https"))
+}
+
+/// Gives a URL the full form the frame can actually fetch.
 ///
 /// `//host/logo.png` means "whatever scheme this document uses", which is a
 /// sensible default on the web and a broken one here: the reading frame is
@@ -106,12 +133,19 @@ fn is_remote(url: &str) -> bool {
 ///
 /// Resolved to `https:` rather than `http:` because a URL that declined to
 /// name a scheme has expressed no preference, and one of the two is encrypted.
+///
+/// The abbreviated http forms — `https:host/x.png`, `https:/host`, and the
+/// backslashed spelling — are written out the same way, since that is what
+/// they mean and leaving them alone leaves the reader with a broken image.
 fn absolute_scheme(url: &str) -> std::borrow::Cow<'static, str> {
-    let trimmed = url.trim_start();
-    if trimmed.starts_with("//") {
-        return format!("https:{trimmed}").into();
+    let cleaned = as_the_browser_reads_it(url);
+    if cleaned.starts_with("//") {
+        return format!("https:{cleaned}").into();
     }
-    url.to_owned().into()
+    match url::Url::parse(&cleaned) {
+        Ok(parsed) if matches!(parsed.scheme(), "http" | "https") => parsed.to_string().into(),
+        _ => url.to_owned().into(),
+    }
 }
 
 /// Filters a `style` attribute down to the allowlist. Any declaration that
@@ -263,6 +297,106 @@ fn tag_attributes() -> HashMap<&'static str, HashSet<&'static str>> {
     m
 }
 
+/// How deep a message may nest before the rest of the tree is flattened.
+///
+/// Far past anything real mail contains: the deepest hand-written newsletter
+/// tables run to a few dozen. What this is for is the other kind, where the
+/// depth *is* the payload — 10,000 nested divs is 110 KB of HTML that took
+/// two and a half seconds to sanitize, and 50,000 took a minute, both on the
+/// thread the window draws on.
+const MAX_NESTING: usize = 512;
+
+/// Drops tags that would nest deeper than the cap, keeping their content.
+///
+/// A pre-pass rather than a limit inside the sanitizer, because the parser
+/// builds the whole tree before anything gets to look at it. Under the cap
+/// this returns the input untouched, so ordinary mail is not reshaped by a
+/// defence it never triggers.
+fn cap_nesting(html: &str) -> std::borrow::Cow<'_, str> {
+    // Elements that never open a level: they have no closing tag to match.
+    const VOID: &[&str] = &[
+        "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param",
+        "source", "track", "wbr",
+    ];
+    let bytes = html.as_bytes();
+    let mut depth = 0usize;
+    // Opens dropped for being too deep, whose closing tags must go too.
+    let mut dropped = 0usize;
+    let mut out: Option<String> = None;
+    let mut i = 0usize;
+    let mut copied = 0usize;
+    while let Some(offset) = html[i..].find('<') {
+        let start = i + offset;
+        let rest = &html[start..];
+        // Comments and doctypes carry no nesting and are left alone.
+        if rest.starts_with("<!") {
+            i = start + 2;
+            continue;
+        }
+        let closing = rest.starts_with("</");
+        let name_at = start + if closing { 2 } else { 1 };
+        if !bytes.get(name_at).is_some_and(u8::is_ascii_alphabetic) {
+            i = start + 1;
+            continue;
+        }
+        // The tag runs to its `>`, with quoted attribute values skipped so a
+        // `>` inside one does not end it early.
+        let mut j = name_at;
+        let mut quote: Option<u8> = None;
+        while j < bytes.len() {
+            match (quote, bytes[j]) {
+                (Some(q), c) if c == q => quote = None,
+                (None, c @ (b'"' | b'\'')) => quote = Some(c),
+                (None, b'>') => break,
+                _ => {}
+            }
+            j += 1;
+        }
+        if j >= bytes.len() {
+            break;
+        }
+        let end = j + 1;
+        let name: String = html[name_at..j]
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+            .collect::<String>()
+            .to_ascii_lowercase();
+        let self_closing = html[name_at..j].trim_end().ends_with('/');
+        if VOID.contains(&name.as_str()) || self_closing {
+            i = end;
+            continue;
+        }
+        let drop_it = if closing {
+            if dropped > 0 {
+                dropped -= 1;
+                true
+            } else {
+                depth = depth.saturating_sub(1);
+                false
+            }
+        } else if depth >= MAX_NESTING {
+            dropped += 1;
+            true
+        } else {
+            depth += 1;
+            false
+        };
+        if drop_it {
+            let buffer = out.get_or_insert_with(|| String::with_capacity(html.len()));
+            buffer.push_str(&html[copied..start]);
+            copied = end;
+        }
+        i = end;
+    }
+    match out {
+        Some(mut buffer) => {
+            buffer.push_str(&html[copied..]);
+            buffer.into()
+        }
+        None => html.into(),
+    }
+}
+
 /// Sanitizes a message body for display.
 ///
 /// `allow_remote` reflects an explicit user decision for this sender; when
@@ -301,14 +435,30 @@ pub fn sanitize_html(html: &str, allow_remote: bool) -> Sanitized {
         .tag_attributes(tag_attributes())
         .generic_attributes(["style", "align", "dir", "lang"].into_iter().collect())
         // `cid:` stays so inline images can be resolved from the message's own
-        // parts; `data:` is absent because it enables UI spoofing.
-        .url_schemes(["http", "https", "mailto", "cid"].into_iter().collect())
+        // parts. `data:` is admitted here and then narrowed in the attribute
+        // filter below to images on an `img`: the bytes are the message's own
+        // and the frame's own policy already allows them, so stripping them
+        // left a broken picture — but `data:text/html` in a link is a page
+        // wearing someone else's name, which is why it cannot be a blanket
+        // permission.
+        .url_schemes(
+            ["http", "https", "mailto", "cid", "data"]
+                .into_iter()
+                .collect(),
+        )
         .link_rel(Some("noopener noreferrer nofollow"))
         // Namespacing stops a message's ids from colliding with (or targeting)
         // the surrounding document.
         .id_prefix(Some("m-"))
-        .attribute_filter(
-            move |element, attribute, value| match (element, attribute) {
+        .attribute_filter(move |element, attribute, value| {
+            // A data: URL is the message's own bytes, so it is never a fetch
+            // and never counted — but only as a picture, and only where a
+            // picture goes.
+            if is_data_uri(value) {
+                let picture = matches!((element, attribute), ("img", "src") | (_, "background"));
+                return (picture && is_data_image(value)).then(|| value.into());
+            }
+            match (element, attribute) {
                 // `background` is a URL like `src` is, so it answers to the
                 // same rule. Sharing the arm is the point: a second place that
                 // decides whether mail may fetch something is a second place
@@ -329,10 +479,10 @@ pub fn sanitize_html(html: &str, allow_remote: bool) -> Sanitized {
                     }
                 }
                 _ => Some(value.into()),
-            },
-        );
+            }
+        });
 
-    let html = builder.clean(html).to_string();
+    let html = builder.clean(&cap_nesting(html)).to_string();
     Sanitized {
         html,
         report: SanitizeReport {
@@ -561,6 +711,28 @@ mod tests {
             res.html
         );
         assert_eq!(res.report.blocked_remote, 0);
+    }
+
+    /// A pasted screenshot travels as `data:image/png;base64,…`, which is the
+    /// message's own bytes and not a fetch. The frame's policy allows them, so
+    /// stripping them only ever left a broken picture — but the permission
+    /// stops at pictures, and at `img`.
+    #[test]
+    fn inline_data_images_survive_and_nothing_else_data_does() {
+        let png = "data:image/png;base64,iVBORw0KGgo=";
+        let res = sanitize_html(
+            &format!(
+                r#"<img src="{png}"><a href="data:text/html,<b>hi</b>">l</a>
+                   <img src="data:text/html;base64,PHNjcmlwdD4=">"#
+            ),
+            false,
+        );
+        assert!(res.html.contains(png), "the picture stays: {}", res.html);
+        assert!(!res.html.contains("text/html"), "{}", res.html);
+        assert_eq!(
+            res.report.blocked_remote, 0,
+            "the message's own bytes are not a tracker"
+        );
     }
 
     #[test]
@@ -800,6 +972,76 @@ mod tests {
         ] {
             let _ = sanitize_html(raw, false);
         }
+    }
+
+    /// Every abbreviated http form a browser accepts. The CSP blocked these
+    /// all along; what was wrong was the count under the message, which is a
+    /// promise to the reader rather than a log line.
+    #[test]
+    fn the_short_spellings_of_http_are_remote_too() {
+        let res = sanitize_html(
+            r#"<img src="https:evil.example/a.png"><img src="https:/evil.example/b.png">
+               <img src="HTTPS:\\evil.example\c.png"><img src="http:evil.example/d.png">"#,
+            false,
+        );
+        assert_eq!(res.report.blocked_remote, 4, "{}", res.html);
+        assert!(!res.html.contains("evil.example"), "{}", res.html);
+
+        // With remote content allowed they are written out in full, so the
+        // frame can actually fetch them.
+        let res = sanitize_html(r#"<img src="https:cdn.example/a.png">"#, true);
+        assert!(
+            res.html.contains("https://cdn.example/a.png"),
+            "{}",
+            res.html
+        );
+        assert_eq!(res.report.blocked_remote, 0);
+
+        // And nothing that was never remote has become so.
+        let res = sanitize_html(
+            r#"<img src="cid:part@x"><img src="/relative.png"><a href="mailto:x@y.example">m</a>"#,
+            false,
+        );
+        assert_eq!(res.report.blocked_remote, 0, "{}", res.html);
+    }
+
+    /// Depth as a payload: 50,000 nested divs is 300 KB of HTML that took the
+    /// best part of a minute, on the thread the window draws on.
+    #[test]
+    fn a_deeply_nested_message_is_flattened_rather_than_dwelt_on() {
+        let deep = format!("{}x{}", "<div>".repeat(50_000), "</div>".repeat(50_000));
+        let started = std::time::Instant::now();
+        let out = sanitize_html(&deep, false);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "took {:?}",
+            started.elapsed()
+        );
+        assert!(
+            out.html.contains('x'),
+            "the content survives the flattening"
+        );
+        assert!(
+            out.html.matches("<div>").count() <= MAX_NESTING,
+            "capped at the limit, not at whatever was sent"
+        );
+    }
+
+    #[test]
+    fn ordinary_nesting_is_left_exactly_as_it_was() {
+        // Under the cap the pre-pass must be invisible: real mail nests a few
+        // dozen deep and must not be reshaped by a defence it never trips.
+        let nested = format!("{}hello{}", "<div>".repeat(40), "</div>".repeat(40));
+        assert!(matches!(
+            cap_nesting(&nested),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        let quoted = r#"<td width=">"><img src="x" alt="a > b"><br>text<hr/></td>"#;
+        assert!(matches!(cap_nesting(quoted), std::borrow::Cow::Borrowed(_)));
+        // Void and self-closing elements do not open a level, so a long
+        // sequence of them is not nesting at all.
+        let voids = "<br>".repeat(5_000);
+        assert!(matches!(cap_nesting(&voids), std::borrow::Cow::Borrowed(_)));
     }
 
     #[test]

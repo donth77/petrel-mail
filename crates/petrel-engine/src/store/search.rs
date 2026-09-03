@@ -10,10 +10,24 @@ impl Store {
     /// Routed search: CJK queries use the per-character index, everything else
     /// the unicode61 index with as-you-type prefix on the final token.
     pub fn search(&self, query: &str, limit: u32) -> Result<Vec<SearchHit>> {
+        self.search_page(query, limit, 0)
+    }
+
+    /// One page of the ranking, skipping the `offset` best matches.
+    ///
+    /// A search is scoped to the account on screen, and the account is not
+    /// something FTS5 knows: the filter is applied to the hits afterwards.
+    /// One page of hits is therefore not one page of results, and taking a
+    /// single fixed slice of the ranking meant a word common in the other
+    /// account could fill it entirely — six hundred short matches over
+    /// there hid the one match here, and the search box said there was
+    /// nothing. Paging is what lets the caller keep asking until it has
+    /// enough of its own.
+    pub fn search_page(&self, query: &str, limit: u32, offset: u32) -> Result<Vec<SearchHit>> {
         if query.chars().any(is_cjk) {
-            self.search_cjk(query, limit)
+            self.search_cjk_page(query, limit, offset)
         } else {
-            self.search_unicode(query, limit)
+            self.search_unicode_page(query, limit, offset)
         }
     }
 
@@ -25,6 +39,10 @@ impl Store {
     /// punctuation as though it had matched the search. Nothing types a
     /// private-use codepoint, so nothing can be mistaken for one.
     pub fn search_unicode(&self, query: &str, limit: u32) -> Result<Vec<SearchHit>> {
+        self.search_unicode_page(query, limit, 0)
+    }
+
+    fn search_unicode_page(&self, query: &str, limit: u32, offset: u32) -> Result<Vec<SearchHit>> {
         let Some(expr) = match_expr(query, true) else {
             return Ok(Vec::new());
         };
@@ -35,9 +53,9 @@ impl Store {
              FROM fts_messages
              WHERE fts_messages MATCH ?1
              ORDER BY r
-             LIMIT ?2",
+             LIMIT ?2 OFFSET ?3",
         )?;
-        let rows = stmt.query_map(params![expr, limit], |row| {
+        let rows = stmt.query_map(params![expr, limit, offset], |row| {
             Ok(SearchHit {
                 message_id: row.get(0)?,
                 rank: row.get(1)?,
@@ -50,6 +68,10 @@ impl Store {
     /// Per-character CJK search. Ranks on the index copy but takes snippets from
     /// `fts_content`, because the indexed text is space-separated.
     pub fn search_cjk(&self, query: &str, limit: u32) -> Result<Vec<SearchHit>> {
+        self.search_cjk_page(query, limit, 0)
+    }
+
+    fn search_cjk_page(&self, query: &str, limit: u32, offset: u32) -> Result<Vec<SearchHit>> {
         let Some(expr) = cjk_match_expr(query) else {
             return Ok(Vec::new());
         };
@@ -61,9 +83,9 @@ impl Store {
              JOIN fts_content c ON c.message_id = f.rowid
              WHERE fts_cjk MATCH ?1
              ORDER BY r
-             LIMIT ?2",
+             LIMIT ?2 OFFSET ?3",
         )?;
-        let rows = stmt.query_map(params![expr, limit], |row| {
+        let rows = stmt.query_map(params![expr, limit, offset], |row| {
             let body: String = row.get(2)?;
             Ok(SearchHit {
                 message_id: row.get(0)?,
@@ -136,33 +158,42 @@ impl Store {
         let Some(account) = self.active_account()? else {
             return Ok(Vec::new());
         };
-        let wide = limit.saturating_mul(3).min(600);
+        // A page of the ranking: wide enough that one round usually
+        // answers, small enough that a query matching most of a mailbox
+        // does not read it all before filtering.
+        let wide = limit.saturating_mul(3).clamp(50, 600);
 
-        // Words rank; conditions filter. With no words there is nothing for
-        // BM25 to score, so `has:attachment` on its own is a listing in date
-        // order — which is the right answer to a question that named no terms.
-        let hits: Vec<Listing> = if q.text.trim().is_empty() {
-            self.messages_meeting(&q, wide, account)?
-        } else {
-            let found = self.search_listing(&q.text, wide)?;
-            let keep =
-                self.ids_meeting(&found.iter().map(|h| h.id).collect::<Vec<_>>(), &q, account)?;
-            found.into_iter().filter(|h| keep.contains(&h.id)).collect()
-        };
-        if hits.is_empty() {
-            return Ok(Vec::new());
-        }
         let mut order: Vec<i64> = Vec::new();
         let mut seen = std::collections::HashSet::new();
         // The first hit for a conversation is its best one — the list arrives
         // ranked — so that is the snippet the row shows.
         let mut why: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
-        for h in &hits {
-            let tid = self.thread_of(h.id)?.unwrap_or(-h.id);
-            if seen.insert(tid) {
-                order.push(tid);
-                if !h.snippet.is_empty() {
-                    why.insert(tid, h.snippet.clone());
+        // Words rank; conditions filter. With no words there is nothing for
+        // BM25 to score, so `has:attachment` on its own is a listing in date
+        // order — which is the right answer to a question that named no terms.
+        if q.text.trim().is_empty() {
+            let hits = self.messages_meeting(&q, wide, account)?;
+            self.gather_threads(&hits, &mut seen, &mut order, &mut why)?;
+        } else {
+            // The account filter is applied after the ranking, so a page of
+            // hits is not a page of results: the ranking is walked a page at
+            // a time until this account has enough conversations of its own.
+            // The cap is what keeps a word that matches most of a large
+            // mailbox from walking all of it — the answer is then the best
+            // matches rather than every match, which is what a search is.
+            const SCAN_CAP: u32 = 12_000;
+            let mut offset = 0u32;
+            loop {
+                let found = self.search_listing_page(&q.text, wide, offset)?;
+                let exhausted = (found.len() as u32) < wide;
+                let ids: Vec<i64> = found.iter().map(|h| h.id).collect();
+                let keep = self.ids_meeting(&ids, &q, account)?;
+                let kept: Vec<Listing> =
+                    found.into_iter().filter(|h| keep.contains(&h.id)).collect();
+                self.gather_threads(&kept, &mut seen, &mut order, &mut why)?;
+                offset = offset.saturating_add(wide);
+                if exhausted || order.len() >= limit as usize || offset >= SCAN_CAP {
+                    break;
                 }
             }
         }
@@ -180,6 +211,28 @@ impl Store {
             row.match_snippet = why.remove(&row.thread_id);
         }
         Ok(rows)
+    }
+
+    /// Folds a page of ranked hits into the conversations they belong to,
+    /// keeping the order the ranking put them in and the snippet of each
+    /// conversation's best-matching message.
+    fn gather_threads(
+        &self,
+        hits: &[Listing],
+        seen: &mut std::collections::HashSet<i64>,
+        order: &mut Vec<i64>,
+        why: &mut std::collections::HashMap<i64, String>,
+    ) -> Result<()> {
+        for h in hits {
+            let tid = self.thread_of(h.id)?.unwrap_or(-h.id);
+            if seen.insert(tid) {
+                order.push(tid);
+                if !h.snippet.is_empty() {
+                    why.insert(tid, h.snippet.clone());
+                }
+            }
+        }
+        Ok(())
     }
 
     /// The SQL for a query's conditions, and the values they bind.
@@ -335,7 +388,13 @@ impl Store {
     /// Search results joined with display metadata; the snippet carries
     /// `[`…`]` highlight markers from FTS5.
     pub fn search_listing(&self, query: &str, limit: u32) -> Result<Vec<Listing>> {
-        let hits = self.search(query, limit)?;
+        self.search_listing_page(query, limit, 0)
+    }
+
+    /// `search_listing`, skipping the `offset` best matches — one page of the
+    /// ranking for a caller that filters the hits itself.
+    fn search_listing_page(&self, query: &str, limit: u32, offset: u32) -> Result<Vec<Listing>> {
+        let hits = self.search_page(query, limit, offset)?;
         let mut stmt = self.conn.prepare_cached(
             "SELECT coalesce(from_display,''), coalesce(from_addr,''),
                     coalesce(subject,''), date_ms
@@ -343,14 +402,22 @@ impl Store {
         )?;
         let mut out = Vec::with_capacity(hits.len());
         for h in hits {
-            let row = stmt.query_row(params![h.message_id], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, i64>(3)?,
-                ))
-            })?;
+            // A hit whose message row is gone is an index row nothing owns.
+            // Skipped, not fatal: one stray row used to fail every search
+            // that matched it, for good.
+            let Some(row) = stmt
+                .query_row(params![h.message_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                })
+                .optional()?
+            else {
+                continue;
+            };
             out.push(Listing {
                 id: h.message_id,
                 from_display: row.0,

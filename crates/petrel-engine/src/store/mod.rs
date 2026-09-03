@@ -19,7 +19,11 @@ mod listing;
 mod maintenance;
 mod search;
 
-pub const SCHEMA_VERSION: i64 = 24;
+pub const SCHEMA_VERSION: i64 = 26;
+/// How many of a message's References are kept. Threading only ever looks
+/// for the nearest ancestors, and an unbounded header is both a query
+/// SQLite refuses to run and a row count nobody reads.
+const MAX_REFERENCES: usize = 200;
 /// Bumped whenever text extraction changes; a mismatch forces reindexing.
 pub const EXTRACTOR_VERSION: i64 = 1;
 
@@ -54,6 +58,8 @@ const MIGRATIONS: &[(i64, &str)] = &[
         24,
         include_str!("migrations/0024-action-message-outcome.sql"),
     ),
+    (25, include_str!("migrations/0025-ghost-repair.sql")),
+    (26, include_str!("migrations/0026-submission-ports.sql")),
 ];
 
 const _: () = assert!(
@@ -239,6 +245,16 @@ pub struct ThreadMessage {
     pub has_calendar: bool,
     /// The recorded answer to an invitation: accepted, tentative, declined.
     pub invite_response: Option<String>,
+    /// The message's own Message-ID, bare — no angle brackets — for a reply
+    /// to name in In-Reply-To. None when the message arrived without one.
+    /// Other clients thread by these headers, so a reply that carries none
+    /// starts a new conversation on every screen but this one.
+    pub msgid: Option<String>,
+    /// The ids the message itself referenced, bare, for a reply to carry
+    /// forward before adding `msgid` at the end. In stored order rather
+    /// than the header's: the one that matters is the message's own id,
+    /// which the reply appends last.
+    pub references: Vec<String>,
 }
 
 /// Somebody worth offering while a recipient is typed.
@@ -1481,12 +1497,20 @@ impl Store {
 
         let subject_norm =
             crate::threading::normalize_subject(parsed.subject.as_deref().unwrap_or(""));
+        // The nearest ancestors, and no more of them. References grows by one
+        // id per reply and nothing trims it: a long-running list thread
+        // arrived carrying 32,771 of them, and the ancestor lookup binds one
+        // variable per reference — past SQLite's limit of 32,766, so the
+        // whole message failed to ingest and was refetched forever. The tail
+        // is the part that threads, because that is where the parent is.
+        let references =
+            &parsed.references[parsed.references.len().saturating_sub(MAX_REFERENCES)..];
         assign_thread(
             &tx,
             account_id,
             id,
             parsed.message_id.as_deref(),
-            &parsed.references,
+            references,
             &subject_norm,
             date_ms,
         )?;
@@ -1606,16 +1630,28 @@ impl Store {
                     -- switcher announce seven for an account whose inbox said
                     -- zero — old newsletters filed unread into the archive,
                     -- true but useless, and disagreeing with the pane below.
-                    (SELECT count(*) FROM messages m
-                      WHERE m.account_id = a.id AND m.deleted_at_ms IS NULL
-                        AND m.flags & 1 = 0
-                        AND EXISTS (SELECT 1 FROM placements p
-                                    JOIN folders f ON f.id = p.folder_id
-                                    WHERE p.message_id = m.id AND f.role = 'inbox')
-                        AND NOT EXISTS (SELECT 1 FROM placements p
-                                        JOIN folders f ON f.id = p.folder_id
-                                        WHERE p.message_id = m.id
-                                          AND f.role IN ('spam','trash'))),
+                    --
+                    -- Conversations, not messages, and snoozed mail left out:
+                    -- the rail beside the Inbox counts that way, the list
+                    -- shows conversations, and two badges for the same
+                    -- mailbox that disagree are one badge that is wrong. An
+                    -- account with a three-message unread thread said 3 in
+                    -- the switcher and 1 beside the mailbox it came from.
+                    (SELECT count(*) FROM (
+                       SELECT coalesce(m.thread_id, -m.id) AS tid
+                         FROM messages m
+                        WHERE m.account_id = a.id AND m.deleted_at_ms IS NULL
+                          AND m.flags & 1 = 0
+                          AND (m.snoozed_until_ms IS NULL
+                               OR m.snoozed_until_ms <= (strftime('%s','now') * 1000))
+                          AND EXISTS (SELECT 1 FROM placements p
+                                      JOIN folders f ON f.id = p.folder_id
+                                      WHERE p.message_id = m.id AND f.role = 'inbox')
+                          AND NOT EXISTS (SELECT 1 FROM placements p
+                                          JOIN folders f ON f.id = p.folder_id
+                                          WHERE p.message_id = m.id
+                                            AND f.role IN ('spam','trash'))
+                        GROUP BY tid)),
                     (SELECT max(m.date_ms) FROM messages m
                       WHERE m.account_id = a.id AND m.deleted_at_ms IS NULL)
              FROM accounts a ORDER BY a.id",

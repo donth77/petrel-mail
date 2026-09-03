@@ -72,6 +72,21 @@ or export APPLE_ID, APPLE_TEAM_ID and APPLE_APP_PASSWORD."
 fi
 
 [ -f "$ENTITLEMENTS" ] || die "missing $ENTITLEMENTS"
+
+# The update artifact is signed with a key that never enters this repository
+# (see the update artifact step). A release without it is one that existing
+# installs never hear about, so a missing key or tool stops the script here,
+# before the build, rather than printing a warning under "release ready".
+# PETREL_NO_UPDATE_ARTIFACT=1 says the omission is intended.
+KEY_PATH="${TAURI_SIGNING_PRIVATE_KEY_PATH:-$HOME/.config/petrel/updater.key}"
+if [ "${PETREL_NO_UPDATE_ARTIFACT:-}" != "1" ]; then
+  [ -f "$KEY_PATH" ] || die "no update-signing key at $KEY_PATH.
+  Generate one with:  cargo tauri signer generate -w $KEY_PATH
+  and put the printed public key in tauri.conf.json under plugins.updater.
+  To ship without an update artifact on purpose: PETREL_NO_UPDATE_ARTIFACT=1"
+  command -v cargo-tauri >/dev/null || die "cargo-tauri is not installed (cargo install tauri-cli --version '^2' --locked)."
+  echo "update key: $KEY_PATH"
+fi
 command -v hdiutil >/dev/null || die "hdiutil not found (is this macOS?)"
 
 # The version the app REPORTS comes from tauri.conf.json, compiled in by
@@ -86,15 +101,36 @@ CONF_VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p
 [ "$CONF_VERSION" = "$VERSION" ] || die "version mismatch.
   $CONF says \"$CONF_VERSION\", you asked for \"$VERSION\".
   Set the version in tauri.conf.json and commit it, then run this again:
-    \"version\": \"$VERSION\"
-  That file is the only place a version is declared; everything else follows it."
+    \"version\": \"$VERSION\""
+# The crates carry the same number (workspace.package.version), and the
+# changelog has to have a section for it, or the release notes and the
+# binary disagree about what shipped.
+CARGO_VERSION="$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version = "\([^"]*\)".*/\1/p;}' "$ROOT/Cargo.toml" | head -1)"
+[ "$CARGO_VERSION" = "$VERSION" ] || die "version mismatch.
+  Cargo.toml [workspace.package] says \"$CARGO_VERSION\", you asked for \"$VERSION\"."
+grep -q "^## $VERSION\b" "$ROOT/CHANGELOG.md" || die "CHANGELOG.md has no \"## $VERSION\" section."
 echo "version:  $VERSION"
 
-# A release built from a dirty tree is a release nobody can reproduce.
+# A release built from a dirty tree is a release nobody can reproduce, so it
+# is refused. PETREL_ALLOW_DIRTY=1 is for trying the script, not for shipping.
 if [ -n "$(git status --porcelain)" ]; then
-  echo "warning: working tree is dirty; this build will not be reproducible" >&2
+  if [ "${PETREL_ALLOW_DIRTY:-}" = "1" ]; then
+    echo "warning: working tree is dirty; this build will not be reproducible" >&2
+  else
+    die "working tree is dirty. Commit or stash first (PETREL_ALLOW_DIRTY=1 overrides)."
+  fi
 fi
 echo "commit: $(git rev-parse --short HEAD)"
+
+# One binary for both kinds of Mac. Each half is built for its own target and
+# the two are joined with lipo; the manifest below points both platform keys
+# at the one tarball, which is only honest because of this step.
+TARGETS=(aarch64-apple-darwin x86_64-apple-darwin)
+for t in "${TARGETS[@]}"; do
+  rustup target list --installed | grep -qx "$t" \
+    || die "Rust target $t is not installed. Run: rustup target add $t"
+done
+command -v lipo >/dev/null || die "lipo not found (is Xcode's command line tools installed?)"
 
 # ------------------------------------------------------------------- build
 say "build"
@@ -109,14 +145,27 @@ if [ -z "${PETREL_RELEASE_NOTES:-}" ]; then
   echo "         in Settings > Updates, and the manifest will carry none." >&2
 fi
 (cd apps/desktop/ui && pnpm run build >/dev/null)
+# Panic messages and backtraces carry source paths, and without this they
+# would name this machine's home directory in every copy that ships.
+export RUSTFLAGS="--remap-path-prefix=$HOME=~ ${RUSTFLAGS:-}"
 # custom-protocol is what puts Tauri in production mode; without it the
 # webview goes looking for a dev server that is not there.
-cargo build --release -p petrel-desktop --features custom-protocol
+for t in "${TARGETS[@]}"; do
+  cargo build --release -p petrel-desktop --features custom-protocol --target "$t"
+done
+lipo -create -output "$ROOT/target/release/petrel-desktop" \
+  "$ROOT/target/aarch64-apple-darwin/release/petrel-desktop" \
+  "$ROOT/target/x86_64-apple-darwin/release/petrel-desktop"
+lipo -info "$ROOT/target/release/petrel-desktop" | grep -q 'x86_64 arm64\|arm64 x86_64' \
+  || die "the joined binary is not universal"
 
 say "assemble"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$ROOT/assets/Petrel.icns" "$APP/Contents/Resources/Petrel.icns"
+# The licences of the libraries Petrel is built from. Several ask that
+# their notice ship with the software, so it goes inside the bundle.
+cp "$ROOT/THIRD_PARTY.md" "$APP/Contents/Resources/THIRD_PARTY.md"
 cp "$ROOT/target/release/petrel-desktop" "$APP/Contents/MacOS/petrel-desktop"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -192,9 +241,8 @@ say "update artifact"
 # ~/.config/petrel/updater.key (or wherever TAURI_SIGNING_PRIVATE_KEY_PATH
 # points), and losing it means no existing install can ever be updated
 # again — back it up somewhere you would keep an SSH key.
-KEY_PATH="${TAURI_SIGNING_PRIVATE_KEY_PATH:-$HOME/.config/petrel/updater.key}"
 TARBALL="$ROOT/target/release/Petrel-$VERSION.app.tar.gz"
-if [ -f "$KEY_PATH" ] && command -v cargo-tauri >/dev/null; then
+if [ "${PETREL_NO_UPDATE_ARTIFACT:-}" != "1" ]; then
   # COPYFILE_DISABLE=1 is load-bearing. Without it macOS tar stores each
   # file's extended attributes as a second, parallel "._name" member —
   # half the archive — and the updater's Rust tar reader has no special
@@ -225,6 +273,7 @@ json.dump({
     "version":  os.environ["RELEASE_VERSION"],
     "notes":    os.environ["RELEASE_NOTES"],
     "pub_date": os.environ["RELEASE_PUBDATE"],
+    # One universal tarball serves both kinds of Mac; see the lipo step.
     "platforms": {
         "darwin-aarch64": {"signature": sig, "url": url},
         "darwin-x86_64":  {"signature": sig, "url": url},
@@ -233,10 +282,7 @@ json.dump({
   echo "signed tarball: $TARBALL"
   echo "manifest:       $ROOT/target/release/latest.json"
 else
-  echo "no update-signing key at $KEY_PATH — skipping the update artifact." >&2
-  echo "Existing installs will not see this release. Generate one with:" >&2
-  echo "  cargo tauri signer generate -w $KEY_PATH" >&2
-  echo "and put the printed public key in tauri.conf.json under plugins.updater." >&2
+  echo "PETREL_NO_UPDATE_ARTIFACT=1: no update artifact; existing installs will not see this release." >&2
 fi
 
 printf '\n%s\n' "release ready: $DMG"

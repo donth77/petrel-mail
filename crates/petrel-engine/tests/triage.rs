@@ -1127,3 +1127,151 @@ fn archiving_a_conversation_leaves_sent_and_binned_messages_where_they_are() {
     assert_eq!(t.message_count, 3);
     assert_eq!(store.folders_of(ids[1]).unwrap(), vec![trash]);
 }
+
+/// The drain snapshots the queue once and delivers from the snapshot, so an
+/// action undone mid-cycle still arrives at the outcome mark a moment later.
+/// What is undone stays undone.
+#[test]
+fn an_undone_action_cannot_be_settled_by_a_late_delivery() {
+    let (store, account, ids) = seeded();
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+    for (i, id) in ids.iter().enumerate() {
+        store.place_message_at(*id, inbox, i as u32 + 1).unwrap();
+    }
+    let tid = thread_of(&store, ids[0]);
+    let receipt = store
+        .apply_thread_action(
+            account,
+            tid,
+            ActionKind::Archive,
+            None,
+            PlacementPolicy::Exclusive,
+        )
+        .unwrap();
+    // Snapshot taken; then the user undoes.
+    let pending = store.pending_actions(account).unwrap();
+    assert!(!pending.is_empty());
+    assert!(store.undo_action(receipt.action_id).unwrap());
+    assert_eq!(
+        store.action_state(receipt.action_id).unwrap().as_deref(),
+        Some("undone")
+    );
+
+    // Every delivery from the snapshot lands anyway.
+    for p in &pending {
+        assert!(
+            !store
+                .mark_message_outcome(p.action_id, p.message_id, true)
+                .unwrap(),
+            "nothing settles"
+        );
+    }
+    store.mark_action_state(receipt.action_id, "sent").unwrap();
+    assert_eq!(
+        store.action_state(receipt.action_id).unwrap().as_deref(),
+        Some("undone"),
+        "the state the user chose survives the drain"
+    );
+    // And the row stays put where undo left it.
+    assert!(
+        store
+            .list_threads(&ListView::Inbox, 0, 10, Default::default())
+            .unwrap()
+            .iter()
+            .any(|r| r.thread_id == tid)
+    );
+    assert!(store.pending_actions(account).unwrap().is_empty());
+}
+
+/// Undo into a folder the survey has since forgotten.
+///
+/// The placements were cleared and the re-insert then failed on the foreign
+/// key, outside any transaction: the message was left in no folder at all,
+/// and the action stayed queued, so the drain delivered the move the user
+/// had just cancelled.
+#[test]
+fn undo_into_a_forgotten_folder_keeps_the_message_where_it_is() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&dir.path().join("t.db")).unwrap();
+    let blobs = petrel_engine::blob::BlobStore::open(&dir.path().join("blobs")).unwrap();
+    let account = store.ensure_test_account().unwrap();
+    store.set_active_account(account).unwrap();
+    let x = store.ensure_named_folder(account, "Projects/X").unwrap();
+    let y = store.ensure_named_folder(account, "Projects/Y").unwrap();
+    let ids = ingest_reply_chain(&mut store, &blobs, account, x, 1);
+    let tid = thread_of(&store, ids[0]);
+    let receipt = store
+        .apply_thread_action(
+            account,
+            tid,
+            ActionKind::Move,
+            Some(y),
+            PlacementPolicy::Exclusive,
+        )
+        .unwrap();
+    // The survey no longer lists X.
+    store.forget_folder(x).unwrap();
+
+    assert!(store.undo_action(receipt.action_id).unwrap());
+    assert_eq!(
+        store.folders_of(ids[0]).unwrap(),
+        vec![y],
+        "nowhere to go back to, so it stays where it is"
+    );
+    assert_eq!(
+        store.action_state(receipt.action_id).unwrap().as_deref(),
+        Some("undone")
+    );
+    assert!(
+        store.pending_actions(account).unwrap().is_empty(),
+        "and the cancelled move is not delivered"
+    );
+}
+
+/// A member the user filed in the destination earlier keeps the number the
+/// server knows it by when the rest of the conversation joins it.
+#[test]
+fn an_exclusive_archive_keeps_the_uid_of_a_member_already_archived() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&dir.path().join("t.db")).unwrap();
+    let blobs = petrel_engine::blob::BlobStore::open(&dir.path().join("blobs")).unwrap();
+    let account = store.ensure_test_account().unwrap();
+    store.set_active_account(account).unwrap();
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+    let archive = store.ensure_folder(account, "archive", "Archive").unwrap();
+    let ids = ingest_reply_chain(&mut store, &blobs, account, inbox, 2);
+    store.remove_placement(ids[0], account, "INBOX").unwrap();
+    store.place_message_at(ids[0], archive, 11).unwrap();
+    let tid = thread_of(&store, ids[0]);
+
+    store
+        .apply_thread_action(
+            account,
+            tid,
+            ActionKind::Archive,
+            None,
+            PlacementPolicy::Exclusive,
+        )
+        .unwrap();
+    assert_eq!(
+        store.placement_uid(ids[0], archive).unwrap(),
+        Some(Some(11)),
+        "already there, still numbered"
+    );
+    assert_eq!(store.folders_of(ids[1]).unwrap(), vec![archive]);
+
+    // The same for a move to a named folder.
+    let filed = store.ensure_named_folder(account, "Filed").unwrap();
+    store.place_message_at(ids[1], filed, 21).unwrap();
+    store
+        .apply_thread_action(
+            account,
+            tid,
+            ActionKind::Move,
+            Some(filed),
+            PlacementPolicy::Exclusive,
+        )
+        .unwrap();
+    assert_eq!(store.placement_uid(ids[1], filed).unwrap(), Some(Some(21)));
+    assert_eq!(store.folders_of(ids[1]).unwrap(), vec![filed]);
+}

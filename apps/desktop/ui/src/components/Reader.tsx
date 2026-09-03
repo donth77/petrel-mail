@@ -63,6 +63,8 @@ function messageFromCard(
     attachments: [],
     has_calendar: false,
     invite_response: null,
+    msgid: null,
+    references: [],
   };
 }
 

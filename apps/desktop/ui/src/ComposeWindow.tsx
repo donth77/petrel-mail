@@ -1,9 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from './lib/api';
 import { draftFromRecord } from './lib/draft-record';
 import { Compose, addresses, type Draft } from './components/Compose';
 import { Picker } from './components/Picker';
 import { ATTACHMENT_LIMIT, pickAttachments, stageDropped } from './lib/attachments';
+import { settleDraft } from './lib/close-draft';
+import { AUTOSAVE_MS, draftSignature, slotFor, unsaved } from './lib/draft-autosave';
+import type { ComposerSlot } from './lib/draft-autosave';
 import { fileSize } from './lib/format';
 import { snoozeOptions } from './lib/snooze';
 import { Toast } from './components/Toast';
@@ -33,6 +36,16 @@ export function ComposeWindow({ draftId }: { draftId: number }) {
   const [error, setError] = useState<string | null>(null);
   const [account, setAccount] = useState('');
   const [scheduling, setScheduling] = useState(false);
+  // The close handler is registered once and outlives every render, so it
+  // reads the draft through a ref rather than the closure it was made in.
+  const draftRef = useRef<Draft | null>(null);
+  draftRef.current = draft;
+  // The same save bookkeeping the docked composer keeps: the row this
+  // message lives in and what that row holds, so an autosave can tell an edit
+  // from a save that only stamped the id, and a chain so a close that lands
+  // while an autosave is in flight updates the same row.
+  const slotRef = useRef<ComposerSlot>({ id: draftId, signature: null });
+  const saveChain = useRef<Promise<number | null>>(Promise.resolve(null));
 
   useEffect(() => {
     let live = true;
@@ -40,7 +53,9 @@ export function ComposeWindow({ draftId }: { draftId: number }) {
       .loadDraft(draftId)
       .then((d) => {
         if (!live) return;
-        setDraft(draftFromRecord(d));
+        const loaded = draftFromRecord(d);
+        slotRef.current = slotFor(loaded);
+        setDraft(loaded);
       })
       .catch((e) => live && setError(String(e)));
     api
@@ -52,30 +67,93 @@ export function ComposeWindow({ draftId }: { draftId: number }) {
     };
   }, [draftId]);
 
-  const close = async () => {
+  /** Closes the window without asking anything of it: what needed saving
+   *  has been saved by the time this is called. `destroy` rather than
+   *  `close`, which would raise the close request this window answers by
+   *  saving again. */
+  const destroy = async () => {
     try {
       const { getCurrentWindow } = await import('@tauri-apps/api/window');
-      await getCurrentWindow().close();
+      await getCurrentWindow().destroy();
     } catch {
       // Not under Tauri, or the window has gone already. Nothing useful to do.
     }
   };
 
-  const save = async (d: Draft) => {
-    try {
-      const id = await api.saveDraft(d.savedId ?? null, d.to, d.subject, d.body, d.html, {
+  /** Writes the draft and remembers its row. Throws on failure, so every
+   *  chain that would go on to close the window stops here instead. */
+  const save = (d: Draft): Promise<number | null> => {
+    const signature = draftSignature(d);
+    const slot = slotRef.current;
+    const run = saveChain.current.then(async () => {
+      const known = slot.id ?? d.savedId ?? null;
+      const id = await api.saveDraft(known, d.to, d.subject, d.body, d.html, {
         cc: d.cc,
         inReplyTo: d.inReplyTo ?? null,
         references: d.references ?? [],
         attachments: (d.attachments ?? []).map((a) => a.path),
       });
-      setDraft({ ...d, savedId: id });
+      slot.id = id;
+      slot.signature = signature;
+      setDraft((cur) => (cur ? { ...cur, savedId: id } : cur));
       return id;
-    } catch (e) {
-      setToast(t('compose-save-failed', { error: String(e) }));
-      return null;
-    }
+    });
+    // The chain must not stay rejected, or every later save would skip.
+    saveChain.current = run.catch(() => null);
+    return run;
   };
+  const saveRef = useRef(save);
+  saveRef.current = save;
+
+  // Drafts save as they are typed, exactly as in the docked composer. This
+  // window had no autosave at all: a native close lost everything since the
+  // last deliberate save, which was usually everything.
+  useEffect(() => {
+    if (!draft || !unsaved(draft, slotRef.current)) return;
+    const timer = window.setTimeout(() => {
+      void saveRef.current(draft).catch(() => {});
+    }, AUTOSAVE_MS);
+    return () => window.clearTimeout(timer);
+  }, [draft]);
+
+  /** Puts the message away and says whether the window may go. A save that
+   *  fails keeps the window, with the reason on screen. */
+  const settle = async (): Promise<boolean> => {
+    const d = draftRef.current;
+    if (!d) return true;
+    const result = await settleDraft(d, slotRef.current, saveRef.current, api.pushDraft);
+    if (!result.ok) setToast(t('compose-save-failed', { error: result.error }));
+    return result.ok;
+  };
+  const settleRef = useRef(settle);
+  settleRef.current = settle;
+
+  // The window's own close button, and ⌘W, arrive here rather than simply
+  // closing: the message is written first, and a window whose message could
+  // not be written stays open. The runtime destroys the window once the
+  // handler returns unless it was told not to.
+  useEffect(() => {
+    let live = true;
+    let unlisten: (() => void) | null = null;
+    void import('@tauri-apps/api/window')
+      .then(({ getCurrentWindow }) =>
+        getCurrentWindow().onCloseRequested(async (event) => {
+          const ok = await settleRef.current();
+          if (!ok) event.preventDefault();
+        }),
+      )
+      .then((stop) => {
+        if (live) unlisten = stop;
+        else stop();
+      })
+      .catch(() => {
+        // Not under Tauri. There is no native close to intercept.
+      });
+    return () => {
+      live = false;
+      unlisten?.();
+    };
+  }, []);
 
   if (error) return <div className="empty"><p>{error}</p></div>;
   if (!draft) return <div className="empty" />;
@@ -86,16 +164,23 @@ export function ComposeWindow({ draftId }: { draftId: number }) {
         draft={draft}
         account={account}
         onChange={setDraft}
-        // Closing keeps the message, exactly as the docked composer does.
+        // Closing keeps the message, exactly as the docked composer does —
+        // and only closes once it is kept.
         onClose={() =>
-          void save(draft)
-            .then((id) => (id != null ? api.pushDraft(id).catch(() => {}) : undefined))
-            .then(close)
+          void settle().then((ok) => {
+            if (ok) return destroy();
+          })
         }
-        onSaveDraft={() => void save(draft).then(() => setToast(t('compose-saved')))}
+        onSaveDraft={(d) =>
+          void save(d)
+            .then(() => setToast(t('compose-saved')))
+            .catch((e) => setToast(t('compose-save-failed', { error: String(e) })))
+        }
         onNotice={setToast}
         onAttach={() => {
-          void pickAttachments(draft.attachments ?? [], api.attachmentInfo)
+          void pickAttachments(draft.attachments ?? [], api.attachmentInfo, () =>
+            api.pickFiles('attach'),
+          )
             .then((result) => {
               if (!result) return;
               setDraft({ ...draft, attachments: result.kept });
@@ -129,8 +214,8 @@ export function ComposeWindow({ draftId }: { draftId: number }) {
         // Already in its own window: popping out again would either make a
         // second window onto the same draft or do nothing.
         onPopOut={() => setToast(t('compose-already-popped'))}
-        onSend={() => {
-          if (addresses(draft.to).length === 0) {
+        onSend={(d) => {
+          if (addresses(d.to).length === 0) {
             setToast(t('compose-no-recipient'));
             return;
           }
@@ -138,10 +223,16 @@ export function ComposeWindow({ draftId }: { draftId: number }) {
           // gives, rather than straight onto the wire. A popped-out send
           // had no window at all before this — and no retry, no outbox row
           // on failure, nothing but a toast in a window about to close.
+          // The save throws when it fails, so the window stays with the
+          // message still in it rather than closing over a send that never
+          // reached the outbox.
           const wait = Number(settings.undoSendSeconds) || 0;
-          void save(draft)
-            .then((id) => (id == null ? null : api.scheduleSend(id, Date.now() + wait * 1000)))
-            .then(() => close())
+          void save(d)
+            .then((id) => {
+              if (id == null) throw new Error('no draft row');
+              return api.scheduleSend(id, Date.now() + wait * 1000);
+            })
+            .then(() => destroy())
             .catch((e) => setToast(t('compose-failed', { error: String(e) })));
         }}
       />
@@ -155,8 +246,11 @@ export function ComposeWindow({ draftId }: { draftId: number }) {
         onChoose={(at) => {
           setScheduling(false);
           void save(draft)
-            .then((id) => (id == null ? null : api.scheduleSend(id, at)))
-            .then(() => close())
+            .then((id) => {
+              if (id == null) throw new Error('no draft row');
+              return api.scheduleSend(id, at);
+            })
+            .then(() => destroy())
             .catch((e) => setToast(t('compose-save-failed', { error: String(e) })));
         }}
       />

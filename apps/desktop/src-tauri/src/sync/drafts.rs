@@ -20,7 +20,7 @@ pub(crate) async fn push_draft_to_server(
     state: &Arc<AppState>,
     draft_id: i64,
 ) -> Result<(), String> {
-    let (account, record, msgid, old_uid, cfg, drafts_path, identity, domain) = {
+    let (account, record, msgid, old_uid, cfg, drafts_path, identity, from_addr) = {
         let mut store = state.store()?;
         // The draft's own account, never the active one: a send or a save can
         // finish after the rail has been switched, and the copy must land in
@@ -45,12 +45,11 @@ pub(crate) async fn push_draft_to_server(
             .flatten()
             .and_then(|fid| store.folder_path(fid).ok().flatten());
         let identity = store.identity(account).ok();
-        let domain = cfg
-            .user
-            .split('@')
-            .nth(1)
-            .unwrap_or("localhost")
-            .to_string();
+        // The draft's Message-ID is minted under the account's own address,
+        // the same one the message will go out as — never the login name,
+        // which is not always an address at all.
+        let from_addr = crate::send::sender_address(identity.as_ref(), &cfg.user);
+        let domain = crate::send::address_domain(&from_addr);
         let msgid = match msgid {
             Some(m) => m,
             None => {
@@ -76,16 +75,15 @@ pub(crate) async fn push_draft_to_server(
             cfg,
             drafts_path,
             identity,
-            domain,
+            from_addr,
         )
     };
     let Some(drafts_path) = drafts_path else {
         return Ok(());
     };
-    let _ = domain;
 
     let msg = petrel_providers::smtp::Outgoing {
-        from_addr: cfg.user.clone(),
+        from_addr,
         from_name: identity.map(|i| i.display_name).unwrap_or_default(),
         to: addresses_of(&record.to),
         cc: addresses_of(&record.cc),

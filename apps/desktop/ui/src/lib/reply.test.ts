@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { replyTargets } from './reply';
+import { replyHeaders, replyTargets } from './reply';
 import type { ThreadMessage } from './api';
 
 const message = (over: Partial<ThreadMessage> = {}): ThreadMessage =>
@@ -16,6 +16,43 @@ const message = (over: Partial<ThreadMessage> = {}): ThreadMessage =>
     attachments: [],
     ...over,
   }) as ThreadMessage;
+
+describe('replyHeaders', () => {
+  it('names the message answered and appends it to its own chain', () => {
+    expect(
+      replyHeaders({ msgid: 'c@example.com', references: ['a@example.com', 'b@example.com'] }),
+    ).toEqual({
+      inReplyTo: 'c@example.com',
+      references: ['a@example.com', 'b@example.com', 'c@example.com'],
+    });
+  });
+
+  it('starts a chain for a message that had none', () => {
+    expect(replyHeaders({ msgid: 'a@example.com', references: [] })).toEqual({
+      inReplyTo: 'a@example.com',
+      references: ['a@example.com'],
+    });
+  });
+
+  it('sends nothing for a message with no id, rather than an empty header', () => {
+    // A bare "<>" in In-Reply-To is worse than no header: some clients file
+    // it under a conversation called nothing.
+    expect(replyHeaders({ msgid: null, references: [] })).toEqual({
+      inReplyTo: null,
+      references: [],
+    });
+    expect(replyHeaders({ msgid: '  ', references: ['a@example.com'] })).toEqual({
+      inReplyTo: null,
+      references: ['a@example.com'],
+    });
+  });
+
+  it('never lists the same id twice', () => {
+    expect(
+      replyHeaders({ msgid: 'a@example.com', references: ['a@example.com'] }).references,
+    ).toEqual(['a@example.com']);
+  });
+});
 
 describe('reply', () => {
   it('goes to the sender', () => {
@@ -61,5 +98,32 @@ describe('reply all', () => {
       to: ['sam@example.com'],
       cc: [],
     });
+  });
+});
+
+describe('replying to a message you sent', () => {
+  const mine = message({
+    from_addr: 'you@example.com',
+    from_display: 'You',
+    recipient_addrs: ['sam@example.com', 'dana@example.com'],
+  });
+
+  it('writes to the people you wrote to, not to yourself', () => {
+    // Following up on your own message is the ordinary reason to reply to
+    // it. Addressing the sender gave an empty To, because the sender is you.
+    expect(replyTargets(mine, 'you@example.com', false)).toEqual({
+      to: ['sam@example.com', 'dana@example.com'],
+      cc: [],
+    });
+  });
+
+  it('never leaves the To empty on a reply-all either', () => {
+    const { to, cc } = replyTargets(mine, 'you@example.com', true);
+    expect(to).toEqual(['sam@example.com', 'dana@example.com']);
+    expect(cc).toEqual([]);
+  });
+
+  it('still replies to the sender when the sender is somebody else', () => {
+    expect(replyTargets(message(), 'you@example.com', false).to).toEqual(['sam@example.com']);
   });
 });

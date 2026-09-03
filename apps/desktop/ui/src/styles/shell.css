@@ -37,11 +37,17 @@
   block-size: 100%;
 }
 
+/* The rail and the list are asked for at their stored widths but may give
+   way, down to the floors their resize handles already enforce, before the
+   reader does. Fixed tracks added up to more than the window's minimum width,
+   and the reader — the last column — was the one pushed off the right edge,
+   toolbar first, with nothing to scroll it back. */
 .shell {
   flex-grow: 1;
   min-block-size: 0;
   display: grid;
-  grid-template-columns: var(--rail-size) var(--list-size) 0 minmax(380px, 1fr);
+  grid-template-columns:
+    minmax(180px, var(--rail-size)) minmax(300px, var(--list-size)) 0 minmax(380px, 1fr);
   grid-template-rows: 1fr auto;
 }
 

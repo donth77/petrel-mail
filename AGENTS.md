@@ -5,7 +5,7 @@ Guidance for agents and new humans working in this repository.
 ## What this is
 
 Petrel: a local-first desktop email client. Rust engine + Tauri 2 shell + React/TS UI.
-Pre-alpha (M0). The engine is the product; the UI is a thin view over it.
+At 1.0. The engine is the product; the UI is a thin view over it.
 
 ## Commands
 

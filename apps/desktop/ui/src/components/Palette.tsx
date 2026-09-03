@@ -8,7 +8,7 @@ import {
   type Command, type CommandContext,
 } from '../lib/commands';
 import { api, type Thread } from '../lib/api';
-import { count as fmtCount, listTime } from '../lib/format';
+import { listTime } from '../lib/format';
 import { Icon } from './Icon';
 import { clickAway } from '../lib/dialog';
 import { t } from '../lib/strings';
@@ -239,7 +239,7 @@ export function Palette({ open, onClose, subject, ctx, onOpen }: Props) {
 
           <div className="palette-foot">
             {overflow > 0 && (
-              <span className="mono">{t('palette-more', { count: fmtCount(overflow) })}</span>
+              <span className="mono">{t('palette-more', { count: overflow })}</span>
             )}
             <span className="palette-foot-spacer" />
             <span>

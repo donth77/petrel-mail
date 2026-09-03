@@ -17,10 +17,21 @@ allow = [
     "CC0-1.0",
     "Unlicense",
     "BSL-1.0",
+    # Mozilla's CA certificate set (webpki-roots) is data, not code, and
+    # this licence asks only that the disclaimer travel with it.
+    "CDLA-Permissive-2.0",
+    # One clause of aws-lc-sys's compound expression offers it.
+    "MIT-0",
 ]
 
 [advisories]
+# A yanked version in the lockfile is always ours to fix.
 yanked = "deny"
+# "Unmaintained" only counts against crates this workspace chose. The
+# GTK3 bindings, proc-macro-error and the unic crates all arrive under
+# Tauri and cannot be swapped out from here; flagging them every run
+# would train everyone to ignore the gate that catches the real thing.
+unmaintained = "workspace"
 
 [bans]
 multiple-versions = "warn"

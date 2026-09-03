@@ -7,9 +7,14 @@ import {
   firstPageCall,
   loadMoreCall,
   mergeHead,
+  pageMore,
+  refreshHead,
   replaceLoadHasMore,
   runReplaceLoad,
+  stillWanted,
+  type Asked,
   type ThreadFetchers,
+  type WindowSink,
 } from './useThreadWindow';
 
 let nextId = 1;
@@ -247,5 +252,115 @@ describe('loadMore integration', () => {
     ]);
     expect(items.length).toBe(LIST_PAGE + 1);
     expect(reachedEnd).toBe(true);
+  });
+});
+
+/* A sink that records what a background load did to the window, so a load
+   can be shown to have left the rows alone. */
+function recordingSink(initial: Thread[]) {
+  let items = initial;
+  const failures: string[] = [];
+  const sink: WindowSink = {
+    items: () => items,
+    setItems: (next) => {
+      items = typeof next === 'function' ? next(items) : next;
+    },
+    setHasMore: vi.fn(),
+    bumpReplace: vi.fn(),
+    failed: (e) => failures.push(e),
+  };
+  return { sink, rows: () => items, failures };
+}
+
+describe('stillWanted', () => {
+  const asked: Asked = { gen: 3, view: 'inbox', sort: DEFAULT_SORT };
+  it('accepts an answer for the same window', () => {
+    expect(stillWanted(asked, { ...asked })).toBe(true);
+  });
+  it('drops an answer once the window has been replaced', () => {
+    // A new account or query bumps the generation even when the view and
+    // sort read the same, which is exactly the case the view check missed.
+    expect(stillWanted(asked, { ...asked, gen: 4 })).toBe(false);
+    expect(stillWanted(asked, { ...asked, view: 'sent' })).toBe(false);
+    expect(stillWanted(asked, { ...asked, sort: { key: 'sender', ascending: true } })).toBe(false);
+  });
+});
+
+describe('refreshHead', () => {
+  const loaded = [thread({ thread_id: 1 }), thread({ thread_id: 2 })];
+
+  it('keeps the loaded rows and reports the failure when the page cannot be fetched', async () => {
+    const { sink, rows, failures } = recordingSink(loaded);
+    const fetchers: ThreadFetchers = {
+      threads: async () => {
+        throw new Error('database is locked');
+      },
+      search: async () => [],
+    };
+    await refreshHead(fetchers, 'inbox', DEFAULT_SORT, () => true, sink);
+    expect(rows()).toBe(loaded);
+    expect(failures).toEqual(['Error: database is locked']);
+  });
+
+  it('folds a fresh page into the head when it arrives', async () => {
+    const { sink, rows, failures } = recordingSink(loaded);
+    const fetchers: ThreadFetchers = {
+      threads: async () => [thread({ thread_id: 3 })],
+      search: async () => [],
+    };
+    await refreshHead(fetchers, 'inbox', DEFAULT_SORT, () => true, sink);
+    expect(rows().map((r) => r.thread_id)).toEqual([3]);
+    expect(failures).toEqual([]);
+  });
+
+  it('drops an answer, and a failure, for a window since replaced', async () => {
+    const { sink, rows, failures } = recordingSink(loaded);
+    const gone = () => false;
+    await refreshHead(
+      { threads: async () => [thread({ thread_id: 9 })], search: async () => [] },
+      'inbox', DEFAULT_SORT, gone, sink,
+    );
+    await refreshHead(
+      { threads: async () => { throw new Error('late'); }, search: async () => [] },
+      'inbox', DEFAULT_SORT, gone, sink,
+    );
+    expect(rows()).toBe(loaded);
+    expect(failures).toEqual([]);
+    expect(sink.bumpReplace).not.toHaveBeenCalled();
+  });
+});
+
+describe('pageMore', () => {
+  const loaded = Array.from({ length: LIST_PAGE }, (_, i) => thread({ thread_id: i + 1 }));
+
+  it('keeps the loaded rows and reports the failure when the next page cannot be fetched', async () => {
+    const { sink, rows, failures } = recordingSink(loaded);
+    await pageMore(
+      { threads: async () => { throw new Error('connection reset'); }, search: async () => [] },
+      'inbox', DEFAULT_SORT, loaded[loaded.length - 1], () => true, sink,
+    );
+    expect(rows()).toBe(loaded);
+    expect(failures).toEqual(['Error: connection reset']);
+    expect(sink.setHasMore).not.toHaveBeenCalled();
+  });
+
+  it('appends the page and notes the end of the list', async () => {
+    const { sink, rows } = recordingSink(loaded);
+    await pageMore(
+      { threads: async () => [thread({ thread_id: LIST_PAGE + 1 })], search: async () => [] },
+      'inbox', DEFAULT_SORT, loaded[loaded.length - 1], () => true, sink,
+    );
+    expect(rows().length).toBe(LIST_PAGE + 1);
+    expect(sink.setHasMore).toHaveBeenCalledWith(false);
+  });
+
+  it('drops a page for a window since replaced', async () => {
+    const { sink, rows, failures } = recordingSink(loaded);
+    await pageMore(
+      { threads: async () => [thread({ thread_id: LIST_PAGE + 1 })], search: async () => [] },
+      'inbox', DEFAULT_SORT, loaded[loaded.length - 1], () => false, sink,
+    );
+    expect(rows()).toBe(loaded);
+    expect(failures).toEqual([]);
   });
 });

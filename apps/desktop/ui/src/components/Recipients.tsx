@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { api, type Correspondent } from '../lib/api';
 import { Icon } from './Icon';
@@ -10,6 +10,17 @@ type Props = {
   value: string;
   onChange: (value: string) => void;
   inputRef?: React.Ref<HTMLInputElement>;
+  /** The composer's way of asking for what is still being typed. */
+  handle?: React.Ref<RecipientsHandle>;
+};
+
+/** What the composer can ask of a field it does not own the state of. */
+export type RecipientsHandle = {
+  /** Commits whatever is still in the input and returns the field's new
+   *  value, or null when nothing was pending. The composer reads the value
+   *  back rather than waiting for onChange: a send in the same keystroke
+   *  would otherwise go out with the address still in the input. */
+  flush: () => string | null;
 };
 
 /**
@@ -25,13 +36,34 @@ type Props = {
  * array type would mean converting at every boundary and getting it wrong at
  * one of them.
  */
-export function Recipients({ label, value, onChange, inputRef }: Props) {
+export function Recipients({ label, value, onChange, inputRef, handle }: Props) {
   const [typed, setTyped] = useState('');
   const [options, setOptions] = useState<Correspondent[]>([]);
   const [highlight, setHighlight] = useState(0);
   const box = useRef<HTMLDivElement>(null);
 
   const chips = splitRecipients(value);
+
+  // Read by flush, which runs from the composer's key handler in the same
+  // event as the keystroke that filled them — before this render's closures
+  // have caught up.
+  const typedRef = useRef(typed);
+  typedRef.current = typed;
+  const valueRef = useRef(value);
+  valueRef.current = value;
+  useImperativeHandle(
+    handle,
+    () => ({
+      flush: () => {
+        const pending = typedRef.current.trim();
+        if (!pending) return null;
+        setTyped('');
+        setOptions([]);
+        return [...splitRecipients(valueRef.current), pending].join(', ');
+      },
+    }),
+    [],
+  );
 
   const commit = (addr: string) => {
     const next = [...chips, addr.trim()].filter(Boolean);
@@ -127,6 +159,10 @@ export function Recipients({ label, value, onChange, inputRef }: Props) {
               );
               return;
             }
+            // Enter with a modifier is the composer's — send, or send later.
+            // It flushes this field itself, so committing here as well would
+            // do the same work twice in one keystroke.
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) return;
             // Enter takes the highlighted suggestion when the list is open, and
             // otherwise commits exactly what was typed. Tab and comma always
             // commit what was typed — a completion list must never put an

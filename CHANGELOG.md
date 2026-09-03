@@ -75,6 +75,8 @@ goes through a service in the middle.
 Worth knowing before you install:
 
 - macOS only.
+- Outlook.com and Microsoft 365 mailboxes need Microsoft's own sign-in, which Petrel
+  does not have yet. They cannot be added in this version.
 - Gmail and Microsoft 365 are reached over IMAP, not their own APIs. This works, but
   Gmail prefers its API and may tighten IMAP access later.
 - Notifications have no buttons on them. The macOS notification API Petrel uses does
@@ -82,4 +84,4 @@ Worth knowing before you install:
 
 ### Requirements
 
-macOS 11 or later.
+macOS 11 or later, on Apple silicon or Intel.

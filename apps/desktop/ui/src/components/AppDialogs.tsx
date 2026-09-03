@@ -350,7 +350,10 @@ export function AppDialogs({
                     (m) => m.id === pendingDelete[0] || m.thread_id === pendingDelete[0],
                   )?.subject || t('no-subject'),
               })
-            : t('delete-forever-many', { count: fmtCount(pendingDelete?.length ?? 0) })
+            : // The number, not a formatted string: Fluent picks the plural
+              // form by looking at it, and a string always chose the plural.
+              // It still prints grouped — Fluent formats numbers itself.
+              t('delete-forever-many', { count: pendingDelete?.length ?? 0 })
         }
         confirmLabel={t('delete-forever')}
         onClose={() => setPendingDelete(null)}

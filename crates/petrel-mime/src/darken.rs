@@ -10,33 +10,59 @@
 //! the sanitizer's own serialized output, whose attribute shapes are ours.
 
 /// Rewrites every recolorable declaration for a dark ground.
+///
+/// One forward pass. Looking for each attribute name separately meant
+/// searching the whole remaining document for `bgcolor="` on every element
+/// that had none — 620 KB of styled mail took nine seconds and 1.5 MB took
+/// fifty-five, on the thread drawing the window. Here the scan only ever moves
+/// forward: find the next `="`, look at the few bytes in front of it to see
+/// which attribute it belongs to, and carry on from the end of its value.
 pub fn recolor_for_dark(html: &str) -> String {
     let mut out = String::with_capacity(html.len() + 64);
     let mut rest = html;
     loop {
-        // Attribute starts are the serializer's: lowercase name, `="`.
-        let Some((idx, attr)) = ["style=\"", "bgcolor=\""]
-            .iter()
-            .filter_map(|a| rest.find(a).map(|i| (i, *a)))
-            .min_by_key(|(i, _)| *i)
-        else {
+        let Some(eq) = rest.find("=\"") else {
             out.push_str(rest);
             return out;
         };
-        let start = idx + attr.len();
+        // Attribute starts are the serializer's own: a lowercase name, then
+        // `="`. Nothing else it emits ends that way.
+        let name = &rest[..eq];
+        let attr = if name.ends_with("style") {
+            Attr::Style
+        } else if name.ends_with("bgcolor") {
+            Attr::Bgcolor
+        } else {
+            Attr::Other
+        };
+        let start = eq + 2;
+        if attr == Attr::Other {
+            out.push_str(&rest[..start]);
+            rest = &rest[start..];
+            continue;
+        }
         let Some(len) = rest[start..].find('"') else {
             out.push_str(rest);
             return out;
         };
         out.push_str(&rest[..start]);
         let value = &rest[start..start + len];
-        if attr == "bgcolor=\"" {
-            out.push_str(&recolor_token(value).unwrap_or_else(|| value.to_string()));
-        } else {
-            out.push_str(&recolor_style(value));
+        match attr {
+            Attr::Bgcolor => {
+                out.push_str(&recolor_token(value).unwrap_or_else(|| value.to_string()))
+            }
+            _ => out.push_str(&recolor_style(value)),
         }
         rest = &rest[start + len..];
     }
+}
+
+/// Which of the two attributes carrying colors this one is, if either.
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum Attr {
+    Style,
+    Bgcolor,
+    Other,
 }
 
 /// Properties whose values may carry colors, after the sanitizer's filter.
@@ -242,6 +268,34 @@ mod tests {
         assert!(out.contains(r##"bgcolor="#0a0a0a""##), "{out}");
         assert!(out.contains("rgba(23") || out.contains("rgba(2"), "{out}");
         assert!(out.contains(", 0.9)"), "alpha kept: {out}");
+    }
+
+    /// The scan has to stay linear. Searching the rest of the document for
+    /// each attribute name separately made a styled 620 KB message take nine
+    /// seconds in dark mode, and 1.5 MB take fifty-five — with the reading
+    /// pane empty for all of it.
+    #[test]
+    fn a_large_styled_message_is_recolored_promptly() {
+        // 20,000 styled elements, and one bgcolor right at the end: the shape
+        // that made the old scan quadratic, because every element without one
+        // searched the whole remaining document for it.
+        let html = format!(
+            "{}<table bgcolor=\"white\"><tr><td>x</td></tr></table>",
+            "<p style=\"color: #333333\">x</p>".repeat(20_000)
+        );
+        let started = std::time::Instant::now();
+        let out = recolor_for_dark(&html);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "took {:?}",
+            started.elapsed()
+        );
+        assert_eq!(
+            out.matches("color: #cccccc").count(),
+            20_000,
+            "all recolored"
+        );
+        assert!(out.contains(r##"bgcolor="#0a0a0a""##), "including the last");
     }
 
     #[test]

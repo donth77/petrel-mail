@@ -66,8 +66,7 @@ export function Attachments({
 
   const save = async (a: Attachment) => {
     try {
-      const { save: dialog } = await import('@tauri-apps/plugin-dialog');
-      const path = await dialog({ defaultPath: a.filename });
+      const path = await api.pickSavePath(a.filename, 'attachment');
       if (!path) return;
       await api.saveAttachment(messageId, a.part, path);
       onToast(t('att-saved', { name: a.filename }));
@@ -124,8 +123,11 @@ export function Attachments({
           const a = confirming;
           setConfirming(null);
           if (!a) return;
+          // Confirmed: the warning above named this file and the person
+          // said open it. Without the flag the shell refuses an executable
+          // outright, and the dialog would be a button that does nothing.
           void api
-            .openAttachment(messageId, a.part)
+            .openAttachment(messageId, a.part, true)
             .catch((e) => onToast(t('att-open-failed', { error: String(e) })));
         }}
       />

@@ -30,6 +30,9 @@ jobs:
       # whole app at runtime and is invisible to tsc and to the tests.
       - run: pnpm --dir apps/desktop/ui lint
       - run: pnpm --dir apps/desktop/ui test
+      # High and critical only. A moderate advisory in a build-time package
+      # should be read and decided on, not left to break an unrelated push.
+      - run: pnpm --dir apps/desktop/ui audit --audit-level high
   engine:
     strategy:
       # Windows too: the engine's portability is all path handling, SQLite
@@ -53,8 +56,18 @@ jobs:
       - name: Vendored crate is unchanged apart from its patch
         if: matrix.os == 'ubuntu-latest'
         run: ./scripts/check-vendor.sh
+      # Licences, yanked versions and unmaintained crates we chose ourselves.
+      # One runner is enough: it reads the lockfile, not the platform.
+      - name: Dependency licences and advisories
+        if: matrix.os == 'ubuntu-latest'
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --exclude petrel-desktop --all-targets -- -D warnings
+      # The scripted-server tests only compile under this feature, so without
+      # this second pass clippy never reads them.
+      - run: cargo clippy -p petrel-providers --all-targets --features insecure-plaintext -- -D warnings
       - run: cargo test
       # The scripted IMAP servers in petrel-providers/tests live behind this
       # feature, so `cargo test` alone never compiled them and they went

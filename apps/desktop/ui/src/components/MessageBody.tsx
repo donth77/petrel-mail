@@ -16,6 +16,10 @@ import { t } from '../lib/strings';
 export function MessageBody({ messageId, title }: { messageId: number; title: string }) {
   const { settings } = useSettings();
   const [url, setUrl] = useState<string | null>(null);
+  // Set when the body could not be asked for. Distinct from "not yet": a
+  // failure used to leave `url` null, which is the loading state, so a
+  // message whose body could not be fetched showed a placeholder for ever.
+  const [failed, setFailed] = useState<string | null>(null);
   const [height, setHeight] = useState(180);
   const [blocked, setBlocked] = useState(0);
   const [sender, setSender] = useState<string | null>(null);
@@ -26,15 +30,27 @@ export function MessageBody({ messageId, title }: { messageId: number; title: st
   // The per-message escape from the dark transform (and from a sender's own
   // dark styling): render this one light. Session-local by intent.
   const [forceLight, setForceLight] = useState(false);
+  // The system's answer, watched rather than read once. The frame is born
+  // with the theme baked into its URL, so a flip from light to dark left
+  // every open message on the old one until it was closed and reopened.
+  const [systemDark, setSystemDark] = useState(
+    () => typeof window.matchMedia === 'function'
+      && window.matchMedia('(prefers-color-scheme: dark)').matches,
+  );
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const onChange = (e: MediaQueryListEvent) => setSystemDark(e.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
   const appDark =
-    settings.theme === 'dark' ||
-    (settings.theme !== 'light' &&
-      typeof window.matchMedia === 'function' &&
-      window.matchMedia('(prefers-color-scheme: dark)').matches);
+    settings.theme === 'dark' || (settings.theme !== 'light' && systemDark);
 
   useEffect(() => {
     let live = true;
     setUrl(null);
+    setFailed(null);
     setBlocked(0);
     api
       .messageUrl(messageId)
@@ -51,7 +67,11 @@ export function MessageBody({ messageId, title }: { messageId: number; title: st
         const force = forceLight ? '&force=light' : '';
         setUrl(u ? `${u}${u.includes('?') ? '&' : '?'}theme=${resolved}${force}` : null);
       })
-      .catch(() => live && setUrl(null));
+      .catch((e) => {
+        if (!live) return;
+        setUrl(null);
+        setFailed(String(e));
+      });
     return () => {
       live = false;
     };
@@ -136,6 +156,14 @@ export function MessageBody({ messageId, title }: { messageId: number; title: st
     }
   };
 
+  if (failed) {
+    return (
+      <div className="body-failed">
+        <p>{t('msg-body-failed')}</p>
+        <p className="mono">{failed}</p>
+      </div>
+    );
+  }
   if (!url) return <div className="body-loading" />;
   return (
     <>

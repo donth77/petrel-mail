@@ -11,7 +11,7 @@ use tauri::State;
 /// Applies a triage action locally and queues it. Returns the receipt the UI
 /// needs to offer undo, so the frontend holds no state of its own about what it
 /// just did.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn triage(
     thread_id: i64,
     kind: ActionKind,
@@ -32,7 +32,7 @@ pub fn triage(
     Ok(receipt)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn undo_triage(action_id: i64, state: State<Arc<AppState>>) -> Result<bool, String> {
     let store = state.store()?;
     let account = active_account(&store)?;
@@ -44,7 +44,7 @@ pub fn undo_triage(action_id: i64, state: State<Arc<AppState>>) -> Result<bool, 
 }
 
 /// Creates a tag, or returns the one already there — same shape as folders.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn create_tag(name: String, state: State<Arc<AppState>>) -> Result<i64, String> {
     let store = state.store()?;
     let account = active_account(&store)?;
@@ -54,14 +54,14 @@ pub fn create_tag(name: String, state: State<Arc<AppState>>) -> Result<i64, Stri
 }
 
 /// Corrects a tag's name. The colour and every tagged message come with it.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn rename_tag(tag_id: i64, name: String, state: State<Arc<AppState>>) -> Result<(), String> {
     let store = state.store()?;
     store.rename_tag(tag_id, &name).map_err(|e| e.to_string())
 }
 
 /// Sets a tag's colour. Local by design: no provider has a field for it.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_tag_colour(
     tag_id: i64,
     colour: String,
@@ -74,7 +74,7 @@ pub fn set_tag_colour(
 }
 
 /// Removes a tag from the account and from every message carrying it.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_tag(tag_id: i64, state: State<Arc<AppState>>) -> Result<(), String> {
     let store = state.store()?;
     store.delete_tag(tag_id).map_err(|e| e.to_string())
@@ -86,7 +86,7 @@ pub fn delete_tag(tag_id: i64, state: State<Arc<AppState>>) -> Result<(), String
 /// which is what every list in the window wants — but the export pane offers
 /// a row per account, and a folder list borrowed from whichever one happens
 /// to be active would name places that account's export cannot find.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_folders(
     account: Option<i64>,
     state: State<Arc<AppState>>,
@@ -105,7 +105,7 @@ pub fn list_folders(
 
 /// Creates a folder the user named, or returns the one already there. The
 /// picker offers this on the end of the same keystroke as choosing one.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn create_folder(path: String, state: State<Arc<AppState>>) -> Result<i64, String> {
     let (account, id, cfg) = {
         let store = state.store()?;
@@ -266,21 +266,21 @@ pub(crate) async fn destroy_trashed(
 /// order, so there is nothing to push and nothing that can come back to
 /// contradict it. That also makes this the rare folder command that cannot
 /// half-fail, which is why it has no rollback.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn reorder_folders(ids: Vec<i64>, state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let mut store = state.store()?;
     store.reorder_folders(&ids).map_err(|e| e.to_string())
 }
 
 /// The order somebody dragged their tags into. Local, for the same reason.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn reorder_tags(ids: Vec<i64>, state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let mut store = state.store()?;
     store.reorder_tags(&ids).map_err(|e| e.to_string())
 }
 
 /// How many messages a folder holds, so a confirmation can name the number.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn folder_message_count(folder_id: i64, state: State<Arc<AppState>>) -> Result<i64, String> {
     let store = state.store()?;
     store

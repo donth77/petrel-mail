@@ -44,6 +44,8 @@ type Props = {
   /** Opens the add-account steps, which the window owns so the switcher and
       this pane share one dialog. */
   onAddAccount: () => void;
+  /** An account was removed; true when it was the one the window showed. */
+  onAccountRemoved: (wasActive: boolean) => void;
   open: boolean;
   /** Which pane to land on. Opening Settings from "Accounts" and arriving at
    *  Appearance is the kind of small betrayal that teaches people to distrust
@@ -55,13 +57,20 @@ type Props = {
   onMessage: (text: string) => void;
 };
 
-export function Settings({ open, pane: requested, onClose, onMessage, onAddAccount }: Props) {
+export function Settings({
+  open,
+  pane: requested,
+  onClose,
+  onMessage,
+  onAddAccount,
+  onAccountRemoved,
+}: Props) {
   const [pane, setPane] = useState<PaneId>(requested ?? 'appearance');
 
   // Elements, not components: building the record costs nine element objects
   // and renders none of them — only the one looked up below ever mounts.
   const PANE_VIEWS: Record<PaneId, ReactNode> = {
-    accounts: <Accounts onAddAccount={onAddAccount} />,
+    accounts: <Accounts onAddAccount={onAddAccount} onAccountRemoved={onAccountRemoved} />,
     identities: <Identities onMessage={onMessage} />,
     composing: <Composing />,
     notifications: <Notifications />,

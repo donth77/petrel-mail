@@ -81,6 +81,79 @@ export async function runReplaceLoad(
   return { items, hasMore: replaceLoadHasMore(query, items.length) };
 }
 
+/** What a load was asked for, so its answer can be checked against what the
+ *  window wants by the time it lands. The generation counts every replaced
+ *  window — account, query, view or sort — so a page for a list since left
+ *  is never folded into the one showing now. The view and sort are checked
+ *  as well as the generation because the merge and the page are not started
+ *  by the replace effect, and only the generation ties them to it. */
+export type Asked = { gen: number; view: string; sort: Sort };
+
+export function stillWanted(asked: Asked, now: Asked): boolean {
+  return asked.gen === now.gen && asked.view === now.view && asked.sort === now.sort;
+}
+
+/** Where a background load puts its answer. The rows it reads and writes
+ *  are the window's; a failure is reported and changes nothing else. */
+export type WindowSink = {
+  items: () => Thread[];
+  setItems: (next: Thread[] | ((prev: Thread[]) => Thread[])) => void;
+  setHasMore: (more: boolean) => void;
+  bumpReplace: () => void;
+  /** A background load that could not be made. The rows on screen are still
+   *  the rows; the notice says the newest may be missing. */
+  failed: (error: string) => void;
+};
+
+/** Folds a fresh first page into the loaded window.
+ *
+ *  Its failure keeps the rows. A refresh that fails used to put the whole
+ *  list behind an error notice — forty conversations gone because one poll
+ *  could not get a page — when everything on screen was still true. */
+export async function refreshHead(
+  fetchers: ThreadFetchers,
+  view: string,
+  sort: Sort,
+  wanted: () => boolean,
+  sink: WindowSink,
+): Promise<void> {
+  try {
+    const rows = await fetchers.threads(...firstPageCall(view, sort));
+    if (!wanted()) return;
+    const wasEmpty = sink.items().length === 0;
+    sink.setItems((cur) =>
+      mergeHead(cur, rows, { byDate: sort.key === 'date', ascending: sort.ascending }),
+    );
+    if (wasEmpty) {
+      sink.setHasMore(rows.length === LIST_PAGE);
+      sink.bumpReplace();
+    }
+  } catch (err: unknown) {
+    if (wanted()) sink.failed(String(err));
+  }
+}
+
+/** Appends the page after `last`. Same rule as the head merge: a page for a
+ *  window since left is dropped, and a failure keeps what is loaded. */
+export async function pageMore(
+  fetchers: ThreadFetchers,
+  view: string,
+  sort: Sort,
+  last: Thread,
+  wanted: () => boolean,
+  sink: WindowSink,
+): Promise<void> {
+  try {
+    const rows = await fetchers.threads(...loadMoreCall(view, sort, last));
+    if (!wanted()) return;
+    const { items: next, reachedEnd } = appendPage(sink.items(), rows);
+    sink.setItems(next);
+    if (reachedEnd) sink.setHasMore(false);
+  } catch (err: unknown) {
+    if (wanted()) sink.failed(String(err));
+  }
+}
+
 export function useThreadWindow(args: {
   query: string;
   view: string;
@@ -89,10 +162,15 @@ export function useThreadWindow(args: {
   /** Live message count. Increases mean new mail — merge into the head, never replace the loaded window. */
   messageCount: number | undefined;
   fetchers: ThreadFetchers;
+  /** A background page or refresh that failed. The rows stay; this is where
+   *  the failure is said. */
+  onRefreshFailed?: (error: string) => void;
 }): {
   items: Thread[];
   setItems: React.Dispatch<React.SetStateAction<Thread[]>>;
   loading: boolean;
+  /** Why the window could not be loaded at all. Only a replace load sets
+   *  it — a window that never arrived — and the next replace clears it. */
   error: string | null;
   hasMore: boolean;
   loadMore: () => void;
@@ -102,7 +180,7 @@ export function useThreadWindow(args: {
    *  the array is new. */
   replaceEpoch: number;
 } {
-  const { query, view, sort, accountEpoch, messageCount, fetchers } = args;
+  const { query, view, sort, accountEpoch, messageCount, fetchers, onRefreshFailed } = args;
 
   const [items, setItems] = useState<Thread[]>([]);
   const [loading, setLoading] = useState(true);
@@ -127,28 +205,51 @@ export function useThreadWindow(args: {
   const sortRef = useRef(sort);
   sortRef.current = sort;
 
+  const failedRef = useRef(onRefreshFailed);
+  failedRef.current = onRefreshFailed;
+
   const loadMoreInFlight = useRef(false);
   const messageCountRef = useRef(messageCount);
   const [replaceEpoch, setReplaceEpoch] = useState(0);
+  // Counts replaced windows. Every load remembers the generation it was
+  // started under and is dropped if the window has been replaced since.
+  const gen = useRef(0);
+
+  const asked = useCallback(
+    (): Asked => ({ gen: gen.current, view: viewRef.current, sort: sortRef.current }),
+    [],
+  );
+
+  const sink = useRef<WindowSink>({
+    items: () => itemsRef.current,
+    setItems: (next) => setItems(next),
+    setHasMore: (more) => setHasMore(more),
+    bumpReplace: () => setReplaceEpoch((n) => n + 1),
+    failed: (e) => failedRef.current?.(e),
+  });
 
   // Replace the window when the mailbox, query, sort, or account changes.
   useEffect(() => {
     let live = true;
+    gen.current += 1;
+    const myGen = gen.current;
     setLoading(true);
+    // A failure belongs to the window that failed. Left standing, it hid
+    // the next window too, even when that one loaded.
+    setError(null);
 
     const debounceMs = query.trim() ? 100 : 0;
     const handle = window.setTimeout(() => {
       runReplaceLoad(fetchersRef.current, query, view, sort)
         .then(({ items: rows, hasMore: more }) => {
-          if (!live) return;
-          setError(null);
+          if (!live || gen.current !== myGen) return;
           setItems(rows);
           setHasMore(more);
           setReplaceEpoch((n) => n + 1);
           setLoading(false);
         })
         .catch((err: unknown) => {
-          if (!live) return;
+          if (!live || gen.current !== myGen) return;
           setError(String(err));
           setLoading(false);
         });
@@ -179,34 +280,22 @@ export function useThreadWindow(args: {
     if (prev === undefined || messageCount === prev) return;
 
     let live = true;
-    // The answer belongs to the view and sort asked for. A page for the
-    // inbox that arrived after a click on Sent used to be merged into Sent,
-    // and a short one replaced it outright.
-    const askedView = viewRef.current;
-    const askedSort = sortRef.current;
-    fetchersRef.current
-      .threads(...firstPageCall(askedView, askedSort))
-      .then((rows) => {
-        if (!live || viewRef.current !== askedView || sortRef.current !== askedSort) return;
-        const wasEmpty = itemsRef.current.length === 0;
-        const sort = sortRef.current;
-        setItems((cur) =>
-          mergeHead(cur, rows, { byDate: sort.key === 'date', ascending: sort.ascending }),
-        );
-        if (wasEmpty) {
-          setHasMore(rows.length === LIST_PAGE);
-          setReplaceEpoch((n) => n + 1);
-        }
-      })
-      .catch((err: unknown) => {
-        if (!live) return;
-        setError(String(err));
-      });
+    // The answer belongs to the window asked for. A page for the inbox that
+    // arrived after a click on Sent used to be merged into Sent, and a short
+    // one replaced it outright; one for the last account did the same.
+    const was = asked();
+    void refreshHead(
+      fetchersRef.current,
+      was.view,
+      was.sort,
+      () => live && stillWanted(was, asked()),
+      sink.current,
+    );
 
     return () => {
       live = false;
     };
-  }, [messageCount, query]);
+  }, [messageCount, query, asked]);
 
   const loadMore = useCallback(() => {
     if (queryRef.current.trim() || !hasMoreRef.current || loadMoreInFlight.current) return;
@@ -216,34 +305,18 @@ export function useThreadWindow(args: {
     if (!last) return;
 
     loadMoreInFlight.current = true;
-    const askedView = viewRef.current;
-    const askedSort = sortRef.current;
-    const wire = wireSort(askedSort);
-    fetchersRef.current
-      .threads(
-        askedView,
-        0,
-        LIST_PAGE,
-        wire.key,
-        wire.ascending,
-        last.date_ms,
-        last.thread_id,
-      )
-      .then((rows) => {
-        // Same rule as the head merge: a page for a view since left is not
-        // appended to whatever is showing now.
-        if (viewRef.current !== askedView || sortRef.current !== askedSort) return;
-        const { items: next, reachedEnd } = appendPage(itemsRef.current, rows);
-        setItems(next);
-        if (reachedEnd) setHasMore(false);
-      })
-      .catch((err: unknown) => {
-        setError(String(err));
-      })
-      .finally(() => {
-        loadMoreInFlight.current = false;
-      });
-  }, []);
+    const was = asked();
+    void pageMore(
+      fetchersRef.current,
+      was.view,
+      was.sort,
+      last,
+      () => stillWanted(was, asked()),
+      sink.current,
+    ).finally(() => {
+      loadMoreInFlight.current = false;
+    });
+  }, [asked]);
 
   return { items, setItems, loading, error, hasMore, loadMore, replaceEpoch };
 }

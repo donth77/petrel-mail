@@ -23,6 +23,14 @@ fn like_escape(literal: &str) -> String {
     out
 }
 
+/// The rows allowed to stand in no folder at all: a draft, pushed or not,
+/// and post waiting in the outbox. Everything else with no placement is a
+/// message the server has stopped holding. Written against the alias `m`.
+pub(super) const NOT_DRAFT_OR_OUTBOX: &str = "m.send_after_ms IS NULL
+                   AND m.draft_msgid IS NULL
+                   AND coalesce(m.draft_body, '') = ''
+                   AND coalesce(m.draft_html, '') = ''";
+
 /// Points the queue at a folder's new name.
 ///
 /// A queued action carries the path its message sat at, captured when the
@@ -426,17 +434,14 @@ impl Store {
     pub fn remove_folder(&mut self, folder_id: i64) -> Result<usize> {
         let tx = self.conn.transaction()?;
         let orphans: Vec<i64> = {
-            let mut stmt = tx.prepare(
+            let mut stmt = tx.prepare(&format!(
                 "SELECT m.id FROM messages m
                  JOIN placements p ON p.message_id = m.id AND p.folder_id = ?1
                  WHERE m.deleted_at_ms IS NULL
-                   AND m.send_after_ms IS NULL
-                   AND m.draft_msgid IS NULL
-                   AND coalesce(m.draft_body, '') = ''
-                   AND coalesce(m.draft_html, '') = ''
+                   AND {NOT_DRAFT_OR_OUTBOX}
                    AND NOT EXISTS (SELECT 1 FROM placements q
-                                    WHERE q.message_id = m.id AND q.folder_id != ?1)",
-            )?;
+                                    WHERE q.message_id = m.id AND q.folder_id != ?1)"
+            ))?;
             let rows = stmt.query_map(params![folder_id], |r| r.get(0))?;
             rows.collect::<std::result::Result<Vec<_>, _>>()?
         };
@@ -696,13 +701,26 @@ impl Store {
     /// says the listing covered the whole mailbox. A depth-limited listing
     /// proves nothing about mail older than its window, and evicting history
     /// because the window ended is exactly the data loss this exists to avoid.
+    /// A message a complete listing leaves with no placement at all is
+    /// tombstoned as the ghost sweep would tombstone it — a soft delete with
+    /// the usual grace, cleared by a re-ingest — never deleted outright.
     pub fn remap_folder_after_reset(
         &mut self,
         folder_id: i64,
         server: &[(u32, Option<String>)],
         complete: bool,
     ) -> Result<RemapOutcome> {
-        let tx = self.conn.transaction()?;
+        // Placements that had no number before the reset are local or
+        // quarantined already; the listing says nothing about them, so they
+        // are not the server's word that the message is gone.
+        let unaddressed_before: std::collections::HashSet<i64> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT message_id FROM placements WHERE folder_id = ?1 AND uid IS NULL",
+            )?;
+            let rows = stmt.query_map(params![folder_id], |r| r.get::<_, i64>(0))?;
+            rows.collect::<std::result::Result<_, _>>()?
+        };
+        let tx = self.conn.unchecked_transaction()?;
         tx.execute(
             "UPDATE placements SET uid = NULL WHERE folder_id = ?1",
             params![folder_id],
@@ -733,10 +751,22 @@ impl Store {
             }
         }
         if complete {
+            let dropping: Vec<i64> = {
+                let mut stmt = tx.prepare(
+                    "SELECT message_id FROM placements WHERE folder_id = ?1 AND uid IS NULL",
+                )?;
+                let rows = stmt.query_map(params![folder_id], |r| r.get::<_, i64>(0))?;
+                rows.collect::<std::result::Result<Vec<_>, _>>()?
+            };
             out.dropped = tx.execute(
                 "DELETE FROM placements WHERE folder_id = ?1 AND uid IS NULL",
                 params![folder_id],
             )?;
+            let proven_gone: Vec<i64> = dropping
+                .into_iter()
+                .filter(|id| !unaddressed_before.contains(id))
+                .collect();
+            self.tombstone_unplaced(folder_id, &proven_gone)?;
         }
         tx.commit()?;
         Ok(out)
@@ -781,34 +811,194 @@ impl Store {
     /// inbox. Given the folder's actual UID set, everything stored but absent
     /// goes. NULL-UID placements stay: they are local or quarantined, and the
     /// server not naming them is exactly what is already known about them.
+    ///
+    /// A message this leaves with no placement at all is tombstoned, as
+    /// deleting its folder would tombstone it — see `tombstone_unplaced` for
+    /// when that holds. Dropping the placement alone made a permanent
+    /// ghost: out of every view, still answering searches, still in its
+    /// conversation, and never collected.
     pub fn remove_placements_absent(
         &self,
         folder_id: i64,
         present: &std::collections::HashSet<u32>,
     ) -> Result<usize> {
-        let stored: Vec<i64> = {
-            let mut stmt = self
-                .conn
-                .prepare("SELECT uid FROM placements WHERE folder_id = ?1 AND uid IS NOT NULL")?;
-            let rows = stmt.query_map(params![folder_id], |r| r.get::<_, i64>(0))?;
+        let stored: Vec<(i64, i64)> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT message_id, uid FROM placements WHERE folder_id = ?1 AND uid IS NOT NULL",
+            )?;
+            let rows = stmt.query_map(params![folder_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
             rows.collect::<std::result::Result<Vec<_>, _>>()?
         };
-        let gone: Vec<i64> = stored
+        let gone: Vec<(i64, i64)> = stored
             .into_iter()
-            .filter(|u| !present.contains(&(*u as u32)))
+            .filter(|(_, u)| !present.contains(&(*u as u32)))
             .collect();
+        if gone.is_empty() {
+            return Ok(0);
+        }
+        let tx = self.conn.unchecked_transaction()?;
         for chunk in gone.chunks(500) {
             let marks = vec!["?"; chunk.len()].join(",");
             let mut params: Vec<&dyn rusqlite::ToSql> = vec![&folder_id];
-            for u in chunk {
+            for (_, u) in chunk {
                 params.push(u);
             }
-            self.conn.execute(
+            tx.execute(
                 &format!("DELETE FROM placements WHERE folder_id = ?1 AND uid IN ({marks})"),
                 rusqlite::params_from_iter(params),
             )?;
         }
+        let ids: Vec<i64> = gone.iter().map(|(m, _)| *m).collect();
+        self.tombstone_unplaced(folder_id, &ids)?;
+        tx.commit()?;
         Ok(gone.len())
+    }
+
+    /// Tombstones whichever of `ids` the server has just stopped holding
+    /// anywhere, the way `remove_folder` does: out of search now, bytes
+    /// reaped by the grace-period sweep, and cleared again by a re-ingest
+    /// should the message turn up in another folder. `folder_id` is the
+    /// folder whose placements were just removed.
+    ///
+    /// Only for an account that mirrors the server: a local archive keeps
+    /// exactly this mail, on purpose. And only where leaving the folder means
+    /// leaving the server. Where folders are labels, mail archived on the
+    /// phone drops out of INBOX and is still in All Mail, which the walk may
+    /// not have claimed yet; a label removed is a label removed. There, only
+    /// the bins and All Mail itself can say a message is gone. Drafts and
+    /// outbox rows are never touched: they are allowed to have no placement.
+    fn tombstone_unplaced(&self, folder_id: i64, ids: &[i64]) -> Result<usize> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let Some((account, role)) = self
+            .conn
+            .query_row(
+                "SELECT account_id, coalesce(role, '') FROM folders WHERE id = ?1",
+                params![folder_id],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+            )
+            .optional()?
+        else {
+            return Ok(0);
+        };
+        if self.retention_mode(account)? == crate::retention::RetentionMode::LocalArchive {
+            return Ok(0);
+        }
+        let means_gone = match self.placement_policy(account)? {
+            crate::actions::PlacementPolicy::Exclusive => true,
+            crate::actions::PlacementPolicy::Labels => {
+                matches!(role.as_str(), "archive" | "trash" | "spam")
+            }
+        };
+        if !means_gone {
+            return Ok(0);
+        }
+        let mut tombstoned = 0usize;
+        for chunk in ids.chunks(500) {
+            let marks = vec!["?"; chunk.len()].join(",");
+            let orphans: Vec<i64> = {
+                let mut stmt = self.conn.prepare(&format!(
+                    "SELECT m.id FROM messages m
+                     WHERE m.id IN ({marks}) AND m.deleted_at_ms IS NULL
+                       AND {NOT_DRAFT_OR_OUTBOX}
+                       AND NOT EXISTS (SELECT 1 FROM placements q WHERE q.message_id = m.id)"
+                ))?;
+                let rows =
+                    stmt.query_map(rusqlite::params_from_iter(chunk.iter()), |r| r.get(0))?;
+                rows.collect::<std::result::Result<Vec<_>, _>>()?
+            };
+            for id in orphans {
+                self.conn.execute(
+                    "UPDATE messages SET deleted_at_ms = (strftime('%s','now') * 1000)
+                     WHERE id = ?1",
+                    params![id],
+                )?;
+                self.conn
+                    .execute("DELETE FROM fts_content WHERE message_id = ?1", params![id])?;
+                tombstoned += 1;
+            }
+        }
+        Ok(tombstoned)
+    }
+
+    /// Gives the folder's unnumbered placements the numbers a listing of it
+    /// holds, and drops the ones the listing does not hold.
+    ///
+    /// `server` is the folder's complete `(UID, Message-ID)` listing. The
+    /// placements in question are the ones `remove_placements_absent` has to
+    /// leave alone because they carry no number: a Gmail label sweep files
+    /// into the inbox by Message-ID and learns no INBOX number, and a move
+    /// files locally before the server has assigned one. Matched against the
+    /// listing by the key ingest dedupes on, a placement either learns its
+    /// number or is proven absent — and an absent one goes, as an absent
+    /// numbered one would, tombstoning the message if that was its last
+    /// folder and the account mirrors the server.
+    ///
+    /// Never a placement whose message has work queued, nor one touched by
+    /// an action in the last few minutes: a listing taken a moment before
+    /// the drain delivered a move is a lie about exactly that placement, and
+    /// dropping it would undo the move on screen. Drafts and outbox rows are
+    /// the store's own and are not the server's to prune.
+    pub fn reconcile_unaddressed_placements(
+        &self,
+        folder_id: i64,
+        server: &[(u32, Option<String>)],
+    ) -> Result<RemapOutcome> {
+        const RECENT_MS: i64 = 10 * 60 * 1000;
+        let mut out = RemapOutcome::default();
+        if self.folder_is_local(folder_id)? {
+            return Ok(out);
+        }
+        let by_msgid: std::collections::HashMap<&str, u32> = server
+            .iter()
+            .filter_map(|(uid, mid)| mid.as_deref().map(|m| (m, *uid)))
+            .collect();
+        let unaddressed: Vec<(i64, String)> = {
+            let mut stmt = self.conn.prepare(&format!(
+                "SELECT p.message_id, coalesce(m.message_id_hdr, '')
+                 FROM placements p
+                 JOIN messages m ON m.id = p.message_id
+                 WHERE p.folder_id = ?1 AND p.uid IS NULL
+                   AND {NOT_DRAFT_OR_OUTBOX}
+                   AND NOT EXISTS (SELECT 1 FROM action_messages am
+                                   JOIN actions a ON a.id = am.action_id
+                                   WHERE am.message_id = m.id
+                                     AND (a.state = 'queued'
+                                          OR a.created_ms > (strftime('%s','now') * 1000) - ?2))"
+            ))?;
+            let rows = stmt.query_map(params![folder_id, RECENT_MS], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        if unaddressed.is_empty() {
+            return Ok(out);
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        let mut dropped: Vec<i64> = Vec::new();
+        for (message_id, key) in unaddressed {
+            match by_msgid.get(key.as_str()) {
+                Some(uid) => {
+                    tx.execute(
+                        "UPDATE placements SET uid = ?3 WHERE message_id = ?1 AND folder_id = ?2",
+                        params![message_id, folder_id, *uid as i64],
+                    )?;
+                    out.rematched += 1;
+                }
+                None => {
+                    tx.execute(
+                        "DELETE FROM placements WHERE message_id = ?1 AND folder_id = ?2",
+                        params![message_id, folder_id],
+                    )?;
+                    dropped.push(message_id);
+                }
+            }
+        }
+        out.dropped = dropped.len();
+        self.tombstone_unplaced(folder_id, &dropped)?;
+        tx.commit()?;
+        Ok(out)
     }
 
     /// Every UID this folder's placements carry — the store's side of the

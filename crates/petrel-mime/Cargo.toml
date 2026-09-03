@@ -4,8 +4,13 @@ description = "MIME parsing, the HTML sanitization profile, and message building
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
 mail-parser = { version = "0.11", features = ["full_encoding"] }
 ammonia = "4"
+# Deciding whether a URL is remote by hand missed every shape a browser
+# accepts but a prefix match does not (`https:evil.example`). ammonia already
+# depends on this crate, so it costs no new build.
+url = "2"
 thiserror.workspace = true

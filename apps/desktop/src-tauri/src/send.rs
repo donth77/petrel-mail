@@ -2,12 +2,39 @@
 
 use crate::commands::compose::guess_content_type;
 use crate::config::{imap_config_from_env, imap_config_from_servers};
-use crate::diag::{log_sync, without_addresses};
-use crate::state::{AppState, now_ms};
+use crate::diag::{friendly_sync_error_for, log_sync, without_addresses};
+use crate::state::{AppState, now_ms, stopped};
 use crate::sync::drafts::drop_server_draft_using;
-use petrel_engine::store::Store;
+use petrel_engine::store::{Identity, Store};
 use std::sync::Arc;
 use std::sync::{MutexGuard, TryLockError};
+
+/// The address mail goes out as: the account's own, never its login name.
+///
+/// The login is whatever the provider wants typed into the password box —
+/// an Apple ID, a university id, a cPanel `user@host` — and it was being put
+/// in `MAIL FROM` and the `From:` header for everyone whose provider does
+/// not simply use the address. The identity holds the address the account
+/// was set up with; the login is only for AUTH, and only stands in here when
+/// the identity somehow has no address at all.
+pub(crate) fn sender_address(identity: Option<&Identity>, login: &str) -> String {
+    identity
+        .map(|i| i.address.trim())
+        .filter(|a| !a.is_empty())
+        .unwrap_or(login)
+        .to_string()
+}
+
+/// The domain a Message-ID is minted under: the sender's, as the RFC has it.
+pub(crate) fn address_domain(address: &str) -> String {
+    address
+        .split('@')
+        .nth(1)
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .unwrap_or("localhost")
+        .to_string()
+}
 
 /// The store lock, without pinning a tokio worker on `Mutex::lock`.
 ///
@@ -39,9 +66,12 @@ async fn wait_store(state: &AppState) -> Option<MutexGuard<'_, Store>> {
 /// for as long as that backlog took — two minutes, live, for fifteen actions.
 /// This worker is the other half of that split: triage still has its signal;
 /// a send wakes this one.
-pub(crate) fn spawn_send_worker(state: Arc<AppState>, account: i64) {
+pub(crate) fn spawn_send_worker(
+    state: Arc<AppState>,
+    account: i64,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+) {
     let signals = state.outbox_signals(account);
-    let mut stop = state.stop_signal(account);
     tauri::async_runtime::spawn(async move {
         loop {
             if *stop.borrow() {
@@ -49,7 +79,7 @@ pub(crate) fn spawn_send_worker(state: Arc<AppState>, account: i64) {
             }
             tokio::select! {
                 _ = signals.send.notified() => {}
-                _ = stop.changed() => break,
+                _ = stopped(&mut stop) => break,
             }
             // Two rows marked due a few milliseconds apart should be one pass.
             // Not the drain's 900ms: that is for triage bursts, and it is the
@@ -74,9 +104,12 @@ pub(crate) fn spawn_send_worker(state: Arc<AppState>, account: i64) {
 /// without it, a send queued during the empty-outbox nap waited until the nap
 /// ended, or until someone pressed Send now. The one-minute cap is for the
 /// clock being wrong — a laptop lid closed through the scheduled time.
-pub(crate) fn spawn_outbox_clock(state: Arc<AppState>, account: i64) {
+pub(crate) fn spawn_outbox_clock(
+    state: Arc<AppState>,
+    account: i64,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+) {
     let signals = state.outbox_signals(account);
-    let mut stop = state.stop_signal(account);
     tauri::async_runtime::spawn(async move {
         loop {
             if *stop.borrow() {
@@ -93,7 +126,7 @@ pub(crate) fn spawn_outbox_clock(state: Arc<AppState>, account: i64) {
             tokio::select! {
                 _ = tokio::time::sleep(std::time::Duration::from_millis(wait_ms as u64)) => {}
                 _ = signals.clock.notified() => continue,
-                _ = stop.changed() => break,
+                _ = stopped(&mut stop) => break,
             }
             if next.is_some_and(|at| at <= now_ms()) {
                 signals.send.notify_one();
@@ -173,12 +206,6 @@ async fn attempt(
     let smtp = servers
         .and_then(|s| crate::config::smtp_config_from_servers(account, s))
         .unwrap_or_else(|| SmtpConfig::for_imap_host(&cfg.host, &cfg.user, cfg_password(cfg)));
-    let domain = cfg
-        .user
-        .split('@')
-        .nth(1)
-        .unwrap_or("localhost")
-        .to_string();
 
     let identity = {
         let store = wait_store(state)
@@ -186,25 +213,33 @@ async fn attempt(
             .ok_or("could not read the account while the mailbox is busy")?;
         store.identity(account).ok()
     };
+    // The account's address, for the envelope and the header alike. The
+    // login name is the SMTP config's business and nobody else's.
+    let from_addr = sender_address(identity.as_ref(), &cfg.user);
+    let domain = address_domain(&from_addr);
     // Read here rather than shuttled through the bridge. A 20MB file becomes a
     // 27MB JSON string on the way across, held twice in memory and slow enough
     // to notice; the path costs nothing and the file is read once.
     let mut files = Vec::new();
     for path in &attachments {
         let p = std::path::Path::new(path);
-        let bytes = std::fs::read(p).map_err(|e| format!("Could not read {path}: {e}"))?;
+        let filename = p
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "attachment".into());
+        // The name, not the path: this text lands in the outbox row and in
+        // the log, and a directory is nobody's business but the sender's.
+        let bytes =
+            std::fs::read(p).map_err(|e| format!("Could not read attachment {filename}: {e}"))?;
         files.push(Attachment {
-            filename: p
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "attachment".into()),
+            filename,
             content_type: guess_content_type(p),
             bytes,
         });
     }
 
     let msg = Outgoing {
-        from_addr: cfg.user.clone(),
+        from_addr,
         from_name: identity.map(|i| i.display_name).unwrap_or_default(),
         to,
         cc,
@@ -274,19 +309,26 @@ async fn attempt(
         })
     };
     if let Some(path) = sent_path {
-        match tokio::time::timeout(
+        let filed = match tokio::time::timeout(
             std::time::Duration::from_secs(60),
             petrel_providers::imap::append_message(cfg, &path, Some("(\\Seen)"), &raw),
         )
         .await
         {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                log_sync(&format!("sent, but could not file a copy in {path}: {e}"));
-            }
-            Err(_) => {
-                log_sync(&format!("sent, but filing a copy in {path} timed out"));
-            }
+            Ok(Ok(())) => None,
+            Ok(Err(e)) => Some(e.to_string()),
+            Err(_) => Some("timed out".to_string()),
+        };
+        if let Some(why) = filed {
+            // The message went; only the copy did not. Said in the log and
+            // to the person: a Sent folder missing what they know they sent
+            // is the kind of gap that makes someone send it again. The
+            // window carries the words; this only raises the flag.
+            log_sync(&format!(
+                "sent, but could not file a copy in Sent: {}",
+                without_addresses(&why)
+            ));
+            state.raise_alert("sent-copy-failed");
         }
     }
     log_sync(&format!("sent {message_id}"));
@@ -484,6 +526,15 @@ pub(crate) async fn send_due(state: Arc<AppState>, account: i64) {
         } else {
             ServerEvidence::Indeterminate
         };
+        // A password the server refused is not a transport hiccup: the ladder
+        // will keep the message and keep trying, and without this the only
+        // sign would be mail that never leaves. The same banner the sync loop
+        // raises says what is wrong and where to fix it.
+        if detail.starts_with("auth:") {
+            *state.sync_error.lock().unwrap_or_else(|p| p.into_inner()) =
+                Some(friendly_sync_error_for(&cfg.host, &detail));
+        }
+
         let next = reconcile(outcome, evidence);
         log_sync(&format!("outbox: outcome {next:?}"));
 
@@ -555,6 +606,52 @@ pub(crate) async fn send_due(state: Arc<AppState>, account: i64) {
 }
 
 #[cfg(test)]
+mod sender_tests {
+    use super::{address_domain, sender_address};
+    use petrel_engine::store::Identity;
+
+    fn identity(address: &str) -> Identity {
+        Identity {
+            address: address.into(),
+            display_name: "Me".into(),
+            signature: String::new(),
+            signature_on_reply: false,
+        }
+    }
+
+    /// The bug: mail went out as the login name. An Apple ID, a university
+    /// id or a cPanel `user@host` is not an address anyone can reply to.
+    #[test]
+    fn mail_goes_out_as_the_accounts_address_not_its_login() {
+        let me = identity("me@example.com");
+        assert_eq!(
+            sender_address(Some(&me), "apple.id.12345"),
+            "me@example.com"
+        );
+        assert_eq!(
+            sender_address(Some(&me), "someone@cpanel.host.example"),
+            "me@example.com"
+        );
+        // And the Message-ID domain follows the address, not the login.
+        assert_eq!(
+            address_domain(&sender_address(Some(&me), "u123")),
+            "example.com"
+        );
+    }
+
+    #[test]
+    fn the_login_stands_in_only_when_there_is_no_address_at_all() {
+        assert_eq!(sender_address(None, "me@example.com"), "me@example.com");
+        assert_eq!(
+            sender_address(Some(&identity("  ")), "me@example.com"),
+            "me@example.com"
+        );
+        assert_eq!(address_domain("nobody"), "localhost");
+        assert_eq!(address_domain("x@"), "localhost");
+    }
+}
+
+#[cfg(test)]
 mod evidence_tests {
     use super::evidence_from_search;
     use petrel_engine::outbox::ServerEvidence;
@@ -571,5 +668,32 @@ mod evidence_tests {
             evidence_from_search(false, false),
             ServerEvidence::Indeterminate
         );
+    }
+}
+
+#[cfg(test)]
+mod auth_banner_tests {
+    use petrel_providers::smtp::SendResult;
+
+    /// The banner is raised on a string, so the string is the contract. If
+    /// the providers crate ever renames the stage, this is what notices —
+    /// otherwise a refused password would go back to being invisible, with
+    /// the outbox quietly retrying against a server that will keep saying no.
+    #[test]
+    fn a_refused_password_is_recognisable_from_the_detail_alone() {
+        let refused = SendResult::FailedBeforeCommit {
+            stage: "auth",
+            detail: "535 5.7.8 Username and Password not accepted".into(),
+        };
+        let SendResult::FailedBeforeCommit { stage, detail } = refused else {
+            unreachable!("built as a pre-commit failure")
+        };
+        let recorded = format!("{stage}: {detail}");
+        assert!(recorded.starts_with("auth:"), "{recorded}");
+
+        // And a failure at any other stage must not raise it: a refused
+        // recipient is about the message, not the account.
+        let rcpt = format!("{}: {}", "rcpt", "550 no such user");
+        assert!(!rcpt.starts_with("auth:"));
     }
 }

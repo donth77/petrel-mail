@@ -34,9 +34,15 @@ pub(crate) struct Status {
     /// the rule's word rides the status poll instead. Each entry is said
     /// once, by whichever poll picks it up.
     notify: Vec<(String, String)>,
+    /// Things a background worker needs the person to know, by key, drained
+    /// the same way. A worker has no words of its own — the window owns
+    /// those, and translates them — so it raises a key and the window says
+    /// the sentence. `sent-copy-failed` is the first: the message went, the
+    /// copy in Sent did not.
+    alerts: Vec<String>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn status(state: State<Arc<AppState>>) -> Status {
     let _t = Timed::new("status");
     let configured = state
@@ -62,10 +68,16 @@ pub fn status(state: State<Arc<AppState>>) -> Status {
         .lock()
         .map(|mut p| std::mem::take(&mut *p))
         .unwrap_or_default();
+    let alerts = state
+        .pending_alerts
+        .lock()
+        .map(|mut p| std::mem::take(&mut *p))
+        .unwrap_or_default();
     Status {
         configured,
         demo: state.demo.load(Ordering::Relaxed),
         notify,
+        alerts,
         seeding: state.seeding.load(Ordering::Relaxed),
         // The active account's held mail, not the store's total: while one
         // account backfills a deep archive, the other's empty folders were
@@ -94,11 +106,22 @@ pub fn status(state: State<Arc<AppState>>) -> Status {
             .lock()
             .map(|s| s.clone())
             .unwrap_or_else(|_| "unknown".into()),
+        // The account on screen, not the one this launch happened to start
+        // with. Retention is per account — one may keep server deletions
+        // locally and the other not — and the status bar states the active
+        // policy, so naming the wrong account's is worse than saying nothing.
         retention: state
             .store
             .lock()
             .ok()
-            .and_then(|s| s.retention_mode(state.account_id).ok())
+            .and_then(|s| {
+                let account = s
+                    .active_account()
+                    .ok()
+                    .flatten()
+                    .unwrap_or(state.account_id);
+                s.retention_mode(account).ok()
+            })
             .map(|m| m.describe().to_string())
             .unwrap_or_default(),
         data_dir: state.data_dir.clone(),
@@ -106,7 +129,7 @@ pub fn status(state: State<Arc<AppState>>) -> Status {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_settings(state: State<Arc<AppState>>) -> Result<HashMap<String, String>, String> {
     let store = state.store()?;
     store.settings().map_err(|e| e.to_string())
@@ -114,7 +137,7 @@ pub fn get_settings(state: State<Arc<AppState>>) -> Result<HashMap<String, Strin
 
 /// An empty value clears the preference, restoring the default rather than
 /// pinning the current one.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_setting(key: String, value: String, state: State<Arc<AppState>>) -> Result<(), String> {
     let store = state.store()?;
     if value.is_empty() {
@@ -125,7 +148,7 @@ pub fn set_setting(key: String, value: String, state: State<Arc<AppState>>) -> R
 }
 
 /// The active account's filter rules, in run order.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_rules(state: State<Arc<AppState>>) -> Result<Vec<petrel_engine::rules::Rule>, String> {
     let store = state.store()?;
     let Some(account) = store.active_account().map_err(|e| e.to_string())? else {
@@ -134,7 +157,7 @@ pub fn list_rules(state: State<Arc<AppState>>) -> Result<Vec<petrel_engine::rule
     store.rules_for_account(account).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_rule(
     rule_id: Option<i64>,
     name: String,
@@ -150,13 +173,13 @@ pub fn save_rule(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_rule(rule_id: i64, state: State<Arc<AppState>>) -> Result<(), String> {
     let mut store = state.store()?;
     store.delete_rule(rule_id).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn move_rule(rule_id: i64, up: bool, state: State<Arc<AppState>>) -> Result<(), String> {
     let mut store = state.store()?;
     store.move_rule(rule_id, up).map_err(|e| e.to_string())
@@ -283,7 +306,13 @@ fn apply_settings_file(
                     .map_err(|e| e.to_string())?
             }
         };
-        if let Some(servers) = &imp.servers {
+        // Servers only for an account this store did not already have. A
+        // backup carries the *exporting* machine's server settings, and
+        // applying them to an account already set up here re-points a
+        // working mailbox at whatever that file says — a stale host, a
+        // wrong port, or a username that signs in to somebody else's mail.
+        // Preferences merge; a live account's connection does not.
+        if let (Some(servers), None) = (&imp.servers, found) {
             store
                 .set_account_servers(id, servers)
                 .map_err(|e| e.to_string())?;
@@ -306,12 +335,14 @@ fn apply_settings_file(
 }
 
 /// Writes the settings backup to a path the user picked.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn export_settings(path: String, state: State<Arc<AppState>>) -> Result<String, String> {
+    // Where the save panel said, and nowhere else.
+    let target = state.vetted_path(&path, &[])?;
     let store = state.store()?;
     let file = build_settings_file(&store)?;
     let json = serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?;
-    std::fs::write(&path, json).map_err(|e| e.to_string())?;
+    std::fs::write(&target, json).map_err(|e| e.to_string())?;
     Ok(format!("{}/{}", file.settings.len(), file.accounts.len()))
 }
 
@@ -319,9 +350,10 @@ pub fn export_settings(path: String, state: State<Arc<AppState>>) -> Result<Stri
 /// file does not mention is left exactly as it was. Accounts the file adds
 /// arrive without passwords — those stay in the keychain of the machine
 /// that wrote the file — and sync once one is entered.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn import_settings(path: String, state: State<Arc<AppState>>) -> Result<String, String> {
-    let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let source = state.vetted_path(&path, &[])?;
+    let raw = std::fs::read_to_string(&source).map_err(|e| e.to_string())?;
     let file: SettingsFile = serde_json::from_str(&raw)
         .map_err(|_| "This is not a Petrel settings file.".to_string())?;
     if file.version > 1 {
@@ -354,6 +386,66 @@ mod backup_tests {
         let s = b.settings().unwrap();
         assert_eq!(s.get("store_id").map(String::as_str), Some("store-b"));
         assert_eq!(s.get("theme").map(String::as_str), Some("dark"));
+    }
+
+    /// An account already configured here keeps the servers it is signing
+    /// in with. A backup taken from another machine — or an older one taken
+    /// from this machine before a host changed — used to overwrite them,
+    /// and the account stopped syncing with nothing on screen to say why.
+    #[test]
+    fn importing_never_repoints_an_account_that_is_already_set_up() {
+        use petrel_engine::store::AccountServers;
+
+        let a = Store::open_in_memory().unwrap();
+        a.add_account(
+            "imap",
+            "me@example.com",
+            "Me",
+            &AccountServers {
+                imap_host: "old.example.com".into(),
+                imap_port: 993,
+                smtp_host: "smtp.old.example.com".into(),
+                smtp_port: 465,
+                username: "me@example.com".into(),
+                provider: String::new(),
+            },
+        )
+        .unwrap();
+        let file = build_settings_file(&a).unwrap();
+
+        let b = Store::open_in_memory().unwrap();
+        let live = b
+            .add_account(
+                "imap",
+                "me@example.com",
+                "Me",
+                &AccountServers {
+                    imap_host: "current.example.com".into(),
+                    imap_port: 993,
+                    smtp_host: "smtp.current.example.com".into(),
+                    smtp_port: 587,
+                    username: "me".into(),
+                    provider: String::new(),
+                },
+            )
+            .unwrap();
+        apply_settings_file(&b, &file).unwrap();
+        let servers = b.account_servers(live).unwrap().unwrap();
+        assert_eq!(
+            servers.imap_host, "current.example.com",
+            "an account already set up here kept its own servers"
+        );
+        assert_eq!(servers.username, "me");
+
+        // An account the file adds does get the servers it names — that is
+        // the whole use of carrying them.
+        let c = Store::open_in_memory().unwrap();
+        apply_settings_file(&c, &file).unwrap();
+        let added = c.accounts().unwrap()[0].id;
+        assert_eq!(
+            c.account_servers(added).unwrap().unwrap().imap_host,
+            "old.example.com"
+        );
     }
 
     #[test]

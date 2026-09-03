@@ -6,7 +6,7 @@ pub(crate) mod drain;
 
 use crate::diag::{friendly_sync_error_for, is_imap_parse_error, log_sync};
 use crate::send::{spawn_outbox_clock, spawn_send_worker};
-use crate::state::{AppState, now_ms};
+use crate::state::{AppState, now_ms, stopped, unless_stopped};
 use crate::sync::backfill::spawn_backfill;
 use crate::sync::drain::{drain_actions, spawn_drain_worker};
 use petrel_engine::actions::ActionKind;
@@ -17,11 +17,21 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
-    spawn_drain_worker(Arc::clone(&state), account, cfg.clone());
-    spawn_outbox_clock(Arc::clone(&state), account);
-    spawn_send_worker(Arc::clone(&state), account);
+    // One switch for everything this account runs, taken here and handed
+    // down. The watchers and the backfill used to ask for their own at the
+    // end of the first pass — which, after a removal during that pass, was a
+    // fresh switch nobody had flipped — and the account carried on syncing
+    // into a store that no longer had it, or into the next account to reuse
+    // its id.
+    let mut stop = state.stop_signal(account);
+    spawn_drain_worker(Arc::clone(&state), account, cfg.clone(), stop.clone());
+    spawn_outbox_clock(Arc::clone(&state), account, stop.clone());
+    spawn_send_worker(Arc::clone(&state), account, stop.clone());
     tauri::async_runtime::spawn(async move {
-        *state.source.lock().unwrap() = format!("syncing {}…", cfg.host);
+        *state.source.lock().unwrap_or_else(|p| p.into_inner()) = format!("syncing {}…", cfg.host);
+        // Between the steps of the first pass, and around the long ones: a
+        // removed account stands down here rather than at the end.
+        let stand_down = || log_sync(&format!("account {account}: sync stopped"));
 
         // Mail already held was indexed by whatever the extraction did then.
         // When that improves, the improvement has to be applied backwards or it
@@ -43,6 +53,10 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
             const SLICE: usize = 250;
             let mut total = 0usize;
             loop {
+                if *stop.borrow() {
+                    stand_down();
+                    return;
+                }
                 let outcome = match state.store.lock() {
                     Ok(mut store) => store.reindex_batch(&state.blobs, SLICE),
                     // Another thread panicked holding it; nothing to do here.
@@ -83,7 +97,12 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
         // so the rail's views have nothing to filter on and archiving has
         // nowhere to put anything — which is how a sync can look like it worked
         // while leaving the app unable to file a single message.
-        match petrel_providers::imap::probe(&cfg, 0).await {
+        let Some(probed) = unless_stopped(&mut stop, petrel_providers::imap::probe(&cfg, 0)).await
+        else {
+            stand_down();
+            return;
+        };
+        match probed {
             Ok(report) => {
                 has_move = report.greeting_capabilities.move_;
                 has_idle = report.greeting_capabilities.idle;
@@ -141,7 +160,8 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
                 } else {
                     log_sync(&format!("folder discovery FAILED: {e}"));
                 }
-                *state.sync_error.lock().unwrap() = Some(friendly_sync_error_for(&cfg.host, &raw));
+                *state.sync_error.lock().unwrap_or_else(|p| p.into_inner()) =
+                    Some(friendly_sync_error_for(&cfg.host, &raw));
             }
         }
 
@@ -157,15 +177,22 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
         // If another drain holds the floor the fetch proceeds without it —
         // the store's pending checks protect what is queued, and the drain
         // worker retries until the floor frees.
-        let _ = drain_actions(
-            Arc::clone(&state),
-            account,
-            cfg.clone(),
-            has_move,
-            has_uidplus,
-            account_is_gmail(&cfg),
+        let drained = unless_stopped(
+            &mut stop,
+            drain_actions(
+                Arc::clone(&state),
+                account,
+                cfg.clone(),
+                has_move,
+                has_uidplus,
+                account_is_gmail(&cfg),
+            ),
         )
         .await;
+        if drained.is_none() {
+            stand_down();
+            return;
+        }
         // A message due while the app was closed goes out now, rather than
         // waiting for whatever next wakes the worker. Notify, do not await:
         // send_due used to sit behind this drain, and a backlog of triage
@@ -174,7 +201,15 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
 
         // One connection, one STATUS line per folder, fetch only what moved.
         // A relaunch over a warm store downloads nothing it already holds.
-        let report = run_sync_cycle(&state, account, &cfg, true, Scope::Everything).await;
+        let Some(report) = unless_stopped(
+            &mut stop,
+            run_sync_cycle(&state, account, &cfg, true, Scope::Everything),
+        )
+        .await
+        else {
+            stand_down();
+            return;
+        };
         let (fresh, failures) = (report.fresh, report.failures);
         let targets = folders_to_sync(&state, account);
         if failures > 0 {
@@ -183,14 +218,16 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
         if !targets.is_empty() && failures >= targets.len() {
             let msg = "no folder could be synced";
             log_sync(msg);
-            *state.sync_error.lock().unwrap() = Some(friendly_sync_error_for(&cfg.host, msg));
-            *state.source.lock().unwrap() = "sync failed".into();
+            *state.sync_error.lock().unwrap_or_else(|p| p.into_inner()) =
+                Some(friendly_sync_error_for(&cfg.host, msg));
+            *state.source.lock().unwrap_or_else(|p| p.into_inner()) = "sync failed".into();
         } else {
             let held = state.seeded.load(Ordering::Relaxed);
             log_sync(&format!(
                 "first pass done: {fresh} new, {held} held locally"
             ));
-            *state.source.lock().unwrap() = format!("{} · {held} message(s) held", cfg.user);
+            *state.source.lock().unwrap_or_else(|p| p.into_inner()) =
+                format!("{} · {held} message(s) held", cfg.user);
         }
         // Where Gmail actually keeps each message.
         //
@@ -204,8 +241,15 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
         // but with CONDSTORE every sweep after the first asks only for what
         // changed, which is usually nothing and costs one round trip.
         if looks_like_gmail {
-            run_label_sweep(&state, account, &cfg).await;
-            run_thrid_sweep(&state, account, &cfg).await;
+            let swept = unless_stopped(&mut stop, async {
+                run_label_sweep(&state, account, &cfg).await;
+                run_thrid_sweep(&state, account, &cfg).await;
+            })
+            .await;
+            if swept.is_none() {
+                stand_down();
+                return;
+            }
         }
 
         state.seeding.store(false, Ordering::Relaxed);
@@ -214,15 +258,22 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
         // since delivered; sweep once now rather than waiting out the first
         // IDLE, so a conversation never spends the first half hour standing
         // in both its folder and the inbox.
-        reconcile_ghost_placements(&state, account, &cfg).await;
         // The bin's clock starts at launch too, not only on the next poll:
         // with IDLE holding a quiet account open, "the next cycle" can be
         // hours away, and mail would sit in the bin unstamped until then.
-        tend_the_bin(&state, account).await;
+        let settled = unless_stopped(&mut stop, async {
+            reconcile_ghost_placements(&state, account, &cfg).await;
+            tend_the_bin(&state, account).await;
+        })
+        .await;
+        if settled.is_none() {
+            stand_down();
+            return;
+        }
 
         // History fills in behind the present, on its own clock — see
         // spawn_backfill for why it is not part of the poll loop.
-        spawn_backfill(Arc::clone(&state), account, cfg.clone());
+        spawn_backfill(Arc::clone(&state), account, cfg.clone(), stop.clone());
 
         // From here on the account is watched rather than polled, on two
         // clocks that answer two different questions.
@@ -284,10 +335,9 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
         // running collapse into the single pass that follows it, which is the
         // right answer because a wake carries no detail to lose.
         let (wake_tx, mut wake_rx) = tokio::sync::mpsc::channel::<()>(1);
-        let mut stop = state.stop_signal(account);
         if has_idle {
             let cfg = cfg.clone();
-            let mut stop = state.stop_signal(account);
+            let mut stop = stop.clone();
             tokio::spawn(async move {
                 // Backoff rather than the flat two-minute sleep this used to
                 // take on failure. A refused IDLE is usually a dropped socket
@@ -306,7 +356,7 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
                             // this one loses nothing.
                             let _ = wake_tx.try_send(());
                         }) => w,
-                        _ = stop.changed() => return,
+                        _ = stopped(&mut stop) => return,
                     };
                     match watching {
                         Ok(()) => {
@@ -322,11 +372,14 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
                                 armed.elapsed().as_secs_f32(),
                                 backoff.as_secs()
                             ));
-                            tokio::time::sleep(backoff).await;
+                            tokio::select! {
+                                _ = tokio::time::sleep(backoff) => {}
+                                _ = stopped(&mut stop) => return,
+                            }
                             backoff = (backoff * 2).min(ceiling_backoff);
                         }
                     }
-                    if wake_tx.is_closed() {
+                    if wake_tx.is_closed() || *stop.borrow() {
                         return;
                     }
                 }
@@ -358,7 +411,7 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
                 _ = tokio::time::sleep(wait) => false,
                 // The account was removed: stand down rather than run one
                 // more cycle against a server the app no longer owns.
-                _ = stop.changed() => break,
+                _ = stopped(&mut stop) => break,
             };
             let cycle = std::time::Instant::now();
             // A wake still takes the sweep if one has come due meanwhile, so a
@@ -384,6 +437,12 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
             .await;
             state.nudge_send(account);
             if sweeping {
+                // Folders were discovered once, at launch. A mailbox made in
+                // webmail — or by a rule on the server — never appeared until
+                // the app was restarted, and mail filed into it was mail
+                // Petrel could not see. The sweep is where "what does the
+                // server have" belongs, and the survey is one LIST.
+                refresh_folders(&state, account, &cfg, looks_like_gmail).await;
                 tend_the_bin(&state, account).await;
                 if reconciled.elapsed() >= reconcile_every {
                     reconciled = std::time::Instant::now();
@@ -419,8 +478,12 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
             }
             // Only a pass that both found nothing and hit nothing clears the
             // banner: a poll that failed halfway is not proof that sync is well.
-            if trouble.is_none() {
-                *state.sync_error.lock().unwrap() = None;
+            // And only a pass that actually asked the server: a cycle with no
+            // folders to sync — the folder probe failed, so there are none —
+            // proves nothing, and used to clear the sign-in banner the probe
+            // had just raised.
+            if trouble.is_none() && report.attempted > 0 {
+                *state.sync_error.lock().unwrap_or_else(|p| p.into_inner()) = None;
             } else if report.attempted > 0 && report.failures >= report.attempted {
                 // A pass that failed everywhere is the account failing, not a
                 // folder. A password revoked after launch used to fail every
@@ -430,7 +493,8 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
                     .last_failure
                     .clone()
                     .unwrap_or_else(|| "no folder could be synced".into());
-                *state.sync_error.lock().unwrap() = Some(friendly_sync_error_for(&cfg.host, &raw));
+                *state.sync_error.lock().unwrap_or_else(|p| p.into_inner()) =
+                    Some(friendly_sync_error_for(&cfg.host, &raw));
             }
             // The two paths are meant to cost very different amounts, and this
             // is where that stops being a claim.
@@ -446,6 +510,47 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
             ));
         }
     });
+}
+
+/// Re-surveys the server's folders, so ones made elsewhere appear.
+///
+/// The same LIST the first pass runs, and the same filtering: labels that
+/// are already Petrel tags stay tags, and \Noselect containers are
+/// hierarchy rather than mailboxes. Failure is silent by design — the
+/// folders already known are still right, and the banner belongs to sync.
+async fn refresh_folders(
+    state: &Arc<AppState>,
+    account: i64,
+    cfg: &ImapConfig,
+    looks_like_gmail: bool,
+) {
+    let Ok(report) = petrel_providers::imap::probe(cfg, 0).await else {
+        return;
+    };
+    let rows: Vec<(String, Option<String>)> = report
+        .folders
+        .iter()
+        .filter(|f| petrel_providers::imap::selectable(f))
+        .map(|f| {
+            (
+                f.name.clone(),
+                petrel_providers::imap::special_use_role(f).map(|r| r.to_string()),
+            )
+        })
+        .collect();
+    let Ok(mut store) = state.store.lock() else {
+        return;
+    };
+    let tag_names: Vec<String> = store
+        .tags_for_account(account)
+        .map(|ts| ts.into_iter().map(|t| t.name).collect())
+        .unwrap_or_default();
+    let rows = without_tag_labels(rows, &tag_names, looks_like_gmail);
+    match store.sync_folders(account, &rows) {
+        Ok(n) if n > 0 => log_sync(&format!("{n} folder(s) stored")),
+        Ok(_) => {}
+        Err(e) => log_sync(&format!("folder sync failed: {e}")),
+    }
 }
 
 /// Which folders a pass covers.
@@ -684,14 +789,18 @@ async fn run_sync_cycle(
                     } else {
                         String::new()
                     };
+                    // By id, not by name. A folder's name is the person's
+                    // own words — "Legal", "Job hunt", a client's name — and
+                    // a log is not the place for it. The id names the row in
+                    // their own store if anyone needs to look.
                     log_sync(&format!(
-                        "{path}: {fetched} fetched, {reflagged} flag update(s){tags}"
+                        "folder {folder_id}: {fetched} fetched, {reflagged} flag update(s){tags}"
                     ));
                 }
             }
             PassOutcome::ValidityChanged { now } => {
                 log_sync(&format!(
-                    "{path}: UIDVALIDITY reset ({:?} -> {now:?}); re-mapping",
+                    "folder {folder_id}: UIDVALIDITY reset ({:?} -> {now:?}); re-mapping",
                     pass.expected_validity
                 ));
                 if let Ok(mut store) = state.store.lock() {
@@ -701,7 +810,7 @@ async fn run_sync_cycle(
                 match recover_folder(state, account, cfg, path, *folder_id).await {
                     Ok(_) => {}
                     Err(e) => {
-                        log_sync(&format!("{path}: recovery failed: {e}"));
+                        log_sync(&format!("folder {folder_id}: recovery failed: {e}"));
                         last_failure = Some(e.to_string());
                         failures += 1;
                     }
@@ -710,9 +819,9 @@ async fn run_sync_cycle(
             PassOutcome::Failed { detail } => {
                 if verbose {
                     if is_imap_parse_error(detail) {
-                        log_sync(&format!("{path}: FAILED: imap-parse"));
+                        log_sync(&format!("folder {folder_id}: FAILED: imap-parse"));
                     } else {
-                        log_sync(&format!("{path}: FAILED: {detail}"));
+                        log_sync(&format!("folder {folder_id}: FAILED: {detail}"));
                     }
                 }
                 last_failure = Some(detail.clone());
@@ -787,7 +896,7 @@ async fn recover_folder(
             .map_err(|e| format!("record validity: {e}"))?;
     }
     log_sync(&format!(
-        "{name}: re-mapped {} placement(s), re-downloaded {refetched}, dropped {}",
+        "folder {folder_id}: re-mapped {} placement(s), re-downloaded {refetched}, dropped {}",
         outcome.rematched, outcome.dropped
     ));
     Ok(refetched)
@@ -1118,10 +1227,61 @@ async fn run_label_sweep(state: &Arc<AppState>, account: i64, cfg: &ImapConfig) 
             if let (Some(m), Ok(store)) = (sweep.modseq, state.store.lock()) {
                 let _ = store.set_setting("gmail_labels_modseq", &m.to_string());
             }
+            if filed > 0 {
+                number_swept_inbox_placements(state, account, cfg).await;
+            }
         }
         // Not fatal: without it, filing falls back to the folder each
         // message arrived from, which is what it was before.
         Err(e) => log_sync(&format!("label sweep failed: {e}")),
+    }
+}
+
+/// Numbers the inbox placements the label sweep just made.
+///
+/// The sweep reads All Mail, so a message it files into the inbox is placed
+/// by Message-ID and learns no INBOX number. An unnumbered placement is one
+/// the drain has to resolve by searching, and one the folder sweep can never
+/// prune — so the inbox is listed as identities and the store is told, which
+/// both numbers what is there and drops what is not.
+///
+/// Only after a sweep that filed something: a full inbox listing is a line
+/// per message, cheap beside a body but not worth a round trip every poll
+/// when nothing moved.
+async fn number_swept_inbox_placements(state: &Arc<AppState>, account: i64, cfg: &ImapConfig) {
+    let inbox: Option<(i64, String)> = {
+        let Ok(store) = state.store.lock() else {
+            return;
+        };
+        let id = store.folder_for_role(account, "inbox").ok().flatten();
+        let path = store
+            .folders(account)
+            .ok()
+            .and_then(|all| all.into_iter().find(|f| Some(f.id) == id).map(|f| f.path));
+        id.zip(path)
+    };
+    let Some((folder_id, path)) = inbox else {
+        return;
+    };
+    // The whole folder, because the store treats the listing as complete and
+    // drops what it does not find: a partial one would unfile live mail.
+    let listing = match petrel_providers::imap::fetch_id_map_range(cfg, &path, 1, u32::MAX).await {
+        Ok(l) => l,
+        Err(e) => {
+            log_sync(&format!("inbox identity listing failed: {e}"));
+            return;
+        }
+    };
+    let Ok(store) = state.store.lock() else {
+        return;
+    };
+    match store.reconcile_unaddressed_placements(folder_id, &listing) {
+        Ok(out) if out.rematched > 0 || out.dropped > 0 => log_sync(&format!(
+            "labels: {} inbox placement(s) numbered, {} dropped",
+            out.rematched, out.dropped
+        )),
+        Ok(_) => {}
+        Err(e) => log_sync(&format!("inbox placement reconcile failed: {e}")),
     }
 }
 
@@ -1223,7 +1383,7 @@ async fn reconcile_ghost_placements(
             match petrel_providers::imap::uids_in_folder(cfg, &path).await {
                 Ok(uids) => uids.into_iter().collect(),
                 Err(e) => {
-                    log_sync(&format!("{path}: reconcile sweep failed: {e}"));
+                    log_sync(&format!("folder {folder_id}: reconcile sweep failed: {e}"));
                     continue;
                 }
             };
@@ -1236,7 +1396,7 @@ async fn reconcile_ghost_placements(
             .unwrap_or(0);
         if removed > 0 {
             log_sync(&format!(
-                "{path}: {removed} placement(s) the server no longer holds removed"
+                "folder {folder_id}: {removed} placement(s) the server no longer holds removed"
             ));
         }
         // Inward: server UIDs the store never placed. The windowed sync can
@@ -1292,10 +1452,10 @@ async fn reconcile_ghost_placements(
                         Ok(ingested) => {
                             let _ = store.set_message_flags(ingested.message_id, flags);
                             log_sync(&format!(
-                                "{path}: uid {uid} is a second live copy of a stored message; kept as its own"
+                                "folder {folder_id}: uid {uid} is a second live copy of a stored message; kept as its own"
                             ));
                         }
-                        Err(e) => log_sync(&format!("{path}: second copy uid {uid} failed: {e}")),
+                        Err(e) => log_sync(&format!("folder {folder_id}: second copy uid {uid} failed: {e}")),
                     }
                     return;
                 }
@@ -1306,7 +1466,7 @@ async fn reconcile_ghost_placements(
         .unwrap_or(0);
         if fetched > 0 || overflow > 0 {
             log_sync(&format!(
-                "{path}: {fetched} message(s) the store was missing fetched{}",
+                "folder {folder_id}: {fetched} message(s) the store was missing fetched{}",
                 if overflow > 0 {
                     format!(" ({overflow} more next cycle)")
                 } else {

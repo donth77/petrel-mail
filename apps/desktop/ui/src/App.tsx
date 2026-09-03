@@ -24,12 +24,14 @@ import { Palette } from './components/Palette';
 import { Picker, type PickerOption } from './components/Picker';
 import { Compose, addresses, type Draft } from './components/Compose';
 import { snoozeOptions } from './lib/snooze';
+import { key } from './lib/keys';
 import { promisesMissingAttachment } from './lib/compose-checks';
 import { AUTOSAVE_MS, draftSignature, slotFor, unsaved } from './lib/draft-autosave';
 import type { ComposerSlot } from './lib/draft-autosave';
 import { opensComposer } from './lib/draft-view';
 import { draftFromRecord } from './lib/draft-record';
-import { replyTargets } from './lib/reply';
+import { settleDraft } from './lib/close-draft';
+import { replyHeaders, replyTargets } from './lib/reply';
 import { forwardBody, replyBody } from './lib/quote';
 import { dropMeaning } from './lib/dnd';
 import {
@@ -73,10 +75,11 @@ import { PaneResize } from './components/PaneResize';
  *
  *  The poll always returns a new object. Setting it unconditionally re-rendered
  *  the whole window every five seconds, and every 400ms while seeding. Notify
- *  is drained on read, so a non-empty list must always land. */
+ *  and alerts are drained on read, so a non-empty list must always land. */
 function statusNeedsRender(prev: Status | null, next: Status): boolean {
   if (!prev) return true;
   if ((next.notify?.length ?? 0) > 0) return true;
+  if ((next.alerts?.length ?? 0) > 0) return true;
   return (
     prev.configured !== next.configured ||
     prev.demo !== next.demo ||
@@ -90,6 +93,14 @@ function statusNeedsRender(prev: Status | null, next: Status): boolean {
   );
 }
 
+/** A key from the engine becomes a sentence here, where it can be
+ *  translated. An unrecognised key says nothing rather than showing a code —
+ *  a newer engine talking to an older window must not put `sent-copy-failed`
+ *  on screen. */
+const ALERT_TEXT: Record<string, StringId> = {
+  'sent-copy-failed': 'alert-sent-copy-failed',
+};
+
 export function App() {
   const { settings, locale, set } = useSettings();
   const [status, setStatus] = useState<Status | null>(null);
@@ -100,6 +111,10 @@ export function App() {
   // together rather than each noticing separately or, worse, some not
   // noticing at all. The name is about where it came from, not its only use.
   const [accountEpoch, setAccountEpoch] = useState(0);
+  // The same, readable after an await: a load started under one account
+  // must not open its answer under another.
+  const accountEpochRef = useRef(accountEpoch);
+  accountEpochRef.current = accountEpoch;
   // Bumped when a triage or an undo has settled. The rail's recount keys on
   // it, so every action is followed by one recount once the burst is over.
   const [triageEpoch, setTriageEpoch] = useState(0);
@@ -153,6 +168,10 @@ export function App() {
     accountEpoch,
     messageCount: status?.count,
     fetchers: listFetchers,
+    // Said, not shown in place of the list: the rows on screen are still
+    // the rows, and one poll that could not get a page is not a reason to
+    // take forty conversations away.
+    onRefreshFailed: (e) => setToast(t('list-refresh-failed', { error: e })),
   });
   const searchRef = useRef<HTMLInputElement>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -499,8 +518,9 @@ export function App() {
       const inbox = folders.find((f) => f.role === 'inbox');
       if (!inbox) return;
       // The same helper every other key action uses: the selection when there
-      // is one, otherwise the conversation under the cursor.
-      targets(selected, activeId).forEach((id) => void triage.run('move', id, inbox.id));
+      // is one, otherwise the conversation under the cursor — and one call
+      // for all of them, so a selection gets one toast and one undo.
+      void triage.runMany('move', targets(selected, activeId), inbox.id);
       if (selected.size > 0) setSelected(new Set());
     },
     // Acts on the conversation under the cursor, so it works while arrowing
@@ -550,7 +570,12 @@ export function App() {
       const at = items.findIndex((m) => m.id === activeId);
       const next = items[at + (down ? 1 : -1)];
       if (!next) return;
-      setSelected((cur) => extend(cur, items.map((m) => m.id), anchor ?? activeId, next.id));
+      // The row the range grows from, remembered on the first extension.
+      // Without this the anchor stayed null, every ⇧J re-anchored on the row
+      // it had just moved to, and a range of six collapsed to the last two.
+      const from = anchor ?? activeId;
+      if (anchor == null) setAnchor(from);
+      setSelected((cur) => extend(cur, items.map((m) => m.id), from, next.id));
       setActiveId(next.id);
     },
     clearSelection: () => {
@@ -624,7 +649,7 @@ export function App() {
     if (query) {
       return {
         title: t('empty-search-title', { query }),
-        body: t('empty-search-body', { count: fmtCount(status?.count ?? 0) }),
+        body: t('empty-search-body', { count: status?.count ?? 0 }),
       };
     }
     if (view === 'inbox') {
@@ -725,8 +750,7 @@ export function App() {
               settings.language === 'system' ? undefined : settings.language,
             )
           : startingHtml(identity, true),
-        inReplyTo: null,
-        references: [],
+        ...replyHeaders(last),
       });
     } catch (e) {
       setToast(t('compose-resume-failed', { error: String(e) }));
@@ -776,14 +800,20 @@ export function App() {
 
   /** Reopens a saved draft in the composer. */
   const resumeDraft = useCallback(async (id: number) => {
+    // The draft was asked for under one account. If the window has moved to
+    // another while the load was in flight, opening it now would put the
+    // old account's message in a composer that saves to the new one.
+    const epoch = accountEpochRef.current;
     try {
       const d = await api.loadDraft(id);
+      if (accountEpochRef.current !== epoch) return;
       openComposer(draftFromRecord(d));
       // Asked as the draft opens, not at save time: the person is about to
       // continue from one of two versions, and should choose before typing
       // into the wrong one. The data layer kept both; that is what makes
       // this a question instead of a loss.
       const conflict = await api.draftConflict(id);
+      if (accountEpochRef.current !== epoch) return;
       if (conflict) setDraftConflict({ draftId: id, otherId: conflict.other_id });
     } catch (e) {
       setToast(t('compose-resume-failed', { error: String(e) }));
@@ -796,7 +826,7 @@ export function App() {
   }, []);
 
   const onActivate = useCallback(
-    (id: number, mods: { toggle: boolean; range: boolean }) => {
+    (id: number, mods: { toggle: boolean; range: boolean; keyboard?: boolean }) => {
       // Cmd/ctrl adds or removes one; shift reaches back to where the
       // selection started. Neither opens the conversation — picking
       // several and having the last one fill the reading pane is how
@@ -811,9 +841,12 @@ export function App() {
         return;
       }
       // A plain click is "just this one", so it puts a selection away
-      // rather than quietly acting on rows still held from before.
-      if (selected.size > 0) setSelected(new Set());
-      setAnchor(id);
+      // rather than quietly acting on rows still held from before. Walking
+      // the list with J and K is not that: it is how you reach the next row
+      // to add with X, and clearing there made a non-contiguous selection
+      // impossible to build.
+      if (!mods.keyboard && selected.size > 0) setSelected(new Set());
+      if (!mods.keyboard) setAnchor(id);
       setActiveId(id);
       // In Drafts, selecting one means resuming it. Showing an
       // unfinished message in a reading pane is showing it to the
@@ -880,6 +913,25 @@ export function App() {
    * dropped — a row id from one account means nothing in another.
    */
   const switchAccount = async (id: number, email: string) => {
+    // The composer belongs to the account it opened in. Every save writes
+    // to whichever account is active, so a draft left open across the switch
+    // would autosave itself into the other account's Drafts. It is written
+    // and pushed under its own account first, and the composer closes with
+    // it; a message that cannot be written keeps the window where it is.
+    const current = draftRef.current;
+    if (current) {
+      const settled = await settleDraft(
+        current,
+        slotRef.current,
+        (d) => saveDraft(d, { quiet: true }),
+        api.pushDraft,
+      );
+      if (!settled.ok) {
+        setToast(t('account-switch-draft-failed', { error: settled.error }));
+        return;
+      }
+      setDraft(null);
+    }
     try {
       await api.setActiveAccount(id);
       setActiveId(null);
@@ -966,7 +1018,9 @@ export function App() {
     try {
       const current = draftRef.current;
       if (!current) return;
-      const result = await pickAttachments(current.attachments ?? [], api.attachmentInfo);
+      const result = await pickAttachments(current.attachments ?? [], api.attachmentInfo, () =>
+        api.pickFiles('attach'),
+      );
       if (!result) return;
       setDraft({ ...current, attachments: result.kept });
       if (result.rejected.length > 0) {
@@ -1238,6 +1292,20 @@ export function App() {
       );
     }
   }, [status, settings]);
+
+  // Something that happened to mail of yours, said plainly.
+  //
+  // Not gated on the notification settings: those govern mail arriving, and
+  // this is about a message you sent. A send whose Sent copy failed is the
+  // one case today — the message went, and the only trace of it that would
+  // normally be there is missing, which is worth knowing before you go
+  // looking for it. Drained server-side, so each is said once.
+  useEffect(() => {
+    const alerts = status?.alerts ?? [];
+    if (alerts.length === 0) return;
+    const said = ALERT_TEXT[alerts[0]];
+    if (said) setToast(t(said));
+  }, [status]);
 
   // Moving off a conversation marks it read — the rule every mail client with
   // a reading pane uses, and the one Outlook states outright as "mark as read
@@ -2113,21 +2181,20 @@ export function App() {
           }}
           onAttach={() => void attach()}
           onDropFiles={(files) => void dropAttachments(files)}
-          onSaveDraft={() => void saveDraft(draft)}
+          onSaveDraft={(d) => void saveDraft(d)}
           onSendLater={() => setPicker('send-later')}
           onNotice={setToast}
-          onPopOut={() => {
+          onPopOut={(d) => {
             // Saved first: the new window is given an id, and that id is also
             // what stops the two windows becoming separate unsaved copies of
             // the same message.
-            const d = draft;
             void saveDraft(d)
               .then((id) => api.popoutCompose(id ?? 0))
               .then(() => setDraft(null))
               .catch((e) => setToast(t('compose-popout-failed', { error: String(e) })));
           }}
-          onSend={() => {
-            if (addresses(draft.to).length === 0) {
+          onSend={(d) => {
+            if (addresses(d.to).length === 0) {
               setToast(t('compose-no-recipient'));
               return;
             }
@@ -2137,7 +2204,7 @@ export function App() {
             if (
               settings.warnMissingAttachment === 'on' &&
               !attachmentWarned.current &&
-              promisesMissingAttachment(draft.subject, draft.body, draft.attachments?.length ?? 0)
+              promisesMissingAttachment(d.subject, d.body, d.attachments?.length ?? 0)
             ) {
               attachmentWarned.current = true;
               setToast(t('compose-missing-attachment'));
@@ -2152,7 +2219,6 @@ export function App() {
             // ambiguous-outcome rule protects every send, not only the
             // scheduled ones.
             const wait = Number(settings.undoSendSeconds) || 0;
-            const d = draft;
             setDraft(null);
             // Through the same chain as every other save, so an autosave
             // still in flight updates this row rather than a twin of it.
@@ -2211,11 +2277,10 @@ export function App() {
             return;
           }
           // Whatever is selected, or the conversation on screen when nothing
-          // is. Passing `undefined` here meant the picker always acted on the
-          // active row alone, so tagging six selected conversations tagged one
-          // of them and silently left the rest — the selection was visible on
-          // screen the whole time.
-          const targets = selected.size > 0 ? [...selected] : [undefined];
+          // is, as one batch. Acting on the active row alone tagged one of
+          // six selected conversations; acting on them one at a time gave
+          // six toasts and an undo that reached only the last.
+          const ids = targets(selected, activeId);
           if (picker === 'folder') {
             // The two rows that are verbs rather than destinations. Reading
             // them as folder ids would archive by moving the mail into
@@ -2223,15 +2288,13 @@ export function App() {
             // archiving at all.
             const kind =
               id === ARCHIVE_VERB ? 'archive' : id === TRASH_VERB ? 'trash' : null;
-            targets.forEach((t) =>
-              void (kind ? triage.run(kind, t) : triage.run('move', t, id)),
-            );
+            void (kind ? triage.runMany(kind, ids) : triage.runMany('move', ids, id));
             setPicker(null);
             if (selected.size > 0) setSelected(new Set());
           } else {
             // Toggling: `on` is the state being moved to, so an applied tag
             // untags rather than re-applying and reporting "Tagged" twice.
-            targets.forEach((t) => void triage.run(on ? 'tag' : 'untag', t, id));
+            void triage.runMany(on ? 'tag' : 'untag', ids, id);
           }
         }}
         onCreate={(name) => {
@@ -2249,10 +2312,7 @@ export function App() {
               // something else reloaded it.
               return api.tags().then(setTags).then(() => {
                 // ...and to everything selected, not only the row underneath.
-                const targets = selected.size > 0 ? [...selected] : [undefined];
-                return Promise.all(
-                  targets.map((target) => triage.run('tag', target, id)),
-                ).then(() => undefined);
+                return triage.runMany('tag', targets(selected, activeId), id);
               });
             })
             .catch((e) => setToast(t('triage-failed', { error: String(e) })));
@@ -2263,11 +2323,19 @@ export function App() {
         open={paletteOpen}
         onOpen={(threadId: number) => {
           // Opening from the palette puts the conversation in the reading pane
-          // if the current view already holds it. If it does not, the query is
-          // what puts it there — jumping the list to a row it does not contain
-          // would land on nothing.
+          // if the current view already holds it. If it does not — a result
+          // from Archive while you are in the inbox, which is most of what a
+          // search finds — it opens in its own window instead. Nothing at all
+          // used to happen: the palette found the conversation, closed, and
+          // left the same mailbox on screen.
           const row = items.find((m) => m.thread_id === threadId);
-          if (row) setActiveId(row.id);
+          if (row) {
+            setActiveId(row.id);
+            return;
+          }
+          void api
+            .popoutMessage(threadId)
+            .catch((e) => setToast(t('popout-failed', { error: String(e) })));
         }}
         onClose={() => setPaletteOpen(false)}
         subject={active?.subject ?? null}
@@ -2298,6 +2366,20 @@ export function App() {
       <Help open={helpOpen} onClose={() => setHelpOpen(false)} />
       <Settings
         onAddAccount={() => setAddingAccount(true)}
+        onAccountRemoved={(wasActive) => {
+          // The switcher reads the accounts again when Settings closes; only
+          // the account on screen needs more than that. Everything shown
+          // belonged to it — the rows, the open conversation, a draft the
+          // store has already deleted — so the window starts over on
+          // whichever account the store made active in its place.
+          if (!wasActive) return;
+          setDraft(null);
+          setActiveId(null);
+          setSelected(new Set());
+          setView('inbox');
+          setQuery('');
+          setAccountEpoch((n) => n + 1);
+        }}
         open={settingsOpen !== null}
         pane={settingsOpen ?? undefined}
         onClose={() => {
@@ -2339,32 +2421,33 @@ export function App() {
         (() => {
           const row = items.find((m) => m.thread_id === rowMenu.id || m.id === rowMenu.id);
           if (!row) return null;
-          const targets = selected.has(rowMenu.id) ? [...selected] : [rowMenu.id];
+          const ids = selected.has(rowMenu.id) ? [...selected] : [rowMenu.id];
           const close = () => setRowMenu(null);
           // Every item routes through the same paths the rest of the app uses,
           // so a right-click cannot become a second, subtly different way to
-          // archive something.
+          // archive something — and through runMany, so a selection is one
+          // action with one toast and one undo rather than one of each per row.
           return (
             <RowMenu
               at={{ x: rowMenu.x, y: rowMenu.y }}
               onClose={close}
               thread={row}
               view={view}
-              count={targets.length}
+              count={ids.length}
               onAction={(kind) => {
                 close();
                 if (kind === 'delete_forever') {
-                  askDelete(targets);
+                  askDelete(ids);
                   return;
                 }
-                targets.forEach((id) => void triage.run(kind, id));
+                void triage.runMany(kind, ids);
                 if (selected.size > 0) setSelected(new Set());
               }}
               onMoveInbox={() => {
                 close();
                 const inbox = folders.find((f) => f.role === 'inbox');
                 if (!inbox) return;
-                targets.forEach((id) => void triage.run('move', id, inbox.id));
+                void triage.runMany('move', ids, inbox.id);
                 if (selected.size > 0) setSelected(new Set());
               }}
               onMove={() => {
@@ -2514,7 +2597,7 @@ export function App() {
           <span className="kbd">/</span> {t('footer-search')}
         </span>
         <span>
-          <span className="kbd">⌘K</span> {t('palette-title')}
+          <span className="kbd">{key('palette')}</span> {t('palette-title')}
         </span>
       </footer>
       </div>

@@ -192,20 +192,39 @@ impl Store {
         // The list shows a snippet; an empty draft still needs to be findable,
         // so it gets a placeholder rather than a blank row.
         let snippet: String = body.chars().take(200).collect();
-        let identity = self.identity(account_id)?;
+
+        // A draft that exists belongs to the account it was written in, not
+        // to whichever account the window happens to show. The composer
+        // follows an account switch, and a save under the new account used
+        // to file the draft's placement in the other account's Drafts.
+        //
+        // And a draft that no longer exists — discarded, or sent, with an
+        // autosave still in flight — is refused rather than re-indexed: the
+        // index row was written first, the message row never came back, and
+        // the orphan then failed every search that touched its words.
+        let account_id = match draft_id {
+            Some(id) => self
+                .account_of_message(id)?
+                .ok_or_else(|| StoreError::Rejected("that draft no longer exists".into()))?,
+            None => account_id,
+        };
 
         let id = match draft_id {
             Some(id) => {
-                self.conn.execute(
+                let n = self.conn.execute(
                     "UPDATE messages
                      SET date_ms = ?2, subject = ?3, snippet = ?4, draft_body = ?5,
                          draft_html = ?6, draft_envelope = ?7
                      WHERE id = ?1",
                     params![id, now, subject, snippet, body, html, envelope_json],
                 )?;
+                if n == 0 {
+                    return Err(StoreError::Rejected("that draft no longer exists".into()));
+                }
                 id
             }
             None => {
+                let identity = self.identity(account_id)?;
                 self.conn.execute(
                     "INSERT INTO messages(account_id, date_ms, from_addr, from_display,
                                           subject, snippet, draft_body, draft_html, flags,

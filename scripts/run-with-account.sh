@@ -7,9 +7,10 @@
 # and running `open` silently launches an app with no account, which looks
 # exactly like a broken sync. `open --env` passes them explicitly.
 #
-# The values are never written into the bundle, never logged, and never leave
-# this process tree. Use an app-specific password (see .env.example) and revoke
-# it when you are done.
+# The values are never written into the bundle and never logged. One caveat:
+# LaunchServices takes them as arguments to `open`, so for the second that
+# command runs the password is visible to `ps` on this machine. Use an
+# app-specific password (see .env.example) and revoke it when you are done.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -45,7 +46,7 @@ set +a
 DATA_DIR="${PETREL_DATA_DIR:-$HOME/Library/Application Support/Petrel-live}"
 mkdir -p "$DATA_DIR"
 
-echo "account : $PETREL_IMAP_USER @ $PETREL_IMAP_HOST:${PETREL_IMAP_PORT:-993}"
+echo "account : $PETREL_IMAP_HOST:${PETREL_IMAP_PORT:-993}"
 echo "store   : $DATA_DIR"
 
 pkill -9 -f petrel-desktop 2>/dev/null || true

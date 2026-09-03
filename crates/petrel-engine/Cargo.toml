@@ -4,6 +4,7 @@ description = "Petrel's headless mail engine: storage, search, actions"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
 rusqlite.workspace = true

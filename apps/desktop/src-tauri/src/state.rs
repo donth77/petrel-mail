@@ -31,9 +31,15 @@ pub(crate) struct AppState {
     /// its workers stand down instead of carrying on against a server the
     /// app no longer owns — or against a new account that inherited the same
     /// id, which is what remove-and-re-add hands out. `stop_signal` gives a
-    /// worker its receiver; `stop_workers` flips the switch and forgets the
-    /// sender, so a re-added account starts with a fresh one.
+    /// worker its receiver; `stop_workers` flips the switch and *keeps* it,
+    /// so a receiver taken afterwards reads stopped too. Only `reset_workers`,
+    /// called when an account is set up, puts a fresh switch in its place.
     pub(crate) stops: Mutex<std::collections::HashMap<i64, tokio::sync::watch::Sender<bool>>>,
+    /// Paths the OS file dialogs handed back this session. A command that
+    /// takes a path from the window accepts only one of these, one under the
+    /// staging directory, or one already on the draft being edited — the
+    /// window never gets to name a file on disk by itself.
+    pub(crate) picked: Mutex<std::collections::HashSet<std::path::PathBuf>>,
     /// What each account's server can do, from that account's own probe. One
     /// set of flags for the whole app used to be written by whichever account
     /// probed last, so with Gmail beside Dovecot half of launches drained one
@@ -57,6 +63,11 @@ pub(crate) struct AppState {
     /// poll to carry them to the announcer. Drained on read: each is said
     /// once.
     pub(crate) pending_notify: Mutex<Vec<(String, String)>>,
+    /// Things a worker needs the person to know, by key, waiting for the
+    /// next status poll. The window owns the words: a worker has no
+    /// language of its own, and on two of the three platforms no way to
+    /// post a notification either. Drained on read; each is said once.
+    pub(crate) pending_alerts: Mutex<Vec<String>>,
     /// When a sync cycle last completed clean, in ms. Zero until one has.
     /// The status bar ages this into words; a static "just now" was the
     /// previous implementation, and it was stuck by construction.
@@ -117,9 +128,9 @@ impl AppState {
     }
 
     /// The receiver a worker for this account watches. Made on first use, so
-    /// whichever worker spawns first creates the switch; a receiver sees
-    /// `true` once `stop_workers` has run, and `changed()` returns as soon
-    /// as it does.
+    /// whichever worker spawns first creates the switch; a receiver reads
+    /// `true` once `stop_workers` has run — whether it was taken before or
+    /// after — and `stopped` resolves as soon as it does.
     pub(crate) fn stop_signal(&self, account: i64) -> tokio::sync::watch::Receiver<bool> {
         let mut all = self.stops.lock().unwrap_or_else(|p| p.into_inner());
         all.entry(account)
@@ -127,22 +138,70 @@ impl AppState {
             .subscribe()
     }
 
-    /// Flips the account's switch and forgets it, so its workers stop at
-    /// their next wait and an account re-added under the same id gets a
-    /// switch of its own. Returns whether there was anything to stop.
+    /// Flips the account's switch, and leaves it flipped.
+    ///
+    /// The switch used to be forgotten here so that a re-added account got a
+    /// fresh one — which meant a worker that asked for its receiver *after*
+    /// the removal got a fresh one too. The first sync pass takes minutes,
+    /// and its watchers and backfill only asked at the end of it, so an
+    /// account removed during that pass kept syncing, and the next account
+    /// to be set up inherited the id and the mail. Stopped stays stopped
+    /// until `reset_workers` says otherwise. Returns whether any worker had
+    /// ever asked about this account.
     pub(crate) fn stop_workers(&self, account: i64) -> bool {
-        let sender = self
-            .stops
+        let mut all = self.stops.lock().unwrap_or_else(|p| p.into_inner());
+        let known = all.contains_key(&account);
+        let tx = all
+            .entry(account)
+            .or_insert_with(|| tokio::sync::watch::channel(false).0);
+        // `send` fails when nothing is subscribed yet — and *leaves the value
+        // alone*, which is exactly the case that matters: an account removed
+        // before its workers ever asked for the switch would have been given
+        // a false one. `send_replace` writes the value either way.
+        tx.send_replace(true);
+        known
+    }
+
+    /// A fresh switch for an account being set up, so its workers start
+    /// clean however its id was used before. Whatever was watching the old
+    /// switch still reads stopped: the shared value never goes back to false.
+    pub(crate) fn reset_workers(&self, account: i64) {
+        self.stops
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .remove(&account);
-        match sender {
-            Some(tx) => {
-                let _ = tx.send(true);
-                true
-            }
-            None => false,
-        }
+            .insert(account, tokio::sync::watch::channel(false).0);
+    }
+
+    /// Queues an alert for the window to say, once.
+    pub(crate) fn raise_alert(&self, key: &str) {
+        self.pending_alerts
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(key.to_string());
+    }
+
+    /// Records paths the OS dialogs handed back, so commands can accept them.
+    pub(crate) fn remember_paths(&self, paths: &[std::path::PathBuf]) {
+        let mut picked = self.picked.lock().unwrap_or_else(|p| p.into_inner());
+        picked.extend(paths.iter().cloned());
+    }
+
+    /// A path the window named, checked against what it was ever given.
+    ///
+    /// `on_draft` is the attachment list already stored on the draft being
+    /// edited, which came through this same check when it was saved.
+    pub(crate) fn vetted_path(
+        &self,
+        path: &str,
+        on_draft: &[String],
+    ) -> Result<std::path::PathBuf, String> {
+        let picked = self.picked.lock().unwrap_or_else(|p| p.into_inner());
+        accept_path(
+            &picked,
+            &crate::diag::data_dir().join("staged"),
+            on_draft,
+            path,
+        )
     }
 
     /// What this account's server can do; nothing, until its probe answers.
@@ -208,6 +267,65 @@ impl AppState {
     }
 }
 
+/// Resolves once the account has been told to stop — at once, if it already
+/// has. Every worker's wait is a `select!` against this, so a removal ends a
+/// twenty-minute IDLE, a backfill nap or a fetch in progress rather than
+/// waiting for it.
+pub(crate) async fn stopped(stop: &mut tokio::sync::watch::Receiver<bool>) {
+    while !*stop.borrow() {
+        // The sender going away is a stop too: it means the account's switch
+        // was replaced, and whoever holds this receiver belongs to the old one.
+        if stop.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+/// Runs `work` unless the account is stopped first. `None` means it was,
+/// and the work was abandoned wherever it had got to.
+pub(crate) async fn unless_stopped<T>(
+    stop: &mut tokio::sync::watch::Receiver<bool>,
+    work: impl std::future::Future<Output = T>,
+) -> Option<T> {
+    if *stop.borrow() {
+        return None;
+    }
+    tokio::select! {
+        v = work => Some(v),
+        _ = stopped(stop) => None,
+    }
+}
+
+/// Whether a path the window named may be read or written.
+///
+/// Three ways in, and no fourth: the OS dialog produced it this session, it
+/// lives in the staging directory Petrel itself writes dropped files to, or
+/// it is already on the draft being edited. Message content is kept out of
+/// the app by design; this is what keeps a compromised page from turning
+/// "attach this file" into "mail any file on the disk".
+pub(crate) fn accept_path(
+    picked: &std::collections::HashSet<std::path::PathBuf>,
+    staged_dir: &std::path::Path,
+    on_draft: &[String],
+    path: &str,
+) -> Result<std::path::PathBuf, String> {
+    use std::path::{Component, Path, PathBuf};
+    let candidate = PathBuf::from(path);
+    if picked.contains(&candidate) || on_draft.iter().any(|p| p == path) {
+        return Ok(candidate);
+    }
+    // Lexically under the staging directory, with nothing that climbs back
+    // out of it: `staged/../petrel.db` starts with the right prefix and
+    // names the database.
+    let climbs = candidate
+        .components()
+        .any(|c| matches!(c, Component::ParentDir));
+    if !climbs && candidate.starts_with(staged_dir) && Path::new(path) != staged_dir {
+        return Ok(candidate);
+    }
+    Err("that file was not chosen through Petrel".into())
+}
+
 /// The account on screen, as commands need it: an id, or the error that
 /// there is none yet.
 pub(crate) fn active_account(store: &Store) -> Result<i64, String> {
@@ -258,36 +376,137 @@ pub(crate) fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// A state over an in-memory store, for tests of the coordination it holds.
+#[cfg(test)]
+pub(crate) fn test_state(dir: &std::path::Path) -> Arc<AppState> {
+    let store = Store::open_in_memory().expect("store");
+    let account = store.ensure_test_account().expect("account");
+    Arc::new(AppState {
+        store: Mutex::new(store),
+        blobs: BlobStore::open(&dir.join("blobs")).expect("blobs"),
+        seeding: AtomicBool::new(false),
+        demo: AtomicBool::new(false),
+        seeded: AtomicUsize::new(0),
+        status_count: AtomicUsize::new(0),
+        source: Mutex::new(String::new()),
+        sync_error: Mutex::new(None),
+        stops: Mutex::new(std::collections::HashMap::new()),
+        picked: Mutex::new(std::collections::HashSet::new()),
+        caps: Mutex::new(std::collections::HashMap::new()),
+        outbox: Mutex::new(Vec::new()),
+        draining: AtomicBool::new(false),
+        draft_dirty: Mutex::new(std::collections::HashSet::new()),
+        pending_notify: Mutex::new(Vec::new()),
+        pending_alerts: Mutex::new(Vec::new()),
+        last_sync_ms: std::sync::atomic::AtomicI64::new(0),
+        ui_touch_ms: std::sync::atomic::AtomicI64::new(0),
+        server_total: std::sync::atomic::AtomicUsize::new(0),
+        shown_once: Mutex::new(std::collections::HashSet::new()),
+        tokens: Arc::new(ViewTokens::new()),
+        account_id: account,
+        data_dir: dir.display().to_string(),
+    })
+}
+
 #[cfg(test)]
 mod worker_switch_tests {
     use super::*;
     use std::collections::HashMap;
 
-    type Stops = Mutex<HashMap<i64, tokio::sync::watch::Sender<bool>>>;
-
-    /// The switch semantics every worker relies on: a receiver taken before
-    /// the account is removed reads true afterwards, and a receiver taken for
-    /// the same id afterwards — a re-added account — starts at false.
+    /// The switch semantics every worker relies on. A receiver taken before
+    /// the account is removed reads true afterwards; so does one taken for
+    /// the same id *after* the removal — a worker that only asks at the end
+    /// of a long first pass must not be handed a fresh switch. Only setting
+    /// the account up again starts clean.
     #[test]
-    fn stopping_an_account_flips_its_switch_and_leaves_a_fresh_one_behind() {
-        let stops: Stops = Mutex::new(HashMap::new());
-        let mut all = stops.lock().unwrap();
-        let old = all
-            .entry(7)
-            .or_insert_with(|| tokio::sync::watch::channel(false).0)
-            .subscribe();
-        assert!(!*old.borrow());
-        let tx = all.remove(&7).expect("a switch to flip");
-        let _ = tx.send(true);
-        assert!(*old.borrow(), "the removed account's workers see the stop");
-        let fresh = all
-            .entry(7)
-            .or_insert_with(|| tokio::sync::watch::channel(false).0)
-            .subscribe();
+    fn a_stopped_account_stays_stopped_until_it_is_set_up_again() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = test_state(dir.path());
+
+        let early = state.stop_signal(7);
+        assert!(!*early.borrow());
+        assert!(state.stop_workers(7), "a switch existed to flip");
+        assert!(
+            *early.borrow(),
+            "the removed account's workers see the stop"
+        );
+
+        // The bug: this receiver used to be a fresh, un-flipped switch.
+        let late = state.stop_signal(7);
+        assert!(
+            *late.borrow(),
+            "a worker asking after the removal must read stopped too"
+        );
+        // And an id nobody has asked about yet is stopped the moment it is
+        // removed, so nothing spawned for it later can run.
+        assert!(!state.stop_workers(8));
+        assert!(*state.stop_signal(8).borrow());
+
+        // Setting the account up again is the one thing that resets it.
+        state.reset_workers(7);
+        let fresh = state.stop_signal(7);
         assert!(
             !*fresh.borrow(),
             "a re-added account under the same id starts clean"
         );
+        assert!(
+            *late.borrow(),
+            "the old workers keep reading stopped; the new switch is not theirs"
+        );
+    }
+
+    /// `stopped` is the wait every worker selects against: it resolves at
+    /// once for a switch already flipped, and when its switch is replaced.
+    #[test]
+    fn the_stop_wait_resolves_at_once_for_an_account_already_stopped() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = test_state(dir.path());
+        state.stop_workers(3);
+        let mut rx = state.stop_signal(3);
+        tauri::async_runtime::block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(2), stopped(&mut rx))
+                .await
+                .expect("resolves without waiting for a change");
+            // Nothing runs on a stopped account.
+            let ran = unless_stopped(&mut rx, async { 1 }).await;
+            assert_eq!(ran, None);
+        });
+        // A replaced switch ends the old workers' wait too.
+        let mut old = state.stop_signal(4);
+        state.reset_workers(4);
+        tauri::async_runtime::block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(2), stopped(&mut old))
+                .await
+                .expect("the old switch going away is a stop");
+        });
+    }
+
+    /// A path reaches a command only if Petrel itself produced it.
+    #[test]
+    fn only_paths_petrel_handed_out_are_accepted() {
+        use std::path::PathBuf;
+        let staged = PathBuf::from("/data/Petrel/staged");
+        let mut picked: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+        picked.insert(PathBuf::from("/Users/me/Documents/report.pdf"));
+        let on_draft = vec!["/Users/me/Pictures/old.png".to_string()];
+
+        let ok = |p: &str| accept_path(&picked, &staged, &on_draft, p).is_ok();
+        assert!(ok("/Users/me/Documents/report.pdf"), "picked this session");
+        assert!(ok("/data/Petrel/staged/1-dropped.txt"), "staged by a drop");
+        assert!(ok("/Users/me/Pictures/old.png"), "already on the draft");
+
+        assert!(!ok("/etc/passwd"));
+        assert!(!ok("/Users/me/.ssh/id_rsa"));
+        assert!(
+            !ok("/data/Petrel/staged/../petrel.db"),
+            "climbing out of staged"
+        );
+        assert!(!ok("/data/Petrel/staged"), "the directory itself");
+        assert!(
+            !ok("/data/Petrel/stagedX/x"),
+            "a sibling with the same prefix"
+        );
+        assert!(!ok(""));
     }
 
     #[test]

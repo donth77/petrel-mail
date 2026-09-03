@@ -19,7 +19,7 @@ pub async fn discover_account(
 }
 
 /// The manual form's pre-fill when nothing answered: the conventional hosts.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn guess_servers(
     address: String,
 ) -> Option<(petrel_autoconfig::Server, petrel_autoconfig::Server)> {
@@ -88,7 +88,7 @@ async fn test_account_inner(setup: AccountSetup, which: Option<String>) -> Resul
 /// Stores the account: servers on the row, password in the keychain, and
 /// then starts syncing it. Only ever called after `test_account` passed, so
 /// a wrong password never reaches the keychain.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn add_account(setup: AccountSetup, state: State<Arc<AppState>>) -> Result<i64, String> {
     let servers = petrel_engine::store::AccountServers {
         imap_host: setup.imap_host,
@@ -136,6 +136,11 @@ pub fn add_account(setup: AccountSetup, state: State<Arc<AppState>>) -> Result<i
         return Err(e);
     }
     remember_password(id, &setup.password);
+    // A clean stop switch. Account ids are reused — the row has no
+    // AUTOINCREMENT — so an account added after a removal inherits the id
+    // *and* the flipped switch that stopped the old one's workers. Without
+    // this the new account's sync would stand down the moment it started.
+    state.reset_workers(id);
     // Syncing starts now, not at the next launch: step 3 of onboarding is
     // "Getting your mail", and it is watching.
     if let Some(cfg) = imap_config(&state, id) {
@@ -146,7 +151,7 @@ pub fn add_account(setup: AccountSetup, state: State<Arc<AppState>>) -> Result<i
 
 /// Makes an account the one the window shows. Nothing about syncing changes:
 /// every account is already being kept up to date; this is which one is read.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_active_account(account_id: i64, state: State<Arc<AppState>>) -> Result<(), String> {
     note_ui_touch(&state);
     let store = state.store()?;
@@ -163,7 +168,7 @@ pub fn set_active_account(account_id: i64, state: State<Arc<AppState>>) -> Resul
 }
 
 /// Removes an account, its mail and its password.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn remove_account(account_id: i64, state: State<Arc<AppState>>) -> Result<(), String> {
     // Workers first. Left running, the account's drain, send and sync loops
     // kept its server and its queue; and since ids are reused, an account
@@ -180,13 +185,13 @@ pub fn remove_account(account_id: i64, state: State<Arc<AppState>>) -> Result<()
     store.remove_account(account_id).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_accounts(state: State<Arc<AppState>>) -> Result<Vec<AccountSummary>, String> {
     let store = state.store()?;
     store.accounts().map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_account_color(
     account_id: i64,
     color: String,
@@ -198,7 +203,7 @@ pub fn set_account_color(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_account_archive(
     account_id: i64,
     enabled: bool,

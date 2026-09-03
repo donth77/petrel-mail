@@ -22,9 +22,14 @@ use serde::{Deserialize, Serialize};
 pub struct Server {
     pub host: String,
     pub port: u16,
-    /// Implicit TLS on connect (993/465). STARTTLS is deliberately not offered:
-    /// every provider worth configuring has an implicit-TLS port, and a
-    /// setting that can be downgraded is a setting that will be.
+    /// The connection is encrypted — always true, and kept as a field because
+    /// a stored account carries it.
+    ///
+    /// It is not a *choice*: the port decides how the encryption starts.
+    /// 993 and 465 speak TLS from the first byte; 587 starts in the clear and
+    /// is upgraded with STARTTLS before any credential is written, and a
+    /// server that will not upgrade is refused rather than fallen back on.
+    /// There is no plaintext setting to be downgraded to.
     pub tls: bool,
 }
 
@@ -111,6 +116,16 @@ fn server(host: &str, port: u16) -> Server {
     }
 }
 
+/// A submission server on 587, reached with STARTTLS.
+///
+/// Only where the provider offers nothing else. Apple and Microsoft have
+/// nothing listening on 465 at all, so pointing an account there meant every
+/// send failed at connect while the mail came in perfectly well — an account
+/// that looked configured and could not answer anybody.
+fn submission(host: &str) -> Server {
+    server(host, 587)
+}
+
 /// Providers matched by the address's own domain.
 ///
 /// Small on purpose: this is for the domains that appear in most address
@@ -130,7 +145,7 @@ fn known_by_domain(domain: &str) -> Option<Discovered> {
             provider: "iCloud Mail".into(),
             via: Via::KnownProvider,
             imap: server("imap.mail.me.com", 993),
-            smtp: server("smtp.mail.me.com", 465),
+            smtp: submission("smtp.mail.me.com"),
             auth: Auth::AppPassword,
             app_password_url: Some("https://account.apple.com/account/manage".into()),
         },
@@ -138,7 +153,7 @@ fn known_by_domain(domain: &str) -> Option<Discovered> {
             provider: "Outlook.com".into(),
             via: Via::KnownProvider,
             imap: server("outlook.office365.com", 993),
-            smtp: server("smtp-mail.outlook.com", 465),
+            smtp: submission("smtp-mail.outlook.com"),
             auth: Auth::OauthRequired,
             // Deliberately none: the app-password page this used to offer
             // cannot make a Microsoft account work with a client that has no
@@ -205,7 +220,7 @@ fn known_by_mx(mx_host: &str) -> Result<Option<Discovered>, Error> {
             provider: "iCloud Mail".into(),
             via: Via::Mx,
             imap: server("imap.mail.me.com", 993),
-            smtp: server("smtp.mail.me.com", 465),
+            smtp: submission("smtp.mail.me.com"),
             auth: Auth::AppPassword,
             app_password_url: Some("https://account.apple.com/account/manage".into()),
         }
@@ -223,7 +238,7 @@ fn known_by_mx(mx_host: &str) -> Result<Option<Discovered>, Error> {
             provider: "Microsoft 365".into(),
             via: Via::Mx,
             imap: server("outlook.office365.com", 993),
-            smtp: server("smtp.office365.com", 465),
+            smtp: submission("smtp.office365.com"),
             // Same reason as Outlook.com above: a tenant on Exchange Online
             // is the account type Microsoft turned password sign-in off for
             // first.
@@ -486,6 +501,35 @@ mod tests {
             "Gmail refuses the account password for IMAP"
         );
         assert!(known_by_domain("northbay.example").is_none());
+    }
+
+    /// Apple and Microsoft answer on 587 and nothing else. Sending them to
+    /// 465 was a configuration that could receive mail and never send any:
+    /// the connect simply timed out, message after message.
+    #[test]
+    fn apple_and_microsoft_submit_on_587() {
+        for domain in ["icloud.com", "me.com", "mac.com"] {
+            let d = known_by_domain(domain).unwrap();
+            assert_eq!(d.smtp.host, "smtp.mail.me.com", "{domain}");
+            assert_eq!(d.smtp.port, 587, "{domain}");
+            assert_eq!(d.imap.port, 993, "incoming is unchanged: {domain}");
+        }
+        for domain in ["outlook.com", "hotmail.com", "live.com", "msn.com"] {
+            let d = known_by_domain(domain).unwrap();
+            assert_eq!(d.smtp.host, "smtp-mail.outlook.com", "{domain}");
+            assert_eq!(d.smtp.port, 587, "{domain}");
+        }
+        let m365 = known_by_mx("northbay-example.mail.protection.outlook.com.")
+            .unwrap()
+            .unwrap();
+        assert_eq!(m365.smtp.host, "smtp.office365.com");
+        assert_eq!(m365.smtp.port, 587);
+        let icloud = known_by_mx("mx01.mail.icloud.com.").unwrap().unwrap();
+        assert_eq!(icloud.smtp.port, 587);
+        // Everyone else keeps implicit TLS, which is the better port where a
+        // provider offers it.
+        assert_eq!(known_by_domain("gmail.com").unwrap().smtp.port, 465);
+        assert_eq!(known_by_domain("fastmail.com").unwrap().smtp.port, 465);
     }
 
     #[test]

@@ -288,6 +288,9 @@ mod conditions {
             from: "dana wu <dana@vendorco.example>".into(),
             to: "me@example.com".into(),
             cc: "priya nair <priya@vendorco.example>".into(),
+            from_parts: vec!["dana wu".into(), "dana@vendorco.example".into()],
+            to_parts: vec!["me@example.com".into()],
+            cc_parts: vec!["priya nair".into(), "priya@vendorco.example".into()],
             subject: "q3 invoice attached".into(),
             list_id: String::new(),
             body: "please find the invoice for september attached.".into(),
@@ -601,5 +604,105 @@ mod round_trip {
             saved.conditions, conditions,
             "a condition changed on the way to disk and back"
         );
+    }
+}
+
+/// The exact operators, asked of an address rather than of the rendered line.
+///
+/// "From is dana@vendorco.example" is the rule somebody writes to pin one
+/// sender. Compared against "dana wu dana@vendorco.example" it could never
+/// hold — nor could `starts with` or `ends with`, on From, To or Cc, for any
+/// message ever — while the rule sat in the list looking enabled.
+mod exact_addresses {
+    use petrel_engine::rules::{Actions, Condition, Envelope, Op, Rule, matches};
+
+    const RAW: &[u8] = b"From: Dana Wu <dana@vendorco.example>\r\n\
+        To: Sam Okafor <sam@example.com>, billing@example.com\r\n\
+        Cc: Ada Chen <ada@example.com>\r\n\
+        Subject: Q3 Invoice attached\r\n\
+        Date: Tue, 18 Aug 2026 14:02:00 +0000\r\n\
+        Message-ID: <inv1@x>\r\nMIME-Version: 1.0\r\n\
+        Content-Type: text/plain\r\n\r\nbody\r\n";
+
+    fn envelope() -> Envelope {
+        let parsed = petrel_mime::parse_message(RAW).expect("parses");
+        Envelope::from_message(&parsed, RAW.len() as u64)
+    }
+
+    fn hit(field: &str, op: Op, value: &str) -> bool {
+        let rule = Rule {
+            id: 1,
+            position: 0,
+            enabled: true,
+            name: "r".into(),
+            conditions: vec![Condition {
+                field: field.into(),
+                header: None,
+                op,
+                value: value.into(),
+            }],
+            actions: Actions::default(),
+        };
+        matches(&rule, &envelope())
+    }
+
+    #[test]
+    fn is_matches_an_address_and_a_display_name() {
+        assert!(hit("from", Op::Is, "dana@vendorco.example"));
+        assert!(hit("from", Op::Is, "Dana Wu"), "the name counts too");
+        assert!(!hit("from", Op::Is, "dana"));
+        assert!(hit("to", Op::Is, "sam@example.com"));
+        assert!(hit("to", Op::Is, "billing@example.com"), "any of them");
+        assert!(hit("cc", Op::Is, "ada@example.com"));
+        assert!(!hit("cc", Op::Is, "sam@example.com"));
+    }
+
+    #[test]
+    fn starts_and_ends_with_read_one_address_at_a_time() {
+        assert!(hit("from", Op::StartsWith, "dana@"));
+        assert!(hit("from", Op::EndsWith, "@vendorco.example"));
+        assert!(
+            hit("to", Op::StartsWith, "billing@"),
+            "the second recipient"
+        );
+        assert!(
+            hit("to", Op::EndsWith, "@example.com"),
+            "shared by both, and true of each"
+        );
+        assert!(!hit("to", Op::StartsWith, "dana@"));
+    }
+
+    #[test]
+    fn a_negative_test_has_to_hold_for_every_address() {
+        // One recipient is billing@, so "is not billing@" is false for the
+        // line however innocent the other recipient looks.
+        assert!(!hit("to", Op::IsNot, "billing@example.com"));
+        assert!(hit("to", Op::IsNot, "someone-else@example.com"));
+        assert!(!hit("from", Op::NotEndsWith, "@vendorco.example"));
+        assert!(hit("from", Op::NotEndsWith, "@example.com"));
+        assert!(!hit("to", Op::NotStartsWith, "sam@"));
+    }
+
+    #[test]
+    fn contains_still_reads_the_whole_line() {
+        assert!(hit("from", Op::Contains, "vendorco"));
+        assert!(hit("to", Op::Contains, "Sam Okafor"));
+        assert!(!hit("to", Op::Contains, "Ada"), "cc is not to");
+        assert!(hit("to", Op::NotContains, "dana"));
+    }
+
+    #[test]
+    fn a_half_written_rule_still_matches_nothing() {
+        for op in [
+            Op::Is,
+            Op::IsNot,
+            Op::StartsWith,
+            Op::NotStartsWith,
+            Op::EndsWith,
+            Op::NotEndsWith,
+        ] {
+            assert!(!hit("from", op, ""), "empty value matched with {op:?}");
+            assert!(!hit("to", op, ""), "empty value matched with {op:?}");
+        }
     }
 }

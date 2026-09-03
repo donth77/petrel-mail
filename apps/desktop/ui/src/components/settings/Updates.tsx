@@ -14,6 +14,9 @@ const ERROR_TEXT: Record<string, StringId> = {
   missing: 'update-err-missing',
   malformed: 'update-err-malformed',
   unknown: 'update-err-unknown',
+  // A build with no updater in it — the platforms that ship no update
+  // artifact. Said outright rather than as "nothing published yet".
+  unsupported: 'update-err-unsupported',
 };
 const errorText = (kind: string) => t(ERROR_TEXT[kind] ?? 'update-err-unknown');
 
@@ -33,11 +36,13 @@ export function Updates({ onMessage }: { onMessage: (text: string) => void }) {
   const [installed, setInstalled] = useState(false);
 
   // The version is a fact about this app and costs nothing to read, so the
-  // pane can say what it is before anyone asks it to look further.
+  // pane can say what it is before anyone asks it to look further. Read
+  // from the build, not from the update server: opening this pane must not
+  // be a check, which the notes promise never happens uninvited.
   useEffect(() => {
     let live = true;
     api
-      .checkUpdate()
+      .appVersion()
       .then((s) => live && setStatus(s))
       .catch(() => {});
     return () => {

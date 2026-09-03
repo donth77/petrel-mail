@@ -27,6 +27,9 @@ VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$C
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$ROOT/assets/Petrel.icns" "$APP/Contents/Resources/Petrel.icns"
+# The licences of the libraries Petrel is built from. Several ask that
+# their notice ship with the software, so it goes inside the bundle.
+cp "$ROOT/THIRD_PARTY.md" "$APP/Contents/Resources/THIRD_PARTY.md"
 cp "$BIN" "$APP/Contents/MacOS/petrel-desktop"
 
 cat > "$APP/Contents/Info.plist" <<PLIST

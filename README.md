@@ -119,7 +119,7 @@ cargo petrel
 
 ```
 crates/petrel-engine       storage, search, actions, the engine API
-crates/petrel-providers    provider backends (IMAP/SMTP; Gmail API; Microsoft Graph)
+crates/petrel-providers    provider backends (IMAP and SMTP)
 crates/petrel-mime         parsing, sanitization profile, message building
 crates/petrel-autoconfig   account autodiscovery
 crates/petrel-testkit      synthetic mailboxes, fault injection, corpora

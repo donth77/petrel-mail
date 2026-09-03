@@ -101,6 +101,7 @@ pub fn frontend_log(entry: String) {
     // bundle, which is the only way macOS gives it real focus) stderr goes
     // nowhere readable, and diagnostics that vanish are not diagnostics.
     let path = data_dir().join("frontend.log");
+    rotate_if_large(&path, LOG_LIMIT_BYTES);
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -108,6 +109,50 @@ pub fn frontend_log(entry: String) {
     {
         use std::io::Write;
         let _ = writeln!(f, "{entry}");
+    }
+}
+
+/// How big a log file may grow before it is set aside. A few megabytes is
+/// weeks of ordinary use and still opens in anything.
+const LOG_LIMIT_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Sets a full log aside as `<name>.1`, replacing the previous one.
+///
+/// Neither log ever rotated, so on a machine that had run Petrel for a year
+/// `sync.log` was whatever a year of sync lines comes to, and it grew a line
+/// per event for as long as the app was installed. One previous file is
+/// kept, which is enough to read what happened just before a restart.
+pub(crate) fn rotate_if_large(path: &std::path::Path, limit: u64) {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return;
+    };
+    if meta.len() < limit {
+        return;
+    }
+    let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+        return;
+    };
+    let previous = path.with_file_name(format!("{name}.1"));
+    // Windows will not rename over an existing file.
+    let _ = std::fs::remove_file(&previous);
+    let _ = std::fs::rename(path, &previous);
+}
+
+/// Creates a directory that only this user can read, for files that are
+/// somebody's mail: dropped attachments waiting to be sent, and copies made
+/// so the OS can open them.
+pub(crate) fn create_private_dir(path: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(path)
     }
 }
 
@@ -141,6 +186,7 @@ pub(crate) fn data_dir() -> std::path::PathBuf {
 pub(crate) fn log_sync(msg: &str) {
     eprintln!("[sync] {msg}");
     let path = data_dir().join("sync.log");
+    rotate_if_large(&path, LOG_LIMIT_BYTES);
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -305,6 +351,37 @@ pub(crate) fn without_addresses(text: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+#[cfg(test)]
+mod rotation_tests {
+    use super::rotate_if_large;
+
+    /// A log over the limit is set aside as `.1` and a fresh one starts;
+    /// the one before that is gone, so two files is all a log ever costs.
+    #[test]
+    fn a_full_log_is_set_aside_and_the_one_before_it_replaced() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = dir.path().join("sync.log");
+        let previous = dir.path().join("sync.log.1");
+
+        std::fs::write(&log, "small\n").unwrap();
+        rotate_if_large(&log, 1024);
+        assert!(log.exists(), "under the limit, nothing moves");
+        assert!(!previous.exists());
+
+        std::fs::write(&previous, "older\n").unwrap();
+        std::fs::write(&log, "x".repeat(2048)).unwrap();
+        rotate_if_large(&log, 1024);
+        assert!(!log.exists(), "the full log was set aside");
+        assert_eq!(
+            std::fs::read(&previous).unwrap().len(),
+            2048,
+            "the previous file is the log that just filled"
+        );
+        // A missing file is not an error.
+        rotate_if_large(&dir.path().join("absent.log"), 1024);
+    }
 }
 
 #[cfg(test)]

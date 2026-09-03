@@ -86,7 +86,7 @@ function Row({
         {pending && <Icon icon={Clock} size={14} className="outbox-glyph" />}
         <span className="outbox-subject clip">
           {unknown && <span className="outbox-needs">{t('outbox-needs-you')} — </span>}
-          {row.subject || '(no subject)'}
+          {row.subject || t('no-subject')}
         </span>
       </header>
       <div className="outbox-to clip">

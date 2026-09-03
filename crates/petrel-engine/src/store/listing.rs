@@ -7,6 +7,25 @@ use super::*;
 use rusqlite::OptionalExtension;
 use std::collections::HashMap;
 
+/// Whether a row comes strictly after a cursor in a sender or subject sort.
+///
+/// The order the query states: conversations with nothing in the field last
+/// whichever way the sort runs, then the field itself in the sort's
+/// direction, then newest first within a tie.
+fn sorts_after(value: &str, date_ms: i64, cursor: &str, cursor_ms: i64, ascending: bool) -> bool {
+    if value.is_empty() != cursor.is_empty() {
+        return value.is_empty();
+    }
+    if value != cursor {
+        return if ascending {
+            value > cursor
+        } else {
+            value < cursor
+        };
+    }
+    date_ms < cursor_ms
+}
+
 /// The tags a row wears, as one JSON array per conversation.
 ///
 /// Shared by the two queries that build a row — the list's and the one search
@@ -31,6 +50,7 @@ type ThreadDetailRow = (
     i64,
     bool,
     Option<String>,
+    Option<String>,
 );
 
 /// SQLite allows 999 bound variables. Stay well under that for the
@@ -48,7 +68,27 @@ fn thread_detail_row(r: &rusqlite::Row) -> rusqlite::Result<ThreadDetailRow> {
         r.get(6)?,
         r.get(7)?,
         r.get(8)?,
+        r.get(9)?,
     ))
+}
+
+/// The wire Message-ID behind a stored dedupe key, if the key is one.
+///
+/// The key is the header when the message had one, and stands in for it
+/// otherwise: a blob hash for a message with no Message-ID, and a `::copy-N`
+/// suffix on a second server copy of the same message. A reply must name
+/// only the real thing — an invented id threads with nothing, and a
+/// suffixed one threads with nothing either.
+fn wire_msgid(key: Option<String>) -> Option<String> {
+    let key = key?;
+    if key.is_empty() || key.starts_with("blake3:") {
+        return None;
+    }
+    let bare = match key.find("::copy-") {
+        Some(at) => &key[..at],
+        None => key.as_str(),
+    };
+    (!bare.is_empty()).then(|| bare.to_string())
 }
 
 /// Display name and addr_norm, in header order, split by role.
@@ -293,7 +333,7 @@ impl Store {
                     _ => "lower(coalesce(nullif(n.subject,''), ''))",
                 };
                 format!(
-                    "SELECT n.k, n.d FROM (
+                    "SELECT n.k, n.d, {field} AS s FROM (
                        SELECT {key} AS k,
                               max(date_ms) AS d,
                               from_display, from_addr, subject
@@ -304,6 +344,71 @@ impl Store {
                      ORDER BY nullif({field}, '') IS NULL, {field} {dir}, n.d DESC"
                 )
             }
+        };
+        // What the cursor conversation sorts under, read from the messages
+        // themselves rather than from the page it came on. By sender or
+        // subject the walk looks for the cursor *row*, and a row another
+        // client had archived meanwhile was not in the walk at all — so the
+        // page came back empty and the list ended, halfway down a mailbox.
+        // With its value known, the page can start where the row would have
+        // been.
+        //
+        // Through this view first, because that is the value the walk
+        // compares against: a conversation's sender is its newest message's,
+        // and its newest message *in the inbox* is not always its newest
+        // message. Falling back to the whole account is for the case this
+        // exists for — the conversation has left the view, so the view can
+        // no longer say what it sorted under, and its newest message
+        // anywhere is the closest thing to the answer.
+        let cursor_value: Option<String> = match (sort.key, before) {
+            (SortKey::Sender | SortKey::Subject, Some((_, cursor_k))) => {
+                let expr = match sort.key {
+                    SortKey::Sender => "lower(coalesce(nullif(from_display,''), from_addr, ''))",
+                    _ => "lower(coalesce(nullif(subject,''), ''))",
+                };
+                // The key is an i64 the caller handed in, which is what
+                // makes writing it into the SQL safe; the view's own bound
+                // value is still bound, as ?3.
+                let scoped = format!(
+                    "SELECT {expr} FROM messages
+                      WHERE deleted_at_ms IS NULL AND account_id = {account}
+                        AND {key} = {cursor_k} AND {inner}
+                      ORDER BY date_ms DESC LIMIT 1"
+                );
+                let mut stmt = self.conn.prepare_cached(&scoped)?;
+                let supplied: Vec<Box<dyn rusqlite::ToSql>> = vec![
+                    Box::new(rusqlite::types::Null),
+                    Box::new(rusqlite::types::Null),
+                    match bound.clone() {
+                        Some(b) => Box::new(b) as Box<dyn rusqlite::ToSql>,
+                        None => Box::new(rusqlite::types::Null),
+                    },
+                ];
+                let wanted = stmt.parameter_count();
+                let in_view: Option<String> = stmt
+                    .query_row(
+                        rusqlite::params_from_iter(supplied.into_iter().take(wanted)),
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                match in_view {
+                    Some(v) => Some(v),
+                    None => self
+                        .conn
+                        .query_row(
+                            &format!(
+                                "SELECT {expr} FROM messages
+                                  WHERE deleted_at_ms IS NULL AND account_id = {account}
+                                    AND {key} = ?1
+                                  ORDER BY date_ms DESC LIMIT 1"
+                            ),
+                            params![cursor_k],
+                            |r| r.get(0),
+                        )
+                        .optional()?,
+                }
+            }
+            _ => None,
         };
         let mut stmt = self.conn.prepare_cached(&sql)?;
         // A view's predicate binds its folder role or tag name as ?3; one
@@ -369,12 +474,33 @@ impl Store {
                         skipping = false;
                         found_cursor = true;
                     }
-                    (_, Some((_, cursor_k))) => {
+                    (_, Some((cursor_d, cursor_k))) => {
                         if k == cursor_k {
                             skipping = false;
                             found_cursor = true;
+                            continue;
                         }
-                        continue;
+                        // The cursor row is met before anything that sorts
+                        // strictly after it, so reaching one of those means
+                        // it is no longer in this view — and this row is
+                        // where the page begins. Rows sorting level with it
+                        // are still skipped, which is what happens while it
+                        // is there.
+                        let past = match cursor_value.as_deref() {
+                            Some(cv) => sorts_after(
+                                &row.get::<_, String>(2)?,
+                                d,
+                                cv,
+                                cursor_d,
+                                sort.ascending,
+                            ),
+                            None => false,
+                        };
+                        if !past {
+                            continue;
+                        }
+                        skipping = false;
+                        found_cursor = true;
                     }
                     (_, None) => unreachable!("skipping only with a cursor"),
                 }
@@ -948,7 +1074,7 @@ impl Store {
                     EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = messages.id
                               AND (a.mime LIKE '%calendar%' OR a.mime = 'application/ics'
                                    OR lower(coalesce(a.filename,'')) LIKE '%.ics')),
-                    invite_response
+                    invite_response, message_id_hdr
              FROM messages
              WHERE id = ?1 AND deleted_at_ms IS NULL";
         let mut stmt = self.conn.prepare_cached(COLS)?;
@@ -978,7 +1104,7 @@ impl Store {
                     EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = messages.id
                               AND (a.mime LIKE '%calendar%' OR a.mime = 'application/ics'
                                    OR lower(coalesce(a.filename,'')) LIKE '%.ics')),
-                    invite_response
+                    invite_response, message_id_hdr
              FROM messages
              WHERE coalesce(thread_id, -id) = ?1 AND deleted_at_ms IS NULL";
 
@@ -1087,6 +1213,31 @@ impl Store {
         Ok(out)
     }
 
+    /// The ids each message referenced, as ingest recorded them.
+    fn references_for_messages(&self, ids: &[i64]) -> Result<HashMap<i64, Vec<String>>> {
+        let mut out: HashMap<i64, Vec<String>> = HashMap::new();
+        for chunk in ids.chunks(HYDRATE_IN_CHUNK) {
+            if chunk.is_empty() {
+                continue;
+            }
+            let sql = format!(
+                "SELECT message_id, ref_msgid FROM message_refs
+                 WHERE message_id IN ({})
+                 ORDER BY message_id, ref_msgid",
+                sql_in_marks(chunk.len())
+            );
+            let mut stmt = self.conn.prepare_cached(&sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter()), |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (message_id, msgid) = row?;
+                out.entry(message_id).or_default().push(msgid);
+            }
+        }
+        Ok(out)
+    }
+
     fn hydrate_thread_messages(&self, rows: Vec<ThreadDetailRow>) -> Result<Vec<ThreadMessage>> {
         if rows.is_empty() {
             return Ok(Vec::new());
@@ -1094,6 +1245,7 @@ impl Store {
         let ids: Vec<i64> = rows.iter().map(|r| r.0).collect();
         let addrs = self.addresses_for_messages(&ids)?;
         let files = self.attachments_for_messages(&ids)?;
+        let mut refs = self.references_for_messages(&ids)?;
         let mut out = Vec::with_capacity(rows.len());
         for (
             id,
@@ -1105,6 +1257,7 @@ impl Store {
             flags,
             has_calendar,
             invite_response,
+            msgid_key,
         ) in rows
         {
             let buckets = addrs.get(&id).cloned().unwrap_or_default();
@@ -1134,6 +1287,8 @@ impl Store {
                 recipients,
                 recipient_addrs,
                 attachments,
+                msgid: wire_msgid(msgid_key),
+                references: refs.remove(&id).unwrap_or_default(),
             });
         }
         Ok(out)

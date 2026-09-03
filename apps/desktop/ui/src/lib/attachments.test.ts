@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ATTACHMENT_LIMIT, encodedSize, fits, stageDropped } from './attachments';
+import { ATTACHMENT_LIMIT, encodedSize, fits, pickAttachments, stageDropped } from './attachments';
 
 describe('encodedSize', () => {
   it('is always at least the raw size', () => {
@@ -73,5 +73,21 @@ describe('stageDropped', () => {
       return { path: `/staged/${n}`, name: n, size: b.byteLength };
     });
     expect(staged).toEqual([]);
+  });
+});
+
+describe('pickAttachments', () => {
+  const info = async (paths: string[]) =>
+    paths.map((path) => ({ path, name: path.split('/').pop() || path, size: 1024 }));
+
+  it('answers null for a cancelled picker, which is not a failure', async () => {
+    expect(await pickAttachments([], info, async () => [])).toBeNull();
+  });
+
+  it('keeps what the shell picked, once each', async () => {
+    const already = { path: '/a.pdf', name: 'a.pdf', size: 1024 };
+    const res = await pickAttachments([already], info, async () => ['/a.pdf', '/b.pdf']);
+    expect(res?.kept.map((a) => a.path)).toEqual(['/a.pdf', '/b.pdf']);
+    expect(res?.rejected).toEqual([]);
   });
 });

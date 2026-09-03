@@ -4,5 +4,6 @@ description = "Synthetic mailboxes, corpora, and fault-injection helpers for Pet
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]

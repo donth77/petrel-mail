@@ -139,11 +139,10 @@ export function Storage({ onMessage }: { onMessage: (text: string) => void }) {
   const exportTo = async (account: Account, view: string, label: string) => {
     setBusy(true);
     try {
-      const { save } = await import('@tauri-apps/plugin-dialog');
-      const path = await save({
-        defaultPath: `petrel-${scopeSlug(label)}-${account.email}.mbox`,
-        filters: [{ name: 'mbox', extensions: ['mbox'] }],
-      });
+      const path = await api.pickSavePath(
+        `petrel-${scopeSlug(label)}-${account.email}.mbox`,
+        'mbox',
+      );
       // Cancelling is an answer, not a failure.
       if (!path) return;
       const result = await api.exportMbox(account.id, view, path);
@@ -165,13 +164,8 @@ export function Storage({ onMessage }: { onMessage: (text: string) => void }) {
   const importFrom = async () => {
     setBusy(true);
     try {
-      const { open } = await import('@tauri-apps/plugin-dialog');
-      const picked = await open({
-        multiple: true,
-        filters: [{ name: 'Mail archives', extensions: ['mbox', 'mbx', 'eml'] }],
-      });
-      if (!picked) return;
-      const paths = Array.isArray(picked) ? picked : [picked];
+      const paths = await api.pickFiles('mail');
+      if (paths.length === 0) return;
       const r = await api.importMail(paths);
       onMessage(
         r.failed > 0 || r.duplicates > 0
@@ -193,11 +187,7 @@ export function Storage({ onMessage }: { onMessage: (text: string) => void }) {
   const exportSettings = async () => {
     setBusy(true);
     try {
-      const { save } = await import('@tauri-apps/plugin-dialog');
-      const path = await save({
-        defaultPath: 'petrel-settings.json',
-        filters: [{ name: 'Petrel settings', extensions: ['json'] }],
-      });
+      const path = await api.pickSavePath('petrel-settings.json', 'settings');
       if (!path) return;
       const r = await api.exportSettings(path);
       const [prefs, accounts] = r.split('/');
@@ -212,12 +202,8 @@ export function Storage({ onMessage }: { onMessage: (text: string) => void }) {
   const importSettings = async () => {
     setBusy(true);
     try {
-      const { open } = await import('@tauri-apps/plugin-dialog');
-      const picked = await open({
-        multiple: false,
-        filters: [{ name: 'Petrel settings', extensions: ['json'] }],
-      });
-      if (!picked || typeof picked !== 'string') return;
+      const [picked] = await api.pickFiles('settings');
+      if (!picked) return;
       const r = await api.importSettings(picked);
       const [prefs, updated, added] = r.split('/');
       onMessage(t('settings-imported', { prefs, updated, added }));
@@ -363,7 +349,7 @@ export function Storage({ onMessage }: { onMessage: (text: string) => void }) {
                 <tr key={a.id}>
                   <td>{accountLabel(a)}</td>
                   <td className="mono num">
-                    {t('storage-account-messages', { count: s.messages.toLocaleString() })}
+                    {t('storage-account-messages', { count: s.messages })}
                   </td>
                   <td className="mono num">{fileSize(s.blob_bytes)}</td>
                 </tr>

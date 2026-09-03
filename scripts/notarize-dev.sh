@@ -23,14 +23,23 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 APP="$ROOT/target/Petrel.app"
-IDENTITY="${PETREL_SIGN_IDENTITY:-Developer ID Application: Thomas Donohue (7726PJ7MGW)}"
+# Looked up rather than written down: the certificate name carries a
+# person and a team id, and this file is public.
+IDENTITY="${PETREL_SIGN_IDENTITY:-}"
+if [ -z "$IDENTITY" ]; then
+  IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
+    | grep 'Developer ID Application' | head -1 \
+    | sed -E 's/.*"(.*)".*/\1/' || true)"
+fi
 NOTARY_PROFILE="${PETREL_NOTARY_PROFILE:-petrel-notary}"
-ENTITLEMENTS="$ROOT/apps/desktop/src-tauri/entitlements.plist"
+ENTITLEMENTS="$ROOT/apps/desktop/src-tauri/Entitlements.plist"
 
 say() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 die() { printf '\033[31m%s\033[0m\n' "$1" >&2; exit 1; }
 
 [ -d "$APP" ] || die "no app bundle. Run ./scripts/rebuild.sh first."
+[ -n "$IDENTITY" ] || die "no Developer ID Application certificate in the keychain.
+  Install one, or set PETREL_SIGN_IDENTITY to its exact name."
 xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1 ||
   die "no notarization credential in profile '$NOTARY_PROFILE'. See scripts/release.sh."
 

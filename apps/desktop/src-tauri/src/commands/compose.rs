@@ -1,6 +1,7 @@
 //! Writing mail: drafts, quoting, attachments being staged, scheduling, and the identity a message goes out under.
 
-use crate::diag::data_dir;
+use crate::commands::clean_header;
+use crate::diag::{create_private_dir, data_dir};
 use crate::state::{AppState, active_account, now_ms};
 use crate::sync::drafts::{push_draft_to_server, schedule_draft_push, spawn_drop_server_draft};
 use petrel_engine::store::{DraftRecord, Identity};
@@ -8,7 +9,7 @@ use std::sync::Arc;
 use tauri::State;
 
 /// Saves the composer's contents so they survive closing it.
-#[tauri::command]
+#[tauri::command(async)]
 #[allow(clippy::too_many_arguments)]
 pub fn save_draft(
     draft_id: Option<i64>,
@@ -23,19 +24,58 @@ pub fn save_draft(
     state: State<Arc<AppState>>,
 ) -> Result<i64, String> {
     let store = state.store()?;
-    let account = active_account(&store)?;
+    // The draft's own account, never the active one. Cmd-2 with a composer
+    // open switches the rail while the message stays on screen, and every
+    // save after it wrote the draft under the other account — a different
+    // address to send as, a different signature, a different server's
+    // Drafts folder. A draft belongs to the account it was started in until
+    // somebody says otherwise.
+    let account = match draft_id {
+        Some(id) => store
+            .account_of_message(id)
+            .map_err(|e| e.to_string())?
+            .ok_or("that draft is no longer here")?,
+        None => active_account(&store)?,
+    };
+    // Files already on the row went through this same check when they were
+    // attached; anything new must be a path Petrel itself handed out.
+    let held: Vec<String> = match draft_id {
+        Some(id) => store
+            .load_draft(id)
+            .map(|d| d.envelope.attachments)
+            .unwrap_or_default(),
+        None => Vec::new(),
+    };
+    let mut files = Vec::new();
+    for path in attachments.unwrap_or_default() {
+        files.push(
+            state
+                .vetted_path(&path, &held)?
+                .to_string_lossy()
+                .into_owned(),
+        );
+    }
+    // Scrubbed on the way in as well as on the way out. The composer's
+    // fields are ordinary text to the person typing them, but a reply's
+    // subject and reply headers arrive from a message somebody else wrote —
+    // and a header value carrying a newline is not a value, it is a second
+    // header. Only the header fields: a body may contain whatever it likes.
     let envelope = petrel_engine::store::DraftEnvelope {
-        in_reply_to,
-        references: references.unwrap_or_default(),
-        attachments: attachments.unwrap_or_default(),
+        in_reply_to: in_reply_to.map(|v| clean_header(&v)),
+        references: references
+            .unwrap_or_default()
+            .iter()
+            .map(|r| clean_header(r))
+            .collect(),
+        attachments: files,
     };
     let id = store
         .save_draft_full(
             account,
             draft_id,
-            &to,
-            cc.as_deref().unwrap_or(""),
-            &subject,
+            &clean_header(&to),
+            &clean_header(cc.as_deref().unwrap_or("")),
+            &clean_header(&subject),
             &body,
             &html,
             &envelope,
@@ -65,7 +105,7 @@ pub struct DraftConflict {
     pub other_id: i64,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn draft_conflict(
     id: i64,
     state: State<Arc<AppState>>,
@@ -93,11 +133,15 @@ pub async fn resolve_draft_conflict(
     state: State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
     use crate::config::imap_config_for;
-    use crate::state::active_account;
 
     let (account, cfg, drafts_path, our_uid, other_uid) = {
         let store = state.store()?;
-        let account = active_account(&store)?;
+        // The draft's account. Expunging its server copy under whichever
+        // account the rail happens to show destroys a stranger's draft.
+        let account = store
+            .account_of_message(id)
+            .map_err(|e| e.to_string())?
+            .ok_or("that draft is no longer here")?;
         let cfg = imap_config_for(&store, account);
         let drafts_path = store
             .folder_for_role(account, "drafts")
@@ -175,7 +219,7 @@ pub async fn resolve_draft_conflict(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn load_draft(id: i64, state: State<Arc<AppState>>) -> Result<DraftRecord, String> {
     let store = state.store()?;
     let record = store.load_draft(id).map_err(|e| e.to_string())?;
@@ -220,7 +264,7 @@ pub fn load_draft(id: i64, state: State<Arc<AppState>>) -> Result<DraftRecord, S
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_draft(id: i64, state: State<Arc<AppState>>) -> Result<(), String> {
     // The server's copy goes with it. Read before the local row disappears.
     spawn_drop_server_draft(state.inner(), id);
@@ -229,7 +273,7 @@ pub fn delete_draft(id: i64, state: State<Arc<AppState>>) -> Result<(), String> 
 }
 
 /// Addresses to offer while a recipient is being typed.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn complete_addresses(
     prefix: String,
     state: State<Arc<AppState>>,
@@ -268,7 +312,7 @@ pub(crate) struct Quoted {
 /// *sent*. Quoting a tracked message with its pixel intact would forward that
 /// pixel to everyone on the reply and fire it again for each of them, turning
 /// the person replying into the tracker's delivery mechanism.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn quote_message(message_id: i64, state: State<Arc<AppState>>) -> Result<Quoted, String> {
     let store = state.store()?;
     let hash = store
@@ -326,7 +370,7 @@ pub fn quote_message(message_id: i64, state: State<Arc<AppState>>) -> Result<Quo
 /// The name is reduced to a file name and nothing else. It arrives from a drag
 /// the application did not compose, so `../../.ssh/id_rsa` has to be a file
 /// called `id_rsa` in the staging directory and not a path out of it.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn stage_attachment(name: String, bytes: Vec<u8>) -> Result<AttachmentInfo, String> {
     let stem = std::path::Path::new(&name)
         .file_name()
@@ -335,7 +379,10 @@ pub fn stage_attachment(name: String, bytes: Vec<u8>) -> Result<AttachmentInfo, 
         .unwrap_or_else(|| "attachment".to_string());
 
     let dir = data_dir().join("staged");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    // 0700 on Unix: a staged file is somebody's mail sitting in a directory
+    // under their profile, and every other account on the machine could
+    // read it.
+    create_private_dir(&dir).map_err(|e| e.to_string())?;
 
     // Prefixed rather than overwritten: dropping two files of the same name
     // from different folders is ordinary, and the second must not replace the
@@ -365,22 +412,23 @@ pub fn stage_attachment(name: String, bytes: Vec<u8>) -> Result<AttachmentInfo, 
 /// Statted here rather than in the window: the file picker hands back paths,
 /// and asking the OS for a size is something the backend can already do
 /// without a second plugin and a second capability to review.
-#[tauri::command]
-pub fn attachment_info(paths: Vec<String>) -> Vec<AttachmentInfo> {
+#[tauri::command(async)]
+pub fn attachment_info(paths: Vec<String>, state: State<Arc<AppState>>) -> Vec<AttachmentInfo> {
     paths
         .into_iter()
-        .map(|path| {
-            let p = std::path::Path::new(&path);
-            AttachmentInfo {
-                name: p
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| path.clone()),
-                // Unreadable reports zero rather than failing the whole pick;
-                // the send will report it properly if it is still a problem.
-                size: std::fs::metadata(p).map(|m| m.len()).unwrap_or(0),
-                path,
-            }
+        // Only paths a Petrel picker produced. Statting an arbitrary path
+        // says whether it exists and how big it is, which is a little
+        // filesystem oracle for anything that gets into the window.
+        .filter_map(|path| state.vetted_path(&path, &[]).ok().map(|p| (path, p)))
+        .map(|(path, p)| AttachmentInfo {
+            name: p
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.clone()),
+            // Unreadable reports zero rather than failing the whole pick;
+            // the send will report it properly if it is still a problem.
+            size: std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0),
+            path,
         })
         .collect()
 }
@@ -424,13 +472,25 @@ pub(crate) fn guess_content_type(path: &std::path::Path) -> String {
 }
 
 /// Marks a draft to go later, or pulls it back.
-#[tauri::command]
+///
+/// The row is looked up first so that scheduling a draft that is no longer
+/// here is an error rather than a silent success: an UPDATE that matches
+/// nothing returns Ok, and a message discarded while its composer was open
+/// reported "Sending in 20 seconds" about nothing at all. The account is the
+/// row's own — the send worker reads the queue per account, so the message
+/// goes out over the servers of whichever account wrote it, whatever the
+/// rail is showing by then.
+#[tauri::command(async)]
 pub fn schedule_send(
     draft_id: i64,
     at_ms: Option<i64>,
     state: State<Arc<AppState>>,
 ) -> Result<(), String> {
     let store = state.store()?;
+    store
+        .account_of_message(draft_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("that message is no longer here")?;
     store
         .schedule_send(draft_id, at_ms)
         .map_err(|e| e.to_string())?;
@@ -441,14 +501,14 @@ pub fn schedule_send(
 }
 
 /// Who mail is sent as, and what goes underneath it.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_identity(state: State<Arc<AppState>>) -> Result<Identity, String> {
     let store = state.store()?;
     let account = active_account(&store)?;
     store.identity(account).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_identity(
     display_name: String,
     signature: String,
@@ -460,4 +520,93 @@ pub fn set_identity(
     store
         .set_identity(account, &display_name, &signature, signature_on_reply)
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod draft_account_tests {
+    use petrel_engine::store::{AccountServers, DraftEnvelope, Store};
+
+    fn two_accounts() -> (Store, i64, i64) {
+        let store = Store::open_in_memory().expect("store");
+        let first = store
+            .add_account("imap", "a@example.com", "A", &AccountServers::default())
+            .expect("first");
+        let second = store
+            .add_account("imap", "b@example.com", "B", &AccountServers::default())
+            .expect("second");
+        (store, first, second)
+    }
+
+    /// A draft belongs to the account it was written in, and keeps belonging
+    /// to it while the rail moves. Cmd-1…9 fires even while somebody is
+    /// typing, so the composer outliving an account switch is ordinary use
+    /// rather than an edge case.
+    #[test]
+    fn a_draft_keeps_its_own_account_whatever_the_rail_shows() {
+        let (store, first, second) = two_accounts();
+        store.set_active_account(first).unwrap();
+        let draft = store
+            .save_draft(first, None, "someone@example.com", "Hi", "body", "")
+            .unwrap();
+
+        // The rail moves to the other account.
+        store.set_active_account(second).unwrap();
+        assert_eq!(store.active_account().unwrap(), Some(second));
+        // What the save reads instead of the active account.
+        assert_eq!(store.account_of_message(draft).unwrap(), Some(first));
+
+        // Saving again under that account leaves the row where it was.
+        store
+            .save_draft_full(
+                first,
+                Some(draft),
+                "someone@example.com",
+                "",
+                "Hi again",
+                "body",
+                "",
+                &DraftEnvelope::default(),
+            )
+            .unwrap();
+        assert_eq!(store.account_of_message(draft).unwrap(), Some(first));
+
+        // And the send worker reads the queue per account, so the message
+        // goes out over the servers of the account that wrote it — with its
+        // address, its signature, its Sent folder — and never the other's.
+        store.schedule_send(draft, Some(1_000)).unwrap();
+        assert!(
+            store
+                .due_sends(first, 2_000)
+                .unwrap()
+                .iter()
+                .any(|d| d.id == draft),
+            "the account that wrote it sends it"
+        );
+        assert!(
+            store.due_sends(second, 2_000).unwrap().is_empty(),
+            "the account on screen must not send another account's message"
+        );
+    }
+
+    /// A draft discarded while its composer was still open. Both commands
+    /// look the row up first, so a save or a schedule against a message that
+    /// is no longer here is an error rather than an UPDATE matching nothing
+    /// and reporting success.
+    #[test]
+    fn a_draft_that_is_gone_is_an_error_rather_than_a_silent_success() {
+        let (store, first, _second) = two_accounts();
+        let draft = store
+            .save_draft(first, None, "someone@example.com", "Hi", "body", "")
+            .unwrap();
+        store.delete_draft(draft).unwrap();
+        assert_eq!(
+            store.account_of_message(draft).unwrap(),
+            None,
+            "the lookup both commands refuse on"
+        );
+        // The store itself is happy to schedule nothing at all, which is
+        // why the check has to be here.
+        assert!(store.schedule_send(draft, Some(1_000)).is_ok());
+        assert!(store.due_sends(first, 2_000).unwrap().is_empty());
+    }
 }

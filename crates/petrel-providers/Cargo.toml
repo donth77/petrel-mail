@@ -4,6 +4,7 @@ description = "Provider backends: IMAP/SMTP, Gmail API, Microsoft Graph (JMAP la
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [features]
 # Plaintext IMAP exists ONLY for loopback integration tests against a throwaway
@@ -15,6 +16,9 @@ insecure-plaintext = []
 async-imap = { version = "0.11", default-features = false, features = ["runtime-tokio"] }
 tokio = { version = "1", features = ["net", "rt-multi-thread", "macros", "io-util", "time"] }
 tokio-rustls = "0.26"
+# TCP keepalive on the socket before rustls sees it. Tokio's own TcpStream
+# cannot set it and already depends on this crate, so it costs no new build.
+socket2 = "0.6"
 rustls = "0.23"
 webpki-roots = "1"
 futures = "0.3"

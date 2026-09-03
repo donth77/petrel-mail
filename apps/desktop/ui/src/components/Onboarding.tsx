@@ -440,7 +440,7 @@ function FirstSync({ address, onDone }: { address: string; onDone: () => void })
       <p className="onb-count mono">
         {total > 0
           ? t('onb-progress', { count: count.toLocaleString(), total: total.toLocaleString() })
-          : t('onb-progress-unknown', { count: count.toLocaleString() })}
+          : t('onb-progress-unknown', { count })}
         {count > 0 && <> · {t('onb-inbox-ready')}</>}
       </p>
       <p className="onb-quiet">{address}</p>

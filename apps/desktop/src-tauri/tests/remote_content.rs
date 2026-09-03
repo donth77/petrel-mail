@@ -65,6 +65,20 @@ fn the_blocked_count_is_reported_out_of_the_frame() {
     );
 }
 
+/// One directive out of a policy.
+///
+/// Asked for by name rather than searched for as a substring: the policy
+/// now names the app window's own `https://tauri.localhost` in
+/// `frame-ancestors`, and a search over the whole string reads that as
+/// permission to load pictures from the web.
+fn directive(csp: &str, name: &str) -> String {
+    csp.split(';')
+        .map(str::trim)
+        .find(|d| d.starts_with(&format!("{name} ")))
+        .unwrap_or_else(|| panic!("no {name} directive in {csp}"))
+        .to_string()
+}
+
 #[test]
 fn blocking_removes_the_image_and_refuses_it_in_the_policy() {
     let (html, csp) = render(false);
@@ -72,9 +86,11 @@ fn blocking_removes_the_image_and_refuses_it_in_the_policy() {
         !html.contains("tracker.example"),
         "remote src survived: {html}"
     );
+    let img = directive(&csp, "img-src");
     assert!(
-        !csp.contains("https:"),
-        "policy still permits remote images: {csp}"
+        !img.split_whitespace()
+            .any(|s| matches!(s, "https:" | "http:" | "*")),
+        "policy still permits remote images: {img}"
     );
 }
 
@@ -85,10 +101,34 @@ fn allowing_lets_the_image_through_both_layers() {
         html.contains("tracker.example"),
         "the setting did not reach the sanitizer: {html}"
     );
+    let img = directive(&csp, "img-src");
     assert!(
-        csp.contains("https:"),
-        "the setting did not reach the policy: {csp}"
+        img.split_whitespace().any(|s| s == "https:"),
+        "the setting did not reach the policy: {img}"
     );
+}
+
+/// Windows: the reading pane was blank, and one reason was this directive.
+/// `frame-ancestors 'self'` is the *frame's* origin — no app window is ever
+/// that — so Chromium refused to display the message at all. The embedder
+/// is named outright now, in every spelling the platforms use.
+#[test]
+fn the_app_window_is_allowed_to_show_the_frame_on_every_platform() {
+    for allow in [false, true] {
+        let (_, csp) = render(allow);
+        let ancestors = directive(&csp, "frame-ancestors");
+        for origin in [
+            "tauri://localhost",
+            "http://tauri.localhost",
+            "https://tauri.localhost",
+        ] {
+            assert!(
+                ancestors.split_whitespace().any(|s| s == origin),
+                "{origin} cannot embed the reading pane: {ancestors}"
+            );
+        }
+        assert!(!ancestors.contains("'self'"), "{ancestors}");
+    }
 }
 
 /// Whatever the setting, the directives that matter never move. Allowing

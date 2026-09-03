@@ -9,6 +9,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_imap::extensions::idle::IdleResponse;
+use async_imap::imap_proto::{AttributeValue, MessageSection, Response, SectionPath, Status};
+use async_imap::types::Flag;
 use async_imap::{Client, Session};
 use futures::StreamExt;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -185,7 +187,8 @@ pub(crate) async fn tls_stream_for(
     tls_stream(host, port).await
 }
 
-async fn tls_stream(host: &str, port: u16) -> Result<tokio_rustls::client::TlsStream<TcpStream>> {
+/// The rustls setup every connection out of this crate uses.
+fn tls_config() -> Arc<ClientConfig> {
     // rustls needs one crypto provider chosen for the process. The desktop
     // chooses at startup; anything else that opens a connection through this
     // crate (a test, a tool) gets the same choice here rather than a panic.
@@ -197,16 +200,386 @@ async fn tls_stream(host: &str, port: u16) -> Result<tokio_rustls::client::TlsSt
     };
     // TODO(M4): swap for the OS trust store so corporate/self-signed CAs work,
     // alongside the explicit per-host pinning flow for self-hosters.
-    let config = ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    let connector = TlsConnector::from(Arc::new(config));
-    let tcp = TcpStream::connect((host, port)).await?;
+    Arc::new(
+        ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    )
+}
+
+async fn tls_stream(host: &str, port: u16) -> Result<tokio_rustls::client::TlsStream<TcpStream>> {
+    let tcp = connect_tcp(host, port).await?;
+    tls_upgrade(host, tcp).await
+}
+
+/// Opens the socket a connection runs on.
+///
+/// Two things the bare connect did not do. A deadline, because a black-holed
+/// address otherwise waits out the operating system's own two minutes with the
+/// account showing nothing at all; and TCP keepalive, because a NAT mapping
+/// that expires while the lid is shut leaves a socket that is never closed and
+/// never answers — the failure with no symptom.
+async fn connect_tcp(host: &str, port: u16) -> Result<TcpStream> {
+    let limit = connect_timeout();
+    let tcp = match tokio::time::timeout(limit, TcpStream::connect((host, port))).await {
+        Ok(result) => result?,
+        Err(_) => {
+            return Err(ImapError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("no answer from {host}:{port} after {}s", limit.as_secs()),
+            )));
+        }
+    };
+    let keepalive = socket2::TcpKeepalive::new()
+        .with_time(Duration::from_secs(60))
+        .with_interval(Duration::from_secs(20));
+    // Best effort: a platform that refuses the option is not a reason to
+    // refuse the connection.
+    let _ = socket2::SockRef::from(&tcp).set_tcp_keepalive(&keepalive);
+    Ok(tcp)
+}
+
+/// Wraps an already-connected socket in TLS.
+///
+/// The whole of an implicit-TLS connect, and the second half of STARTTLS on
+/// the submission port. One function for both, because an upgrade that
+/// validated certificates less strictly than the implicit path would be a
+/// downgrade with extra steps.
+pub(crate) async fn tls_upgrade(
+    host: &str,
+    tcp: TcpStream,
+) -> Result<tokio_rustls::client::TlsStream<TcpStream>> {
+    let connector = TlsConnector::from(tls_config());
     let name = ServerName::try_from(host.to_string()).map_err(|e| ImapError::Tls(e.to_string()))?;
     connector
         .connect(name, tcp)
         .await
         .map_err(|e| ImapError::Tls(e.to_string()))
+}
+
+/// How long a connect may take before the host is called unreachable.
+fn connect_timeout() -> Duration {
+    crate::smtp::phase_timeout("PETREL_IMAP_CONNECT_SECONDS", 30)
+}
+
+/// How long a session may sit with the server saying nothing at all.
+///
+/// Generous, because a large FETCH on a slow mailbox really does go quiet
+/// between messages. What it measures is a socket that will never speak
+/// again, not one that is merely slow.
+fn read_timeout() -> Duration {
+    crate::smtp::phase_timeout("PETREL_IMAP_READ_SECONDS", 120)
+}
+
+/// The same, for a connection parked in IDLE, where silence is the point.
+///
+/// The wall-clock ceiling in `idle_watch` is what normally ends an IDLE; this
+/// is the backstop for a connection that is wedged rather than quiet, so it
+/// sits above any ceiling a caller would sensibly ask for.
+fn idle_read_timeout() -> Duration {
+    crate::smtp::phase_timeout("PETREL_IMAP_IDLE_READ_SECONDS", 1800)
+}
+
+/// How long `done()` and `logout()` may take. Both used to be untimed, and
+/// both wait for the server to answer: a dead socket parked the account in
+/// either of them for as long as the process lived.
+fn command_timeout() -> Duration {
+    crate::smtp::phase_timeout("PETREL_IMAP_COMMAND_SECONDS", 60)
+}
+
+/// The socket a session runs on: TLS in every shipping build and — in test
+/// builds only — a plaintext loopback socket. One type, so every session in
+/// this file is built the same way and carries the same deadline.
+#[derive(Debug)]
+enum Socket {
+    Tls(Box<tokio_rustls::client::TlsStream<TcpStream>>),
+    #[cfg(feature = "insecure-plaintext")]
+    Plain(TcpStream),
+}
+
+impl AsyncRead for Socket {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Socket::Tls(s) => std::pin::Pin::new(s.as_mut()).poll_read(cx, buf),
+            #[cfg(feature = "insecure-plaintext")]
+            Socket::Plain(s) => std::pin::Pin::new(s).poll_read(cx, buf),
+        }
+    }
+}
+
+impl AsyncWrite for Socket {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        match self.get_mut() {
+            Socket::Tls(s) => std::pin::Pin::new(s.as_mut()).poll_write(cx, buf),
+            #[cfg(feature = "insecure-plaintext")]
+            Socket::Plain(s) => std::pin::Pin::new(s).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Socket::Tls(s) => std::pin::Pin::new(s.as_mut()).poll_flush(cx),
+            #[cfg(feature = "insecure-plaintext")]
+            Socket::Plain(s) => std::pin::Pin::new(s).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Socket::Tls(s) => std::pin::Pin::new(s.as_mut()).poll_shutdown(cx),
+            #[cfg(feature = "insecure-plaintext")]
+            Socket::Plain(s) => std::pin::Pin::new(s).poll_shutdown(cx),
+        }
+    }
+}
+
+/// A transport that gives up on a server which stops speaking.
+///
+/// No IMAP conversation had a deadline of any kind: a socket killed by a
+/// closed lid or an expired NAT mapping left a read pending for as long as the
+/// process lived, and the account it belonged to simply stopped syncing — no
+/// error, no retry, nothing to notice. Here a read that makes no progress for
+/// `idle` fails as a timeout, which is a failure the sync loop already knows
+/// what to do with.
+#[derive(Debug)]
+struct Deadline<S> {
+    inner: S,
+    idle: Duration,
+    /// Armed the first time a read cannot finish, disarmed by any progress.
+    timer: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
+}
+
+impl<S> Deadline<S> {
+    fn new(inner: S, idle: Duration) -> Self {
+        Deadline {
+            inner,
+            idle,
+            timer: None,
+        }
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for Deadline<S> {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        use std::task::Poll;
+        let this = self.get_mut();
+        match std::pin::Pin::new(&mut this.inner).poll_read(cx, buf) {
+            Poll::Ready(r) => {
+                this.timer = None;
+                Poll::Ready(r)
+            }
+            Poll::Pending => {
+                let idle = this.idle;
+                let timer = this
+                    .timer
+                    .get_or_insert_with(|| Box::pin(tokio::time::sleep(idle)));
+                match std::future::Future::poll(timer.as_mut(), cx) {
+                    Poll::Ready(()) => {
+                        this.timer = None;
+                        Poll::Ready(Err(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            format!("the server said nothing for {}s", idle.as_secs()),
+                        )))
+                    }
+                    Poll::Pending => Poll::Pending,
+                }
+            }
+        }
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for Deadline<S> {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.get_mut().inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
+}
+
+/// What every session in this file runs on.
+type Transport = Deadline<Socket>;
+
+/// Opens a connection for an ordinary session.
+async fn connect(cfg: &ImapConfig) -> Result<Transport> {
+    connect_within(cfg, read_timeout()).await
+}
+
+/// Opens a connection for a watch, where a long silence is expected.
+async fn connect_idle(cfg: &ImapConfig) -> Result<Transport> {
+    connect_within(cfg, idle_read_timeout()).await
+}
+
+async fn connect_within(cfg: &ImapConfig, idle: Duration) -> Result<Transport> {
+    let socket = match cfg.security {
+        Security::Tls => Socket::Tls(Box::new(tls_stream(&cfg.host, cfg.port).await?)),
+        #[cfg(feature = "insecure-plaintext")]
+        Security::InsecurePlaintext => Socket::Plain(connect_tcp(&cfg.host, cfg.port).await?),
+    };
+    Ok(Deadline::new(socket, idle))
+}
+
+/// A mailbox name as it goes onto the wire: modified UTF-7 (RFC 3501 §5.1.3).
+///
+/// IMAP mailbox names are ASCII. Anything else is carried in a shift sequence,
+/// so a German Drafts folder is `Entw&APw-rfe` on the wire, and a CREATE
+/// carrying raw UTF-8 is refused by every server that has not been told to
+/// accept it. Sending the name as typed meant non-English folders could not be
+/// made, renamed, or selected.
+fn wire_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut shifted: Vec<u16> = Vec::new();
+    for c in name.chars() {
+        // Printable ASCII travels as itself; `&` is the shift character, so it
+        // says so by doubling.
+        if c == '&' {
+            end_shift(&mut shifted, &mut out);
+            out.push_str("&-");
+        } else if matches!(c, ' '..='~') {
+            end_shift(&mut shifted, &mut out);
+            out.push(c);
+        } else {
+            let mut units = [0u16; 2];
+            shifted.extend_from_slice(c.encode_utf16(&mut units));
+        }
+    }
+    end_shift(&mut shifted, &mut out);
+    out
+}
+
+/// Closes a run of non-ASCII characters as one `&…-` sequence.
+fn end_shift(shifted: &mut Vec<u16>, out: &mut String) {
+    use base64::Engine as _;
+    if shifted.is_empty() {
+        return;
+    }
+    let mut bytes = Vec::with_capacity(shifted.len() * 2);
+    for unit in shifted.drain(..) {
+        bytes.extend_from_slice(&unit.to_be_bytes());
+    }
+    let encoded = base64::engine::general_purpose::STANDARD_NO_PAD.encode(&bytes);
+    out.push('&');
+    // Modified base64: `,` stands in for `/`, since `/` is a hierarchy
+    // delimiter on many servers.
+    out.push_str(&encoded.replace('/', ","));
+    out.push('-');
+}
+
+/// A mailbox name as a person should see it.
+///
+/// The reverse of `wire_name`, plus the quoted-string escapes the response
+/// parser hands back as they were written: a folder called `a "b"` arrives as
+/// `a \"b\"`, and asking for it under that name asks for a mailbox no server
+/// has.
+fn display_name(raw: &str) -> String {
+    from_wire_name(&unescape_quoted(raw))
+}
+
+fn unescape_quoted(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    while let Some(c) = chars.next() {
+        // Only the two sequences a quoted string may contain. A backslash in
+        // front of anything else is part of the name — a literal carries them
+        // unescaped, and there is nothing in the parsed response to say which
+        // form the server used.
+        if c == '\\'
+            && let Some(escaped) = chars.next_if(|n| matches!(n, '"' | '\\'))
+        {
+            out.push(escaped);
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
+fn from_wire_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut rest = name;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        let after = &rest[amp + 1..];
+        match after.find('-') {
+            // `&-` is how the wire spells a literal ampersand.
+            Some(0) => {
+                out.push('&');
+                rest = &after[1..];
+            }
+            Some(end) => {
+                match decode_shift(&after[..end]) {
+                    Some(text) => out.push_str(&text),
+                    // Not a shift sequence after all. Passed through exactly
+                    // as it came: a name we cannot read is still the name the
+                    // server will answer to.
+                    None => {
+                        out.push('&');
+                        out.push_str(&after[..end]);
+                        out.push('-');
+                    }
+                }
+                rest = &after[end + 1..];
+            }
+            None => {
+                out.push('&');
+                out.push_str(after);
+                return out;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// One `&…-` payload: modified base64 of UTF-16BE.
+fn decode_shift(payload: &str) -> Option<String> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD_NO_PAD
+        .decode(payload.replace(',', "/"))
+        .ok()?;
+    if bytes.len() % 2 != 0 {
+        return None;
+    }
+    let units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+        .collect();
+    char::decode_utf16(units)
+        .collect::<std::result::Result<String, _>>()
+        .ok()
 }
 
 /// Runs the probe over an established transport. Generic so the TLS and
@@ -230,7 +603,7 @@ where
         while let Some(name) = names.next().await {
             let name = name?;
             folders.push(FolderInfo {
-                name: name.name().to_string(),
+                name: display_name(name.name()),
                 delimiter: name.delimiter().map(|d| d.to_string()),
                 attributes: name.attributes().iter().map(|a| format!("{a:?}")).collect(),
             });
@@ -301,7 +674,7 @@ where
         }
     }
 
-    session.logout().await?;
+    sign_out(&mut session).await?;
 
     Ok(ProbeReport {
         strategy: capabilities.strategy(),
@@ -319,22 +692,10 @@ pub async fn append_message(
     flags: Option<&str>,
     raw: &[u8],
 ) -> Result<()> {
-    match cfg.security {
-        Security::Tls => {
-            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
-            let mut session = sign_in(client, cfg).await?;
-            session.append(folder, flags, None, raw).await?;
-            session.logout().await?;
-        }
-        #[cfg(feature = "insecure-plaintext")]
-        Security::InsecurePlaintext => {
-            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
-            let client = Client::new(tcp);
-            let mut session = sign_in(client, cfg).await?;
-            session.append(folder, flags, None, raw).await?;
-            session.logout().await?;
-        }
-    }
+    let client = Client::new(connect(cfg).await?);
+    let mut session = sign_in(client, cfg).await?;
+    session.append(wire_name(folder), flags, None, raw).await?;
+    sign_out(&mut session).await?;
     Ok(())
 }
 
@@ -408,17 +769,8 @@ pub async fn fetch_raw_each<F>(
 where
     F: FnMut(u32, i64, &[u8]),
 {
-    match cfg.security {
-        Security::Tls => {
-            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
-            fetch_each_session(client, cfg, folder, limit, on_message).await
-        }
-        #[cfg(feature = "insecure-plaintext")]
-        Security::InsecurePlaintext => {
-            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
-            fetch_each_session(Client::new(tcp), cfg, folder, limit, on_message).await
-        }
-    }
+    let client = Client::new(connect(cfg).await?);
+    fetch_each_session(client, cfg, folder, limit, on_message).await
 }
 
 async fn fetch_each_session<S, F>(
@@ -433,7 +785,7 @@ where
     F: FnMut(u32, i64, &[u8]),
 {
     let mut session = sign_in(client, cfg).await?;
-    let mailbox = session.select(folder).await?;
+    let mailbox = session.select(wire_name(folder)).await?;
     let mut n = 0usize;
     if mailbox.exists > 0 {
         let last = mailbox.exists;
@@ -441,35 +793,26 @@ where
         // FLAGS, not just the body. Without them every message ingests with no
         // read state and shows as unread — a mailbox with nothing unread in it
         // arrives looking like hundreds of unread conversations.
-        let mut fetches = session
-            .fetch(format!("{first}:{last}"), "(UID FLAGS RFC822)")
-            .await?;
-        while let Some(fetch) = fetches.next().await {
-            let fetch = fetch?;
-            let bits = flags_to_bits(fetch.flags());
-            if let (Some(uid), Some(body)) = (fetch.uid, fetch.body()) {
-                on_message(uid, bits, body);
-                n += 1;
-            }
-        }
+        fetch_command(
+            &mut session,
+            format!("FETCH {first}:{last} (UID FLAGS RFC822)"),
+            |attrs| {
+                if let (Some(uid), Some(body)) = (attr_uid(attrs), attr_body(attrs)) {
+                    on_message(uid, flags_to_bits(attr_flags(attrs)), body);
+                    n += 1;
+                }
+            },
+        )
+        .await?;
     }
     let uid_validity = mailbox.uid_validity;
-    session.logout().await?;
+    sign_out(&mut session).await?;
     Ok((n, uid_validity))
 }
 
 pub async fn fetch_raw(cfg: &ImapConfig, folder: &str, limit: u32) -> Result<Vec<(u32, Vec<u8>)>> {
-    match cfg.security {
-        Security::Tls => {
-            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
-            fetch_raw_session(client, cfg, folder, limit).await
-        }
-        #[cfg(feature = "insecure-plaintext")]
-        Security::InsecurePlaintext => {
-            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
-            fetch_raw_session(Client::new(tcp), cfg, folder, limit).await
-        }
-    }
+    let client = Client::new(connect(cfg).await?);
+    fetch_raw_session(client, cfg, folder, limit).await
 }
 
 async fn fetch_raw_session<S>(
@@ -482,22 +825,23 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
 {
     let mut session = sign_in(client, cfg).await?;
-    let mailbox = session.select(folder).await?;
+    let mailbox = session.select(wire_name(folder)).await?;
     let mut out = Vec::new();
     if mailbox.exists > 0 {
         let last = mailbox.exists;
         let first = last.saturating_sub(limit.saturating_sub(1)).max(1);
-        let mut fetches = session
-            .fetch(format!("{first}:{last}"), "(UID RFC822)")
-            .await?;
-        while let Some(fetch) = fetches.next().await {
-            let fetch = fetch?;
-            if let (Some(uid), Some(body)) = (fetch.uid, fetch.body()) {
-                out.push((uid, body.to_vec()));
-            }
-        }
+        fetch_command(
+            &mut session,
+            format!("FETCH {first}:{last} (UID RFC822)"),
+            |attrs| {
+                if let (Some(uid), Some(body)) = (attr_uid(attrs), attr_body(attrs)) {
+                    out.push((uid, body.to_vec()));
+                }
+            },
+        )
+        .await?;
     }
-    session.logout().await?;
+    sign_out(&mut session).await?;
     Ok(out)
 }
 
@@ -551,17 +895,8 @@ pub async fn sweep_gmail_thrids(
     limit: u32,
     since: Option<u64>,
 ) -> Result<ThridSweep> {
-    match cfg.security {
-        Security::Tls => {
-            let stream = tls_stream(&cfg.host, cfg.port).await?;
-            raw_thrid_exchange(stream, cfg, folder, limit, since).await
-        }
-        #[cfg(feature = "insecure-plaintext")]
-        Security::InsecurePlaintext => {
-            let stream = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
-            raw_thrid_exchange(stream, cfg, folder, limit, since).await
-        }
-    }
+    let stream = connect(cfg).await?;
+    raw_thrid_exchange(stream, cfg, folder, limit, since).await
 }
 
 async fn raw_thrid_exchange<S>(
@@ -633,7 +968,7 @@ where
         &mut lines,
         &mut write,
         "t2",
-        &format!("EXAMINE {} (CONDSTORE)", quote(folder)),
+        &format!("EXAMINE {} (CONDSTORE)", quote(&wire_name(folder))),
     )
     .await?;
     let mut modseq: Option<u64> = None;
@@ -696,17 +1031,8 @@ pub async fn sweep_gmail_labels(
     limit: u32,
     since: Option<u64>,
 ) -> Result<LabelSweep> {
-    match cfg.security {
-        Security::Tls => {
-            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
-            sweep_labels_session(client, cfg, folder, limit, since).await
-        }
-        #[cfg(feature = "insecure-plaintext")]
-        Security::InsecurePlaintext => {
-            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
-            sweep_labels_session(Client::new(tcp), cfg, folder, limit, since).await
-        }
-    }
+    let client = Client::new(connect(cfg).await?);
+    sweep_labels_session(client, cfg, folder, limit, since).await
 }
 
 async fn sweep_labels_session<S>(
@@ -721,7 +1047,7 @@ where
 {
     let mut session = sign_in(client, cfg).await?;
     // EXAMINE: reading where mail lives must not mark any of it seen.
-    let mailbox = session.examine(folder).await?;
+    let mailbox = session.examine(wire_name(folder)).await?;
     let modseq = mailbox.highest_modseq;
     let mut out = Vec::new();
     if mailbox.exists > 0 {
@@ -736,25 +1062,16 @@ where
                 (format!("{first}:{last}"), ITEMS.to_string())
             }
         };
-        let mut fetches = session.fetch(range, query).await?;
-        while let Some(fetch) = fetches.next().await {
-            let fetch = fetch?;
-            let Some(header) = fetch.header() else {
-                continue;
-            };
-            let Some(id) = message_id_of(header) else {
-                continue;
-            };
-            out.push((
-                id,
-                fetch
-                    .gmail_labels()
-                    .map(|ls| ls.iter().map(|l| l.to_string()).collect())
-                    .unwrap_or_default(),
-            ));
-        }
+        // A refused sweep must not report a modseq: the caller records it, and
+        // the next sweep would then start above labels this one never saw.
+        fetch_command(&mut session, format!("FETCH {range} {query}"), |attrs| {
+            if let Some(id) = attr_header(attrs).and_then(message_id_of) {
+                out.push((id, attr_labels(attrs)));
+            }
+        })
+        .await?;
     }
-    session.logout().await?;
+    sign_out(&mut session).await?;
     Ok(LabelSweep {
         labels: out,
         modseq,
@@ -810,17 +1127,8 @@ pub async fn fetch_gmail_labels(
     folder: &str,
     limit: u32,
 ) -> Result<Vec<Vec<String>>> {
-    match cfg.security {
-        Security::Tls => {
-            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
-            gmail_labels_session(client, cfg, folder, limit).await
-        }
-        #[cfg(feature = "insecure-plaintext")]
-        Security::InsecurePlaintext => {
-            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
-            gmail_labels_session(Client::new(tcp), cfg, folder, limit).await
-        }
-    }
+    let client = Client::new(connect(cfg).await?);
+    gmail_labels_session(client, cfg, folder, limit).await
 }
 
 async fn gmail_labels_session<S>(
@@ -833,7 +1141,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
 {
     let mut session = sign_in(client, cfg).await?;
-    let mailbox = session.examine(folder).await?;
+    let mailbox = session.examine(wire_name(folder)).await?;
     let mut out = Vec::new();
     if mailbox.exists > 0 {
         let last = mailbox.exists;
@@ -851,7 +1159,7 @@ where
             );
         }
     }
-    session.logout().await?;
+    sign_out(&mut session).await?;
     Ok(out)
 }
 
@@ -860,17 +1168,8 @@ where
 /// For answering "is this message starred on the server" without pulling any
 /// bodies: a diagnostic, and cheap enough to run against a real mailbox.
 pub async fn fetch_flags_only(cfg: &ImapConfig, folder: &str, limit: u32) -> Result<Vec<i64>> {
-    match cfg.security {
-        Security::Tls => {
-            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
-            flags_only_session(client, cfg, folder, limit).await
-        }
-        #[cfg(feature = "insecure-plaintext")]
-        Security::InsecurePlaintext => {
-            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
-            flags_only_session(Client::new(tcp), cfg, folder, limit).await
-        }
-    }
+    let client = Client::new(connect(cfg).await?);
+    flags_only_session(client, cfg, folder, limit).await
 }
 
 async fn flags_only_session<S>(
@@ -883,7 +1182,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
 {
     let mut session = sign_in(client, cfg).await?;
-    let mailbox = session.examine(folder).await?;
+    let mailbox = session.examine(wire_name(folder)).await?;
     let mut out = Vec::new();
     if mailbox.exists > 0 {
         let last = mailbox.exists;
@@ -893,7 +1192,7 @@ where
             out.push(flags_to_bits(fetch?.flags()));
         }
     }
-    session.logout().await?;
+    sign_out(&mut session).await?;
     Ok(out)
 }
 
@@ -902,17 +1201,8 @@ where
 /// EXAMINE rather than SELECT: read-only, so counting cannot mark anything seen
 /// or otherwise disturb a mailbox we are only measuring.
 pub async fn folder_counts(cfg: &ImapConfig, folders: &[String]) -> Result<Vec<(String, u32)>> {
-    match cfg.security {
-        Security::Tls => {
-            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
-            folder_counts_session(client, cfg, folders).await
-        }
-        #[cfg(feature = "insecure-plaintext")]
-        Security::InsecurePlaintext => {
-            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
-            folder_counts_session(Client::new(tcp), cfg, folders).await
-        }
-    }
+    let client = Client::new(connect(cfg).await?);
+    folder_counts_session(client, cfg, folders).await
 }
 
 async fn folder_counts_session<S>(
@@ -928,12 +1218,12 @@ where
     for name in folders {
         // A folder that cannot be examined is reported as absent rather than
         // failing the whole survey — \Noselect containers are normal.
-        match session.examine(name).await {
+        match session.examine(wire_name(name)).await {
             Ok(mb) => out.push((name.clone(), mb.exists)),
             Err(_) => continue,
         }
     }
-    session.logout().await?;
+    sign_out(&mut session).await?;
     Ok(out)
 }
 
@@ -954,17 +1244,8 @@ where
 /// error to notice. Coming back up for air on a timer makes that failure a
 /// reconnect rather than a silence.
 pub async fn idle_once(cfg: &ImapConfig, folder: &str, timeout: Duration) -> Result<bool> {
-    match cfg.security {
-        Security::Tls => {
-            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
-            idle_session(client, cfg, folder, timeout).await
-        }
-        #[cfg(feature = "insecure-plaintext")]
-        Security::InsecurePlaintext => {
-            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
-            idle_session(Client::new(tcp), cfg, folder, timeout).await
-        }
-    }
+    let client = Client::new(connect_idle(cfg).await?);
+    idle_session(client, cfg, folder, timeout).await
 }
 
 /// Holds one connection open and reports every time the server speaks.
@@ -995,17 +1276,8 @@ pub async fn idle_watch<F>(
 where
     F: FnMut(),
 {
-    match cfg.security {
-        Security::Tls => {
-            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
-            idle_watch_session(client, cfg, folder, ceiling, on_wake).await
-        }
-        #[cfg(feature = "insecure-plaintext")]
-        Security::InsecurePlaintext => {
-            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
-            idle_watch_session(Client::new(tcp), cfg, folder, ceiling, on_wake).await
-        }
-    }
+    let client = Client::new(connect_idle(cfg).await?);
+    idle_watch_session(client, cfg, folder, ceiling, on_wake).await
 }
 
 /// The SASL exchange for XOAUTH2.
@@ -1073,6 +1345,170 @@ where
     }
 }
 
+/// Runs a FETCH, hands each item's attributes on, and reports how the server
+/// ended it.
+///
+/// The typed fetch stream stops at the tagged reply without ever looking at
+/// its status, so a FETCH answered `OK` and one answered
+/// `NO [SERVERBUG] internal error` arrive identically: as a stream that simply
+/// ends. Reading a short answer as a complete one is how a watermark moves
+/// past mail that was never fetched — and mail above a watermark is never
+/// asked for again. Gmail's "Some messages could not be FETCHed", Dovecot's
+/// SERVERBUG and Exchange's "BAD Command Argument Error" all arrive this way.
+async fn fetch_command<S, F>(
+    session: &mut Session<S>,
+    command: String,
+    mut on_item: F,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
+    F: FnMut(&[AttributeValue<'_>]),
+{
+    let tag = session.run_command(&command).await?;
+    let name = command.split(' ').next().unwrap_or("FETCH").to_string();
+    loop {
+        // EOF mid-fetch is a truncated answer too, and the loudest kind: the
+        // slice is incomplete and there is not even a status to read.
+        let Some(response) = session.read_response().await? else {
+            return Err(ImapError::Protocol(format!(
+                "{name}: the connection closed before the server answered"
+            )));
+        };
+        match response.parsed() {
+            Response::Fetch(_, attrs) => on_item(attrs),
+            Response::Done {
+                tag: answered,
+                status,
+                information,
+                ..
+            } if answered == &tag => {
+                return match status {
+                    Status::Ok => Ok(()),
+                    _ => Err(ImapError::Protocol(format!(
+                        "{name}: {status:?} {}",
+                        information.as_deref().unwrap_or_default()
+                    ))),
+                };
+            }
+            // A server going down says so and then closes; whatever it had
+            // sent by then is a fragment.
+            Response::Data {
+                status: Status::Bye,
+                information,
+                ..
+            } => {
+                return Err(ImapError::Protocol(format!(
+                    "{name}: the server closed the connection ({})",
+                    information.as_deref().unwrap_or_default()
+                )));
+            }
+            // EXISTS, EXPUNGE, an unsolicited FLAGS: not this command's
+            // business, and not a reason to stop reading.
+            _ => {}
+        }
+    }
+}
+
+/// The UID a FETCH item named, if it named one.
+fn attr_uid(attrs: &[AttributeValue<'_>]) -> Option<u32> {
+    attrs.iter().find_map(|a| match a {
+        AttributeValue::Uid(uid) => Some(*uid),
+        _ => None,
+    })
+}
+
+/// The whole message, from `BODY[]` or `RFC822`.
+///
+/// `NIL` and a zero-length literal both mean the server had nothing to give:
+/// neither is a message, and storing either would be storing an empty one.
+fn attr_body<'a>(attrs: &'a [AttributeValue<'a>]) -> Option<&'a [u8]> {
+    attrs
+        .iter()
+        .find_map(|a| match a {
+            AttributeValue::BodySection {
+                section: None,
+                data: Some(body),
+                ..
+            }
+            | AttributeValue::Rfc822(Some(body)) => Some(body.as_ref()),
+            _ => None,
+        })
+        .filter(|body| !body.is_empty())
+}
+
+/// The header block from `BODY[HEADER…]` or `RFC822.HEADER`.
+fn attr_header<'a>(attrs: &'a [AttributeValue<'a>]) -> Option<&'a [u8]> {
+    attrs.iter().find_map(|a| match a {
+        AttributeValue::BodySection {
+            section: Some(SectionPath::Full(MessageSection::Header)),
+            data: Some(header),
+            ..
+        }
+        | AttributeValue::Rfc822Header(Some(header)) => Some(header.as_ref()),
+        _ => None,
+    })
+}
+
+/// The flag names on a FETCH item.
+fn attr_flags<'a>(attrs: &'a [AttributeValue<'a>]) -> impl Iterator<Item = Flag<'a>> {
+    attrs
+        .iter()
+        .filter_map(|a| match a {
+            AttributeValue::Flags(flags) => Some(flags),
+            _ => None,
+        })
+        .flatten()
+        .map(|f| Flag::from(f.as_ref()))
+}
+
+/// Gmail's labels on a FETCH item.
+fn attr_labels(attrs: &[AttributeValue<'_>]) -> Vec<String> {
+    attrs
+        .iter()
+        .filter_map(|a| match a {
+            AttributeValue::GmailLabels(labels) => Some(labels),
+            _ => None,
+        })
+        .flatten()
+        .map(|l| l.to_string())
+        .collect()
+}
+
+/// Ends a session, and gives up if the server will not answer.
+///
+/// Untimed, this held the whole cycle on a socket that was already dead: the
+/// mail was in, and the pass could not finish saying so.
+async fn sign_out<S>(session: &mut Session<S>) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
+{
+    match tokio::time::timeout(command_timeout(), session.logout()).await {
+        Ok(result) => result.map_err(Into::into),
+        Err(_) => Err(ImapError::Io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "the server did not answer LOGOUT",
+        ))),
+    }
+}
+
+/// Leaves IDLE, and gives up if the server will not answer DONE.
+///
+/// The wake is already in hand by this point, so a server that stops answering
+/// here parks a watcher that has news and nobody to give it to — for as long
+/// as the process lives.
+async fn end_idle<S>(handle: async_imap::extensions::idle::Handle<S>) -> Result<Session<S>>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug + 'static,
+{
+    match tokio::time::timeout(command_timeout(), handle.done()).await {
+        Ok(result) => result.map_err(Into::into),
+        Err(_) => Err(ImapError::Io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "the server did not answer DONE",
+        ))),
+    }
+}
+
 async fn idle_watch_session<S, F>(
     client: Client<S>,
     cfg: &ImapConfig,
@@ -1086,7 +1522,7 @@ where
 {
     let started = std::time::Instant::now();
     let mut session = sign_in(client, cfg).await?;
-    session.select(folder).await?;
+    session.select(wire_name(folder)).await?;
 
     loop {
         let left = ceiling.saturating_sub(started.elapsed());
@@ -1109,12 +1545,12 @@ where
         };
         // DONE before anything else: the connection is in IDLE until it is
         // sent, and a session in IDLE will not take another command.
-        session = handle.done().await?;
+        session = end_idle(handle).await?;
         if woke {
             on_wake();
         }
     }
-    session.logout().await?;
+    sign_out(&mut session).await?;
     Ok(())
 }
 
@@ -1128,7 +1564,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug + 'static,
 {
     let mut session = sign_in(client, cfg).await?;
-    session.select(folder).await?;
+    session.select(wire_name(folder)).await?;
 
     let mut handle = session.idle();
     handle.init().await?;
@@ -1147,8 +1583,8 @@ where
     };
     // DONE before logout: leaving a connection in IDLE and dropping it makes
     // the server hold resources until its own timeout expires.
-    let mut session = handle.done().await?;
-    session.logout().await?;
+    let mut session = end_idle(handle).await?;
+    sign_out(&mut session).await?;
     Ok(woke)
 }
 
@@ -1233,6 +1669,22 @@ pub fn catchup_slice(since_uid: u32, server_uid_next: Option<u32>, chunk: u32) -
     }
 }
 
+/// The UIDNEXT a pass may record, held back by whatever it could not take.
+///
+/// `refused` is the lowest UID the server listed and gave no body for —
+/// recording anything above it would skip that message for good. `unplaceable`
+/// is an item that named no UID at all, which cannot be pinned to a number, so
+/// nothing is recorded and the slice is asked for again.
+fn watermark(reported: Option<u32>, refused: Option<u32>, unplaceable: bool) -> Option<u32> {
+    if unplaceable {
+        return None;
+    }
+    match (reported, refused) {
+        (Some(n), Some(uid)) => Some(n.min(uid)),
+        (n, _) => n,
+    }
+}
+
 /// What one folder's slice found.
 #[derive(Debug)]
 pub enum PassOutcome {
@@ -1285,17 +1737,8 @@ pub async fn sync_pass<F>(
 where
     F: FnMut(usize, u32, i64, &[u8]),
 {
-    match cfg.security {
-        Security::Tls => {
-            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
-            sync_pass_session(client, cfg, passes, want_keywords, on_message).await
-        }
-        #[cfg(feature = "insecure-plaintext")]
-        Security::InsecurePlaintext => {
-            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
-            sync_pass_session(Client::new(tcp), cfg, passes, want_keywords, on_message).await
-        }
-    }
+    let client = Client::new(connect(cfg).await?);
+    sync_pass_session(client, cfg, passes, want_keywords, on_message).await
 }
 
 async fn sync_pass_session<S, F>(
@@ -1322,7 +1765,10 @@ where
     let mut out = Vec::with_capacity(passes.len());
     for (index, pass) in passes.iter().enumerate() {
         let status = match session
-            .status(&pass.path, "(MESSAGES UIDNEXT UIDVALIDITY HIGHESTMODSEQ)")
+            .status(
+                wire_name(&pass.path),
+                "(MESSAGES UIDNEXT UIDVALIDITY HIGHESTMODSEQ)",
+            )
             .await
         {
             Ok(s) => s,
@@ -1372,7 +1818,7 @@ where
         }
 
         // Read-only select: fetching mail must not change it.
-        let mailbox = match session.examine(&pass.path).await {
+        let mailbox = match session.examine(wire_name(&pass.path)).await {
             Ok(m) => m,
             Err(e) => {
                 out.push(PassOutcome::Failed {
@@ -1389,6 +1835,13 @@ where
         // first saw it used to wait for a later flag change to bump the
         // modseq, and on a server without CONDSTORE never arrived at all.
         let mut keyword_updates: Vec<(u32, Vec<String>)> = Vec::new();
+        // The lowest UID the server listed and would not give a body for, and
+        // a flag for an item that named no UID at all. Both hold the watermark
+        // back: a message counted as fetched and never stored is a message
+        // nothing will ever ask for again.
+        let mut refused_uid: Option<u32> = None;
+        let mut unplaceable_item = false;
+        let mut failure: Option<String> = None;
         if new_mail {
             let query = "(UID FLAGS BODY.PEEK[])";
             if pass.since_uid == 0 {
@@ -1398,20 +1851,30 @@ where
                         .saturating_sub(pass.seed_window.saturating_sub(1))
                         .max(1);
                     let range = format!("{first}:{last}", last = mailbox.exists);
-                    let mut fetches = session.fetch(range, query).await?;
-                    while let Some(fetch) = fetches.next().await {
-                        let fetch = fetch?;
-                        let bits = flags_to_bits(fetch.flags());
-                        if let (Some(uid), Some(body)) = (fetch.uid, fetch.body()) {
-                            on_message(index, uid, bits, body);
-                            fetched += 1;
-                            if want_keywords {
-                                let keywords = keywords_of(fetch.flags());
-                                if !keywords.is_empty() {
-                                    keyword_updates.push((uid, keywords));
+                    let result = fetch_command(
+                        &mut session,
+                        format!("FETCH {range} {query}"),
+                        |attrs| match (attr_uid(attrs), attr_body(attrs)) {
+                            (Some(uid), Some(body)) => {
+                                on_message(index, uid, flags_to_bits(attr_flags(attrs)), body);
+                                fetched += 1;
+                                if want_keywords {
+                                    let keywords = keywords_of(attr_flags(attrs));
+                                    if !keywords.is_empty() {
+                                        keyword_updates.push((uid, keywords));
+                                    }
                                 }
                             }
-                        }
+                            (Some(uid), None) => {
+                                refused_uid =
+                                    Some(refused_uid.map_or(uid, |lowest| lowest.min(uid)))
+                            }
+                            (None, _) => unplaceable_item = true,
+                        },
+                    )
+                    .await;
+                    if let Err(e) = result {
+                        failure = Some(e.to_string());
                     }
                 }
             } else {
@@ -1432,26 +1895,37 @@ where
                         break;
                     }
                     let mut got = 0usize;
-                    {
-                        let mut fetches = session.uid_fetch(slice.range.as_str(), query).await?;
-                        while let Some(fetch) = fetches.next().await {
-                            let fetch = fetch?;
-                            let bits = flags_to_bits(fetch.flags());
-                            if let (Some(uid), Some(body)) = (fetch.uid, fetch.body()) {
-                                if uid <= since {
-                                    continue;
-                                }
-                                on_message(index, uid, bits, body);
-                                fetched += 1;
-                                got += 1;
-                                if want_keywords {
-                                    let keywords = keywords_of(fetch.flags());
-                                    if !keywords.is_empty() {
-                                        keyword_updates.push((uid, keywords));
+                    let result = fetch_command(
+                        &mut session,
+                        format!("UID FETCH {} {query}", slice.range),
+                        |attrs| match (attr_uid(attrs), attr_body(attrs)) {
+                            (Some(uid), Some(body)) => {
+                                if uid > since {
+                                    on_message(index, uid, flags_to_bits(attr_flags(attrs)), body);
+                                    fetched += 1;
+                                    got += 1;
+                                    if want_keywords {
+                                        let keywords = keywords_of(attr_flags(attrs));
+                                        if !keywords.is_empty() {
+                                            keyword_updates.push((uid, keywords));
+                                        }
                                     }
                                 }
                             }
-                        }
+                            (Some(uid), None) => {
+                                refused_uid =
+                                    Some(refused_uid.map_or(uid, |lowest| lowest.min(uid)))
+                            }
+                            (None, _) => unplaceable_item = true,
+                        },
+                    )
+                    .await;
+                    if let Err(e) = result {
+                        // The slice is incomplete, so the watermark stays
+                        // where it was and this slice is asked for again next
+                        // cycle rather than skipped.
+                        failure = Some(e.to_string());
+                        break;
                     }
                     if slice.covered {
                         break;
@@ -1465,25 +1939,34 @@ where
                 }
             }
         }
+        if let Some(detail) = failure {
+            out.push(PassOutcome::Failed { detail });
+            continue;
+        }
 
         let mut flag_updates = Vec::new();
         if flags_moved && let Some(seen) = pass.since_modseq {
-            // A server that advertised CONDSTORE and then refuses the fetch
-            // leaves flags stale until the next full pass — the state they
-            // were in before this existed.
-            if let Ok(mut fetches) = session
-                .uid_fetch("1:*", format!("(FLAGS) (CHANGEDSINCE {seen})"))
-                .await
-            {
-                while let Some(fetch) = fetches.next().await {
-                    let Ok(fetch) = fetch else { break };
-                    if let Some(uid) = fetch.uid {
-                        flag_updates.push((uid, flags_to_bits(fetch.flags())));
+            // A refused diff is not a folder with nothing to report. Recording
+            // the new modseq after one loses those flag changes for good,
+            // because the next diff starts above them.
+            let result = fetch_command(
+                &mut session,
+                format!("UID FETCH 1:* (FLAGS) (CHANGEDSINCE {seen})"),
+                |attrs| {
+                    if let Some(uid) = attr_uid(attrs) {
+                        flag_updates.push((uid, flags_to_bits(attr_flags(attrs))));
                         if want_keywords {
-                            keyword_updates.push((uid, keywords_of(fetch.flags())));
+                            keyword_updates.push((uid, keywords_of(attr_flags(attrs))));
                         }
                     }
-                }
+                },
+            )
+            .await;
+            if let Err(e) = result {
+                out.push(PassOutcome::Failed {
+                    detail: e.to_string(),
+                });
+                continue;
             }
         }
 
@@ -1495,18 +1978,30 @@ where
             // mail it never saw. STATUS said "no new mail" with one UIDNEXT;
             // EXAMINE, a moment later, can report a higher one because a
             // message landed in between — recording that skipped the message
-            // for good, since the next pass starts above it.
-            uid_next: if new_mail {
-                catchup_uid_next.or(mailbox.uid_next).or(status.uid_next)
-            } else {
-                status.uid_next
-            },
+            // for good, since the next pass starts above it. The same applies
+            // to a message the server listed and would not hand over: the
+            // watermark stops below the lowest of those, and an item that
+            // named no UID stops it moving at all.
+            uid_next: watermark(
+                if new_mail {
+                    catchup_uid_next.or(mailbox.uid_next).or(status.uid_next)
+                } else {
+                    status.uid_next
+                },
+                refused_uid,
+                unplaceable_item,
+            ),
             flag_updates,
             keyword_updates,
             total: mailbox.exists,
         });
     }
-    session.logout().await?;
+    // Best effort, unlike everywhere else: the mail is already ingested and
+    // every folder has said what happened to it. Throwing all of that away
+    // because a dead socket would not answer LOGOUT — which is exactly the
+    // case a folder just reported — would lose the report of the failure
+    // along with the cycle's work.
+    let _ = sign_out(&mut session).await;
     Ok(out)
 }
 
@@ -1535,33 +2030,16 @@ pub async fn fetch_since_each<F>(
 where
     F: FnMut(u32, i64, &[u8]),
 {
-    match cfg.security {
-        Security::Tls => {
-            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
-            fetch_since_session(
-                client,
-                cfg,
-                folder,
-                since_uid,
-                expected_validity,
-                on_message,
-            )
-            .await
-        }
-        #[cfg(feature = "insecure-plaintext")]
-        Security::InsecurePlaintext => {
-            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
-            fetch_since_session(
-                Client::new(tcp),
-                cfg,
-                folder,
-                since_uid,
-                expected_validity,
-                on_message,
-            )
-            .await
-        }
-    }
+    let client = Client::new(connect(cfg).await?);
+    fetch_since_session(
+        client,
+        cfg,
+        folder,
+        since_uid,
+        expected_validity,
+        on_message,
+    )
+    .await
 }
 
 async fn fetch_since_session<S, F>(
@@ -1577,7 +2055,7 @@ where
     F: FnMut(u32, i64, &[u8]),
 {
     let mut session = sign_in(client, cfg).await?;
-    let mailbox = session.select(folder).await?;
+    let mailbox = session.select(wire_name(folder)).await?;
     let uid_validity = mailbox.uid_validity;
     // Checked before a single byte is fetched: after a reset the watermark
     // is meaningless, and `{since+1}:*` in the new numbering could be
@@ -1585,30 +2063,27 @@ where
     if let Some(expected) = expected_validity
         && uid_validity != Some(expected)
     {
-        session.logout().await?;
+        sign_out(&mut session).await?;
         return Ok(FetchOutcome::ValidityChanged { now: uid_validity });
     }
     let mut n = 0usize;
-    {
-        let mut fetches = session
-            .uid_fetch(
-                format!("{}:*", since_uid.saturating_add(1)),
-                "(UID FLAGS RFC822)",
-            )
-            .await?;
-        while let Some(fetch) = fetches.next().await {
-            let fetch = fetch?;
-            let bits = flags_to_bits(fetch.flags());
-            if let (Some(uid), Some(body)) = (fetch.uid, fetch.body()) {
-                if uid <= since_uid {
-                    continue;
-                }
-                on_message(uid, bits, body);
+    fetch_command(
+        &mut session,
+        format!(
+            "UID FETCH {}:* (UID FLAGS RFC822)",
+            since_uid.saturating_add(1)
+        ),
+        |attrs| {
+            if let (Some(uid), Some(body)) = (attr_uid(attrs), attr_body(attrs))
+                && uid > since_uid
+            {
+                on_message(uid, flags_to_bits(attr_flags(attrs)), body);
                 n += 1;
             }
-        }
-    }
-    session.logout().await?;
+        },
+    )
+    .await?;
+    sign_out(&mut session).await?;
     Ok(FetchOutcome::Fetched {
         count: n,
         uid_validity,
@@ -1634,17 +2109,8 @@ pub struct IdMap {
 
 /// Lists the newest `depth` messages as (uid, Message-ID) pairs.
 pub async fn fetch_id_map(cfg: &ImapConfig, folder: &str, depth: u32) -> Result<IdMap> {
-    match cfg.security {
-        Security::Tls => {
-            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
-            id_map_session(client, cfg, folder, depth).await
-        }
-        #[cfg(feature = "insecure-plaintext")]
-        Security::InsecurePlaintext => {
-            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
-            id_map_session(Client::new(tcp), cfg, folder, depth).await
-        }
-    }
+    let client = Client::new(connect(cfg).await?);
+    id_map_session(client, cfg, folder, depth).await
 }
 
 async fn id_map_session<S>(
@@ -1657,7 +2123,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
 {
     let mut session = sign_in(client, cfg).await?;
-    let mailbox = session.select(folder).await?;
+    let mailbox = session.select(wire_name(folder)).await?;
     let mut map = IdMap {
         uid_validity: mailbox.uid_validity,
         entries: Vec::new(),
@@ -1670,21 +2136,21 @@ where
             .exists
             .saturating_sub(depth.saturating_sub(1))
             .max(1);
-        let mut fetches = session
-            .fetch(
-                format!("{start}:*"),
-                "(UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])",
-            )
-            .await?;
-        while let Some(fetch) = fetches.next().await {
-            let fetch = fetch?;
-            if let Some(uid) = fetch.uid {
-                map.entries
-                    .push((uid, fetch.header().and_then(message_id_of)));
-            }
-        }
+        // A truncated listing is worse here than anywhere: the caller reads it
+        // as "the server no longer holds these", and evicts.
+        fetch_command(
+            &mut session,
+            format!("FETCH {start}:* (UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])"),
+            |attrs| {
+                if let Some(uid) = attr_uid(attrs) {
+                    map.entries
+                        .push((uid, attr_header(attrs).and_then(message_id_of)));
+                }
+            },
+        )
+        .await?;
     }
-    session.logout().await?;
+    sign_out(&mut session).await?;
     Ok(map)
 }
 
@@ -1701,17 +2167,8 @@ pub async fn fetch_id_map_range(
         return Ok(Vec::new());
     }
     let set = format!("{first}:{last}");
-    match cfg.security {
-        Security::Tls => {
-            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
-            id_range_session(client, cfg, folder, &set).await
-        }
-        #[cfg(feature = "insecure-plaintext")]
-        Security::InsecurePlaintext => {
-            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
-            id_range_session(Client::new(tcp), cfg, folder, &set).await
-        }
-    }
+    let client = Client::new(connect(cfg).await?);
+    id_range_session(client, cfg, folder, &set).await
 }
 
 async fn id_range_session<S>(
@@ -1724,43 +2181,29 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
 {
     let mut session = sign_in(client, cfg).await?;
-    session.select(folder).await?;
+    session.select(wire_name(folder)).await?;
     let mut out = Vec::new();
-    {
-        let mut fetches = session
-            .uid_fetch(set, "(UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
-            .await?;
-        while let Some(fetch) = fetches.next().await {
-            let fetch = fetch?;
-            if let Some(uid) = fetch.uid {
-                out.push((uid, fetch.header().and_then(message_id_of)));
+    fetch_command(
+        &mut session,
+        format!("UID FETCH {set} (UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])"),
+        |attrs| {
+            if let Some(uid) = attr_uid(attrs) {
+                out.push((uid, attr_header(attrs).and_then(message_id_of)));
             }
-        }
-    }
-    session.logout().await?;
+        },
+    )
+    .await?;
+    sign_out(&mut session).await?;
     Ok(out)
 }
 
 /// One folder's UIDNEXT, by STATUS — where a fresh All Mail walk starts.
 pub async fn folder_uidnext(cfg: &ImapConfig, folder: &str) -> Result<Option<u32>> {
-    match cfg.security {
-        Security::Tls => {
-            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
-            let mut session = sign_in(client, cfg).await?;
-            let s = session.status(folder, "(UIDNEXT)").await?;
-            session.logout().await?;
-            Ok(s.uid_next)
-        }
-        #[cfg(feature = "insecure-plaintext")]
-        Security::InsecurePlaintext => {
-            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
-            let client = Client::new(tcp);
-            let mut session = sign_in(client, cfg).await?;
-            let s = session.status(folder, "(UIDNEXT)").await?;
-            session.logout().await?;
-            Ok(s.uid_next)
-        }
-    }
+    let client = Client::new(connect(cfg).await?);
+    let mut session = sign_in(client, cfg).await?;
+    let s = session.status(wire_name(folder), "(UIDNEXT)").await?;
+    sign_out(&mut session).await?;
+    Ok(s.uid_next)
 }
 
 /// Fetches one contiguous UID range in full — the backfill's stride.
@@ -1782,17 +2225,8 @@ where
         return Ok(0);
     }
     let set = format!("{first}:{last}");
-    match cfg.security {
-        Security::Tls => {
-            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
-            uid_set_session(client, cfg, folder, &set, &mut on_message).await
-        }
-        #[cfg(feature = "insecure-plaintext")]
-        Security::InsecurePlaintext => {
-            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
-            uid_set_session(Client::new(tcp), cfg, folder, &set, &mut on_message).await
-        }
-    }
+    let client = Client::new(connect(cfg).await?);
+    uid_set_session(client, cfg, folder, &set, &mut on_message).await
 }
 
 /// Fetches an explicit set of messages in full, by UID.
@@ -1817,17 +2251,8 @@ where
             .map(|u| u.to_string())
             .collect::<Vec<_>>()
             .join(",");
-        match cfg.security {
-            Security::Tls => {
-                let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
-                n += uid_set_session(client, cfg, folder, &set, &mut on_message).await?;
-            }
-            #[cfg(feature = "insecure-plaintext")]
-            Security::InsecurePlaintext => {
-                let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
-                n += uid_set_session(Client::new(tcp), cfg, folder, &set, &mut on_message).await?;
-            }
-        }
+        let client = Client::new(connect(cfg).await?);
+        n += uid_set_session(client, cfg, folder, &set, &mut on_message).await?;
     }
     Ok(n)
 }
@@ -1844,21 +2269,23 @@ where
     F: FnMut(u32, i64, &[u8]),
 {
     let mut session = sign_in(client, cfg).await?;
-    session.select(folder).await?;
+    session.select(wire_name(folder)).await?;
     let mut n = 0usize;
-    {
-        // PEEK, as everywhere: fetching mail must not mark it read.
-        let mut fetches = session.uid_fetch(set, "(UID FLAGS BODY.PEEK[])").await?;
-        while let Some(fetch) = fetches.next().await {
-            let fetch = fetch?;
-            let bits = flags_to_bits(fetch.flags());
-            if let (Some(uid), Some(body)) = (fetch.uid, fetch.body()) {
-                on_message(uid, bits, body);
+    // PEEK, as everywhere: fetching mail must not mark it read. A refused
+    // range is an error rather than an empty one, because the backfill reads
+    // "nothing here" as "this stretch of numbers is spent" and moves on.
+    fetch_command(
+        &mut session,
+        format!("UID FETCH {set} (UID FLAGS BODY.PEEK[])"),
+        |attrs| {
+            if let (Some(uid), Some(body)) = (attr_uid(attrs), attr_body(attrs)) {
+                on_message(uid, flags_to_bits(attr_flags(attrs)), body);
                 n += 1;
             }
-        }
-    }
-    session.logout().await?;
+        },
+    )
+    .await?;
+    sign_out(&mut session).await?;
     Ok(n)
 }
 
@@ -1874,17 +2301,8 @@ pub async fn store_flag(
     flag: &str,
     add: bool,
 ) -> Result<()> {
-    match cfg.security {
-        Security::Tls => {
-            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
-            store_flag_session(client, cfg, folder, uid, flag, add).await
-        }
-        #[cfg(feature = "insecure-plaintext")]
-        Security::InsecurePlaintext => {
-            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
-            store_flag_session(Client::new(tcp), cfg, folder, uid, flag, add).await
-        }
-    }
+    let client = Client::new(connect(cfg).await?);
+    store_flag_session(client, cfg, folder, uid, flag, add).await
 }
 
 async fn store_flag_session<S>(
@@ -1899,7 +2317,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
 {
     let mut session = sign_in(client, cfg).await?;
-    session.select(folder).await?;
+    session.select(wire_name(folder)).await?;
     let op = if add {
         "+FLAGS.SILENT"
     } else {
@@ -1911,7 +2329,7 @@ where
             .await?;
         while updates.next().await.is_some() {}
     }
-    session.logout().await?;
+    sign_out(&mut session).await?;
     Ok(())
 }
 
@@ -1934,17 +2352,8 @@ pub async fn store_flags(
     if uids.len() == 1 {
         return store_flag(cfg, folder, uids[0], flag, add).await;
     }
-    match cfg.security {
-        Security::Tls => {
-            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
-            store_flags_session(client, cfg, folder, uids, flag, add).await
-        }
-        #[cfg(feature = "insecure-plaintext")]
-        Security::InsecurePlaintext => {
-            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
-            store_flags_session(Client::new(tcp), cfg, folder, uids, flag, add).await
-        }
-    }
+    let client = Client::new(connect(cfg).await?);
+    store_flags_session(client, cfg, folder, uids, flag, add).await
 }
 
 async fn store_flags_session<S>(
@@ -1959,7 +2368,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
 {
     let mut session = sign_in(client, cfg).await?;
-    session.select(folder).await?;
+    session.select(wire_name(folder)).await?;
     let op = if add {
         "+FLAGS.SILENT"
     } else {
@@ -1974,7 +2383,7 @@ where
         let mut updates = session.uid_store(set, format!("{op} ({flag})")).await?;
         while updates.next().await.is_some() {}
     }
-    session.logout().await?;
+    sign_out(&mut session).await?;
     Ok(())
 }
 
@@ -2002,17 +2411,8 @@ pub async fn store_gmail_labels(
     label: &str,
     add: bool,
 ) -> Result<()> {
-    match cfg.security {
-        Security::Tls => {
-            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
-            store_labels_session(client, cfg, folder, uid, label, add).await
-        }
-        #[cfg(feature = "insecure-plaintext")]
-        Security::InsecurePlaintext => {
-            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
-            store_labels_session(Client::new(tcp), cfg, folder, uid, label, add).await
-        }
-    }
+    let client = Client::new(connect(cfg).await?);
+    store_labels_session(client, cfg, folder, uid, label, add).await
 }
 
 async fn store_labels_session<S>(
@@ -2027,7 +2427,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
 {
     let mut session = sign_in(client, cfg).await?;
-    session.select(folder).await?;
+    session.select(wire_name(folder)).await?;
     let op = if add { "+X-GM-LABELS" } else { "-X-GM-LABELS" };
     {
         let mut updates = session
@@ -2035,7 +2435,7 @@ where
             .await?;
         while updates.next().await.is_some() {}
     }
-    session.logout().await?;
+    sign_out(&mut session).await?;
     Ok(())
 }
 
@@ -2057,17 +2457,8 @@ pub async fn expunge_uid(
     uid: u32,
     server_has_uidplus: bool,
 ) -> Result<bool> {
-    match cfg.security {
-        Security::Tls => {
-            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
-            expunge_uid_session(client, cfg, folder, uid, server_has_uidplus).await
-        }
-        #[cfg(feature = "insecure-plaintext")]
-        Security::InsecurePlaintext => {
-            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
-            expunge_uid_session(Client::new(tcp), cfg, folder, uid, server_has_uidplus).await
-        }
-    }
+    let client = Client::new(connect(cfg).await?);
+    expunge_uid_session(client, cfg, folder, uid, server_has_uidplus).await
 }
 
 async fn expunge_uid_session<S>(
@@ -2081,7 +2472,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
 {
     let mut session = sign_in(client, cfg).await?;
-    session.select(folder).await?;
+    session.select(wire_name(folder)).await?;
     {
         let mut updates = session
             .uid_store(uid.to_string(), "+FLAGS.SILENT (\\Deleted)")
@@ -2097,7 +2488,7 @@ where
     } else {
         false
     };
-    session.logout().await?;
+    sign_out(&mut session).await?;
     Ok(expunged)
 }
 
@@ -2132,18 +2523,22 @@ enum FolderOp {
     Delete,
 }
 
+/// Whether a refused CREATE was refused because the folder is already there.
+///
+/// The response code where the server sends one (RFC 5530), and the words
+/// otherwise. Deliberately not "contains `exist`": "mailbox does not exist"
+/// and "parent does not exist" both contain it, and both mean the folder was
+/// not created.
+fn already_exists(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    lower.contains("[alreadyexists]")
+        || lower.contains("already exists")
+        || lower.contains("already exist")
+}
+
 async fn folder_op(cfg: &ImapConfig, op: FolderOp, a: &str, b: &str) -> Result<()> {
-    match cfg.security {
-        Security::Tls => {
-            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
-            folder_op_session(client, cfg, op, a, b).await
-        }
-        #[cfg(feature = "insecure-plaintext")]
-        Security::InsecurePlaintext => {
-            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
-            folder_op_session(Client::new(tcp), cfg, op, a, b).await
-        }
-    }
+    let client = Client::new(connect(cfg).await?);
+    folder_op_session(client, cfg, op, a, b).await
 }
 
 async fn folder_op_session<S>(
@@ -2158,23 +2553,24 @@ where
 {
     let mut session = sign_in(client, cfg).await?;
     let result = match op {
-        FolderOp::Create => session.create(a).await,
-        FolderOp::Rename => session.rename(a, b).await,
-        FolderOp::Delete => session.delete(a).await,
+        FolderOp::Create => session.create(wire_name(a)).await,
+        FolderOp::Rename => session.rename(wire_name(a), wire_name(b)).await,
+        FolderOp::Delete => session.delete(wire_name(a)).await,
     };
     match result {
         Ok(()) => {}
         // "Already exists" answers a CREATE the way success does: the folder
-        // the caller wanted is there. Everything else is a real failure.
-        Err(e)
-            if matches!(op, FolderOp::Create)
-                && e.to_string().to_ascii_lowercase().contains("exist") => {}
+        // the caller wanted is there. Everything else is a real failure —
+        // including "mailbox does not exist", which contains the word and
+        // used to be read as success, so a CREATE that failed for want of a
+        // parent folder was reported as a folder that had been made.
+        Err(e) if matches!(op, FolderOp::Create) && already_exists(&e.to_string()) => {}
         Err(e) => {
-            let _ = session.logout().await;
+            let _ = sign_out(&mut session).await;
             return Err(e.into());
         }
     }
-    session.logout().await?;
+    sign_out(&mut session).await?;
     Ok(())
 }
 
@@ -2198,37 +2594,18 @@ pub async fn move_uid(
     server_has_uidplus: bool,
     message_id: Option<&str>,
 ) -> Result<bool> {
-    match cfg.security {
-        Security::Tls => {
-            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
-            move_uid_session(
-                client,
-                cfg,
-                from,
-                uid,
-                to,
-                server_has_move,
-                server_has_uidplus,
-                message_id,
-            )
-            .await
-        }
-        #[cfg(feature = "insecure-plaintext")]
-        Security::InsecurePlaintext => {
-            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
-            move_uid_session(
-                Client::new(tcp),
-                cfg,
-                from,
-                uid,
-                to,
-                server_has_move,
-                server_has_uidplus,
-                message_id,
-            )
-            .await
-        }
-    }
+    let client = Client::new(connect(cfg).await?);
+    move_uid_session(
+        client,
+        cfg,
+        from,
+        uid,
+        to,
+        server_has_move,
+        server_has_uidplus,
+        message_id,
+    )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2247,23 +2624,23 @@ where
 {
     let mut session = sign_in(client, cfg).await?;
     if server_has_move {
-        session.select(from).await?;
-        session.uid_mv(uid.to_string(), to).await?;
-        session.logout().await?;
+        session.select(wire_name(from)).await?;
+        session.uid_mv(uid.to_string(), wire_name(to)).await?;
+        sign_out(&mut session).await?;
         return Ok(true);
     }
     // A copy that already landed is not made again.
     let already_there = match message_id {
         Some(id) => {
-            session.select(to).await?;
-            let query = format!("HEADER Message-ID \"{}\"", id.replace('"', ""));
+            session.select(wire_name(to)).await?;
+            let query = format!("HEADER Message-ID {}", quote_imap(id));
             !session.uid_search(query).await?.is_empty()
         }
         None => false,
     };
-    session.select(from).await?;
+    session.select(wire_name(from)).await?;
     if !already_there {
-        session.uid_copy(uid.to_string(), to).await?;
+        session.uid_copy(uid.to_string(), wire_name(to)).await?;
     }
     {
         let mut updates = session
@@ -2281,7 +2658,7 @@ where
     } else {
         false
     };
-    session.logout().await?;
+    sign_out(&mut session).await?;
     Ok(expunged)
 }
 
@@ -2298,18 +2675,12 @@ pub async fn uids_for_message_id(
     folder: &str,
     message_id: &str,
 ) -> Result<Vec<u32>> {
-    let query = format!("HEADER Message-ID \"{}\"", message_id.replace('"', ""));
-    match cfg.security {
-        Security::Tls => {
-            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
-            uid_search_session(client, cfg, folder, &query).await
-        }
-        #[cfg(feature = "insecure-plaintext")]
-        Security::InsecurePlaintext => {
-            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
-            uid_search_session(Client::new(tcp), cfg, folder, &query).await
-        }
-    }
+    // Quoted properly rather than by deleting quotes: an id is generated by
+    // whoever sent the message, and a backslash in one used to end the string
+    // early and leave the rest being read as IMAP.
+    let query = format!("HEADER Message-ID {}", quote_imap(message_id));
+    let client = Client::new(connect(cfg).await?);
+    uid_search_session(client, cfg, folder, &query).await
 }
 
 async fn uid_search_session<S>(
@@ -2322,45 +2693,58 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
 {
     let mut session = sign_in(client, cfg).await?;
-    session.select(folder).await?;
+    session.select(wire_name(folder)).await?;
     let hits = session.uid_search(query).await?;
     let mut found: Vec<u32> = hits.into_iter().collect();
     found.sort_unstable();
-    session.logout().await?;
+    sign_out(&mut session).await?;
     Ok(found)
 }
 
-/// Every UID the folder currently holds — the ground truth a placement
-/// sweep compares against. One SEARCH ALL; the response is a number list,
-/// cheap even for a mailbox in the tens of thousands.
+/// How many UIDs one SEARCH asks about.
+const SEARCH_RANGE: u32 = 50_000;
+
+/// Every UID the folder currently holds — the ground truth a placement sweep
+/// compares against.
+///
+/// In ranges rather than one `SEARCH ALL`. All Mail on a long-lived Gmail
+/// account holds three hundred thousand messages, and asking about all of them
+/// at once cost twenty-one seconds of server CPU, every twenty minutes, until
+/// the backfill finished. A UID range is answered from the index instead.
 pub async fn uids_in_folder(cfg: &ImapConfig, folder: &str) -> Result<Vec<u32>> {
-    match cfg.security {
-        Security::Tls => {
-            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
-            uid_search_session(client, cfg, folder, "ALL").await
-        }
-        #[cfg(feature = "insecure-plaintext")]
-        Security::InsecurePlaintext => {
-            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
-            uid_search_session(Client::new(tcp), cfg, folder, "ALL").await
+    let client = Client::new(connect(cfg).await?);
+    let mut session = sign_in(client, cfg).await?;
+    let mailbox = session.select(wire_name(folder)).await?;
+    let mut found = Vec::new();
+    match mailbox.uid_next {
+        // Without a UIDNEXT there is no last number to walk towards, so the
+        // one broad question is the only one that can be asked.
+        None => found.extend(session.uid_search("ALL").await?),
+        Some(uid_next) => {
+            let mut first = 1u32;
+            while first < uid_next {
+                let last = first.saturating_add(SEARCH_RANGE - 1).min(uid_next - 1);
+                found.extend(session.uid_search(format!("UID {first}:{last}")).await?);
+                if last == uid_next - 1 {
+                    break;
+                }
+                first = last + 1;
+            }
         }
     }
+    found.sort_unstable();
+    sign_out(&mut session).await?;
+    Ok(found)
 }
 
 pub async fn find_message_id(cfg: &ImapConfig, folder: &str, message_id: &str) -> Result<Vec<u32>> {
     // Message-ID values are generated by us; quote defensively regardless.
-    let query = format!("HEADER Message-ID \"{}\"", message_id.replace('"', ""));
-    match cfg.security {
-        Security::Tls => {
-            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
-            search_session(client, cfg, folder, &query).await
-        }
-        #[cfg(feature = "insecure-plaintext")]
-        Security::InsecurePlaintext => {
-            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
-            search_session(Client::new(tcp), cfg, folder, &query).await
-        }
-    }
+    // Quoted properly rather than by deleting quotes: an id is generated by
+    // whoever sent the message, and a backslash in one used to end the string
+    // early and leave the rest being read as IMAP.
+    let query = format!("HEADER Message-ID {}", quote_imap(message_id));
+    let client = Client::new(connect(cfg).await?);
+    search_session(client, cfg, folder, &query).await
 }
 
 async fn search_session<S>(
@@ -2373,11 +2757,11 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
 {
     let mut session = sign_in(client, cfg).await?;
-    session.select(folder).await?;
+    session.select(wire_name(folder)).await?;
     let hits = session.search(query).await?;
     let mut found: Vec<u32> = hits.into_iter().collect();
     found.sort_unstable();
-    session.logout().await?;
+    sign_out(&mut session).await?;
     Ok(found)
 }
 
@@ -2408,36 +2792,16 @@ pub async fn login_check(cfg: &ImapConfig) -> Result<()> {
 }
 
 async fn login_check_inner(cfg: &ImapConfig) -> Result<()> {
-    match cfg.security {
-        Security::Tls => {
-            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
-            let session = sign_in(client, cfg).await?;
-            let mut session = session;
-            session.logout().await?;
-            Ok(())
-        }
-        #[cfg(feature = "insecure-plaintext")]
-        Security::InsecurePlaintext => {
-            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
-            let mut session = sign_in(Client::new(tcp), cfg).await?;
-            session.logout().await?;
-            Ok(())
-        }
-    }
+    let client = Client::new(connect(cfg).await?);
+    let session = sign_in(client, cfg).await?;
+    let mut session = session;
+    sign_out(&mut session).await?;
+    Ok(())
 }
 
 pub async fn probe(cfg: &ImapConfig, fetch_limit: u32) -> Result<ProbeReport> {
-    match cfg.security {
-        Security::Tls => {
-            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
-            probe_session(client, cfg, fetch_limit).await
-        }
-        #[cfg(feature = "insecure-plaintext")]
-        Security::InsecurePlaintext => {
-            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
-            probe_session(Client::new(tcp), cfg, fetch_limit).await
-        }
-    }
+    let client = Client::new(connect(cfg).await?);
+    probe_session(client, cfg, fetch_limit).await
 }
 
 #[cfg(test)]
@@ -2701,17 +3065,8 @@ mod special_use_tests {
 /// Returns how many the server said were there, from SELECT's EXISTS, so the
 /// caller can say "4,187 marked" rather than "done".
 pub async fn store_flag_all(cfg: &ImapConfig, folder: &str, flag: &str, add: bool) -> Result<u32> {
-    match cfg.security {
-        Security::Tls => {
-            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
-            store_flag_all_session(client, cfg, folder, flag, add).await
-        }
-        #[cfg(feature = "insecure-plaintext")]
-        Security::InsecurePlaintext => {
-            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
-            store_flag_all_session(Client::new(tcp), cfg, folder, flag, add).await
-        }
-    }
+    let client = Client::new(connect(cfg).await?);
+    store_flag_all_session(client, cfg, folder, flag, add).await
 }
 
 async fn store_flag_all_session<S>(
@@ -2725,12 +3080,12 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
 {
     let mut session = sign_in(client, cfg).await?;
-    let mailbox = session.select(folder).await?;
+    let mailbox = session.select(wire_name(folder)).await?;
     let n = mailbox.exists;
     // Nothing to do, and `1:*` on an empty mailbox is a command some servers
     // answer with an error rather than a shrug.
     if n == 0 {
-        session.logout().await?;
+        sign_out(&mut session).await?;
         return Ok(0);
     }
     let op = if add {
@@ -2742,7 +3097,7 @@ where
         let mut updates = session.uid_store("1:*", format!("{op} ({flag})")).await?;
         while updates.next().await.is_some() {}
     }
-    session.logout().await?;
+    sign_out(&mut session).await?;
     Ok(n)
 }
 
@@ -2758,17 +3113,8 @@ pub async fn move_all(
     to: &str,
     server_has_move: bool,
 ) -> Result<u32> {
-    match cfg.security {
-        Security::Tls => {
-            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
-            move_all_session(client, cfg, from, to, server_has_move).await
-        }
-        #[cfg(feature = "insecure-plaintext")]
-        Security::InsecurePlaintext => {
-            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
-            move_all_session(Client::new(tcp), cfg, from, to, server_has_move).await
-        }
-    }
+    let client = Client::new(connect(cfg).await?);
+    move_all_session(client, cfg, from, to, server_has_move).await
 }
 
 async fn move_all_session<S>(
@@ -2782,16 +3128,16 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
 {
     let mut session = sign_in(client, cfg).await?;
-    let mailbox = session.select(from).await?;
+    let mailbox = session.select(wire_name(from)).await?;
     let n = mailbox.exists;
     if n == 0 {
-        session.logout().await?;
+        sign_out(&mut session).await?;
         return Ok(0);
     }
     if server_has_move {
-        session.uid_mv("1:*", to).await?;
+        session.uid_mv("1:*", wire_name(to)).await?;
     } else {
-        session.uid_copy("1:*", to).await?;
+        session.uid_copy("1:*", wire_name(to)).await?;
         {
             let mut updates = session
                 .uid_store("1:*", "+FLAGS.SILENT (\\Deleted)")
@@ -2804,6 +3150,6 @@ where
             while expunged.next().await.is_some() {}
         }
     }
-    session.logout().await?;
+    sign_out(&mut session).await?;
     Ok(n)
 }

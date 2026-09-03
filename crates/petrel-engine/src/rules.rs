@@ -122,6 +122,19 @@ pub struct Envelope {
     pub date_ms: i64,
     /// Every header, lowercased name, value as written.
     pub headers: Vec<(String, String)>,
+    /// The From line taken apart: the address, and the display name if there
+    /// is one, each on its own. The joined line above answers "contains";
+    /// the exact operators are asked of these instead.
+    ///
+    /// "From is dana@vendorco.example" means the address, not the rendered
+    /// line — against the line it could never hold for a sender with a
+    /// display name, nor for a To line with two people on it, so `is`,
+    /// `starts with` and `ends with` on these three fields never fired at
+    /// all. Empty for an envelope built without them, which falls back to
+    /// the joined line.
+    pub from_parts: Vec<String>,
+    pub to_parts: Vec<String>,
+    pub cc_parts: Vec<String>,
 }
 
 impl Envelope {
@@ -165,6 +178,19 @@ impl Envelope {
                 .collect::<Vec<_>>()
                 .join(", ")
         }
+        /// Every address and every display name on a line, separately.
+        fn parts(addrs: &[(Option<String>, String)]) -> Vec<String> {
+            let mut out = Vec::with_capacity(addrs.len());
+            for (display, addr) in addrs {
+                if let Some(d) = display.as_deref().filter(|d| !d.trim().is_empty()) {
+                    out.push(d.trim().to_lowercase());
+                }
+                if !addr.trim().is_empty() {
+                    out.push(addr.trim().to_lowercase());
+                }
+            }
+            out
+        }
         Envelope {
             from: named(
                 parsed.from_display.as_deref(),
@@ -182,6 +208,12 @@ impl Envelope {
             size,
             date_ms: parsed.date_ms.unwrap_or(0),
             headers: parsed.headers.clone(),
+            from_parts: parts(&[(
+                parsed.from_display.clone(),
+                parsed.from_addr.clone().unwrap_or_default(),
+            )]),
+            to_parts: parts(&parsed.to),
+            cc_parts: parts(&parsed.cc),
         }
     }
 }
@@ -211,6 +243,33 @@ fn text_holds(hay: &str, op: Op, needle: &str) -> bool {
         Op::Over | Op::Under | Op::Before | Op::After => return false,
     };
     plain != op.negated()
+}
+
+/// Whether an address line satisfies one condition.
+///
+/// `contains` keeps the joined line, which is what makes "To contains Dana"
+/// mean "anyone here called Dana". Everything else is asked of each address
+/// and each display name in turn: any of them for a positive test, all of
+/// them for a negative one — the same shape a repeated header takes, and for
+/// the same reason. "To is not billing@example.com" must not hold for a
+/// message addressed to billing and somebody else.
+fn address_holds(joined: &str, parts: &[String], op: Op, needle: &str) -> bool {
+    if parts.is_empty() || matches!(op, Op::Contains | Op::NotContains) {
+        return text_holds(joined, op, needle);
+    }
+    for part in parts {
+        // `text_holds` has already applied the negation, so `held` means
+        // "this address or name satisfies the condition".
+        let held = text_holds(part, op, needle);
+        if op.negated() {
+            if !held {
+                return false;
+            }
+        } else if held {
+            return true;
+        }
+    }
+    op.negated()
 }
 
 /// Midnight UTC on a `YYYY-MM-DD`, for comparing against a send time.
@@ -250,9 +309,9 @@ pub fn matches(rule: &Rule, envelope: &Envelope) -> bool {
 
 fn holds(c: &Condition, envelope: &Envelope) -> bool {
     match c.field.as_str() {
-        "from" => text_holds(&envelope.from, c.op, &c.value),
-        "to" => text_holds(&envelope.to, c.op, &c.value),
-        "cc" => text_holds(&envelope.cc, c.op, &c.value),
+        "from" => address_holds(&envelope.from, &envelope.from_parts, c.op, &c.value),
+        "to" => address_holds(&envelope.to, &envelope.to_parts, c.op, &c.value),
+        "cc" => address_holds(&envelope.cc, &envelope.cc_parts, c.op, &c.value),
         "subject" => text_holds(&envelope.subject, c.op, &c.value),
         "list_id" => text_holds(&envelope.list_id, c.op, &c.value),
         "body" => text_holds(&envelope.body, c.op, &c.value),

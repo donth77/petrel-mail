@@ -29,6 +29,11 @@ mod diag;
 pub mod message_view;
 mod notify;
 mod send;
+// The webview isolation matrix: hostile documents served to a real frame so
+// the layers can be measured from outside. Useful, and not something a
+// shipping binary should be able to serve — a release build has no such
+// routes at all.
+#[cfg(debug_assertions)]
 mod spike_s2;
 mod state;
 mod sync;
@@ -91,6 +96,153 @@ fn stored_theme(state: &std::sync::Arc<AppState>) -> Option<String> {
     }
 }
 
+/// What a failed launch says: the thing that would not open, where it is,
+/// and what the operating system said about it.
+///
+/// Its own function so the words can be tested. Everything it describes
+/// happens before any window exists, and the message is the only thing a
+/// person will ever see about it.
+fn startup_message(what: &str, path: &std::path::Path, error: &str) -> String {
+    format!(
+        "Petrel could not start.\n\n{what}\n\n{}\n\n{error}",
+        path.display()
+    )
+}
+
+/// Says so, natively, and leaves.
+///
+/// These failures used to be `expect`s. A release build has no console
+/// attached, so a data directory that could not be opened — a full disk, a
+/// permission the OS revoked, a store on a volume that is no longer mounted —
+/// was an icon that bounced once in the Dock and vanished, which looks
+/// exactly like a crash with no cause. The dialog is native because there is
+/// no window yet to put one in.
+fn cannot_start(what: &str, path: &std::path::Path, error: &str) -> ! {
+    let message = startup_message(what, path, error);
+    eprintln!("[startup] {message}");
+    rfd::MessageDialog::new()
+        .set_level(rfd::MessageLevel::Error)
+        .set_title("Petrel could not start")
+        .set_description(&message)
+        .set_buttons(rfd::MessageButtons::Ok)
+        .show();
+    std::process::exit(1);
+}
+
+/// Where the app's own window may navigate.
+///
+/// Everything Petrel shows is either its bundled page or a message document,
+/// and both live at origins this app serves. Left open — which is what a
+/// handler returning `true` is — the window navigates anywhere: a file
+/// dropped outside a composer replaced the entire app with whatever the file
+/// happened to be, and a link that got past the reading frame's own
+/// interceptor would have loaded a live web page where the mail client was.
+pub(crate) fn main_navigation_allowed(url: &tauri::Url) -> bool {
+    let allowed = app_origin(url) || message_origin_url(url);
+    if !allowed {
+        // The origin, never the whole URL: a message's links are the
+        // sender's text and a query string can carry anything.
+        log_sync(&format!("[nav] refused {}", origin_of(url)));
+    }
+    allowed
+}
+
+/// Where the print window may navigate: the message it was opened on, and
+/// nothing else. Its document catches link clicks itself; this is the
+/// webview refusing whatever gets past that.
+pub(crate) fn print_navigation_allowed(url: &tauri::Url) -> bool {
+    let allowed = message_origin_url(url);
+    if !allowed {
+        log_sync(&format!("[nav] print window refused {}", origin_of(url)));
+    }
+    allowed
+}
+
+/// The app's own page, in every spelling the platforms give it — plus the
+/// dev server, which only a development build ever loads.
+fn app_origin(url: &tauri::Url) -> bool {
+    let host = url.host_str().unwrap_or("");
+    match url.scheme() {
+        "tauri" => host == "localhost",
+        "http" | "https" => {
+            host == "tauri.localhost" || (cfg!(dev) && matches!(host, "localhost" | "127.0.0.1"))
+        }
+        // A webview navigates itself to about:blank while it starts; refusing
+        // that refuses the window.
+        "about" => true,
+        _ => false,
+    }
+}
+
+/// A message document, in both spellings — see `message_view::message_origin`.
+fn message_origin_url(url: &tauri::Url) -> bool {
+    let host = url.host_str().unwrap_or("");
+    match url.scheme() {
+        "petrel-msg" => host == "localhost",
+        "http" | "https" => host == "petrel-msg.localhost",
+        _ => false,
+    }
+}
+
+/// Scheme and host alone, for the log.
+fn origin_of(url: &tauri::Url) -> String {
+    format!("{}://{}", url.scheme(), url.host_str().unwrap_or(""))
+}
+
+/// Clears out what previous runs left in the data directory.
+///
+/// Two kinds of leftovers. A "Remove all local data" renames the old
+/// directory aside and quits — the store is still open at that moment, and
+/// on Windows an open SQLite file cannot be deleted — so the deletion
+/// happens here, on the next launch, when nothing holds it. And the staging
+/// directory holds copies of attachments that were dropped into a composer:
+/// they are somebody's mail, they are only needed until the message goes,
+/// and nothing ever removed them.
+fn sweep_leftovers(dir: &std::path::Path) {
+    let removed = commands::storage::purge_removed(dir);
+    if removed > 0 {
+        log_sync("mail from an earlier removal request deleted");
+    }
+    // Staged attachments: copies of somebody's mail, written when a file is
+    // dragged into a composer, and nothing ever removed them. Old ones only
+    // — a draft written last night and sent this morning must still find
+    // what was attached to it, and a fortnight is far longer than a message
+    // spends being written.
+    let staged = dir.join("staged");
+    let _ = crate::diag::create_private_dir(&staged);
+    const KEEP: std::time::Duration = std::time::Duration::from_secs(14 * 24 * 60 * 60);
+    if let Ok(entries) = std::fs::read_dir(&staged) {
+        let mut swept = 0usize;
+        for entry in entries.flatten() {
+            let old_enough = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .and_then(|t| t.elapsed().map_err(std::io::Error::other))
+                .map(|age| age > KEEP)
+                .unwrap_or(false);
+            if old_enough && std::fs::remove_file(entry.path()).is_ok() {
+                swept += 1;
+            }
+        }
+        if swept > 0 {
+            log_sync(&format!("{swept} staged attachment(s) cleared"));
+        }
+    }
+    // And the per-launch directories attachments are opened from, which live
+    // in the system temp directory — world-readable on Linux. Only this
+    // app's, and never this launch's own: two Petrels at once must not
+    // delete each other's open files.
+    let mine = format!("petrel-open-{}", std::process::id());
+    if let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with("petrel-open-") && name != mine {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    }
+}
+
 pub fn run() {
     // Chosen once, here, for the whole process. rustls picks a crypto provider
     // on its own only while exactly one is compiled in; the moment a second
@@ -100,14 +252,30 @@ pub fn run() {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
     let dir = data_dir();
-    std::fs::create_dir_all(&dir).expect("create data directory");
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        cannot_start("Its folder could not be created.", &dir, &e.to_string());
+    }
     eprintln!("[store] data directory: {}", dir.display());
+    // Anything a previous "Remove all local data" renamed aside, and the
+    // working directories the last run left behind.
+    sweep_leftovers(&dir);
 
-    let store = Store::open(&dir.join("petrel.db")).expect("open store");
+    let db = dir.join("petrel.db");
+    let store = match Store::open(&db) {
+        Ok(s) => s,
+        Err(e) => cannot_start("Its mailbox could not be opened.", &db, &e.to_string()),
+    };
     // One account row for now; the account model arrives with setup UI.
-    let account = match store.first_account().expect("read accounts") {
+    let first = match store.first_account() {
+        Ok(a) => a,
+        Err(e) => cannot_start("Its mailbox could not be read.", &db, &e.to_string()),
+    };
+    let account = match first {
         Some(id) => id,
-        None => store.ensure_test_account().expect("create account row"),
+        None => match store.ensure_test_account() {
+            Ok(id) => id,
+            Err(e) => cannot_start("Its mailbox could not be written to.", &db, &e.to_string()),
+        },
     };
     // Name it after the account actually configured, before any sync runs — the
     // address is known from the environment, so there is no reason for the
@@ -122,7 +290,15 @@ pub fn run() {
     for id in store.account_ids().unwrap_or_default() {
         let _ = store.ensure_account_colour(id);
     }
-    let blobs = BlobStore::open(&dir.join("blobs")).expect("open blob store");
+    let blob_dir = dir.join("blobs");
+    let blobs = match BlobStore::open(&blob_dir) {
+        Ok(b) => b,
+        Err(e) => cannot_start(
+            "Its message files could not be opened.",
+            &blob_dir,
+            &e.to_string(),
+        ),
+    };
 
     // Startup housekeeping: clear temp files left by an interrupted write, then
     // destroy anything whose grace period expired while the app was closed.
@@ -137,11 +313,13 @@ pub fn run() {
         source: Mutex::new("starting…".into()),
         sync_error: Mutex::new(None),
         stops: Mutex::new(std::collections::HashMap::new()),
+        picked: Mutex::new(std::collections::HashSet::new()),
         caps: Mutex::new(std::collections::HashMap::new()),
         outbox: Mutex::new(Vec::new()),
         draining: AtomicBool::new(false),
         draft_dirty: Mutex::new(std::collections::HashSet::new()),
         pending_notify: Mutex::new(Vec::new()),
+        pending_alerts: Mutex::new(Vec::new()),
         last_sync_ms: std::sync::atomic::AtomicI64::new(0),
         ui_touch_ms: std::sync::atomic::AtomicI64::new(0),
         server_total: std::sync::atomic::AtomicUsize::new(0),
@@ -268,8 +446,8 @@ pub fn run() {
                             };
                             if let Err(e) = store.set_account_servers(summary.id, &servers) {
                                 eprintln!(
-                                    "[sync] could not adopt env servers for {}: {e}",
-                                    env.user
+                                    "[sync] could not adopt env servers for account {}: {e}",
+                                    summary.id
                                 );
                                 continue;
                             }
@@ -287,8 +465,7 @@ pub fn run() {
                             Ok(()) => {
                                 remember_password(id, env_pass(&env));
                                 log_sync(&format!(
-                                    "adopted environment credentials for {} into the keychain",
-                                    env.user
+                                    "adopted environment credentials for account {id} into the keychain"
                                 ));
                             }
                             Err(e) => eprintln!("[sync] keychain adopt failed: {e}"),
@@ -401,13 +578,14 @@ pub fn run() {
                     if existing > 0 {
                         state.seeded.store(existing as usize, Ordering::Relaxed);
                         state.seeding.store(false, Ordering::Relaxed);
-                        *state.source.lock().unwrap() =
+                        *state.source.lock().unwrap_or_else(|p| p.into_inner()) =
                             "no account configured · showing stored mail".into();
                         if !reseed_demo_if_stale(&state, account) {
                             decorate_demo_store(&state, account);
                         }
                     } else {
-                        *state.source.lock().unwrap() = "synthetic demo data".into();
+                        *state.source.lock().unwrap_or_else(|p| p.into_inner()) =
+                            "synthetic demo data".into();
                         spawn_demo_seeding(state.clone(), account);
                     }
                 }
@@ -476,6 +654,7 @@ pub fn run() {
             commands::settings::save_rule,
             commands::settings::delete_rule,
             commands::settings::move_rule,
+            commands::updates::app_version,
             commands::updates::check_update,
             commands::updates::install_update,
             commands::updates::restart_for_update,
@@ -508,11 +687,14 @@ pub fn run() {
             commands::settings::set_setting,
             commands::mail::search_messages,
             commands::mail::message_url,
+            commands::files::pick_files,
+            commands::files::pick_save_path,
             commands::invitations::invitation,
             commands::invitations::respond_invitation,
             diag::frontend_log
         ])
         .register_uri_scheme_protocol("petrel-msg", move |ctx, request| {
+            #[cfg(debug_assertions)]
             if request.uri().path().starts_with("/doc/")
                 || request.uri().path().starts_with("/beacon/")
             {
@@ -606,6 +788,7 @@ pub fn run() {
                 }
                 init.push_str(SELFTEST);
             }
+            #[cfg(debug_assertions)]
             if std::env::var("PETREL_SPIKE_S2").is_ok() {
                 let port = spike_s2::start_leak_listener();
                 eprintln!("[s2] leak listener on 127.0.0.1:{port}");
@@ -636,10 +819,7 @@ pub fn run() {
                 .position(40.0, 40.0)
                 .focused(true)
                 .initialization_script(&init)
-                .on_navigation(|url| {
-                    log_sync(&format!("[nav] {url}"));
-                    true
-                })
+                .on_navigation(main_navigation_allowed)
                 .on_page_load(|_webview, payload| {
                     log_sync(&format!(
                         "[pageload] {:?} {}",
@@ -721,6 +901,82 @@ mod theme_init_tests {
                 !js.contains('\\'),
                 "a backslash survived into the script: {js}"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::{main_navigation_allowed, print_navigation_allowed, startup_message};
+
+    /// The message is the only thing a person sees when the app cannot
+    /// start, so it has to say which file and what went wrong. Before this
+    /// the `expect` printed to a console a release build does not have.
+    #[test]
+    fn a_failed_launch_names_the_file_and_the_reason() {
+        let message = startup_message(
+            "Its mailbox could not be opened.",
+            std::path::Path::new("/Users/x/Library/Application Support/Petrel/petrel.db"),
+            "unable to open database file",
+        );
+        assert!(message.contains("Petrel could not start."), "{message}");
+        assert!(
+            message.contains("Its mailbox could not be opened."),
+            "{message}"
+        );
+        assert!(message.contains("Petrel/petrel.db"), "{message}");
+        assert!(
+            message.contains("unable to open database file"),
+            "{message}"
+        );
+    }
+
+    fn url(s: &str) -> tauri::Url {
+        s.parse().expect("a url")
+    }
+
+    /// The window may go to its own page and to a message, and nowhere else.
+    /// A file dropped outside a composer used to replace the whole app.
+    #[test]
+    fn the_main_window_navigates_only_to_petrels_own_origins() {
+        for allowed in [
+            "tauri://localhost/index.html",
+            "http://tauri.localhost/index.html?compose=3",
+            "https://tauri.localhost/index.html",
+            "petrel-msg://localhost/message/abc",
+            "http://petrel-msg.localhost/message/abc",
+        ] {
+            assert!(main_navigation_allowed(&url(allowed)), "{allowed}");
+        }
+        for refused in [
+            "file:///Users/x/Desktop/invoice.pdf",
+            "https://example.com/",
+            "http://petrel-msg.localhost.example.com/",
+            "https://tauri.localhost.evil.example/",
+            "data:text/html,<script>alert(1)</script>",
+            "javascript:alert(1)",
+            "petrel-msg://elsewhere/message/abc",
+        ] {
+            assert!(!main_navigation_allowed(&url(refused)), "{refused}");
+        }
+    }
+
+    /// The print window shows one message and never anything else, so a
+    /// link in that message cannot load a web page in a Petrel window.
+    #[test]
+    fn the_print_window_navigates_only_to_a_message() {
+        assert!(print_navigation_allowed(&url(
+            "petrel-msg://localhost/print/tok"
+        )));
+        assert!(print_navigation_allowed(&url(
+            "http://petrel-msg.localhost/print/tok"
+        )));
+        for refused in [
+            "https://example.com/",
+            "tauri://localhost/index.html",
+            "file:///etc/passwd",
+        ] {
+            assert!(!print_navigation_allowed(&url(refused)), "{refused}");
         }
     }
 }

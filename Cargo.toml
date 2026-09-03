@@ -22,6 +22,9 @@ default-members = [
 version = "1.0.0"
 edition = "2024"
 publish = false
+# Declared even though nothing is published: the licence gate reads it,
+# and a crate with no licence at all is a finding rather than a blank.
+license = "MIT"
 
 [workspace.dependencies]
 rusqlite = { version = "0.40", features = ["bundled", "functions"] }
@@ -35,6 +38,11 @@ tempfile = "3"
 
 [profile.release]
 lto = "thin"
+# Symbol names are of no use without a crash reporter to read them, and
+# leaving them out keeps the build paths of whoever cut the release out of
+# the binary. `panic = "abort"` must NOT join them: the mbox import and the
+# message renderer both rely on catching an unwind.
+strip = "symbols"
 
 # Benchmarks want release-grade codegen without a full release build's compile time.
 [profile.bench-fast]
