@@ -17,8 +17,6 @@ export const THREAD_PAGE_MAX = 100;
  *  uncapped expansion turned a long thread into gigabytes of WebView. */
 export const MAX_OPEN_BODIES = 3;
 
-export type ThreadRow = { id: number; date_ms: number };
-
 /** Keep drawing the current cards while the same conversation reloads.
  *
  *  A first open, or a switch to another thread, still shows the placeholder.
@@ -34,41 +32,6 @@ export function keepExistingPane(args: {
 export function clampThreadLimit(limit: number): number {
   if (!Number.isFinite(limit)) return THREAD_PAGE;
   return Math.min(THREAD_PAGE_MAX, Math.max(1, Math.floor(limit)));
-}
-
-/** Oldest row in the loaded window — the cursor for the next older page. */
-export function olderCursor(messages: ThreadRow[]): { dateMs: number; id: number } | null {
-  const first = messages[0];
-  return first ? { dateMs: first.date_ms, id: first.id } : null;
-}
-
-function chronological<T extends ThreadRow>(rows: T[]): T[] {
-  return rows.slice().sort((a, b) => a.date_ms - b.date_ms || a.id - b.id);
-}
-
-/** Prepend an older page. Incoming is already older than prev; dedupe by id. */
-export function mergeOlder<T extends ThreadRow>(prev: readonly T[], incoming: readonly T[]): T[] {
-  const seen = new Set<number>();
-  const out: T[] = [];
-  for (const m of [...incoming, ...prev]) {
-    if (seen.has(m.id)) continue;
-    seen.add(m.id);
-    out.push(m);
-  }
-  return chronological(out);
-}
-
-/** Replace with the newest page on first open. Dedupe and keep chronological order. */
-export function mergeNewer<T extends ThreadRow>(prev: readonly T[], incoming: readonly T[]): T[] {
-  void prev;
-  const seen = new Set<number>();
-  const out: T[] = [];
-  for (const m of incoming) {
-    if (seen.has(m.id)) continue;
-    seen.add(m.id);
-    out.push(m);
-  }
-  return chronological(out);
 }
 
 /** Which messages stay expanded after opening another.

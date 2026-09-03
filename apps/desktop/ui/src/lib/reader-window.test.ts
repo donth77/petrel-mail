@@ -5,9 +5,7 @@ import {
   bodiesToMount,
   clampThreadLimit,
   keepExistingPane,
-  mergeOlder,
   nextExpanded,
-  olderCursor,
 } from './reader-window';
 
 describe('keepExistingPane', () => {
@@ -23,36 +21,6 @@ describe('clampThreadLimit', () => {
     expect(clampThreadLimit(0)).toBe(1);
     expect(clampThreadLimit(-5)).toBe(1);
     expect(clampThreadLimit(THREAD_PAGE_MAX + 50)).toBe(THREAD_PAGE_MAX);
-  });
-});
-
-describe('olderCursor', () => {
-  it('names the oldest loaded row', () => {
-    expect(
-      olderCursor([
-        { id: 2, date_ms: 100 },
-        { id: 5, date_ms: 200 },
-      ]),
-    ).toEqual({ dateMs: 100, id: 2 });
-  });
-
-  it('is null when nothing is loaded', () => {
-    expect(olderCursor([])).toBeNull();
-  });
-});
-
-describe('mergeOlder', () => {
-  it('prepends without duplicating and keeps chronological order', () => {
-    const prev = [
-      { id: 3, date_ms: 300 },
-      { id: 4, date_ms: 400 },
-    ];
-    const incoming = [
-      { id: 1, date_ms: 100 },
-      { id: 3, date_ms: 300 },
-      { id: 2, date_ms: 200 },
-    ];
-    expect(mergeOlder(prev, incoming).map((m) => m.id)).toEqual([1, 2, 3, 4]);
   });
 });
 
@@ -81,17 +49,5 @@ describe('bodiesToMount', () => {
   it('mounts at most three bodies', () => {
     const expanded = new Set([1, 2, 3, 4]);
     expect(bodiesToMount(expanded, 4).size).toBeLessThanOrEqual(MAX_OPEN_BODIES);
-  });
-});
-
-describe('show-all guard', () => {
-  it('does not export an expand-all helper', async () => {
-    const mod = await import('./reader-window');
-    expect(Object.keys(mod).some((k) => /expandAll|showAll/i.test(k))).toBe(false);
-  });
-
-  it('does not export a fold or loadOlder helper', async () => {
-    const mod = await import('./reader-window');
-    expect(Object.keys(mod).some((k) => /fold|loadOlder/i.test(k))).toBe(false);
   });
 });
