@@ -66,11 +66,24 @@ jobs:
         run: |
           docker run -d --rm --name petrel-greenmail -p 3143:3143 -p 3025:3025 \
             -e GREENMAIL_OPTS='-Dgreenmail.setup.test.all -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.users=petrel:petrelpass@example.com' \
-            greenmail/standalone:latest
-          for i in $(seq 1 30); do
-            (echo > /dev/tcp/127.0.0.1/3143) >/dev/null 2>&1 && break
-            sleep 2
+            greenmail/standalone:2.1.13
+          # Wait for the IMAP greeting, not for the port: docker-proxy accepts
+          # a connection long before the JVM behind it listens, and a test
+          # that connected in that gap died on its first command with
+          # "connection reset by peer".
+          ready=""
+          for i in $(seq 1 60); do
+            if exec 3<>/dev/tcp/127.0.0.1/3143 2>/dev/null; then
+              if IFS= read -r -t 3 greeting <&3 && [[ "$greeting" == "* OK"* ]]; then
+                ready="$greeting"
+              fi
+              exec 3>&- 3<&-
+            fi
+            [ -n "$ready" ] && break
+            sleep 1
           done
+          [ -n "$ready" ] || { echo "GreenMail never greeted on :3143"; docker logs petrel-greenmail; exit 1; }
+          echo "GreenMail ready: $ready"
           # `local::` only — live_provider_probe needs a real account and is
           # opt-in via PETREL_IMAP_* (it skips rather than fails without them).
           cargo test -p petrel-providers --features insecure-plaintext --test imap_slice local:: -- --ignored --nocapture
