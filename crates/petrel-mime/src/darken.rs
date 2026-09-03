@@ -79,6 +79,12 @@ fn recolor_style(style: &str) -> String {
 fn recolor_token(tok: &str) -> Option<String> {
     let t = tok.trim();
     if let Some(hex) = t.strip_prefix('#') {
+        // Hex digits are ASCII, so anything else is not a colour — and the
+        // byte slices below would land inside a multi-byte character and
+        // panic, from inside the message handler, on `color: #€€`.
+        if !hex.is_ascii() {
+            return None;
+        }
         let (r, g, b, a) = match hex.len() {
             3 => {
                 let v: Vec<u8> = hex
@@ -202,6 +208,16 @@ fn flip(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
 
 #[cfg(test)]
 mod tests {
+    /// `#€€` is six bytes and two characters. Slicing it by byte for the
+    /// hex pairs panicked inside the message handler, so opening the message
+    /// in dark mode took the app down. A colour we cannot read is left alone.
+    #[test]
+    fn a_non_ascii_colour_token_is_left_alone_rather_than_panicking() {
+        let html = "<p style=\"color: #€€; background: #ffffff\">hi</p>";
+        let out = super::recolor_for_dark(html);
+        assert!(out.contains("#€€"), "{out}");
+    }
+
     use super::*;
 
     #[test]

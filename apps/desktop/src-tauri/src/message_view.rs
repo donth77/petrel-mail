@@ -431,9 +431,16 @@ pub fn handle(
         if !previewable {
             return error_response(415, "this type is saved or opened, not previewed");
         }
+        // The type is the sender's text. A control byte in it is not a type,
+        // and the response builder refuses it — which used to be an `expect`
+        // here, a panic inside the scheme handler the moment a crafted inline
+        // image was drawn.
+        let Ok(content_type) = tauri::http::HeaderValue::from_str(&mime) else {
+            return error_response(415, "this attachment's type cannot be previewed");
+        };
         return Response::builder()
             .status(200)
-            .header("Content-Type", mime)
+            .header("Content-Type", content_type)
             // Same fence as a message body: no scripts, no fetches. A PDF
             // renders in the webview's own viewer; an SVG cannot run script.
             .header(
@@ -443,7 +450,7 @@ pub fn handle(
             .header("X-Content-Type-Options", "nosniff")
             .header("Content-Disposition", "inline")
             .body(bytes)
-            .expect("attachment response");
+            .unwrap_or_else(|_| error_response(500, "attachment response could not be built"));
     }
 
     // The printable document: same token scheme, same sanitizing, plus the

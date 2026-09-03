@@ -281,12 +281,17 @@ fn decode(value: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         match bytes[i] {
-            b'%' if i + 2 < bytes.len() => match u8::from_str_radix(&value[i + 1..i + 3], 16) {
-                Ok(b) => {
+            // `get` rather than a slice: `%` followed by a multi-byte character
+            // put the range inside it, and indexing there panics.
+            b'%' if i + 2 < bytes.len() => match value
+                .get(i + 1..i + 3)
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+            {
+                Some(b) => {
                     out.push(b);
                     i += 3;
                 }
-                Err(_) => {
+                None => {
                     out.push(bytes[i]);
                     i += 1;
                 }
@@ -302,4 +307,15 @@ fn decode(value: &str) -> String {
         }
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+#[cfg(test)]
+mod decode_tests {
+    use super::decode;
+
+    #[test]
+    fn a_percent_before_a_multibyte_character_does_not_panic() {
+        assert_eq!(decode("%€"), "%€");
+        assert_eq!(decode("%41+b%zz"), "A b%zz");
+    }
 }
