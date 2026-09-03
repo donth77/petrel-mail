@@ -494,3 +494,60 @@ async fn a_backlog_is_walked_in_one_pass_slice_by_slice() {
         "one connection"
     );
 }
+
+/// A tag set elsewhere on mail that is already tagged when Petrel first sees
+/// it arrives with that first fetch. It used to arrive only through the
+/// CONDSTORE diff, so it waited for a later flag change to bump the modseq,
+/// and on a server without CONDSTORE never arrived at all.
+#[tokio::test]
+async fn keywords_already_on_a_message_arrive_with_its_first_fetch() {
+    let mut tagged = msg(1, "t");
+    tagged.flags = "\\Seen $Work";
+    let state = Arc::new(Mutex::new(ServerState {
+        folders: [(
+            "INBOX".to_string(),
+            Folder {
+                validity: 1,
+                modseq: 10,
+                messages: vec![tagged, msg(2, "u")],
+            },
+        )]
+        .into(),
+        logins: AtomicUsize::new(0),
+        selects: AtomicUsize::new(0),
+        fetches: AtomicUsize::new(0),
+    }));
+    let port = server(Arc::clone(&state)).await;
+    let cfg = ImapConfig {
+        host: "127.0.0.1".into(),
+        port,
+        user: "u".into(),
+        credential: Credential::password("p"),
+        security: Security::InsecurePlaintext,
+    };
+    let passes = vec![FolderPass {
+        path: "INBOX".to_string(),
+        since_uid: 0,
+        expected_validity: None,
+        since_uidnext: None,
+        since_modseq: None,
+        seed_window: 200,
+    }];
+    let out = sync_pass(&cfg, &passes, true, |_i, _uid, _f, _raw| {})
+        .await
+        .unwrap();
+    let PassOutcome::Fetched {
+        fetched,
+        keyword_updates,
+        ..
+    } = &out[0]
+    else {
+        panic!("{out:?}");
+    };
+    assert_eq!(*fetched, 2);
+    assert_eq!(
+        keyword_updates,
+        &vec![(1, vec!["$Work".to_string()])],
+        "the tagged message reports its keyword; the untagged one reports nothing"
+    );
+}

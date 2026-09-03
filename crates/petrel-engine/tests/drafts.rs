@@ -531,3 +531,44 @@ fn a_draft_knows_its_own_account() {
     assert_eq!(store.account_of_message(draft).unwrap(), Some(second));
     assert_eq!(store.account_of_message(draft + 1_000_000).unwrap(), None);
 }
+
+#[test]
+fn a_draft_can_be_found_by_its_words() {
+    let store = Store::open_in_memory().unwrap();
+    let account = store.ensure_test_account().unwrap();
+    let draft = store
+        .save_draft(
+            account,
+            None,
+            "to@example.com",
+            "quilt",
+            "the zebra quilt is ready",
+            "",
+        )
+        .unwrap();
+    assert_eq!(store.search("zebra", 10).unwrap().len(), 1);
+
+    store
+        .save_draft(
+            account,
+            Some(draft),
+            "to@example.com",
+            "quilt",
+            "the giraffe quilt is ready",
+            "",
+        )
+        .unwrap();
+    assert_eq!(
+        store.search("zebra", 10).unwrap().len(),
+        0,
+        "an edit replaces the indexed text"
+    );
+    assert_eq!(store.search("giraffe", 10).unwrap().len(), 1);
+
+    store.delete_draft(draft).unwrap();
+    assert_eq!(
+        store.search("giraffe", 10).unwrap().len(),
+        0,
+        "a sent or discarded draft leaves the index"
+    );
+}

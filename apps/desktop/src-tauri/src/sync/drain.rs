@@ -304,21 +304,26 @@ pub(crate) async fn drain_actions(
             }
             ActionKind::Archive | ActionKind::Trash | ActionKind::Spam | ActionKind::Move => {
                 // The local move has already happened, so the destination is
-                // wherever the message now sits: the store is the record of
-                // where it should be, and re-deriving it here could disagree.
-                let dest = state
-                    .store
-                    .lock()
-                    .ok()
-                    .and_then(|s| s.folders_of(item.message_id).ok())
-                    .and_then(|f| f.first().copied())
-                    .and_then(|fid| {
-                        state
-                            .store
-                            .lock()
-                            .ok()
-                            .and_then(|s| s.folder_path(fid).ok().flatten())
-                    });
+                // wherever the message now sits, other than where this row
+                // says the server still holds it. A move to a named folder
+                // lands in the folder the action names: on a labels provider
+                // the message also sits in All Mail, and "the first folder"
+                // could pick that and archive it instead.
+                let target = matches!(kind, ActionKind::Move)
+                    .then(|| serde_json::from_str::<serde_json::Value>(&item.payload_json).ok())
+                    .flatten()
+                    .and_then(|p| p.get("target").and_then(|t| t.as_i64()));
+                let dest = state.store.lock().ok().and_then(|s| {
+                    target
+                        .and_then(|fid| s.folder_path(fid).ok().flatten())
+                        .or_else(|| {
+                            s.folders_of(item.message_id).ok().and_then(|fids| {
+                                fids.into_iter()
+                                    .filter_map(|fid| s.folder_path(fid).ok().flatten())
+                                    .find(|p| *p != folder)
+                            })
+                        })
+                });
                 match dest {
                     Some(to) if to != folder => {
                         let moved = match petrel_providers::imap::move_uid(

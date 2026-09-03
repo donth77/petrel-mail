@@ -186,6 +186,12 @@ pub(crate) async fn tls_stream_for(
 }
 
 async fn tls_stream(host: &str, port: u16) -> Result<tokio_rustls::client::TlsStream<TcpStream>> {
+    // rustls needs one crypto provider chosen for the process. The desktop
+    // chooses at startup; anything else that opens a connection through this
+    // crate (a test, a tool) gets the same choice here rather than a panic.
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    }
     let roots = RootCertStore {
         roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
     };
@@ -758,7 +764,12 @@ where
 /// Pulls the Message-ID value out of a one-field header block.
 fn message_id_of(header: &[u8]) -> Option<String> {
     let text = String::from_utf8_lossy(header);
-    let line = text
+    // Unfolded first. Exchange folds a long id onto the continuation line,
+    // and read line by line the first line's value was empty: every such
+    // message failed to re-match after a UIDVALIDITY reset and was fetched
+    // again, and Gmail's labels for it were keyed to "".
+    let unfolded = unfold_header(&text);
+    let line = unfolded
         .lines()
         .find(|l| l.to_ascii_lowercase().starts_with("message-id:"))?;
     let value = line.split_once(':')?.1.trim();
@@ -769,6 +780,23 @@ fn message_id_of(header: &[u8]) -> Option<String> {
             .trim_end_matches('>')
             .to_string(),
     )
+}
+
+/// Joins folded header lines back onto the line they continue (RFC 5322 §2.2.3).
+fn unfold_header(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for line in text.lines() {
+        if !out.is_empty() && (line.starts_with(' ') || line.starts_with('\t')) {
+            out.push(' ');
+            out.push_str(line.trim_start());
+        } else {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(line);
+        }
+    }
+    out
 }
 
 /// Gmail's own labels for the newest `limit` messages in a folder.
@@ -1356,6 +1384,11 @@ where
 
         let mut fetched = 0usize;
         let mut catchup_uid_next: Option<u32> = None;
+        // Keywords ride with the first fetch as well as the CONDSTORE diff.
+        // Tags set elsewhere on mail that was already tagged when Petrel
+        // first saw it used to wait for a later flag change to bump the
+        // modseq, and on a server without CONDSTORE never arrived at all.
+        let mut keyword_updates: Vec<(u32, Vec<String>)> = Vec::new();
         if new_mail {
             let query = "(UID FLAGS BODY.PEEK[])";
             if pass.since_uid == 0 {
@@ -1372,6 +1405,12 @@ where
                         if let (Some(uid), Some(body)) = (fetch.uid, fetch.body()) {
                             on_message(index, uid, bits, body);
                             fetched += 1;
+                            if want_keywords {
+                                let keywords = keywords_of(fetch.flags());
+                                if !keywords.is_empty() {
+                                    keyword_updates.push((uid, keywords));
+                                }
+                            }
                         }
                     }
                 }
@@ -1405,6 +1444,12 @@ where
                                 on_message(index, uid, bits, body);
                                 fetched += 1;
                                 got += 1;
+                                if want_keywords {
+                                    let keywords = keywords_of(fetch.flags());
+                                    if !keywords.is_empty() {
+                                        keyword_updates.push((uid, keywords));
+                                    }
+                                }
                             }
                         }
                     }
@@ -1422,7 +1467,6 @@ where
         }
 
         let mut flag_updates = Vec::new();
-        let mut keyword_updates: Vec<(u32, Vec<String>)> = Vec::new();
         if flags_moved && let Some(seen) = pass.since_modseq {
             // A server that advertised CONDSTORE and then refuses the fetch
             // leaves flags stale until the next full pass — the state they
@@ -2293,6 +2337,25 @@ where
 /// the port and the password right — and answers it in one round trip, so a
 /// wrong password is reported before anything has been stored.
 pub async fn login_check(cfg: &ImapConfig) -> Result<()> {
+    // One ceiling over the whole check, as the SMTP half has. A host that
+    // accepts the connection and never greets used to hold the setup form
+    // for as long as the socket lived.
+    let limit = crate::smtp::check_timeout();
+    match tokio::time::timeout(limit, login_check_inner(cfg)).await {
+        Ok(result) => result,
+        Err(_) => Err(ImapError::Io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!(
+                "no answer from {}:{} after {}s",
+                cfg.host,
+                cfg.port,
+                limit.as_secs()
+            ),
+        ))),
+    }
+}
+
+async fn login_check_inner(cfg: &ImapConfig) -> Result<()> {
     match cfg.security {
         Security::Tls => {
             let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
@@ -2327,6 +2390,21 @@ pub async fn probe(cfg: &ImapConfig, fetch_limit: u32) -> Result<ProbeReport> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_folded_message_id_is_read_whole() {
+        // Exchange folds long ids onto the continuation line; read line by
+        // line, the first line's value is empty.
+        let folded = b"Message-ID:\r\n <long.id.1234@mail.example.com>\r\n\r\n";
+        assert_eq!(
+            super::message_id_of(folded).as_deref(),
+            Some("long.id.1234@mail.example.com")
+        );
+        let plain = b"Message-ID: <a@b>\r\n\r\n";
+        assert_eq!(super::message_id_of(plain).as_deref(), Some("a@b"));
+        let other_first = b"Subject: x\r\n folded subject\r\nMessage-ID: <c@d>\r\n\r\n";
+        assert_eq!(super::message_id_of(other_first).as_deref(), Some("c@d"));
+    }
 
     #[test]
     fn labels_are_quoted_so_a_name_cannot_become_a_command() {

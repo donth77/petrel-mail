@@ -23,6 +23,44 @@ pub const SCHEMA_VERSION: i64 = 24;
 /// Bumped whenever text extraction changes; a mismatch forces reindexing.
 pub const EXTRACTOR_VERSION: i64 = 1;
 
+/// Every schema step in order: the baseline, then each migration by the
+/// version it brings the store to. Applied from whatever version the file
+/// is at, one transaction each.
+const MIGRATIONS: &[(i64, &str)] = &[
+    (1, include_str!("schema.sql")),
+    (2, include_str!("migrations/0002-tags.sql")),
+    (3, include_str!("migrations/0003-settings.sql")),
+    (4, include_str!("migrations/0004-action-messages.sql")),
+    (5, include_str!("migrations/0005-snooze.sql")),
+    (6, include_str!("migrations/0006-identity.sql")),
+    (7, include_str!("migrations/0007-draft-body.sql")),
+    (8, include_str!("migrations/0008-send-later.sql")),
+    (9, include_str!("migrations/0009-remote-senders.sql")),
+    (10, include_str!("migrations/0010-draft-html.sql")),
+    (11, include_str!("migrations/0011-outbox-state.sql")),
+    (12, include_str!("migrations/0012-draft-envelope.sql")),
+    (13, include_str!("migrations/0013-draft-sync.sql")),
+    (14, include_str!("migrations/0014-rules.sql")),
+    (15, include_str!("migrations/0015-thread-key-index.sql")),
+    (16, include_str!("migrations/0016-blob-hash-index.sql")),
+    (17, include_str!("migrations/0017-gmail-thread-ids.sql")),
+    (18, include_str!("migrations/0018-invite-response.sql")),
+    (19, include_str!("migrations/0019-trashed-at.sql")),
+    (20, include_str!("migrations/0020-sidebar-order.sql")),
+    (21, include_str!("migrations/0021-count-view-index.sql")),
+    (22, include_str!("migrations/0022-tag-origin.sql")),
+    (23, include_str!("migrations/0023-folder-role-index.sql")),
+    (
+        24,
+        include_str!("migrations/0024-action-message-outcome.sql"),
+    ),
+];
+
+const _: () = assert!(
+    MIGRATIONS[MIGRATIONS.len() - 1].0 == SCHEMA_VERSION,
+    "SCHEMA_VERSION must name the last migration"
+);
+
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
     #[error("sqlite: {0}")]
@@ -1092,80 +1130,20 @@ impl Store {
         // one runs only what it is missing. Re-running schema.sql over a
         // populated store would fail on "table already exists".
         let ver: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if ver < 1 {
-            conn.execute_batch(include_str!("schema.sql"))?;
-        }
-        if ver < 2 {
-            conn.execute_batch(include_str!("migrations/0002-tags.sql"))?;
-        }
-        if ver < 3 {
-            conn.execute_batch(include_str!("migrations/0003-settings.sql"))?;
-        }
-        if ver < 4 {
-            conn.execute_batch(include_str!("migrations/0004-action-messages.sql"))?;
-        }
-        if ver < 5 {
-            conn.execute_batch(include_str!("migrations/0005-snooze.sql"))?;
-        }
-        if ver < 6 {
-            conn.execute_batch(include_str!("migrations/0006-identity.sql"))?;
-        }
-        if ver < 7 {
-            conn.execute_batch(include_str!("migrations/0007-draft-body.sql"))?;
-        }
-        if ver < 8 {
-            conn.execute_batch(include_str!("migrations/0008-send-later.sql"))?;
-        }
-        if ver < 9 {
-            conn.execute_batch(include_str!("migrations/0009-remote-senders.sql"))?;
-        }
-        if ver < 10 {
-            conn.execute_batch(include_str!("migrations/0010-draft-html.sql"))?;
-        }
-        if ver < 11 {
-            conn.execute_batch(include_str!("migrations/0011-outbox-state.sql"))?;
-        }
-        if ver < 12 {
-            conn.execute_batch(include_str!("migrations/0012-draft-envelope.sql"))?;
-        }
-        if ver < 13 {
-            conn.execute_batch(include_str!("migrations/0013-draft-sync.sql"))?;
-        }
-        if ver < 14 {
-            conn.execute_batch(include_str!("migrations/0014-rules.sql"))?;
-        }
-        if ver < 15 {
-            conn.execute_batch(include_str!("migrations/0015-thread-key-index.sql"))?;
-        }
-        if ver < 16 {
-            conn.execute_batch(include_str!("migrations/0016-blob-hash-index.sql"))?;
-        }
-        if ver < 17 {
-            conn.execute_batch(include_str!("migrations/0017-gmail-thread-ids.sql"))?;
-        }
-        if ver < 18 {
-            conn.execute_batch(include_str!("migrations/0018-invite-response.sql"))?;
-        }
-        if ver < 19 {
-            conn.execute_batch(include_str!("migrations/0019-trashed-at.sql"))?;
-        }
-        if ver < 20 {
-            conn.execute_batch(include_str!("migrations/0020-sidebar-order.sql"))?;
-        }
-        if ver < 21 {
-            conn.execute_batch(include_str!("migrations/0021-count-view-index.sql"))?;
-        }
-        if ver < 22 {
-            conn.execute_batch(include_str!("migrations/0022-tag-origin.sql"))?;
-        }
-        if ver < 23 {
-            conn.execute_batch(include_str!("migrations/0023-folder-role-index.sql"))?;
-        }
-        if ver < 24 {
-            conn.execute_batch(include_str!("migrations/0024-action-message-outcome.sql"))?;
+        for (n, sql) in MIGRATIONS {
+            if ver < *n {
+                // One transaction per step, with the version written inside
+                // it. A crash halfway through a multi-statement migration
+                // used to leave some of its columns added and the version
+                // unchanged, and the next open failed on "duplicate column
+                // name" for good.
+                let tx = conn.unchecked_transaction()?;
+                tx.execute_batch(sql)?;
+                tx.pragma_update(None, "user_version", *n)?;
+                tx.commit()?;
+            }
         }
         if ver < SCHEMA_VERSION {
-            conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             conn.execute(
                 "INSERT OR REPLACE INTO meta(key, value) VALUES ('extractor_version', ?1)",
                 params![EXTRACTOR_VERSION.to_string()],

@@ -228,6 +228,18 @@ impl Store {
             }
         };
 
+        // Searchable, as the module doc has always promised: the text goes into
+        // fts_content like any other message's. Until it did, a draft could
+        // only be found by `in:drafts`, never by a word in it.
+        self.conn.execute(
+            "INSERT INTO fts_content(message_id, subject, body_text, addrs, attachment_names)
+             VALUES (?1, ?2, ?3, ?4, '')
+             ON CONFLICT(message_id) DO UPDATE SET
+                subject = excluded.subject, body_text = excluded.body_text,
+                addrs = excluded.addrs",
+            params![id, subject, body, format!("{to} {cc}")],
+        )?;
+
         // Recipients live where every other message keeps them, so the list can
         // show who a draft is to without a special case.
         self.conn.execute(
@@ -493,6 +505,9 @@ impl Store {
 
     /// Removes a draft once it has been sent or discarded.
     pub fn delete_draft(&self, id: i64) -> Result<()> {
+        // The index row goes with it, or a sent draft's words keep matching.
+        self.conn
+            .execute("DELETE FROM fts_content WHERE message_id = ?1", params![id])?;
         self.conn
             .execute("DELETE FROM messages WHERE id = ?1", params![id])?;
         Ok(())

@@ -18,6 +18,10 @@ use petrel_engine::store::{ListView, Sort, SortKey, Store};
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
+/// Both tests set the active account as they walk; run together they raced
+/// on it, and a listing for one account was counted against the other's.
+static ACTIVE_ACCOUNT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn open() -> Store {
     let path = std::env::var("PETREL_REAL_DB").expect("set PETREL_REAL_DB to a copy of petrel.db");
     Store::open(std::path::Path::new(&path)).unwrap()
@@ -49,6 +53,7 @@ fn views_of(store: &Store, account: i64) -> Vec<(String, ListView)> {
 #[test]
 #[ignore]
 fn every_count_matches_its_listing() {
+    let _one_at_a_time = ACTIVE_ACCOUNT.lock().unwrap_or_else(|e| e.into_inner());
     let store = open();
     let mut mismatches = Vec::new();
     for account in store.account_ids().unwrap() {
@@ -88,6 +93,7 @@ fn every_count_matches_its_listing() {
 #[test]
 #[ignore]
 fn every_view_pages_to_the_end_without_gaps() {
+    let _one_at_a_time = ACTIVE_ACCOUNT.lock().unwrap_or_else(|e| e.into_inner());
     let store = open();
     let sorts = [
         Sort::default(),

@@ -313,3 +313,21 @@ fn a_keyword_in_another_case_does_not_introduce_a_second_tag() {
     assert_eq!(from_server, mine);
     assert_eq!(store.tags_for_account(account).unwrap().len(), 1);
 }
+
+#[test]
+fn the_rail_count_leaves_out_the_bin_as_the_tag_view_does() {
+    // The view hides trashed and spammed conversations under a tag; the rail
+    // said "Urgent 1" over an empty list.
+    let (store, account, ids) = seeded();
+    let tag = store.ensure_tag(account, "Urgent", None).unwrap();
+    store.tag_message(ids[0], tag).unwrap();
+    assert_eq!(store.tags_for_account(account).unwrap()[0].thread_count, 1);
+
+    let trash = store.ensure_folder(account, "trash", "Trash").unwrap();
+    store.place_message(ids[0], trash).unwrap();
+    assert_eq!(
+        store.tags_for_account(account).unwrap()[0].thread_count,
+        0,
+        "in the bin it is not still Urgent"
+    );
+}

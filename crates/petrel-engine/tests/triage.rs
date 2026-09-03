@@ -899,3 +899,101 @@ fn an_action_none_of_whose_messages_had_a_server_copy_is_undeliverable() {
         Some("undeliverable")
     );
 }
+
+#[test]
+fn undo_puts_a_placement_back_with_its_uid() {
+    // Restored without its UID, the placement could not take a flag change
+    // from the server, was never pruned when the server dropped the
+    // message, and disagreed with STATUS every cycle.
+    let (mut store, account, ids) = seeded();
+    let tid = thread_of(&store, ids[0]);
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+    store.place_message_at(ids[0], inbox, 7).unwrap();
+
+    let receipt = store
+        .apply_thread_action(
+            account,
+            tid,
+            ActionKind::Archive,
+            None,
+            PlacementPolicy::Exclusive,
+        )
+        .unwrap();
+    assert_eq!(
+        store.placement_uid(ids[0], inbox).unwrap(),
+        None,
+        "archived out"
+    );
+
+    assert!(store.undo_action(receipt.action_id).unwrap());
+    assert_eq!(
+        store.placement_uid(ids[0], inbox).unwrap(),
+        Some(Some(7)),
+        "back where it was, UID and all"
+    );
+    assert!(
+        store.set_flags_by_uid(inbox, 7, flags::SEEN).unwrap(),
+        "a flag change from the server reaches it again"
+    );
+}
+
+/// On a labels provider the message also sits in All Mail (or under a
+/// label) with a UID of its own. The queue used to address an archive
+/// there, the drain saw "already in that folder" and marked it delivered,
+/// and the Inbox label stayed on the server.
+#[test]
+fn a_labels_archive_is_addressed_at_the_inbox_it_left() {
+    let (store, account, ids) = seeded();
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+    let work = store.ensure_named_folder(account, "Work").unwrap();
+    store.place_message_at(ids[0], inbox, 5).unwrap();
+    store.place_message_at(ids[0], work, 3).unwrap();
+
+    let r = store
+        .apply_thread_action(
+            account,
+            thread_of(&store, ids[0]),
+            ActionKind::Archive,
+            None,
+            PlacementPolicy::Labels,
+        )
+        .unwrap();
+
+    let rows: Vec<_> = store
+        .pending_actions(account)
+        .unwrap()
+        .into_iter()
+        .filter(|p| p.action_id == r.action_id)
+        .collect();
+    assert_eq!(rows.len(), 1, "one source per message");
+    assert_eq!(rows[0].folder_path, "INBOX", "the folder it has to leave");
+    assert_eq!(rows[0].uid, Some(5));
+}
+
+/// A flag action is not a move: it is delivered wherever the message sits,
+/// and a message under two labels still gets one row per placement.
+#[test]
+fn a_flag_action_keeps_a_row_per_placement() {
+    let (store, account, ids) = seeded();
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+    let work = store.ensure_named_folder(account, "Work").unwrap();
+    store.place_message_at(ids[0], inbox, 5).unwrap();
+    store.place_message_at(ids[0], work, 3).unwrap();
+
+    let r = store
+        .apply_thread_action(
+            account,
+            thread_of(&store, ids[0]),
+            ActionKind::MarkRead,
+            None,
+            PlacementPolicy::Labels,
+        )
+        .unwrap();
+    let rows = store
+        .pending_actions(account)
+        .unwrap()
+        .into_iter()
+        .filter(|p| p.action_id == r.action_id)
+        .count();
+    assert_eq!(rows, 2);
+}

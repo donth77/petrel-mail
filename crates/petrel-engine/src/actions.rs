@@ -157,6 +157,12 @@ pub struct PriorState {
     pub source_path: Option<String>,
     #[serde(default)]
     pub source_uid: Option<u32>,
+    /// The folder `source_uid` belongs to, so undo can put the placement back
+    /// with its UID rather than without one. A placement without its UID
+    /// cannot take a flag change from the server and is never pruned when
+    /// the server drops the message. Defaulted: old queue rows lack it.
+    #[serde(default)]
+    pub source_folder: Option<i64>,
     /// When this was due back, if it was snoozed. Captured like the rest so
     /// undoing a snooze restores the previous one rather than clearing it.
     #[serde(default)]

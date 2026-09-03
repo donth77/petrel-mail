@@ -124,7 +124,72 @@ impl Store {
                 row.candidate_paths = paths;
             }
         }
-        Ok(out)
+        // A move has one source: the placement it took the message out of.
+        // The rows so far are one per placement the message still has, and
+        // on a labels provider that is All Mail with a UID of its own, so the
+        // row read "already in All Mail", the drain marked the archive
+        // delivered, and the Inbox label stayed on the server — the phone
+        // went on showing the conversation in its inbox. A move kind is
+        // addressed at the queue-time source whenever that placement is
+        // gone, and carries one row per message.
+        let mut collapsed: Vec<PendingAction> = Vec::with_capacity(out.len());
+        for row in out {
+            let moves = matches!(
+                serde_json::from_str::<crate::actions::ActionKind>(&row.kind_json),
+                Ok(crate::actions::ActionKind::Archive
+                    | crate::actions::ActionKind::Trash
+                    | crate::actions::ActionKind::Spam
+                    | crate::actions::ActionKind::Move)
+            );
+            if !moves {
+                collapsed.push(row);
+                continue;
+            }
+            let same_message = collapsed.last().is_some_and(|last| {
+                last.action_id == row.action_id && last.message_id == row.message_id
+            });
+            if same_message {
+                // A second placement of a message this action already
+                // addresses. Keep whichever row has an address.
+                if let Some(last) = collapsed.last_mut()
+                    && last.uid.is_none()
+                    && row.uid.is_some()
+                {
+                    *last = row;
+                }
+                continue;
+            }
+            let mut row = row;
+            let source = serde_json::from_str::<crate::actions::ActionPayload>(&row.payload_json)
+                .ok()
+                .and_then(|payload| {
+                    payload
+                        .prior
+                        .iter()
+                        .find(|p| p.message_id == row.message_id)
+                        .and_then(|p| Some((p.source_path.clone()?, p.source_uid?)))
+                });
+            if let Some((path, uid)) = source {
+                let still_there: bool = self
+                    .conn
+                    .query_row(
+                        "SELECT 1 FROM placements p
+                         JOIN folders f ON f.id = p.folder_id
+                         WHERE p.message_id = ?1 AND f.path = ?2 AND f.account_id = ?3",
+                        params![row.message_id, path, account_id],
+                        |_| Ok(true),
+                    )
+                    .optional()?
+                    .unwrap_or(false);
+                if !still_there {
+                    row.uid = Some(uid);
+                    row.folder_path = path;
+                    row.candidate_paths.clear();
+                }
+            }
+            collapsed.push(row);
+        }
+        Ok(collapsed)
     }
 
     /// Whether this message has local changes the server has not been told about.
@@ -437,7 +502,16 @@ impl Store {
                 params![p.message_id],
             )?;
             for f in &p.folder_ids {
-                self.place_message(p.message_id, *f)?;
+                // With its UID where the UID is known. Restored without one,
+                // the placement could not take a flag change from the server,
+                // was never pruned when the server dropped the message, and
+                // disagreed with STATUS every cycle until a refetch healed it.
+                match (p.source_folder, p.source_uid) {
+                    (Some(folder), Some(uid)) if folder == *f => {
+                        self.place_message_at(p.message_id, *f, uid)?
+                    }
+                    _ => self.place_message(p.message_id, *f)?,
+                }
             }
             // Same shape as folders: wipe and restore what was captured, rather
             // than removing whatever this action added. Those differ whenever
@@ -596,6 +670,7 @@ impl Store {
                         tag_ids: Vec::new(),
                         source_path: None,
                         source_uid: None,
+                        source_folder: None,
                         snoozed_until,
                     },
                 );
@@ -639,7 +714,8 @@ impl Store {
             // Inbox first so a message in two folders keeps the same address
             // the per-row query used to pick.
             let sql = format!(
-                "SELECT p.message_id, f.path, p.uid, (f.role = 'inbox') FROM placements p
+                "SELECT p.message_id, f.path, p.uid, (f.role = 'inbox'), p.folder_id
+                 FROM placements p
                  JOIN folders f ON f.id = p.folder_id
                  JOIN messages m ON m.id = p.message_id
                  WHERE coalesce(m.thread_id, -m.id) = ?1 AND m.deleted_at_ms IS NULL
@@ -652,15 +728,17 @@ impl Store {
                     r.get::<_, i64>(0)?,
                     r.get::<_, String>(1)?,
                     r.get::<_, i64>(2)?,
+                    r.get::<_, i64>(4)?,
                 ))
             })?;
             for row in rows {
-                let (id, path, uid) = row?;
+                let (id, path, uid, folder) = row?;
                 if let Some(p) = by_id.get_mut(&id)
                     && p.source_uid.is_none()
                 {
                     p.source_path = Some(path);
                     p.source_uid = Some(uid as u32);
+                    p.source_folder = Some(folder);
                 }
             }
         }
@@ -899,6 +977,12 @@ impl Store {
              FROM tags t
              LEFT JOIN message_tags mt ON mt.tag_id = t.id
              LEFT JOIN messages m ON m.id = mt.message_id AND m.deleted_at_ms IS NULL
+                  -- The count follows the view: a conversation in the bin is
+                  -- not still Urgent, and the rail said 1 over an empty list.
+                  AND NOT EXISTS (SELECT 1 FROM placements p
+                                  JOIN folders f ON f.id = p.folder_id
+                                  WHERE p.message_id = m.id
+                                    AND f.role IN ('trash','spam'))
              WHERE t.account_id = ?1
              GROUP BY t.id
              ORDER BY (t.sort_order IS NULL), t.sort_order, t.name COLLATE NOCASE",

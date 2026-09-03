@@ -509,6 +509,21 @@ impl SmtpConfig {
 /// credentials are accepted for sending. No MAIL FROM is issued — a test
 /// that left a half-open envelope on the server would be a worse test.
 pub async fn login_check(cfg: &SmtpConfig) -> std::result::Result<(), String> {
+    // One ceiling over the whole check. A host that accepts the connection
+    // and then says nothing, or a black-holed port, used to leave the setup
+    // form spinning for as long as the socket lived.
+    match tokio::time::timeout(check_timeout(), login_check_inner(cfg)).await {
+        Ok(result) => result,
+        Err(_) => Err(format!(
+            "no answer from {}:{} after {}s",
+            cfg.host,
+            cfg.port,
+            check_timeout().as_secs()
+        )),
+    }
+}
+
+async fn login_check_inner(cfg: &SmtpConfig) -> std::result::Result<(), String> {
     use base64::Engine as _;
     use tokio::io::{AsyncWriteExt, BufReader};
     let tls = crate::imap::tls_stream_for(&cfg.host, cfg.port)
@@ -580,13 +595,18 @@ pub async fn login_check(cfg: &SmtpConfig) -> std::result::Result<(), String> {
 /// sends into ambiguous ones, which is the expensive direction to be wrong in.
 /// Overridable so a test can prove the policy on loopback without waiting ten
 /// minutes for it. Same shape as the sync loop's knobs.
-fn phase_timeout(var: &str, default_secs: u64) -> Duration {
+pub(crate) fn phase_timeout(var: &str, default_secs: u64) -> Duration {
     Duration::from_secs(
         std::env::var(var)
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(default_secs),
     )
+}
+
+/// The onboarding connection test, start to finish.
+pub(crate) fn check_timeout() -> Duration {
+    phase_timeout("PETREL_CHECK_SECONDS", 30)
 }
 
 fn connect_timeout() -> Duration {
