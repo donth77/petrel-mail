@@ -298,6 +298,7 @@ export function App() {
     activeId,
     setActiveId,
     view,
+    listKey: `${accountEpoch}:${view}:${query}`,
     onMessage: (text, undo) => {
       setToast(text);
       setUndoOffer(undo ?? null);
@@ -1208,7 +1209,7 @@ export function App() {
     if (settings.notifyDesktop === 'on') {
       void postDesktopNotification(
         who,
-        worth.length === 1 ? top.subject || '(no subject)' : t('notify-many', { count: fmtCount(worth.length) }),
+        worth.length === 1 ? top.subject || t('no-subject') : t('notify-many', { count: fmtCount(worth.length) }),
       );
     }
   }, [items, view, query, settings, status?.seeding]);
@@ -1232,7 +1233,7 @@ export function App() {
       void postDesktopNotification(
         who,
         fresh.length === 1
-          ? subject || '(no subject)'
+          ? subject || t('no-subject')
           : t('notify-many', { count: fmtCount(fresh.length) }),
       );
     }
@@ -1918,7 +1919,7 @@ export function App() {
 
         {error ? (
           <div className="empty">
-            <h2 style={{ color: 'var(--danger)' }}>Could not load this mailbox</h2>
+            <h2 style={{ color: 'var(--danger)' }}>{t('list-load-failed')}</h2>
             <p className="mono" style={{ fontSize: 11.5 }}>{error}</p>
           </div>
         ) : view === 'outbox' && !query.trim() ? (
@@ -2507,10 +2508,10 @@ export function App() {
         </span>
         <span className="spacer" />
         <span>
-          <span className="kbd">J</span> <span className="kbd">K</span> move
+          <span className="kbd">J</span> <span className="kbd">K</span> {t('footer-move')}
         </span>
         <span>
-          <span className="kbd">/</span> search
+          <span className="kbd">/</span> {t('footer-search')}
         </span>
         <span>
           <span className="kbd">⌘K</span> {t('palette-title')}

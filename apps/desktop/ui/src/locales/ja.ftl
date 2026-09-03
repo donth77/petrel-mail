@@ -749,3 +749,30 @@ auth-pass = 確認済み
 auth-pass-tip = 本当に { $domain } から届いたことをプロバイダが確認しました。安全であるという意味ではありません。
 auth-fail = 送信元の確認に失敗
 auth-fail-tip = { $domain } はこのメッセージを自分たちが送ったものではないとしています。リンクや添付ファイルに注意してください。
+
+# Strings that were hard-coded in English until 2026-09-02: the list's
+# failure notice, the footer hints, the search chips, the outbox countdown,
+# the editor's font and size names and the setup form's field labels.
+list-load-failed = このメールボックスを読み込めませんでした
+footer-move = 移動
+footer-search = 検索
+search-chip-in = { $where } 内
+search-chip-from = { $who } から
+search-chip-attachment = 添付ファイルあり
+search-chip-unread = 未読
+search-chip-starred = スター付き
+search-chip-snoozed = スヌーズ中
+search-chip-year = 今年
+outbox-in-seconds = { $count }秒
+outbox-in-minutes = { $count }分
+outbox-in-hours = { $count }時間
+font-default = 標準
+font-sans = ゴシック体
+font-serif = 明朝体
+font-mono = 等幅
+size-small = 小
+size-normal = 標準
+size-large = 大
+size-huge = 特大
+onb-host-of = { $what } のホスト
+onb-port-of = { $what } のポート

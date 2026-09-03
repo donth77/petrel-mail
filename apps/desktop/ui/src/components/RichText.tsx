@@ -17,7 +17,7 @@ import {
 import type { DocNode } from '../lib/plain-text';
 import { EMBED_CAP, asDataUrl, pastedImages } from '../lib/paste-image';
 import { Icon } from './Icon';
-import { t } from '../lib/strings';
+import { t, type StringId } from '../lib/strings';
 import { Tip } from './Tip';
 
 /** The typefaces on offer.
@@ -27,20 +27,20 @@ import { Tip } from './Tip';
  * resolves on any machine that will open the message. The empty value means no
  * font-family at all, so ordinary text carries no markup.
  */
-const FONTS: { label: string; stack: string }[] = [
-  { label: 'Default', stack: '' },
-  { label: 'Sans serif', stack: 'Arial, Helvetica, sans-serif' },
-  { label: 'Serif', stack: 'Georgia, "Times New Roman", serif' },
-  { label: 'Fixed width', stack: 'ui-monospace, "SFMono-Regular", Menlo, monospace' },
+const FONTS: { label: StringId; stack: string }[] = [
+  { label: 'font-default', stack: '' },
+  { label: 'font-sans', stack: 'Arial, Helvetica, sans-serif' },
+  { label: 'font-serif', stack: 'Georgia, "Times New Roman", serif' },
+  { label: 'font-mono', stack: 'ui-monospace, "SFMono-Regular", Menlo, monospace' },
 ];
 
 /** Named sizes rather than a px field: nobody composing an email thinks in
  *  pixels, and the four names cover what the choice is actually for. */
-const SIZES: { label: string; css: string }[] = [
-  { label: 'Small', css: '12px' },
-  { label: 'Normal', css: '' },
-  { label: 'Large', css: '18px' },
-  { label: 'Huge', css: '24px' },
+const SIZES: { label: StringId; css: string }[] = [
+  { label: 'size-small', css: '12px' },
+  { label: 'size-normal', css: '' },
+  { label: 'size-large', css: '18px' },
+  { label: 'size-huge', css: '24px' },
 ];
 
 /** Which entry the caret is currently sitting in, for the select's value. */
@@ -321,7 +321,7 @@ export function RichText({ html, onChange, onKeyDown, autoFocus, onNotice }: Pro
           value={currentFont(editor)}
           options={FONTS.map((f) => ({
             value: f.stack,
-            label: f.label,
+            label: t(f.label),
             // Each name drawn in its own face: a font list that does not show
             // the fonts is a list of words to guess between.
             style: { fontFamily: f.stack || undefined },
@@ -338,7 +338,7 @@ export function RichText({ html, onChange, onKeyDown, autoFocus, onNotice }: Pro
           value={currentSize(editor)}
           options={SIZES.map((z) => ({
             value: z.css,
-            label: z.label,
+            label: t(z.label),
             // Shown at the size it applies, which is the whole information.
             style: { fontSize: z.css || undefined },
           }))}

@@ -56,6 +56,11 @@ export type UndoOffer = {
   tagDelta?: { tagId: number; delta: number };
   /** The same, for the mailbox numbers. */
   viewDelta?: Record<string, number>;
+  /** The list this was offered in. Undo reverses the action wherever it
+   *  is pressed, but only puts the row back into the list it came from:
+   *  spliced into whatever is showing, an inbox row turned up in Sent, or
+   *  in the other account. */
+  listKey?: string;
   /** The other rows of a batch. One toast, one Z, all of them back: undo
    *  used to reach the last row only, and the rest stayed archived. */
   more?: UndoOffer[];
@@ -120,6 +125,9 @@ export function useTriage(opts: {
   /** Called once an action has settled either way, and after an undo — the
    *  moment the store can be asked for the real numbers. */
   onSettled?: () => void;
+  /** Names the list on screen: account, view and query. An offer made in
+   *  another list reverses its action but leaves these rows alone. */
+  listKey?: string;
 }) {
   const {
     items,
@@ -134,11 +142,17 @@ export function useTriage(opts: {
     countModes = {},
     folderRole,
     onSettled,
+    listKey = '',
   } = opts;
   const [pending, setPending] = useState(false);
   // The last thing done, so Z has something to reverse without the caller
   // tracking it.
   const lastUndo = useRef<UndoOffer | null>(null);
+  // Z still works from another view or account: the action is reversed on
+  // the server either way, and only the row's return to the list is scoped
+  // to the list it left.
+  const listKeyRef = useRef(listKey);
+  listKeyRef.current = listKey;
   // Conversations the user deliberately marked unread. Leaving one must not
   // mark it read again — flagging something to come back to is the entire
   // point, and undoing that on the way out is worse than never offering it.
@@ -252,6 +266,7 @@ export function useTriage(opts: {
           wasActive: row.id === activeId,
           tagDelta: bump ?? undefined,
           viewDelta: movedAny ? moved : undefined,
+          listKey: listKeyRef.current,
         };
         if (collecting.current) {
           collecting.current.push(offer);
@@ -304,6 +319,19 @@ export function useTriage(opts: {
         for (const id of ids) await run(kind, id, targetId);
         return;
       }
+      // Where the cursor lands once the batch is gone: the first row after
+      // the selection that is not part of it, else the last one before.
+      // Each row's own removal used to step the cursor onto the next
+      // selected row, which the next removal then took away, and the pane
+      // went to "Nothing open" with J jumping to the top of the list.
+      const going = new Set(ids);
+      const wasActive = activeId != null && going.has(activeId);
+      const positions = ids.map((id) => items.findIndex((m) => m.id === id)).filter((i) => i >= 0);
+      const survivor = wasActive
+        ? (items.slice(Math.max(...positions) + 1).find((m) => !going.has(m.id)) ??
+          [...items.slice(0, Math.min(...positions))].reverse().find((m) => !going.has(m.id)) ??
+          null)
+        : null;
       const offers: UndoOffer[] = [];
       collecting.current = offers;
       try {
@@ -311,6 +339,7 @@ export function useTriage(opts: {
       } finally {
         collecting.current = null;
       }
+      if (wasActive && leavesView(kind, view)) setActiveId(survivor ? survivor.id : null);
       const [first, ...rest] = offers;
       if (!first) return;
       const offer: UndoOffer = { ...first, more: rest };
@@ -320,7 +349,7 @@ export function useTriage(opts: {
         offer,
       );
     },
-    [run, onMessage],
+    [run, onMessage, items, activeId, view, setActiveId],
   );
 
   const undo = useCallback(
@@ -336,6 +365,13 @@ export function useTriage(opts: {
         const ok = await api.undoTriage(one.actionId).catch(() => false);
         if (!ok) continue;
         undone += 1;
+        // The action is reversed wherever Z was pressed; the row only goes
+        // back into the list it left. Pressed from another view or account,
+        // the counts still move and the list is left alone.
+        const here = (one.listKey ?? '') === listKeyRef.current;
+        if (one.tagDelta) onTagCount?.(one.tagDelta.tagId, -one.tagDelta.delta);
+        if (one.viewDelta) onViewCount?.(negated(one.viewDelta));
+        if (!here) continue;
         // Put the row back where it was, rather than refetching the list. A
         // refetch would scroll you somewhere else and lose whatever you had
         // selected — which defeats the point of an undo you reach for in a
@@ -350,8 +386,6 @@ export function useTriage(opts: {
           return [...prev.slice(0, at), one.row, ...prev.slice(at)];
         });
         if (one.removed && one.wasActive) setActiveId(one.row.id);
-        if (one.tagDelta) onTagCount?.(one.tagDelta.tagId, -one.tagDelta.delta);
-        if (one.viewDelta) onViewCount?.(negated(one.viewDelta));
       }
       const ok = undone === all.length;
       onMessage(ok ? t('undo-done') : t('undo-too-late'));

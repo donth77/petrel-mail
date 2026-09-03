@@ -142,7 +142,7 @@ const MessageRow = memo(function MessageRow({
       aria-label={t('a11y-row', {
         unread: m.unread ? t('a11y-unread-prefix') : '',
         from: m.from_display || m.from_addr,
-        subject: m.subject || '(no subject)',
+        subject: m.subject || t('no-subject'),
         time: fullTime(m.date_ms),
       })}
       className="row"
@@ -173,7 +173,7 @@ const MessageRow = memo(function MessageRow({
       // A press that travels far enough becomes a drag; anything
       // shorter stays a click. The hook decides which, so the row does
       // not have to know the threshold.
-      onPointerDown={(e) => onDragStart(e, m.id, selected, m.subject || '(no subject)')}
+      onPointerDown={(e) => onDragStart(e, m.id, selected, m.subject || t('no-subject'))}
       onPointerEnter={() => setHovered(true)}
       onPointerLeave={() => setHovered(false)}
     >
@@ -218,7 +218,7 @@ const MessageRow = memo(function MessageRow({
               subject grows that span's line box and makes the row taller
               than the density it is named for. */}
           {m.starred && <Icon icon={Star} size={11} className="ic-star flat" />}
-          <span className="crow-subject clip">{m.subject || '(no subject)'}</span>
+          <span className="crow-subject clip">{m.subject || t('no-subject')}</span>
           {m.attachment_name && <Icon icon={Paperclip} size={11} className="ic-clip" />}
           {m.message_count > 1 && <span className="thread-count">{m.message_count}</span>}
           <span className="crow-time">{listTime(m.date_ms)}</span>
@@ -275,7 +275,7 @@ const MessageRow = memo(function MessageRow({
             </span>
             <span className="row-subject clip">
               {m.starred && <Icon icon={Star} size={12} className="ic-star" />}
-              {m.subject || '(no subject)'}
+              {m.subject || t('no-subject')}
             </span>
             <span className="row-snippet clip">
               {/* Why it matched, when it came from a search. The

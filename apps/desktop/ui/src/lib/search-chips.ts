@@ -1,4 +1,5 @@
 import { folderDelimiter, folderLeaf } from './folders';
+import { t, type StringId } from './strings';
 
 /**
  * The filter chips above the search field.
@@ -98,13 +99,13 @@ export type Chip = { id: string; label: string; token: string };
  * tags are a table of their own; neither gets a scope chip rather than
  * getting one that silently matches nothing.
  */
-const SCOPES: Record<string, string> = {
-  inbox: 'Inbox',
-  archive: 'Archive',
-  sent: 'Sent',
-  drafts: 'Drafts',
-  spam: 'Spam',
-  trash: 'Trash',
+const SCOPES: Record<string, StringId> = {
+  inbox: 'mailbox-inbox',
+  archive: 'mailbox-archive',
+  sent: 'mailbox-sent',
+  drafts: 'mailbox-drafts',
+  spam: 'mailbox-spam',
+  trash: 'mailbox-trash',
 };
 
 /** The leaf name of the open folder view — what a search scope calls it.
@@ -132,13 +133,13 @@ export function scopeFor(
   leaf?: string | null,
 ): { token: string; label: string } | null {
   const role = SCOPES[view];
-  if (role) return { token: `in:${view}`, label: `In ${role}` };
+  if (role) return { token: `in:${view}`, label: t('search-chip-in', { where: t(role) }) };
   // Starred and Snoozed are states, not places — their scope speaks `is:`.
-  if (view === 'starred') return { token: 'is:starred', label: 'Starred' };
-  if (view === 'snoozed') return { token: 'is:snoozed', label: 'Snoozed' };
+  if (view === 'starred') return { token: 'is:starred', label: t('search-chip-starred') };
+  if (view === 'snoozed') return { token: 'is:snoozed', label: t('search-chip-snoozed') };
   if (view.startsWith('folder:') && leaf) {
     const value = /\s/.test(leaf) ? `"${leaf}"` : leaf;
-    return { token: `in:${value}`, label: `In ${leaf}` };
+    return { token: `in:${value}`, label: t('search-chip-in', { where: leaf }) };
   }
   return null;
 }
@@ -178,7 +179,7 @@ export function chips(
     tokensOf(context?.token ?? '')[0]?.toLowerCase() === appliedIn.toLowerCase();
   const scope =
     appliedIn && !sameAsContext
-      ? { token: quoted(appliedIn), label: `In ${appliedIn.slice('in:'.length)}` }
+      ? { token: quoted(appliedIn), label: t('search-chip-in', { where: appliedIn.slice('in:'.length) }) }
       : context;
   if (scope) list.push({ id: 'scope', label: scope.label, token: scope.token });
   // The sender of whatever is open, because "more from this person" is the
@@ -193,17 +194,17 @@ export function chips(
   const inQuery = tokensOf(query).find((t) => t.toLowerCase().startsWith('from:'));
   const who = inQuery ? inQuery.slice('from:'.length) : sender;
   if (who) {
-    list.push({ id: 'from', label: `From ${who}`, token: quoted(`from:${who}`) });
+    list.push({ id: 'from', label: t('search-chip-from', { who }), token: quoted(`from:${who}`) });
   }
   list.push(
-    { id: 'attachment', label: 'Has attachment', token: 'has:attachment' },
-    { id: 'unread', label: 'Unread', token: 'is:unread' },
+    { id: 'attachment', label: t('search-chip-attachment'), token: 'has:attachment' },
+    { id: 'unread', label: t('search-chip-unread'), token: 'is:unread' },
   );
   // Not doubled when the scope already is it.
   if (scope?.token !== 'is:starred') {
-    list.push({ id: 'starred', label: 'Starred', token: 'is:starred' });
+    list.push({ id: 'starred', label: t('search-chip-starred'), token: 'is:starred' });
   }
-  list.push({ id: 'year', label: 'This year', token: `after:${year}` });
+  list.push({ id: 'year', label: t('search-chip-year'), token: `after:${year}` });
   // Applied first, each group still in the order above. Two filters rather
   // than a sort, because a sort is only stable by promise and this ordering
   // is the whole point: the row must not shuffle within a group as tokens

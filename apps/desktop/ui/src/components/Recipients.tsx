@@ -40,7 +40,14 @@ export function Recipients({ label, value, onChange, inputRef }: Props) {
     setOptions([]);
   };
 
-  const removeAt = (i: number) => onChange(chips.filter((_, n) => n !== i).join(', '));
+  // The chip's button goes with the chip, and focus with it, to the body,
+  // where the next keystroke is a shortcut. Back into the field, where the
+  // person still is.
+  const entry = useRef<HTMLInputElement | null>(null);
+  const removeAt = (i: number) => {
+    onChange(chips.filter((_, n) => n !== i).join(', '));
+    entry.current?.focus();
+  };
 
   // Suggestions come from mail already synced, so this is a local query and can
   // run on every keystroke without a debounce being a kindness to anyone's
@@ -93,7 +100,11 @@ export function Recipients({ label, value, onChange, inputRef }: Props) {
 
       <div className="recipient-entry">
         <input
-          ref={inputRef}
+          ref={(el) => {
+            entry.current = el;
+            if (typeof inputRef === 'function') inputRef(el);
+            else if (inputRef) (inputRef as { current: HTMLInputElement | null }).current = el;
+          }}
           className="compose-input"
           value={typed}
           aria-label={label}

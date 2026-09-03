@@ -793,3 +793,33 @@ auth-pass = Verified
 auth-pass-tip = Your provider confirmed this really came from { $domain }. That is not the same as the message being safe.
 auth-fail = Failed sender check
 auth-fail-tip = { $domain } says this message did not come from them. Be careful with its links and attachments.
+
+# Strings that were hard-coded in English until 2026-09-02: the list's
+# failure notice, the footer hints, the search chips, the outbox countdown,
+# the editor's font and size names and the setup form's field labels.
+list-load-failed = Could not load this mailbox
+footer-move = move
+footer-search = search
+search-chip-in = In { $where }
+search-chip-from = From { $who }
+search-chip-attachment = Has attachment
+search-chip-unread = Unread
+search-chip-starred = Starred
+search-chip-snoozed = Snoozed
+search-chip-year = This year
+outbox-in-seconds = { $count }s
+outbox-in-minutes = { $count } min
+outbox-in-hours = { $count ->
+    [one] 1 hour
+   *[other] { $count } hours
+}
+font-default = Default
+font-sans = Sans serif
+font-serif = Serif
+font-mono = Fixed width
+size-small = Small
+size-normal = Normal
+size-large = Large
+size-huge = Huge
+onb-host-of = { $what } host
+onb-port-of = { $what } port

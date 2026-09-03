@@ -392,7 +392,7 @@ function ServerFields({
           value={value.host}
           onChange={(e) => onChange({ ...value, host: e.target.value })}
           onKeyDown={(e) => e.key !== 'Escape' && e.stopPropagation()}
-          aria-label={`${label} host`}
+          aria-label={t('onb-host-of', { what: label })}
         />
         <input
           className="onb-field onb-port"
@@ -400,7 +400,7 @@ function ServerFields({
           value={value.port}
           onChange={(e) => onChange({ ...value, port: Number(e.target.value) || 0 })}
           onKeyDown={(e) => e.key !== 'Escape' && e.stopPropagation()}
-          aria-label={`${label} port`}
+          aria-label={t('onb-port-of', { what: label })}
         />
         <span className="onb-tls mono">TLS</span>
       </div>

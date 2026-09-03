@@ -794,3 +794,33 @@ auth-pass = Verificado
 auth-pass-tip = Seu provedor confirmou que isto veio mesmo de { $domain }. Isso não significa que a mensagem seja segura.
 auth-fail = Falhou na verificação
 auth-fail-tip = { $domain } diz que esta mensagem não partiu deles. Cuidado com os links e anexos.
+
+# Strings that were hard-coded in English until 2026-09-02: the list's
+# failure notice, the footer hints, the search chips, the outbox countdown,
+# the editor's font and size names and the setup form's field labels.
+list-load-failed = Não foi possível carregar esta caixa
+footer-move = mover
+footer-search = buscar
+search-chip-in = Em { $where }
+search-chip-from = De { $who }
+search-chip-attachment = Com anexo
+search-chip-unread = Não lidas
+search-chip-starred = Com estrela
+search-chip-snoozed = Adiadas
+search-chip-year = Este ano
+outbox-in-seconds = { $count } s
+outbox-in-minutes = { $count } min
+outbox-in-hours = { $count ->
+    [one] 1 hora
+   *[other] { $count } horas
+}
+font-default = Padrão
+font-sans = Sem serifa
+font-serif = Com serifa
+font-mono = Largura fixa
+size-small = Pequeno
+size-normal = Normal
+size-large = Grande
+size-huge = Enorme
+onb-host-of = Servidor { $what }
+onb-port-of = Porta { $what }

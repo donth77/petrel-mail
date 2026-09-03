@@ -793,3 +793,33 @@ auth-pass = Verifiziert
 auth-pass-tip = Ihr Anbieter hat bestätigt, dass dies wirklich von { $domain } kam. Das heißt nicht, dass die Nachricht sicher ist.
 auth-fail = Absenderprüfung fehlgeschlagen
 auth-fail-tip = { $domain } sagt, diese Nachricht stammt nicht von ihnen. Seien Sie vorsichtig mit Links und Anhängen.
+
+# Strings that were hard-coded in English until 2026-09-02: the list's
+# failure notice, the footer hints, the search chips, the outbox countdown,
+# the editor's font and size names and the setup form's field labels.
+list-load-failed = Dieses Postfach konnte nicht geladen werden
+footer-move = bewegen
+footer-search = suchen
+search-chip-in = In { $where }
+search-chip-from = Von { $who }
+search-chip-attachment = Mit Anhang
+search-chip-unread = Ungelesen
+search-chip-starred = Markiert
+search-chip-snoozed = Zurückgestellt
+search-chip-year = Dieses Jahr
+outbox-in-seconds = { $count } s
+outbox-in-minutes = { $count } Min.
+outbox-in-hours = { $count ->
+    [one] 1 Stunde
+   *[other] { $count } Stunden
+}
+font-default = Standard
+font-sans = Serifenlos
+font-serif = Serif
+font-mono = Feste Breite
+size-small = Klein
+size-normal = Normal
+size-large = Groß
+size-huge = Riesig
+onb-host-of = { $what }-Server
+onb-port-of = { $what }-Port

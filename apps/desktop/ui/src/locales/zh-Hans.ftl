@@ -749,3 +749,30 @@ auth-pass = 已验证
 auth-pass-tip = 你的邮件服务商确认这确实来自 { $domain }。这并不等于邮件是安全的。
 auth-fail = 发件人验证未通过
 auth-fail-tip = { $domain } 表示这封邮件不是他们发出的。请小心其中的链接和附件。
+
+# Strings that were hard-coded in English until 2026-09-02: the list's
+# failure notice, the footer hints, the search chips, the outbox countdown,
+# the editor's font and size names and the setup form's field labels.
+list-load-failed = 无法加载此邮箱
+footer-move = 移动
+footer-search = 搜索
+search-chip-in = 位于 { $where }
+search-chip-from = 来自 { $who }
+search-chip-attachment = 有附件
+search-chip-unread = 未读
+search-chip-starred = 已加星标
+search-chip-snoozed = 已延后
+search-chip-year = 今年
+outbox-in-seconds = { $count } 秒
+outbox-in-minutes = { $count } 分钟
+outbox-in-hours = { $count } 小时
+font-default = 默认
+font-sans = 无衬线
+font-serif = 衬线
+font-mono = 等宽
+size-small = 小
+size-normal = 正常
+size-large = 大
+size-huge = 特大
+onb-host-of = { $what } 主机
+onb-port-of = { $what } 端口

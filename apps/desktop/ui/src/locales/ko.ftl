@@ -787,3 +787,30 @@ auth-pass = 확인됨
 auth-pass-tip = 이 메일이 정말 { $domain }에서 왔음을 제공업체가 확인했습니다. 메시지가 안전하다는 뜻은 아닙니다.
 auth-fail = 발신자 확인 실패
 auth-fail-tip = { $domain }은(는) 이 메시지를 자신들이 보내지 않았다고 합니다. 링크와 첨부에 주의하세요.
+
+# Strings that were hard-coded in English until 2026-09-02: the list's
+# failure notice, the footer hints, the search chips, the outbox countdown,
+# the editor's font and size names and the setup form's field labels.
+list-load-failed = 이 메일함을 불러올 수 없습니다
+footer-move = 이동
+footer-search = 검색
+search-chip-in = { $where } 안
+search-chip-from = { $who } 보낸
+search-chip-attachment = 첨부 파일 있음
+search-chip-unread = 읽지 않음
+search-chip-starred = 별표
+search-chip-snoozed = 다시 알림
+search-chip-year = 올해
+outbox-in-seconds = { $count }초
+outbox-in-minutes = { $count }분
+outbox-in-hours = { $count }시간
+font-default = 기본
+font-sans = 고딕
+font-serif = 명조
+font-mono = 고정폭
+size-small = 작게
+size-normal = 보통
+size-large = 크게
+size-huge = 아주 크게
+onb-host-of = { $what } 호스트
+onb-port-of = { $what } 포트

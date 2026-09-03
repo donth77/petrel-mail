@@ -64,7 +64,19 @@ export { splitRecipients as addresses } from '../lib/recipients';
 export function Compose({ draft, account, onChange, onClose, onSend, onAttach, onDropFiles, onSaveDraft, onSendLater, onPopOut, onNotice, pane }: Props) {
   const { over: dropping, dropProps } = useFileDropZone(onDropFiles);
   const toRef = useRef<HTMLInputElement>(null);
+  const ccRef = useRef<HTMLInputElement>(null);
   const [showCc, setShowCc] = useState(draft.cc.length > 0);
+  // The Cc button unmounts itself when clicked, and focus fell to the body:
+  // the next letters typed were single-key shortcuts, so "eve@" archived the
+  // conversation being replied to and opened Move. Asking for the field
+  // means wanting to type in it.
+  const ccAsked = useRef(false);
+  useEffect(() => {
+    if (showCc && ccAsked.current) {
+      ccAsked.current = false;
+      ccRef.current?.focus();
+    }
+  }, [showCc]);
   // Draggable by its header. The pop-out button is still the way to get a
   // real OS window; this is for nudging it off whatever it is covering.
   // A pane composer already has a place; dragging it would leave the slot.
@@ -152,7 +164,14 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
           inputRef={toRef}
         />
         {!showCc && (
-          <button type="button" className="compose-cc-toggle" onClick={() => setShowCc(true)}>
+          <button
+            type="button"
+            className="compose-cc-toggle"
+            onClick={() => {
+              ccAsked.current = true;
+              setShowCc(true);
+            }}
+          >
             {t('compose-cc')}
           </button>
         )}
@@ -161,7 +180,12 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
       {showCc && (
         <div className="hdrow">
           <span className="lab">{t('compose-cc')}</span>
-          <Recipients label={t('compose-cc')} value={draft.cc} onChange={(v) => field('cc', v)} />
+          <Recipients
+            label={t('compose-cc')}
+            value={draft.cc}
+            onChange={(v) => field('cc', v)}
+            inputRef={ccRef}
+          />
         </div>
       )}
 

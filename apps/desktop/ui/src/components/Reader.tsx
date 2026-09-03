@@ -231,7 +231,7 @@ function Expanded({
 
       {m.has_calendar && <InvitationCard messageId={m.id} onToast={onToast} />}
 
-      {mountBody && <MessageBody messageId={m.id} title={m.subject || '(no subject)'} />}
+      {mountBody && <MessageBody messageId={m.id} title={m.subject || t('no-subject')} />}
 
       {m.attachments.length > 0 && (
         <Attachments messageId={m.id} attachments={m.attachments} onToast={onToast} />
@@ -414,7 +414,11 @@ export function Reader({
     return () => {
       live = false;
     };
-  }, [thread?.thread_id]);
+    // The count as well as the id: a reply landing in the open conversation
+    // changed the header's "3 messages" and not the cards until you left
+    // and came back. Same thread, so the pane is held and only the index
+    // and the newest message are fetched.
+  }, [thread?.thread_id, thread?.message_count]);
 
   // [ and ] walk the conversation. Handled here rather than in the global map
   // for the same reason j/k live in the list: the keys mean "within the thing
@@ -488,7 +492,7 @@ export function Reader({
   const newest = paneCards[paneCards.length - 1];
   const newestId = newest?.id ?? null;
   const mounted = bodiesToMount(expanded, newestId);
-  const subject = thread?.subject || '(no subject)';
+  const subject = thread?.subject || t('no-subject');
 
   const estimateSize = useCallback(
     (index: number) => {

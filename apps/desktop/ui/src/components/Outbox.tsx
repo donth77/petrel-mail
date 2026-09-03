@@ -21,11 +21,10 @@ import { t } from '../lib/strings';
 /** "7s", "2 min", "an hour" — the granularity a countdown is read at. */
 function until(ms: number, now: number): string {
   const s = Math.max(0, Math.round((ms - now) / 1000));
-  if (s < 60) return `${s}s`;
+  if (s < 60) return t('outbox-in-seconds', { count: s });
   const m = Math.round(s / 60);
-  if (m < 60) return `${m} min`;
-  const h = Math.round(m / 60);
-  return h === 1 ? '1 hour' : `${h} hours`;
+  if (m < 60) return t('outbox-in-minutes', { count: m });
+  return t('outbox-in-hours', { count: Math.round(m / 60) });
 }
 
 /** A scheduled time, as the row shows it: today's show a clock, others a date. */
