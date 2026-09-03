@@ -7,7 +7,6 @@ use crate::state::{AppState, now_ms};
 use crate::sync::drafts::drop_server_draft_using;
 use petrel_engine::store::Store;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::sync::{MutexGuard, TryLockError};
 
 /// The store lock, without pinning a tokio worker on `Mutex::lock`.
@@ -42,15 +41,23 @@ async fn wait_store(state: &AppState) -> Option<MutexGuard<'_, Store>> {
 /// a send wakes this one.
 pub(crate) fn spawn_send_worker(state: Arc<AppState>, account: i64) {
     let signals = state.outbox_signals(account);
+    let mut stop = state.stop_signal(account);
     tauri::async_runtime::spawn(async move {
         loop {
-            signals.send.notified().await;
+            if *stop.borrow() {
+                break;
+            }
+            tokio::select! {
+                _ = signals.send.notified() => {}
+                _ = stop.changed() => break,
+            }
             // Two rows marked due a few milliseconds apart should be one pass.
             // Not the drain's 900ms: that is for triage bursts, and it is the
             // wait this worker exists to avoid.
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             send_due(Arc::clone(&state), account).await;
         }
+        log_sync(&format!("account {account}: send worker stopped"));
     });
 }
 
@@ -69,8 +76,12 @@ pub(crate) fn spawn_send_worker(state: Arc<AppState>, account: i64) {
 /// clock being wrong — a laptop lid closed through the scheduled time.
 pub(crate) fn spawn_outbox_clock(state: Arc<AppState>, account: i64) {
     let signals = state.outbox_signals(account);
+    let mut stop = state.stop_signal(account);
     tauri::async_runtime::spawn(async move {
         loop {
+            if *stop.borrow() {
+                break;
+            }
             let next = wait_store(&state)
                 .await
                 .and_then(|s| s.next_due_ms(account).ok())
@@ -82,6 +93,7 @@ pub(crate) fn spawn_outbox_clock(state: Arc<AppState>, account: i64) {
             tokio::select! {
                 _ = tokio::time::sleep(std::time::Duration::from_millis(wait_ms as u64)) => {}
                 _ = signals.clock.notified() => continue,
+                _ = stop.changed() => break,
             }
             if next.is_some_and(|at| at <= now_ms()) {
                 signals.send.notify_one();
@@ -330,12 +342,37 @@ pub(crate) async fn sent_folder_evidence(
         return ServerEvidence::Indeterminate;
     };
     match petrel_providers::imap::find_message_id(cfg, &path, message_id).await {
-        Ok(uids) if !uids.is_empty() => ServerEvidence::Found,
-        Ok(_) => ServerEvidence::Absent,
+        Ok(uids) => evidence_from_search(!uids.is_empty(), server_files_sent_copies(cfg)),
         Err(e) => {
             log_sync(&format!("could not check Sent for {message_id}: {e}"));
             ServerEvidence::Indeterminate
         }
+    }
+}
+
+/// Whether this server places a copy of every submitted message in Sent
+/// itself. Gmail does. Almost nobody else does: on a plain IMAP/SMTP host the
+/// only copy in Sent is the one Petrel appends after the send is confirmed —
+/// which, after an ambiguous send, is exactly the copy that was never made.
+fn server_files_sent_copies(cfg: &petrel_providers::imap::ImapConfig) -> bool {
+    crate::sync::account_is_gmail(cfg)
+}
+
+/// What a Sent search proves. Found is found. Absent means "did not go" only
+/// where the server would have filed a copy on its own; anywhere else an
+/// empty Sent folder says nothing, and the answer has to reach a person
+/// rather than start a retry that may deliver the message twice.
+fn evidence_from_search(
+    found: bool,
+    server_files_sent: bool,
+) -> petrel_engine::outbox::ServerEvidence {
+    use petrel_engine::outbox::ServerEvidence;
+    if found {
+        ServerEvidence::Found
+    } else if server_files_sent {
+        ServerEvidence::Absent
+    } else {
+        ServerEvidence::Indeterminate
     }
 }
 
@@ -461,11 +498,7 @@ pub(crate) async fn send_due(state: Arc<AppState>, account: i64) {
                     "queued send delivered {}",
                     message_id.as_deref().unwrap_or("?")
                 ));
-                drop_server_draft_using(
-                    &store,
-                    id,
-                    state.server_has_uidplus.load(Ordering::Relaxed),
-                );
+                drop_server_draft_using(&state, &store, id);
                 let _ = store.delete_draft(id);
             }
             SendState::RetryQueued => {
@@ -508,5 +541,25 @@ pub(crate) async fn send_due(state: Arc<AppState>, account: i64) {
             }
             SendState::UndoWindow | SendState::Transmitting => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod evidence_tests {
+    use super::evidence_from_search;
+    use petrel_engine::outbox::ServerEvidence;
+
+    /// The rule the outbox lives by: absence is proof only where the server
+    /// files its own copies. Everywhere else an empty Sent after a dropped
+    /// connection means nobody knows, and "nobody knows" reaches a person.
+    #[test]
+    fn an_empty_sent_folder_is_evidence_only_where_the_server_files_copies() {
+        assert_eq!(evidence_from_search(true, false), ServerEvidence::Found);
+        assert_eq!(evidence_from_search(true, true), ServerEvidence::Found);
+        assert_eq!(evidence_from_search(false, true), ServerEvidence::Absent);
+        assert_eq!(
+            evidence_from_search(false, false),
+            ServerEvidence::Indeterminate
+        );
     }
 }

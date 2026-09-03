@@ -40,6 +40,7 @@ impl Store {
              LEFT JOIN placements p ON p.message_id = am.message_id
              LEFT JOIN folders f ON f.id = p.folder_id
              WHERE a.account_id = ?1 AND a.state = 'queued'
+               AND am.delivered_ms IS NULL AND am.dropped_ms IS NULL
              ORDER BY a.id, am.message_id",
         )?;
         let rows = stmt.query_map(params![account_id], |r| {
@@ -495,6 +496,68 @@ impl Store {
             params![action_id, state],
         )?;
         Ok(())
+    }
+
+    /// The state an action is in, or None for an id that never existed.
+    pub fn action_state(&self, action_id: i64) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT state FROM actions WHERE id = ?1",
+                params![action_id],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Records the outcome of one message of an action: it reached the server
+    /// (`delivered`), or there was no server copy for it to change and
+    /// asking again cannot learn more (dropped). The message leaves the queue
+    /// either way; the action settles only when every message has an
+    /// outcome — sent if any reached the server, undeliverable if none did.
+    /// Returns whether the action settled on this call.
+    ///
+    /// Per message because an action carries several: an archive of a
+    /// three-message conversation is three MOVEs, and settling the action on
+    /// the first success discarded the other two.
+    pub fn mark_message_outcome(
+        &self,
+        action_id: i64,
+        message_id: i64,
+        delivered: bool,
+    ) -> Result<bool> {
+        let column = if delivered {
+            "delivered_ms"
+        } else {
+            "dropped_ms"
+        };
+        self.conn.execute(
+            &format!(
+                "UPDATE action_messages SET {column} = (strftime('%s','now') * 1000)
+                 WHERE action_id = ?1 AND message_id = ?2 AND {column} IS NULL"
+            ),
+            params![action_id, message_id],
+        )?;
+        let open: i64 = self.conn.query_row(
+            "SELECT count(*) FROM action_messages
+             WHERE action_id = ?1 AND delivered_ms IS NULL AND dropped_ms IS NULL",
+            params![action_id],
+            |r| r.get(0),
+        )?;
+        if open > 0 {
+            return Ok(false);
+        }
+        let reached: i64 = self.conn.query_row(
+            "SELECT count(*) FROM action_messages
+             WHERE action_id = ?1 AND delivered_ms IS NOT NULL",
+            params![action_id],
+            |r| r.get(0),
+        )?;
+        self.mark_action_state(
+            action_id,
+            if reached > 0 { "sent" } else { "undeliverable" },
+        )?;
+        Ok(true)
     }
 
     /// Priors for every message an action will touch, in one pass per table.

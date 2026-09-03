@@ -5,7 +5,6 @@ use crate::diag::log_sync;
 use crate::state::AppState;
 use petrel_engine::store::Store;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 /// Pushes one draft to the server's Drafts folder, replacing its previous
 /// copy there.
@@ -21,9 +20,15 @@ pub(crate) async fn push_draft_to_server(
     state: &Arc<AppState>,
     draft_id: i64,
 ) -> Result<(), String> {
-    let (record, msgid, old_uid, cfg, drafts_path, identity, domain) = {
+    let (account, record, msgid, old_uid, cfg, drafts_path, identity, domain) = {
         let mut store = state.store()?;
-        let Some(account) = store.active_account().map_err(|e| e.to_string())? else {
+        // The draft's own account, never the active one: a send or a save can
+        // finish after the rail has been switched, and the copy must land in
+        // the Drafts of the account that wrote it.
+        let Some(account) = store
+            .account_of_message(draft_id)
+            .map_err(|e| e.to_string())?
+        else {
             return Ok(());
         };
         let record = store.load_draft(draft_id).map_err(|e| e.to_string())?;
@@ -63,7 +68,16 @@ pub(crate) async fn push_draft_to_server(
                 minted
             }
         };
-        (record, msgid, old_uid, cfg, drafts_path, identity, domain)
+        (
+            account,
+            record,
+            msgid,
+            old_uid,
+            cfg,
+            drafts_path,
+            identity,
+            domain,
+        )
     };
     let Some(drafts_path) = drafts_path else {
         return Ok(());
@@ -105,7 +119,7 @@ pub(crate) async fn push_draft_to_server(
             &cfg,
             &drafts_path,
             old,
-            state.server_has_uidplus.load(Ordering::Relaxed),
+            state.caps(account).has_uidplus,
         )
         .await
         {
@@ -151,11 +165,15 @@ pub(crate) fn schedule_draft_push(state: Arc<AppState>, draft_id: i64) {
 /// Deletes the draft's server copy, if one was recorded — for a draft being
 /// discarded, or one that just became a sent message. Reads through the
 /// caller's guard, because two of the three callers already hold the lock.
-pub(crate) fn drop_server_draft_using(store: &Store, draft_id: i64, uidplus: bool) {
+pub(crate) fn drop_server_draft_using(state: &AppState, store: &Store, draft_id: i64) {
     let Ok((_, Some(uid))) = store.draft_sync_state(draft_id) else {
         return;
     };
-    let Some(account) = store.active_account().ok().flatten() else {
+    // The draft's account, not the active one. This runs from the send
+    // worker after the undo window, by which time the rail may show another
+    // account — and expunging this UID in *that* account's Drafts destroys
+    // whatever draft it holds there.
+    let Some(account) = store.account_of_message(draft_id).ok().flatten() else {
         return;
     };
     let Some(cfg) = imap_config_for(store, account) else {
@@ -169,6 +187,7 @@ pub(crate) fn drop_server_draft_using(store: &Store, draft_id: i64, uidplus: boo
     else {
         return;
     };
+    let uidplus = state.caps(account).has_uidplus;
     tauri::async_runtime::spawn(async move {
         // UIDPLUS makes the expunge surgical; without it the fallback path
         // inside expunge_uid does the careful dance. Read fresh per call.
@@ -180,11 +199,10 @@ pub(crate) fn drop_server_draft_using(store: &Store, draft_id: i64, uidplus: boo
 
 /// The lock-acquiring face of `drop_server_draft_using`.
 pub(crate) fn spawn_drop_server_draft(state: &Arc<AppState>, draft_id: i64) {
-    let uidplus = state.server_has_uidplus.load(Ordering::Relaxed);
     let Ok(store) = state.store.lock() else {
         return;
     };
-    drop_server_draft_using(&store, draft_id, uidplus);
+    drop_server_draft_using(state, &store, draft_id);
 }
 
 /// Splits a recipient field the way the composer's chip field does —

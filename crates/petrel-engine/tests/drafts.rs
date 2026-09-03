@@ -509,3 +509,25 @@ fn a_foreign_revision_is_a_conflict_and_both_resolutions_hold() {
     );
     assert_eq!(store.draft_conflict(draft).expect("settled"), None);
 }
+
+/// A draft belongs to the account it was written in, whichever account the
+/// rail shows by the time its server copy is pushed or dropped.
+#[test]
+fn a_draft_knows_its_own_account() {
+    let store = Store::open_in_memory().unwrap();
+    let first = store.ensure_test_account().unwrap();
+    let second = store
+        .add_account(
+            "imap",
+            "second@example.com",
+            "Second",
+            &petrel_engine::store::AccountServers::default(),
+        )
+        .unwrap();
+    assert_ne!(first, second);
+    let draft = store
+        .save_draft(second, None, "to@example.com", "hello", "body", "")
+        .unwrap();
+    assert_eq!(store.account_of_message(draft).unwrap(), Some(second));
+    assert_eq!(store.account_of_message(draft + 1_000_000).unwrap(), None);
+}

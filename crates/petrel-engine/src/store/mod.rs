@@ -19,7 +19,7 @@ mod listing;
 mod maintenance;
 mod search;
 
-pub const SCHEMA_VERSION: i64 = 23;
+pub const SCHEMA_VERSION: i64 = 24;
 /// Bumped whenever text extraction changes; a mismatch forces reindexing.
 pub const EXTRACTOR_VERSION: i64 = 1;
 
@@ -1161,6 +1161,9 @@ impl Store {
         if ver < 23 {
             conn.execute_batch(include_str!("migrations/0023-folder-role-index.sql"))?;
         }
+        if ver < 24 {
+            conn.execute_batch(include_str!("migrations/0024-action-message-outcome.sql"))?;
+        }
         if ver < SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             conn.execute(
@@ -1395,10 +1398,17 @@ impl Store {
         let date_ms = parsed.date_ms.unwrap_or(0);
         let id = match existing {
             Some(id) => {
+                // `deleted_at_ms` cleared: the server just handed this
+                // message back, so whatever tombstoned it — a folder pruned
+                // from the survey, a deletion seen elsewhere — is no longer
+                // true. A folder renamed on another device used to land here
+                // with the tombstone intact, invisible in every view and in
+                // search until GC purged it thirty days later. The search row
+                // is rewritten below with the rest.
                 tx.execute(
                     "UPDATE messages SET blob_hash = ?2, blob_kind = 'raw', date_ms = ?3,
                         from_addr = ?4, from_display = ?5, subject = ?6, snippet = ?7,
-                        size = ?8, has_attachments = ?9
+                        size = ?8, has_attachments = ?9, deleted_at_ms = NULL
                      WHERE id = ?1",
                     params![
                         id,

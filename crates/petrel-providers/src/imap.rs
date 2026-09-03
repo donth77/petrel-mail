@@ -1447,7 +1447,16 @@ where
             fetched,
             uid_validity: mailbox.uid_validity.or(status.uid_validity),
             highest_modseq: mailbox.highest_modseq.or(status.highest_modseq),
-            uid_next: catchup_uid_next.or(mailbox.uid_next).or(status.uid_next),
+            // A pass that fetched nothing must not move the watermark past
+            // mail it never saw. STATUS said "no new mail" with one UIDNEXT;
+            // EXAMINE, a moment later, can report a higher one because a
+            // message landed in between — recording that skipped the message
+            // for good, since the next pass starts above it.
+            uid_next: if new_mail {
+                catchup_uid_next.or(mailbox.uid_next).or(status.uid_next)
+            } else {
+                status.uid_next
+            },
             flag_updates,
             keyword_updates,
             total: mailbox.exists,

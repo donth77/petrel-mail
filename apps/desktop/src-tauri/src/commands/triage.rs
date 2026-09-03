@@ -6,7 +6,6 @@ use crate::state::{AppState, active_account, note_ui_touch};
 use petrel_engine::actions::{ActionKind, ActionReceipt};
 use petrel_engine::store::FolderSummary;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use tauri::State;
 
 /// Applies a triage action locally and queues it. Returns the receipt the UI
@@ -29,17 +28,18 @@ pub fn triage(
         .map_err(|e| e.to_string())?;
     // Local change done; ask for it to be delivered. The lock is released as
     // this returns, so the drain is never waiting on the caller.
-    state.drain_signal.notify_one();
+    state.nudge_drain(account);
     Ok(receipt)
 }
 
 #[tauri::command]
 pub fn undo_triage(action_id: i64, state: State<Arc<AppState>>) -> Result<bool, String> {
     let store = state.store()?;
+    let account = active_account(&store)?;
     let undone = store.undo_action(action_id).map_err(|e| e.to_string())?;
     // An undo can leave other queued work behind it, and the row it cancelled
     // is gone from the queue — either way the server's picture just changed.
-    state.drain_signal.notify_one();
+    state.nudge_drain(account);
     Ok(undone)
 }
 
@@ -225,9 +225,7 @@ pub(crate) async fn destroy_trashed(
         let store = state.store()?;
         (
             imap_config_for(&store, account),
-            state
-                .server_has_uidplus
-                .load(std::sync::atomic::Ordering::Relaxed),
+            state.caps(account).has_uidplus,
         )
     };
     if items.is_empty() {
@@ -381,7 +379,7 @@ pub async fn trash_folder_contents(
             from_paths,
             to_path,
             to_id,
-            state.server_has_move.load(Ordering::Relaxed),
+            state.caps(account).has_move,
         )
     };
     if from_paths.contains(&to_path) {

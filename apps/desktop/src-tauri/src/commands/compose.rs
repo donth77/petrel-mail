@@ -95,7 +95,7 @@ pub async fn resolve_draft_conflict(
     use crate::config::imap_config_for;
     use crate::state::active_account;
 
-    let (cfg, drafts_path, our_uid, other_uid) = {
+    let (account, cfg, drafts_path, our_uid, other_uid) = {
         let store = state.store()?;
         let account = active_account(&store)?;
         let cfg = imap_config_for(&store, account);
@@ -110,7 +110,7 @@ pub async fn resolve_draft_conflict(
             .map_err(|e| e.to_string())?
             .filter(|(oid, _)| *oid == other_id)
             .and_then(|(_, uid)| uid);
-        (cfg, drafts_path, our_uid, other_uid)
+        (account, cfg, drafts_path, our_uid, other_uid)
     };
 
     if take_server {
@@ -146,9 +146,7 @@ pub async fn resolve_draft_conflict(
                 cfg,
                 path,
                 uid,
-                state
-                    .server_has_uidplus
-                    .load(std::sync::atomic::Ordering::Relaxed),
+                state.caps(account).has_uidplus,
             )
             .await;
         }
@@ -167,9 +165,7 @@ pub async fn resolve_draft_conflict(
                 cfg,
                 path,
                 uid as u32,
-                state
-                    .server_has_uidplus
-                    .load(std::sync::atomic::Ordering::Relaxed),
+                state.caps(account).has_uidplus,
             )
             .await;
         }

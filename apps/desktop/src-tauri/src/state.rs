@@ -27,12 +27,18 @@ pub(crate) struct AppState {
     /// which is exactly what it did, leaving a failed login looking like an
     /// empty mailbox.
     pub(crate) sync_error: Mutex<Option<String>>,
-    /// Raised when local triage is waiting to reach the server. The drain
-    /// worker sleeps on this rather than on a timer, so an archive reaches
-    /// Gmail in about a second instead of whenever the next sync happens to
-    /// come round — which, with IDLE holding a connection open, could be
-    /// twenty minutes.
-    pub(crate) drain_signal: Arc<tokio::sync::Notify>,
+    /// One stop switch per account, flipped when the account is removed so
+    /// its workers stand down instead of carrying on against a server the
+    /// app no longer owns — or against a new account that inherited the same
+    /// id, which is what remove-and-re-add hands out. `stop_signal` gives a
+    /// worker its receiver; `stop_workers` flips the switch and forgets the
+    /// sender, so a re-added account starts with a fresh one.
+    pub(crate) stops: Mutex<std::collections::HashMap<i64, tokio::sync::watch::Sender<bool>>>,
+    /// What each account's server can do, from that account's own probe. One
+    /// set of flags for the whole app used to be written by whichever account
+    /// probed last, so with Gmail beside Dovecot half of launches drained one
+    /// account's changes with the other's commands.
+    pub(crate) caps: Mutex<std::collections::HashMap<i64, ServerCaps>>,
     /// One pair of outbox wake-ups per account, registered by the account's
     /// sync when it starts. A single shared `Notify` looked simpler and was
     /// wrong with two accounts: `notify_one` wakes whichever worker is first
@@ -59,13 +65,6 @@ pub(crate) struct AppState {
     /// yields to this: history is the least urgent work in the program, and
     /// a stride that makes a click wait has its priorities inverted.
     pub(crate) ui_touch_ms: std::sync::atomic::AtomicI64,
-    /// Whether the server supports UID MOVE, learned from the probe.
-    pub(crate) server_has_move: AtomicBool,
-    /// RFC 4315. Without it a message can be marked deleted but not expunged,
-    /// because a bare EXPUNGE would take every other \\Deleted message with it.
-    pub(crate) server_has_uidplus: AtomicBool,
-    /// Whether this account's tags are Gmail labels rather than IMAP keywords.
-    pub(crate) server_is_gmail: AtomicBool,
     /// How much mail the server says it holds, across the folders we sync.
     ///
     /// The denominator of the coverage line, and the reason it exists: a client
@@ -84,6 +83,13 @@ pub(crate) struct AppState {
 /// The wake-ups for one account's outbox: its send worker and its clock.
 pub(crate) struct OutboxSignals {
     pub(crate) account: i64,
+    /// Raised when local triage on this account is waiting to reach the
+    /// server. The drain worker sleeps on this rather than on a timer, so an
+    /// archive reaches the server in about a second rather than at the next
+    /// sync. One per account: a single shared signal woke whichever worker
+    /// had waited longest, and the account with the change waited for its
+    /// next IDLE wake or the five-minute sweep.
+    pub(crate) drain: tokio::sync::Notify,
     /// Raised when a queued send should go now. Send now, the outbox clock,
     /// and a scheduled send wake this; triage does not. Sharing the drain
     /// signal put SMTP behind every pending IMAP STORE/MOVE — observed live
@@ -96,7 +102,66 @@ pub(crate) struct OutboxSignals {
     pub(crate) clock: tokio::sync::Notify,
 }
 
+/// What one account's server advertised when it was probed.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ServerCaps {
+    pub(crate) has_move: bool,
+    pub(crate) has_uidplus: bool,
+    pub(crate) is_gmail: bool,
+}
+
 impl AppState {
+    /// Local triage on this account is waiting to reach the server.
+    pub(crate) fn nudge_drain(&self, account: i64) {
+        self.outbox_signals(account).drain.notify_one();
+    }
+
+    /// The receiver a worker for this account watches. Made on first use, so
+    /// whichever worker spawns first creates the switch; a receiver sees
+    /// `true` once `stop_workers` has run, and `changed()` returns as soon
+    /// as it does.
+    pub(crate) fn stop_signal(&self, account: i64) -> tokio::sync::watch::Receiver<bool> {
+        let mut all = self.stops.lock().unwrap_or_else(|p| p.into_inner());
+        all.entry(account)
+            .or_insert_with(|| tokio::sync::watch::channel(false).0)
+            .subscribe()
+    }
+
+    /// Flips the account's switch and forgets it, so its workers stop at
+    /// their next wait and an account re-added under the same id gets a
+    /// switch of its own. Returns whether there was anything to stop.
+    pub(crate) fn stop_workers(&self, account: i64) -> bool {
+        let sender = self
+            .stops
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&account);
+        match sender {
+            Some(tx) => {
+                let _ = tx.send(true);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// What this account's server can do; nothing, until its probe answers.
+    pub(crate) fn caps(&self, account: i64) -> ServerCaps {
+        self.caps
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&account)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn set_caps(&self, account: i64, caps: ServerCaps) {
+        self.caps
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(account, caps);
+    }
+
     /// The outbox wake-ups for an account, made on first use. The send
     /// worker and the clock both ask, so whichever spawns first creates them.
     pub(crate) fn outbox_signals(&self, account: i64) -> Arc<OutboxSignals> {
@@ -106,6 +171,7 @@ impl AppState {
         }
         let s = Arc::new(OutboxSignals {
             account,
+            drain: tokio::sync::Notify::new(),
             send: tokio::sync::Notify::new(),
             clock: tokio::sync::Notify::new(),
         });
@@ -190,4 +256,53 @@ pub(crate) fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod worker_switch_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    type Stops = Mutex<HashMap<i64, tokio::sync::watch::Sender<bool>>>;
+
+    /// The switch semantics every worker relies on: a receiver taken before
+    /// the account is removed reads true afterwards, and a receiver taken for
+    /// the same id afterwards — a re-added account — starts at false.
+    #[test]
+    fn stopping_an_account_flips_its_switch_and_leaves_a_fresh_one_behind() {
+        let stops: Stops = Mutex::new(HashMap::new());
+        let mut all = stops.lock().unwrap();
+        let old = all
+            .entry(7)
+            .or_insert_with(|| tokio::sync::watch::channel(false).0)
+            .subscribe();
+        assert!(!*old.borrow());
+        let tx = all.remove(&7).expect("a switch to flip");
+        let _ = tx.send(true);
+        assert!(*old.borrow(), "the removed account's workers see the stop");
+        let fresh = all
+            .entry(7)
+            .or_insert_with(|| tokio::sync::watch::channel(false).0)
+            .subscribe();
+        assert!(
+            !*fresh.borrow(),
+            "a re-added account under the same id starts clean"
+        );
+    }
+
+    #[test]
+    fn capabilities_are_per_account_and_empty_until_probed() {
+        let caps: Mutex<HashMap<i64, ServerCaps>> = Mutex::new(HashMap::new());
+        let mut all = caps.lock().unwrap();
+        all.insert(
+            1,
+            ServerCaps {
+                has_move: true,
+                has_uidplus: true,
+                is_gmail: true,
+            },
+        );
+        assert!(all.get(&1).copied().unwrap_or_default().is_gmail);
+        assert!(!all.get(&2).copied().unwrap_or_default().is_gmail);
+    }
 }

@@ -88,12 +88,21 @@ fn permanent_refusal(error: &str) -> bool {
 /// of them beats one connection each. A second of latency is invisible to the
 /// person doing it and saves a login per keystroke.
 pub(crate) fn spawn_drain_worker(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
+    let signals = state.outbox_signals(account);
+    let mut stop = state.stop_signal(account);
     tauri::async_runtime::spawn(async move {
         loop {
-            state.drain_signal.notified().await;
+            if *stop.borrow() {
+                break;
+            }
+            tokio::select! {
+                _ = signals.drain.notified() => {}
+                _ = stop.changed() => break,
+            }
             tokio::time::sleep(std::time::Duration::from_millis(900)).await;
-            let has_move = state.server_has_move.load(Ordering::Relaxed);
-            let has_uidplus = state.server_has_uidplus.load(Ordering::Relaxed);
+            let caps = state.caps(account);
+            let has_move = caps.has_move;
+            let has_uidplus = caps.has_uidplus;
             // The overlap guard is one flag across every account, and losing
             // to it must not lose the wake-up: a notification arriving while
             // another account drains used to be consumed and dropped, leaving
@@ -105,7 +114,7 @@ pub(crate) fn spawn_drain_worker(state: Arc<AppState>, account: i64, cfg: ImapCo
                 cfg.clone(),
                 has_move,
                 has_uidplus,
-                state.server_is_gmail.load(Ordering::Relaxed),
+                caps.is_gmail,
             )
             .await
             {
@@ -116,6 +125,7 @@ pub(crate) fn spawn_drain_worker(state: Arc<AppState>, account: i64, cfg: ImapCo
             // the next Send now waits on the next backlog the same way.
             state.nudge_send(account);
         }
+        log_sync(&format!("account {account}: drain worker stopped"));
     });
 }
 
@@ -238,16 +248,16 @@ pub(crate) async fn drain_actions(
             }
             // Every folder we know of answered, and none holds it — or it has
             // no Message-ID to ask about. There is no server copy for this
-            // action to change, and retrying cannot learn more. Out of the
-            // queue it goes, by name, in the log. The state is per action and
-            // an action can carry several messages: the last writer wins, but
-            // every terminal path leaves 'queued', which is what matters.
+            // message to change, and retrying cannot learn more. The message
+            // leaves the queue; the action settles once every message it
+            // carries has an outcome, and reads as undeliverable only if none
+            // of them reached the server.
             undeliverable += 1;
             if let Ok(store) = state.store.lock() {
-                let _ = store.mark_action_state(item.action_id, "undeliverable");
+                let _ = store.mark_message_outcome(item.action_id, item.message_id, false);
             }
             log_sync(&format!(
-                "action {}: no server copy answers to it; marked undeliverable",
+                "action {}: no server copy answers to one of its messages; dropped",
                 item.action_id
             ));
             continue;
@@ -281,7 +291,11 @@ pub(crate) async fn drain_actions(
                             batched.insert(*i);
                             delivered += 1;
                             if let Ok(store) = state.store.lock() {
-                                let _ = store.mark_action_state(*action_id, "sent");
+                                let _ = store.mark_message_outcome(
+                                    *action_id,
+                                    pending[*i].message_id,
+                                    true,
+                                );
                             }
                         }
                     }
@@ -418,8 +432,11 @@ pub(crate) async fn drain_actions(
         match result {
             Ok(()) => {
                 delivered += 1;
+                // This message reached the server. The action settles when
+                // its last message does; settling it here, on the first,
+                // threw the rest of a conversation's changes away.
                 if let Ok(store) = state.store.lock() {
-                    let _ = store.mark_action_state(item.action_id, "sent");
+                    let _ = store.mark_message_outcome(item.action_id, item.message_id, true);
                 }
             }
             Err(e) => {

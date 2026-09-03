@@ -14,18 +14,27 @@ use std::sync::atomic::Ordering;
 /// work, dormant once every folder's floor reaches 1. Strides stay small,
 /// so a click or a poll never waits long behind one.
 pub(crate) fn spawn_backfill(state: Arc<AppState>, account: i64, cfg: ImapConfig) {
+    let mut stop = state.stop_signal(account);
     tauri::async_runtime::spawn(async move {
         loop {
+            if *stop.borrow() {
+                break;
+            }
             yield_to_user(&state).await;
             // Recent history first; the deep archive once that is quiet.
             let worked = run_backfill_tick(&state, account, &cfg).await
                 || run_allmail_tick(&state, account, &cfg).await;
-            if worked {
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            let nap = if worked {
+                std::time::Duration::from_secs(2)
             } else {
                 // Done, or a folder list that may change later: look again
                 // rarely rather than never.
-                tokio::time::sleep(std::time::Duration::from_secs(15 * 60)).await;
+                std::time::Duration::from_secs(15 * 60)
+            };
+            // The nap ends early when the account is removed.
+            tokio::select! {
+                _ = tokio::time::sleep(nap) => {}
+                _ = stop.changed() => break,
             }
         }
     });

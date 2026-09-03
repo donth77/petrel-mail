@@ -5,7 +5,6 @@ use crate::send::sent_folder_evidence;
 use crate::state::{AppState, active_account, now_ms};
 use crate::sync::drafts::drop_server_draft_using;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use tauri::State;
 
 /// The outbox, row by row, with each message's state.
@@ -69,7 +68,7 @@ pub async fn outbox_check(id: i64, state: State<'_, Arc<AppState>>) -> Result<St
     let store = state.store()?;
     match next {
         SendState::Sent => {
-            drop_server_draft_using(&store, id, state.server_has_uidplus.load(Ordering::Relaxed));
+            drop_server_draft_using(state.inner(), &store, id);
             let _ = store.delete_draft(id);
         }
         SendState::RetryQueued => {

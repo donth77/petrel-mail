@@ -2,7 +2,7 @@
 //! without the mail that passed through it ever being destroyed.
 
 use petrel_engine::blob::BlobStore;
-use petrel_engine::store::{ListView, Store};
+use petrel_engine::store::{ListView, Sort, Store};
 
 fn fixture(mid: &str, subject: &str) -> Vec<u8> {
     format!(
@@ -783,5 +783,125 @@ fn a_copy_on_the_server_makes_a_message_recoverable() {
         store.local_only_messages().unwrap(),
         0,
         "a message the server still holds must not be counted as local-only"
+    );
+}
+
+/// A folder renamed on another device: the old name drops out of the survey
+/// and the new one appears with the same messages. Mirror mode tombstones the
+/// old folder's mail with the usual grace, and the re-ingest under the new
+/// name must bring it back — it used to stay tombstoned, invisible everywhere
+/// and gone for good once GC ran.
+#[test]
+fn a_folder_renamed_elsewhere_gets_its_mail_back_under_the_new_name() {
+    let (_dir, mut store, blobs, account) = setup();
+    store
+        .sync_folders(account, &[("Projects".into(), None)])
+        .unwrap();
+    let old = store
+        .folders(account)
+        .unwrap()
+        .iter()
+        .find(|f| f.path == "Projects")
+        .unwrap()
+        .id;
+    let raw = fixture("renamed@x", "quarterly figures");
+    let first = store
+        .ingest_raw(&blobs, account, Some(old), Some(1), &raw)
+        .unwrap();
+    assert!(store.thread_message(first.message_id).unwrap().is_some());
+
+    // The survey after the rename: Projects is gone, Projects2026 is new.
+    store
+        .sync_folders(account, &[("Projects2026".into(), None)])
+        .unwrap();
+    assert!(
+        store.thread_message(first.message_id).unwrap().is_none(),
+        "mirror mode: the pruned folder's mail is tombstoned until it comes back"
+    );
+    let new = store
+        .folders(account)
+        .unwrap()
+        .iter()
+        .find(|f| f.path == "Projects2026")
+        .unwrap()
+        .id;
+
+    // The new folder syncs and hands the same message back.
+    let again = store
+        .ingest_raw(&blobs, account, Some(new), Some(1), &raw)
+        .unwrap();
+    assert_eq!(
+        again.message_id, first.message_id,
+        "deduped onto the same row"
+    );
+    assert!(
+        store.thread_message(first.message_id).unwrap().is_some(),
+        "the tombstone is cleared"
+    );
+    let listed = store
+        .list_threads(&ListView::UserFolder(new), 0, 10, Sort::default())
+        .unwrap();
+    assert!(
+        listed.iter().any(|r| r.id == first.message_id),
+        "it shows in the new folder: {listed:?}"
+    );
+    assert!(
+        store
+            .search("quarterly", 10)
+            .unwrap()
+            .iter()
+            .any(|h| h.message_id == first.message_id),
+        "and search finds it again"
+    );
+}
+
+/// A local archive is the promise that server deletions never remove local
+/// content. A folder the server stopped listing must not take its mail with
+/// it there — the folder goes, the messages stay where a search can find them.
+#[test]
+fn in_local_archive_mode_a_vanished_folder_keeps_its_mail() {
+    let (_dir, mut store, blobs, account) = setup();
+    store.set_local_archive(account, true).unwrap();
+    store
+        .sync_folders(account, &[("Doomed".into(), None)])
+        .unwrap();
+    let doomed = store
+        .folders(account)
+        .unwrap()
+        .iter()
+        .find(|f| f.path == "Doomed")
+        .unwrap()
+        .id;
+    let kept = store
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(doomed),
+            Some(1),
+            &fixture("kept@x", "keep me"),
+        )
+        .unwrap();
+
+    store.sync_folders(account, &[]).unwrap();
+
+    assert!(
+        !store
+            .folders(account)
+            .unwrap()
+            .iter()
+            .any(|f| f.id == doomed),
+        "the folder row is gone"
+    );
+    assert!(
+        store.thread_message(kept.message_id).unwrap().is_some(),
+        "the message is not tombstoned"
+    );
+    assert!(
+        store
+            .search("keep", 10)
+            .unwrap()
+            .iter()
+            .any(|h| h.message_id == kept.message_id),
+        "and stays searchable"
     );
 }

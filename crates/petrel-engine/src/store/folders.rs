@@ -296,8 +296,20 @@ impl Store {
                 })
                 .collect()
         };
+        // Mirror mode follows the server: the folder's mail is tombstoned
+        // with the usual grace, and comes back by itself if the folder was
+        // only renamed (the re-ingest under the new name clears the
+        // tombstone). A local archive promises the opposite of following
+        // the server, so there the folder row and its placements go and
+        // the messages stay exactly as they were.
+        let keep_mail =
+            self.retention_mode(account_id)? == crate::retention::RetentionMode::LocalArchive;
         for id in stale {
-            self.remove_folder(id)?;
+            if keep_mail {
+                self.forget_folder(id)?;
+            } else {
+                self.remove_folder(id)?;
+            }
         }
         Ok(n)
     }
@@ -395,6 +407,21 @@ impl Store {
     /// and is untouched. Drafts and outbox rows are exempt: they are allowed
     /// to have no placement, and always were.
     ///
+    /// Drops a folder row and its placements and nothing else: the messages
+    /// stay, untombstoned, with whatever other placements they have. For a
+    /// folder the server stopped listing on an account that keeps a local
+    /// archive — the case the archive exists for.
+    pub fn forget_folder(&mut self, folder_id: i64) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "DELETE FROM placements WHERE folder_id = ?1",
+            params![folder_id],
+        )?;
+        tx.execute("DELETE FROM folders WHERE id = ?1", params![folder_id])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Returns how many messages the folder took with it.
     pub fn remove_folder(&mut self, folder_id: i64) -> Result<usize> {
         let tx = self.conn.transaction()?;

@@ -165,6 +165,13 @@ pub fn set_active_account(account_id: i64, state: State<Arc<AppState>>) -> Resul
 /// Removes an account, its mail and its password.
 #[tauri::command]
 pub fn remove_account(account_id: i64, state: State<Arc<AppState>>) -> Result<(), String> {
+    // Workers first. Left running, the account's drain, send and sync loops
+    // kept its server and its queue; and since ids are reused, an account
+    // added afterwards inherited them — its triage delivered to the old
+    // server, its sends made twice.
+    if state.stop_workers(account_id) {
+        crate::diag::log_sync(&format!("account {account_id}: workers told to stop"));
+    }
     if let Ok(k) = keychain_entry(account_id) {
         // A missing entry is fine; the point is that none remains.
         let _ = k.delete_credential();

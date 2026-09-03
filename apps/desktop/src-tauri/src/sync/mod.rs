@@ -88,10 +88,6 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
                 has_move = report.greeting_capabilities.move_;
                 has_idle = report.greeting_capabilities.idle;
                 has_uidplus = report.greeting_capabilities.uidplus;
-                state.server_has_move.store(has_move, Ordering::Relaxed);
-                state
-                    .server_has_uidplus
-                    .store(has_uidplus, Ordering::Relaxed);
                 log_sync(&format!(
                     "probe ok: {} folder(s), MOVE={has_move}, IDLE={has_idle}, UIDPLUS={has_uidplus}",
                     report.folders.len(),
@@ -115,9 +111,14 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
                 // user's other labels instead of clearing them.
                 looks_like_gmail = cfg.host.contains("gmail")
                     || report.folders.iter().any(|f| f.name.starts_with("[Gmail]"));
-                state
-                    .server_is_gmail
-                    .store(looks_like_gmail, Ordering::Relaxed);
+                state.set_caps(
+                    account,
+                    crate::state::ServerCaps {
+                        has_move,
+                        has_uidplus,
+                        is_gmail: looks_like_gmail,
+                    },
+                );
                 if let Ok(mut store) = state.store.lock() {
                     let tag_names: Vec<String> = store
                         .tags_for_account(account)
@@ -283,8 +284,10 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
         // running collapse into the single pass that follows it, which is the
         // right answer because a wake carries no detail to lose.
         let (wake_tx, mut wake_rx) = tokio::sync::mpsc::channel::<()>(1);
+        let mut stop = state.stop_signal(account);
         if has_idle {
             let cfg = cfg.clone();
+            let mut stop = state.stop_signal(account);
             tokio::spawn(async move {
                 // Backoff rather than the flat two-minute sleep this used to
                 // take on failure. A refused IDLE is usually a dropped socket
@@ -294,13 +297,17 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
                 let ceiling_backoff = std::time::Duration::from_secs(120);
                 loop {
                     let armed = std::time::Instant::now();
-                    let watching =
-                        petrel_providers::imap::idle_watch(&cfg, "INBOX", idle_ceiling, || {
+                    // The account may be removed while IDLE holds the
+                    // connection open, for up to twenty minutes: the switch
+                    // ends the watch there and then.
+                    let watching = tokio::select! {
+                        w = petrel_providers::imap::idle_watch(&cfg, "INBOX", idle_ceiling, || {
                             // Full means a pass is already coming; dropping
                             // this one loses nothing.
                             let _ = wake_tx.try_send(());
-                        })
-                        .await;
+                        }) => w,
+                        _ = stop.changed() => return,
+                    };
                     match watching {
                         Ok(()) => {
                             backoff = std::time::Duration::from_secs(2);
@@ -334,6 +341,9 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
             // fires and the timer alone drives it — the old poll, unchanged.
             let until_sweep = sweep_every.saturating_sub(swept.elapsed());
             let wait = if has_idle { until_sweep } else { every };
+            if *stop.borrow() {
+                break;
+            }
             let by_wake = tokio::select! {
                 got = wake_rx.recv() => {
                     // The watcher only ends if the loop is gone, but a closed
@@ -346,6 +356,9 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
                     }
                 }
                 _ = tokio::time::sleep(wait) => false,
+                // The account was removed: stand down rather than run one
+                // more cycle against a server the app no longer owns.
+                _ = stop.changed() => break,
             };
             let cycle = std::time::Instant::now();
             // A wake still takes the sweep if one has come due meanwhile, so a
@@ -909,13 +922,10 @@ async fn tend_the_bin(state: &Arc<AppState>, account: i64) {
 /// Whether this account's server is Gmail — asked of the account's own
 /// configuration rather than of shared state.
 ///
-/// `AppState::server_is_gmail` is one flag for the whole app, written by
-/// whichever account probed last: with a Gmail account beside a Dovecot one
-/// it says "Gmail" for both half the time. Everything below that must be
-/// right *per account* — whether a tag is a label or a keyword, whether the
-/// label sweeps are worth running — asks this instead. The shared flag
-/// stays for the UI's benefit and is no longer consulted for correctness.
-fn account_is_gmail(cfg: &ImapConfig) -> bool {
+/// The probe's own answer lives in `AppState::caps`, per account; this is
+/// the same question answered from configuration alone, for the places that
+/// have a config in hand and no account id.
+pub(crate) fn account_is_gmail(cfg: &ImapConfig) -> bool {
     let host = cfg.host.to_ascii_lowercase();
     host.contains("gmail") || host.contains("googlemail") || host.ends_with("google.com")
 }
@@ -1036,7 +1046,7 @@ fn apply_rules_to(state: &Arc<AppState>, account: i64, arrivals: &[i64]) {
     }
     if applied > 0 {
         log_sync(&format!("rules: {applied} action(s) applied on arrival"));
-        state.drain_signal.notify_one();
+        state.nudge_drain(account);
     }
 }
 

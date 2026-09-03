@@ -116,6 +116,22 @@ impl Store {
 
     /// The draft's server identity: its stable Message-ID and the UID of the
     /// copy currently in the server's Drafts folder.
+    /// The account a message belongs to, tombstoned or not. The callers that
+    /// push or drop a draft's server copy used to ask for the *active*
+    /// account instead, and with two accounts that is whichever one the rail
+    /// happened to show — a draft written in one account was expunged from
+    /// the other's Drafts.
+    pub fn account_of_message(&self, message_id: i64) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT account_id FROM messages WHERE id = ?1",
+                params![message_id],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
     pub fn draft_sync_state(&self, draft_id: i64) -> Result<(Option<String>, Option<u32>)> {
         Ok(self
             .conn

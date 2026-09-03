@@ -812,3 +812,90 @@ Message-ID: <m1@x>\r\nMIME-Version: 1.0\r\nContent-Type: text/plain\r\n\r\nbody\
         assert_eq!(mv.folder_path, "INBOX");
     }
 }
+
+/// An action carries every message of a conversation, and each reaches the
+/// server on its own. The action used to be marked sent on the first success,
+/// so the rest were never retried. Now each message records its outcome and
+/// the action settles on the last one: sent if any got through, undeliverable
+/// only if none did.
+#[test]
+fn an_action_settles_only_when_every_message_has_an_outcome() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&dir.path().join("t.db")).unwrap();
+    let blobs = petrel_engine::blob::BlobStore::open(&dir.path().join("blobs")).unwrap();
+    let account = store.ensure_test_account().unwrap();
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+    let ids = ingest_reply_chain(&mut store, &blobs, account, inbox, 3);
+    let thread = store.thread_of(ids[0]).unwrap().unwrap();
+    let receipt = store
+        .apply_thread_action(
+            account,
+            thread,
+            ActionKind::Archive,
+            None,
+            PlacementPolicy::Exclusive,
+        )
+        .unwrap();
+    let action = receipt.action_id;
+    let queued: Vec<i64> = store
+        .pending_actions(account)
+        .unwrap()
+        .iter()
+        .map(|p| p.message_id)
+        .collect();
+    assert_eq!(queued.len(), 3, "{queued:?}");
+
+    assert!(!store.mark_message_outcome(action, queued[0], true).unwrap());
+    assert_eq!(
+        store.action_state(action).unwrap().as_deref(),
+        Some("queued")
+    );
+    let left: Vec<i64> = store
+        .pending_actions(account)
+        .unwrap()
+        .iter()
+        .map(|p| p.message_id)
+        .collect();
+    assert_eq!(
+        left,
+        queued[1..].to_vec(),
+        "the delivered message leaves the queue"
+    );
+
+    assert!(
+        !store
+            .mark_message_outcome(action, queued[1], false)
+            .unwrap()
+    );
+    assert!(store.mark_message_outcome(action, queued[2], true).unwrap());
+    assert_eq!(store.action_state(action).unwrap().as_deref(), Some("sent"));
+    assert!(store.pending_actions(account).unwrap().is_empty());
+}
+
+#[test]
+fn an_action_none_of_whose_messages_had_a_server_copy_is_undeliverable() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&dir.path().join("t.db")).unwrap();
+    let blobs = petrel_engine::blob::BlobStore::open(&dir.path().join("blobs")).unwrap();
+    let account = store.ensure_test_account().unwrap();
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+    let ids = ingest_reply_chain(&mut store, &blobs, account, inbox, 2);
+    let thread = store.thread_of(ids[0]).unwrap().unwrap();
+    let receipt = store
+        .apply_thread_action(
+            account,
+            thread,
+            ActionKind::Trash,
+            None,
+            PlacementPolicy::Exclusive,
+        )
+        .unwrap();
+    let action = receipt.action_id;
+    for id in &ids {
+        store.mark_message_outcome(action, *id, false).unwrap();
+    }
+    assert_eq!(
+        store.action_state(action).unwrap().as_deref(),
+        Some("undeliverable")
+    );
+}
