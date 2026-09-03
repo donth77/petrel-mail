@@ -327,7 +327,13 @@ pub(crate) async fn drain_actions(
                 match dest {
                     Some(to) if to != folder => {
                         let moved = match petrel_providers::imap::move_uid(
-                            &cfg, &folder, uid, &to, has_move,
+                            &cfg,
+                            &folder,
+                            uid,
+                            &to,
+                            has_move,
+                            has_uidplus,
+                            item.msgid.as_deref(),
                         )
                         .await
                         {
@@ -342,7 +348,13 @@ pub(crate) async fn drain_actions(
                                 match petrel_providers::imap::create_folder(&cfg, &to).await {
                                     Ok(()) => {
                                         petrel_providers::imap::move_uid(
-                                            &cfg, &folder, uid, &to, has_move,
+                                            &cfg,
+                                            &folder,
+                                            uid,
+                                            &to,
+                                            has_move,
+                                            has_uidplus,
+                                            item.msgid.as_deref(),
                                         )
                                         .await
                                     }
@@ -357,12 +369,19 @@ pub(crate) async fn drain_actions(
                         // have re-added it, and a placement the server no
                         // longer backs is how a conversation ends up haunting
                         // both its folder and the inbox.
+                        if let Ok(false) = moved {
+                            // Copied and flagged, not expunged: no UIDPLUS, and a
+                            // bare EXPUNGE would commit other clients' deletions.
+                            log_sync(&format!(
+                                "{folder}: moved by copy; the source copy is flagged deleted, not expunged (no UIDPLUS)"
+                            ));
+                        }
                         if moved.is_ok()
                             && let Ok(store) = state.store.lock()
                         {
                             let _ = store.remove_placement(item.message_id, account, &folder);
                         }
-                        moved
+                        moved.map(|_| ())
                     }
                     // Already where it belongs, or nowhere to send it.
                     _ => Ok(()),

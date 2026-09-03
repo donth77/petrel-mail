@@ -300,10 +300,40 @@ impl Store {
             ActionKind::MarkUnread => format!(" AND flags & {} != 0", flags::SEEN),
             _ => String::new(),
         };
+        // Archive and Move take a message out of the inbox or a folder. They
+        // do not take your own replies out of Sent, or pull a message out of
+        // the bin: a thread-wide archive used to relocate every message in
+        // the conversation, wherever it sat, and the drain then moved your
+        // Sent copy to Archive on the server. Bins are exclusive whatever the
+        // provider, so Trash and Spam still take everything.
+        let kept_where_they_are: Vec<i64> =
+            if matches!(kind, ActionKind::Archive | ActionKind::Move) {
+                let mut stmt = self.conn.prepare(
+                    "SELECT DISTINCT m.id FROM messages m
+                     JOIN placements p ON p.message_id = m.id
+                     JOIN folders f ON f.id = p.folder_id
+                     WHERE coalesce(m.thread_id, -m.id) = ?1 AND m.deleted_at_ms IS NULL
+                       AND f.role IN ('sent','drafts','trash','spam')",
+                )?;
+                stmt.query_map(params![thread_id], |r| r.get(0))?
+                    .collect::<std::result::Result<Vec<_>, _>>()?
+            } else {
+                Vec::new()
+            };
+        let exclude = |column: &str| {
+            if kept_where_they_are.is_empty() {
+                String::new()
+            } else {
+                let list: Vec<String> = kept_where_they_are.iter().map(|i| i.to_string()).collect();
+                format!(" AND {column} NOT IN ({})", list.join(","))
+            }
+        };
+        let bare_filter = format!("{flag_filter}{}", exclude("id"));
+        let aliased_filter = format!("{flag_filter}{}", exclude("m.id"));
         let ids: Vec<i64> = {
             let sql = format!(
                 "SELECT id FROM messages
-                 WHERE coalesce(thread_id, -id) = ?1 AND deleted_at_ms IS NULL{flag_filter}
+                 WHERE coalesce(thread_id, -id) = ?1 AND deleted_at_ms IS NULL{bare_filter}
                  ORDER BY id"
             );
             let mut stmt = self.conn.prepare(&sql)?;
@@ -324,7 +354,7 @@ impl Store {
         // the same message. One pass per table, not one query per message —
         // a 22k-message mark_read used to hold the store lock for fifteen
         // seconds while status waited.
-        let prior = self.capture_thread_priors(thread_id, &flag_filter)?;
+        let prior = self.capture_thread_priors(thread_id, &bare_filter, &aliased_filter)?;
 
         // Queue rows before the local flag flip. The INSERT SELECT reuses the
         // same unread/read filter; if SEEN is already set, it would insert
@@ -359,7 +389,7 @@ impl Store {
             &format!(
                 "INSERT OR IGNORE INTO action_messages(action_id, message_id)
                  SELECT ?1, id FROM messages
-                 WHERE coalesce(thread_id, -id) = ?2 AND deleted_at_ms IS NULL{flag_filter}"
+                 WHERE coalesce(thread_id, -id) = ?2 AND deleted_at_ms IS NULL{bare_filter}"
             ),
             params![action_id, thread_id],
         )?;
@@ -462,8 +492,14 @@ impl Store {
     /// still queued: once it has reached the server, undoing is a new action
     /// rather than a cancellation, and pretending otherwise would be a lie about
     /// what the other end knows.
+    ///
+    /// Only the part of the snapshot the action touched: flags for a flag
+    /// action, placements for a move, tags for a tag, the snooze for a snooze.
+    /// Restoring the whole snapshot replayed it over whatever came later —
+    /// mark read, archive, undo the mark-read, and the conversation walked
+    /// back into the inbox, which a toast outliving the next action could do.
     pub fn undo_action(&self, action_id: i64) -> Result<bool> {
-        use crate::actions::ActionPayload;
+        use crate::actions::{ActionKind, ActionPayload};
 
         let row: Option<(String, String)> = self
             .conn
@@ -492,11 +528,39 @@ impl Store {
             return Ok(false);
         }
 
+        let flag_bit = match payload.kind {
+            ActionKind::MarkRead | ActionKind::MarkUnread => Some(flags::SEEN),
+            ActionKind::Star | ActionKind::Unstar => Some(flags::FLAGGED),
+            _ => None,
+        };
+        let places = matches!(
+            payload.kind,
+            ActionKind::Archive | ActionKind::Trash | ActionKind::Spam | ActionKind::Move
+        );
+        let tags = matches!(payload.kind, ActionKind::Tag | ActionKind::Untag);
+        let snooze = matches!(payload.kind, ActionKind::Snooze | ActionKind::Unsnooze);
+
         for p in &payload.prior {
-            self.conn.execute(
-                "UPDATE messages SET flags = ?2 WHERE id = ?1",
-                params![p.message_id, p.flags],
-            )?;
+            if let Some(bit) = flag_bit {
+                // The one bit, as it was: a star set since survives undoing a
+                // mark-read, and the other way round.
+                self.conn.execute(
+                    "UPDATE messages SET flags = (flags & ~?2) | (?3 & ?2) WHERE id = ?1",
+                    params![p.message_id, bit, p.flags],
+                )?;
+            }
+            if !places {
+                if tags {
+                    self.restore_tags(p)?;
+                }
+                if snooze {
+                    self.conn.execute(
+                        "UPDATE messages SET snoozed_until_ms = ?2 WHERE id = ?1",
+                        params![p.message_id, p.snoozed_until],
+                    )?;
+                }
+                continue;
+            }
             self.conn.execute(
                 "DELETE FROM placements WHERE message_id = ?1",
                 params![p.message_id],
@@ -513,20 +577,6 @@ impl Store {
                     _ => self.place_message(p.message_id, *f)?,
                 }
             }
-            // Same shape as folders: wipe and restore what was captured, rather
-            // than removing whatever this action added. Those differ whenever
-            // the tag was already on the message before the action ran.
-            self.conn.execute(
-                "DELETE FROM message_tags WHERE message_id = ?1",
-                params![p.message_id],
-            )?;
-            for tag in &p.tag_ids {
-                self.tag_message(p.message_id, *tag)?;
-            }
-            self.conn.execute(
-                "UPDATE messages SET snoozed_until_ms = ?2 WHERE id = ?1",
-                params![p.message_id, p.snoozed_until],
-            )?;
         }
 
         self.conn.execute(
@@ -534,6 +584,20 @@ impl Store {
             params![action_id],
         )?;
         Ok(true)
+    }
+
+    /// Same shape as folders: wipe and restore what was captured, rather than
+    /// removing whatever the action added. Those differ whenever the tag was
+    /// already on the message before the action ran.
+    fn restore_tags(&self, p: &crate::actions::PriorState) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM message_tags WHERE message_id = ?1",
+            params![p.message_id],
+        )?;
+        for tag in &p.tag_ids {
+            self.tag_message(p.message_id, *tag)?;
+        }
+        Ok(())
     }
 
     pub fn flags_of(&self, message_id: i64) -> Result<i64> {
@@ -638,7 +702,8 @@ impl Store {
     fn capture_thread_priors(
         &self,
         thread_id: i64,
-        flag_filter: &str,
+        bare_filter: &str,
+        aliased_filter: &str,
     ) -> Result<Vec<crate::actions::PriorState>> {
         use crate::actions::PriorState;
 
@@ -647,7 +712,7 @@ impl Store {
         {
             let sql = format!(
                 "SELECT id, flags, snoozed_until_ms FROM messages
-                 WHERE coalesce(thread_id, -id) = ?1 AND deleted_at_ms IS NULL{flag_filter}
+                 WHERE coalesce(thread_id, -id) = ?1 AND deleted_at_ms IS NULL{bare_filter}
                  ORDER BY id"
             );
             let mut stmt = self.conn.prepare(&sql)?;
@@ -680,7 +745,7 @@ impl Store {
             let sql = format!(
                 "SELECT mt.message_id, mt.tag_id FROM message_tags mt
                  JOIN messages m ON m.id = mt.message_id
-                 WHERE coalesce(m.thread_id, -m.id) = ?1 AND m.deleted_at_ms IS NULL{flag_filter}"
+                 WHERE coalesce(m.thread_id, -m.id) = ?1 AND m.deleted_at_ms IS NULL{aliased_filter}"
             );
             let mut stmt = self.conn.prepare(&sql)?;
             let rows = stmt.query_map(params![thread_id], |r| {
@@ -697,7 +762,7 @@ impl Store {
             let sql = format!(
                 "SELECT p.message_id, p.folder_id FROM placements p
                  JOIN messages m ON m.id = p.message_id
-                 WHERE coalesce(m.thread_id, -m.id) = ?1 AND m.deleted_at_ms IS NULL{flag_filter}"
+                 WHERE coalesce(m.thread_id, -m.id) = ?1 AND m.deleted_at_ms IS NULL{aliased_filter}"
             );
             let mut stmt = self.conn.prepare(&sql)?;
             let rows = stmt.query_map(params![thread_id], |r| {
@@ -719,7 +784,7 @@ impl Store {
                  JOIN folders f ON f.id = p.folder_id
                  JOIN messages m ON m.id = p.message_id
                  WHERE coalesce(m.thread_id, -m.id) = ?1 AND m.deleted_at_ms IS NULL
-                   AND p.uid IS NOT NULL{flag_filter}
+                   AND p.uid IS NOT NULL{aliased_filter}
                  ORDER BY p.message_id, (f.role = 'inbox') DESC"
             );
             let mut stmt = self.conn.prepare(&sql)?;
@@ -1149,8 +1214,14 @@ impl Store {
         labelled: &[(String, Vec<String>)],
     ) -> Result<usize> {
         // The label arrives quoted and how many backslashes survive is a detail
-        // of the parser, so match on the name rather than the escaping.
-        let has = |ls: &[String], name: &str| ls.iter().any(|l| l.ends_with(name));
+        // of the parser, so match on the name rather than the escaping — and
+        // on the whole name. A suffix match kept every message under a user
+        // label such as "Old Inbox" in the inbox after archiving, and starred
+        // anything under one ending in "Starred".
+        let has = |ls: &[String], name: &str| {
+            ls.iter()
+                .any(|l| l.trim_matches('"').trim_start_matches('\\') == name)
+        };
 
         let inbox = self.ensure_folder(account_id, "inbox", "INBOX")?;
         let archive = self.ensure_folder(account_id, "archive", "archive")?;

@@ -259,12 +259,26 @@ impl Store {
         // on a real 26,000-message inbox, which is affordable for a sort
         // somebody chose and would not be for every list open.
         let sql = match sort.key {
+            SortKey::Date if !sort.ascending => format!(
+                "SELECT {key}, date_ms FROM messages
+                 WHERE deleted_at_ms IS NULL AND account_id = {account} AND {inner}
+                 ORDER BY date_ms DESC, {key} DESC"
+            ),
             SortKey::Date => {
-                let dir = if sort.ascending { "ASC" } else { "DESC" };
+                // Ascending cannot stream. The first message met of a
+                // conversation is then its oldest, but a conversation's date —
+                // in the row, and so in the cursor — is its newest. Walking by
+                // the oldest put conversations before rows they should follow
+                // and left the cursor at a position the walk never reached, so
+                // pages skipped conversations. Grouped first, like sender and
+                // subject, at the same cost, for a sort somebody chose.
                 format!(
-                    "SELECT {key}, date_ms FROM messages
-                     WHERE deleted_at_ms IS NULL AND account_id = {account} AND {inner}
-                     ORDER BY date_ms {dir}, {key} {dir}"
+                    "SELECT n.k, n.d FROM (
+                       SELECT {key} AS k, max(date_ms) AS d FROM messages
+                        WHERE deleted_at_ms IS NULL AND account_id = {account} AND {inner}
+                        GROUP BY k
+                     ) n
+                     ORDER BY n.d ASC, n.k ASC"
                 )
             }
             SortKey::Sender | SortKey::Subject => {

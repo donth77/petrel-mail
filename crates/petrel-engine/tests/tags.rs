@@ -177,6 +177,49 @@ mod inbound_labels {
             "backslash-prefixed labels are Gmail's, not the user's"
         );
     }
+
+    /// A user label that merely ends in a system label's name is not that
+    /// label: "Old Inbox" is a place the user made, and a message filed
+    /// there is not in the inbox.
+    #[test]
+    fn a_label_ending_in_inbox_is_not_the_inbox() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("t.db")).unwrap();
+        let blobs = BlobStore::open(&dir.path().join("blobs")).unwrap();
+        let account = store.ensure_test_account().unwrap();
+        let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+        let m = store
+            .ingest_raw(&blobs, account, Some(inbox), Some(1), &fixture("m2@x"))
+            .unwrap();
+
+        store
+            .apply_gmail_labels(
+                account,
+                &[(
+                    "m2@x".to_string(),
+                    vec!["Old Inbox".to_string(), "Not Starred".to_string()],
+                )],
+            )
+            .unwrap();
+        let folders = store.folders_of(m.message_id).unwrap();
+        assert!(
+            !folders.contains(&inbox),
+            "archived: Old Inbox is not \\Inbox"
+        );
+        assert_eq!(
+            store.flags_of(m.message_id).unwrap() & petrel_engine::store::flags::FLAGGED,
+            0,
+            "Not Starred is not \\Starred"
+        );
+
+        store
+            .apply_gmail_labels(
+                account,
+                &[("m2@x".to_string(), vec!["\\Inbox".to_string()])],
+            )
+            .unwrap();
+        assert!(store.folders_of(m.message_id).unwrap().contains(&inbox));
+    }
 }
 
 /// The "Followup" story, start to finish.

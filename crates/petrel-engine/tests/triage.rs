@@ -997,3 +997,133 @@ fn a_flag_action_keeps_a_row_per_placement() {
         .count();
     assert_eq!(rows, 2);
 }
+
+/// Undo puts back the part of the snapshot the action changed, not the whole
+/// snapshot. Mark read, archive, undo the mark-read: unread again, and still
+/// archived. Restoring everything walked it back into the inbox, which a
+/// toast outliving the next action could do.
+#[test]
+fn undoing_an_earlier_action_leaves_a_later_one_alone() {
+    let (store, account, ids) = seeded();
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+    store.place_message(ids[0], inbox).unwrap();
+    let tid = thread_of(&store, ids[0]);
+
+    let read = store
+        .apply_thread_action(
+            account,
+            tid,
+            ActionKind::MarkRead,
+            None,
+            PlacementPolicy::Exclusive,
+        )
+        .unwrap();
+    let archived = store
+        .apply_thread_action(
+            account,
+            tid,
+            ActionKind::Archive,
+            None,
+            PlacementPolicy::Exclusive,
+        )
+        .unwrap();
+    assert!(store.undo_action(read.action_id).unwrap());
+    assert_eq!(
+        store.flags_of(ids[0]).unwrap() & flags::SEEN,
+        0,
+        "unread again"
+    );
+    assert!(
+        !store.folders_of(ids[0]).unwrap().contains(&inbox),
+        "and still archived"
+    );
+
+    // The other way round: a star set after the archive survives undoing it.
+    store
+        .apply_thread_action(
+            account,
+            tid,
+            ActionKind::Star,
+            None,
+            PlacementPolicy::Exclusive,
+        )
+        .unwrap();
+    assert!(store.undo_action(archived.action_id).unwrap());
+    assert!(
+        store.folders_of(ids[0]).unwrap().contains(&inbox),
+        "back in the inbox"
+    );
+    assert_ne!(
+        store.flags_of(ids[0]).unwrap() & flags::FLAGGED,
+        0,
+        "still starred"
+    );
+}
+
+/// Archiving a conversation takes it out of the inbox. It does not take your
+/// own reply out of Sent, or pull a message out of the bin.
+#[test]
+fn archiving_a_conversation_leaves_sent_and_binned_messages_where_they_are() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&dir.path().join("t.db")).unwrap();
+    let blobs = petrel_engine::blob::BlobStore::open(&dir.path().join("blobs")).unwrap();
+    let account = store.ensure_test_account().unwrap();
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+    let sent = store.ensure_folder(account, "sent", "Sent").unwrap();
+    let trash = store.ensure_folder(account, "trash", "Trash").unwrap();
+    let ids = ingest_reply_chain(&mut store, &blobs, account, inbox, 3);
+    // The middle message is your reply, filed in Sent; the last one was binned.
+    store.remove_placement(ids[1], account, "INBOX").unwrap();
+    store.place_message_at(ids[1], sent, 9).unwrap();
+    store.remove_placement(ids[2], account, "INBOX").unwrap();
+    store.place_message(ids[2], trash).unwrap();
+    let tid = thread_of(&store, ids[0]);
+
+    let r = store
+        .apply_thread_action(
+            account,
+            tid,
+            ActionKind::Archive,
+            None,
+            PlacementPolicy::Exclusive,
+        )
+        .unwrap();
+
+    assert_eq!(r.message_count, 1, "only the inbox message moved");
+    assert!(!store.folders_of(ids[0]).unwrap().contains(&inbox));
+    assert_eq!(
+        store.folders_of(ids[1]).unwrap(),
+        vec![sent],
+        "the reply stays in Sent"
+    );
+    assert_eq!(
+        store.folders_of(ids[2]).unwrap(),
+        vec![trash],
+        "the binned one stays binned"
+    );
+    let queued: Vec<_> = store
+        .pending_actions(account)
+        .unwrap()
+        .into_iter()
+        .filter(|p| p.action_id == r.action_id)
+        .map(|p| p.message_id)
+        .collect();
+    assert_eq!(
+        queued,
+        vec![ids[0]],
+        "and the server is asked about that one only"
+    );
+
+    // Trash is exclusive whatever the provider: it takes the reply too.
+    let t = store
+        .apply_thread_action(
+            account,
+            tid,
+            ActionKind::Trash,
+            None,
+            PlacementPolicy::Exclusive,
+        )
+        .unwrap();
+    assert_eq!(t.message_count, 3);
+    assert_eq!(store.folders_of(ids[1]).unwrap(), vec![trash]);
+}

@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use petrel_providers::imap::{
-    Credential, FolderPass, ImapConfig, PassOutcome, Security, sync_pass,
+    Credential, FolderPass, ImapConfig, PassOutcome, Security, move_uid, sync_pass,
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
@@ -20,6 +20,8 @@ struct Msg {
     uid: u32,
     flags: &'static str,
     raw: String,
+    /// Carries \Deleted, waiting for an expunge.
+    deleted: bool,
 }
 
 struct Folder {
@@ -38,6 +40,7 @@ struct ServerState {
 fn msg(uid: u32, subject: &str) -> Msg {
     Msg {
         uid,
+        deleted: false,
         flags: "\\Seen",
         raw: format!(
             "From: a@example.com\r\nTo: b@example.com\r\nSubject: {subject}\r\n\
@@ -169,6 +172,86 @@ async fn server(state: Arc<Mutex<ServerState>>) -> u16 {
                             }
                         }
                         out.extend(format!("{tag} OK fetched\r\n").bytes());
+                    } else if upper.contains(" UID COPY ") {
+                        // <tag> UID COPY <uid> <mailbox>
+                        let parts: Vec<&str> = line.split_whitespace().collect();
+                        let uid: u32 = parts.get(3).and_then(|u| u.parse().ok()).unwrap_or(0);
+                        let dest = unq(parts.get(4).copied().unwrap_or(""));
+                        let mut s = state.lock().unwrap();
+                        let copied = selected
+                            .as_ref()
+                            .and_then(|n| s.folders.get(n))
+                            .and_then(|f| f.messages.iter().find(|m| m.uid == uid).cloned());
+                        match (copied, s.folders.get_mut(&dest)) {
+                            (Some(mut m), Some(target)) => {
+                                m.uid =
+                                    target.messages.iter().map(|m| m.uid).max().unwrap_or(0) + 1;
+                                m.deleted = false;
+                                target.messages.push(m);
+                                out.extend(format!("{tag} OK copied\r\n").bytes());
+                            }
+                            _ => out.extend(
+                                format!("{tag} NO [TRYCREATE] no such mailbox\r\n").bytes(),
+                            ),
+                        }
+                    } else if upper.contains(" UID STORE ") {
+                        let uid: u32 = line
+                            .split_whitespace()
+                            .nth(3)
+                            .and_then(|u| u.parse().ok())
+                            .unwrap_or(0);
+                        let mut s = state.lock().unwrap();
+                        if let Some(f) = selected.as_ref().and_then(|n| s.folders.get_mut(n)) {
+                            for m in f.messages.iter_mut().filter(|m| m.uid == uid) {
+                                if upper.contains("\\DELETED") {
+                                    m.deleted = !upper.contains("-FLAGS");
+                                }
+                            }
+                        }
+                        out.extend(format!("{tag} OK stored\r\n").bytes());
+                    } else if upper.contains(" UID EXPUNGE ")
+                        || upper.trim_end().ends_with(" EXPUNGE")
+                    {
+                        let by_uid: Option<u32> = if upper.contains(" UID EXPUNGE ") {
+                            line.split_whitespace().nth(3).and_then(|u| u.parse().ok())
+                        } else {
+                            None
+                        };
+                        let mut s = state.lock().unwrap();
+                        if let Some(f) = selected.as_ref().and_then(|n| s.folders.get_mut(n)) {
+                            f.messages
+                                .retain(|m| !(m.deleted && by_uid.is_none_or(|u| u == m.uid)));
+                        }
+                        out.extend(format!("{tag} OK expunged\r\n").bytes());
+                    } else if upper.contains(" UID SEARCH ") {
+                        // HEADER Message-ID "<id>", answered from the raw text.
+                        let needle = line
+                            .split("Message-ID")
+                            .nth(1)
+                            .unwrap_or("")
+                            .trim()
+                            .trim_matches(|c| {
+                                c == '"' || c == '<' || c == '>' || c == '\r' || c == '\n'
+                            })
+                            .to_string();
+                        let s = state.lock().unwrap();
+                        let hits: Vec<String> = selected
+                            .as_ref()
+                            .and_then(|n| s.folders.get(n))
+                            .map(|f| {
+                                f.messages
+                                    .iter()
+                                    .filter(|m| {
+                                        !needle.is_empty()
+                                            && m.raw.contains(&format!("Message-ID: <{needle}>"))
+                                    })
+                                    .map(|m| m.uid.to_string())
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        out.extend(
+                            format!("* SEARCH {}\r\n{tag} OK searched\r\n", hits.join(" ")).bytes(),
+                        );
                     } else if upper.contains(" LOGOUT") {
                         out.extend(format!("* BYE\r\n{tag} OK bye\r\n").bytes());
                         let _ = tx.write_all(&out).await;
@@ -550,4 +633,97 @@ async fn keywords_already_on_a_message_arrive_with_its_first_fetch() {
         &vec![(1, vec!["$Work".to_string()])],
         "the tagged message reports its keyword; the untagged one reports nothing"
     );
+}
+
+fn two_folder_server(inbox: Vec<Msg>, archive: Vec<Msg>) -> Arc<Mutex<ServerState>> {
+    Arc::new(Mutex::new(ServerState {
+        folders: [
+            (
+                "INBOX".to_string(),
+                Folder {
+                    validity: 1,
+                    modseq: 1,
+                    messages: inbox,
+                },
+            ),
+            (
+                "Archive".to_string(),
+                Folder {
+                    validity: 2,
+                    modseq: 1,
+                    messages: archive,
+                },
+            ),
+        ]
+        .into(),
+        logins: AtomicUsize::new(0),
+        selects: AtomicUsize::new(0),
+        fetches: AtomicUsize::new(0),
+    }))
+}
+
+fn plain(port: u16) -> ImapConfig {
+    ImapConfig {
+        host: "127.0.0.1".into(),
+        port,
+        user: "u".into(),
+        credential: Credential::password("p"),
+        security: Security::InsecurePlaintext,
+    }
+}
+
+/// Without MOVE, a move is COPY, \Deleted and an expunge by UID. A retry
+/// after a COPY that landed does not copy again: the destination is asked
+/// for the Message-ID first.
+#[tokio::test]
+async fn a_move_without_move_does_not_copy_twice_on_retry() {
+    let state = two_folder_server(vec![msg(1, "a")], vec![]);
+    let port = server(Arc::clone(&state)).await;
+    let cfg = plain(port);
+
+    let expunged = move_uid(&cfg, "INBOX", 1, "Archive", false, true, Some("a@x"))
+        .await
+        .unwrap();
+    assert!(expunged);
+    {
+        let s = folders(&state);
+        assert_eq!(s.folders["Archive"].messages.len(), 1, "copied once");
+        assert!(s.folders["INBOX"].messages.is_empty(), "expunged by UID");
+    }
+
+    // The retry: the copy landed but the source is still there, as it would be
+    // had the STORE or the expunge failed the first time.
+    folders(&state)
+        .folders
+        .get_mut("INBOX")
+        .unwrap()
+        .messages
+        .push(msg(1, "a"));
+    let expunged = move_uid(&cfg, "INBOX", 1, "Archive", false, true, Some("a@x"))
+        .await
+        .unwrap();
+    assert!(expunged);
+    let s = folders(&state);
+    assert_eq!(s.folders["Archive"].messages.len(), 1, "not copied twice");
+    assert!(s.folders["INBOX"].messages.is_empty());
+}
+
+/// Without UIDPLUS the source copy is flagged and left, as expunge_uid leaves
+/// it: a bare EXPUNGE would commit other clients' pending deletions too.
+#[tokio::test]
+async fn without_uidplus_the_source_copy_is_flagged_and_left() {
+    let state = two_folder_server(vec![msg(1, "a"), msg(2, "b")], vec![]);
+    let port = server(Arc::clone(&state)).await;
+    let cfg = plain(port);
+
+    let expunged = move_uid(&cfg, "INBOX", 1, "Archive", false, false, None)
+        .await
+        .unwrap();
+    assert!(!expunged, "the caller is told");
+    let s = folders(&state);
+    assert_eq!(s.folders["Archive"].messages.len(), 1);
+    let inbox = &s.folders["INBOX"].messages;
+    assert_eq!(inbox.len(), 2, "nothing expunged");
+    assert!(inbox[0].deleted, "the moved one is flagged");
+    assert!(!inbox[1].deleted, "the other is untouched");
 }

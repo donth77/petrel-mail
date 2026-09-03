@@ -186,7 +186,6 @@ export function useTriage(opts: {
       if (kind === 'mark_read') heldUnread.current.delete(row.id);
 
       const removes = leavesView(kind, view);
-      const before = items;
       const atIndex = items.findIndex((m) => m.id === row.id);
 
       // The rail's tag number, moved with the row rather than a recount behind
@@ -287,9 +286,16 @@ export function useTriage(opts: {
         // diagnose afterwards. It goes to the log as well.
         void api.log(JSON.stringify({ kind: 'triage', stage: 'failed', k, error: String(err) }));
         // Put it back. A row that vanished and did not actually move is worse
-        // than one that never moved.
-        setItems(() => before);
-        setActiveId(row.id);
+        // than one that never moved. Only this row: restoring the whole list
+        // as it stood before the call used to bring back the siblings of a
+        // batch that had already succeeded, and drop any page merged since.
+        setItems((prev) => {
+          if (!removes) return prev.map((m) => (m.id === row.id ? row : m));
+          if (prev.some((m) => m.id === row.id)) return prev;
+          const at = Math.min(atIndex, prev.length);
+          return [...prev.slice(0, at), row, ...prev.slice(at)];
+        });
+        if (removes && row.id === activeId) setActiveId(row.id);
         onMessage(t('triage-failed', { error: String(err) }));
       } finally {
         setPending(false);

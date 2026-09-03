@@ -2178,26 +2178,60 @@ where
     Ok(())
 }
 
+/// Moves one message: by MOVE where the server has it, and by COPY, \Deleted
+/// and an expunge where it does not.
+///
+/// The fallback is where the care is. A retry after a COPY that landed and a
+/// STORE that did not used to COPY again, and the destination gained a second
+/// copy; given the Message-ID, the destination is asked first and a copy
+/// already there is not made twice. The expunge is by UID where UIDPLUS
+/// allows it: a bare EXPUNGE commits every other pending deletion in the
+/// mailbox, other clients' included. Without UIDPLUS the source copy is
+/// marked \Deleted and left for the server's next compaction, as
+/// `expunge_uid` does, and the caller is told so (`Ok(false)`).
 pub async fn move_uid(
     cfg: &ImapConfig,
     from: &str,
     uid: u32,
     to: &str,
     server_has_move: bool,
-) -> Result<()> {
+    server_has_uidplus: bool,
+    message_id: Option<&str>,
+) -> Result<bool> {
     match cfg.security {
         Security::Tls => {
             let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
-            move_uid_session(client, cfg, from, uid, to, server_has_move).await
+            move_uid_session(
+                client,
+                cfg,
+                from,
+                uid,
+                to,
+                server_has_move,
+                server_has_uidplus,
+                message_id,
+            )
+            .await
         }
         #[cfg(feature = "insecure-plaintext")]
         Security::InsecurePlaintext => {
             let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
-            move_uid_session(Client::new(tcp), cfg, from, uid, to, server_has_move).await
+            move_uid_session(
+                Client::new(tcp),
+                cfg,
+                from,
+                uid,
+                to,
+                server_has_move,
+                server_has_uidplus,
+                message_id,
+            )
+            .await
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn move_uid_session<S>(
     client: Client<S>,
     cfg: &ImapConfig,
@@ -2205,32 +2239,50 @@ async fn move_uid_session<S>(
     uid: u32,
     to: &str,
     server_has_move: bool,
-) -> Result<()>
+    server_has_uidplus: bool,
+    message_id: Option<&str>,
+) -> Result<bool>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
 {
     let mut session = sign_in(client, cfg).await?;
-    session.select(from).await?;
     if server_has_move {
+        session.select(from).await?;
         session.uid_mv(uid.to_string(), to).await?;
-    } else {
-        session.uid_copy(uid.to_string(), to).await?;
-        {
-            let mut updates = session
-                .uid_store(uid.to_string(), "+FLAGS.SILENT (\\Deleted)")
-                .await?;
-            while updates.next().await.is_some() {}
-        }
-        {
-            // The expunge stream is not Unpin, so it has to be pinned before it
-            // can be driven.
-            let expunged = session.expunge().await?;
-            futures::pin_mut!(expunged);
-            while expunged.next().await.is_some() {}
-        }
+        session.logout().await?;
+        return Ok(true);
     }
+    // A copy that already landed is not made again.
+    let already_there = match message_id {
+        Some(id) => {
+            session.select(to).await?;
+            let query = format!("HEADER Message-ID \"{}\"", id.replace('"', ""));
+            !session.uid_search(query).await?.is_empty()
+        }
+        None => false,
+    };
+    session.select(from).await?;
+    if !already_there {
+        session.uid_copy(uid.to_string(), to).await?;
+    }
+    {
+        let mut updates = session
+            .uid_store(uid.to_string(), "+FLAGS.SILENT (\\Deleted)")
+            .await?;
+        while updates.next().await.is_some() {}
+    }
+    let expunged = if server_has_uidplus {
+        // The expunge stream is not Unpin, so it has to be pinned before it
+        // can be driven.
+        let updates = session.uid_expunge(uid.to_string()).await?;
+        futures::pin_mut!(updates);
+        while updates.next().await.is_some() {}
+        true
+    } else {
+        false
+    };
     session.logout().await?;
-    Ok(())
+    Ok(expunged)
 }
 
 /// Searches a folder for a Message-ID. This is the evidence-gathering half of
