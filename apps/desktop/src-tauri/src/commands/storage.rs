@@ -73,11 +73,18 @@ pub(crate) const REMOVED_MARKER: &str = ".removed-";
 /// Moves the data directory out of the way, and says where it went.
 ///
 /// A rename rather than a delete, because on Windows a delete cannot work:
-/// SQLite opens its file without FILE_SHARE_DELETE, so as long as this
-/// process is alive the database cannot be removed — and the old code
-/// deleted the keychain entries first and then failed at the directory,
-/// leaving a mailbox that could no longer sign in to anything. A rename of
-/// the containing directory succeeds while the file inside it is open.
+/// SQLite opens its file without FILE_SHARE_DELETE, so as long as the
+/// database is open it cannot be removed — and the old code deleted the
+/// keychain entries first and then failed at the directory, leaving a
+/// mailbox that could no longer sign in to anything.
+///
+/// The caller must close the store first. Windows refuses to rename a
+/// directory that still holds an open file anywhere inside it, so this is
+/// not a way of moving a live mailbox: it is the step after the connection
+/// has gone. The retry below covers the seconds either side of that — the
+/// workers stop at their next await, and one of them writing a last line to
+/// sync.log holds a handle for a moment. On Unix none of this applies and
+/// the first attempt always wins.
 pub(crate) fn rename_aside(dir: &std::path::Path, stamp: i64) -> std::io::Result<PathBuf> {
     let name = dir
         .file_name()
@@ -92,8 +99,18 @@ pub(crate) fn rename_aside(dir: &std::path::Path, stamp: i64) -> std::io::Result
         target = parent.join(format!("{name}{REMOVED_MARKER}{stamp}-{n}"));
         n += 1;
     }
-    std::fs::rename(dir, &target)?;
-    Ok(target)
+    let mut last = None;
+    for attempt in 0..10 {
+        match std::fs::rename(dir, &target) {
+            Ok(()) => return Ok(target),
+            Err(e) => {
+                last = Some(e);
+                std::thread::sleep(std::time::Duration::from_millis(100 * (attempt + 1)));
+            }
+        }
+    }
+    Err(last
+        .unwrap_or_else(|| std::io::Error::other("the mail directory could not be moved aside")))
 }
 
 /// Deletes whatever an earlier removal renamed aside. Called at launch,
@@ -338,19 +355,25 @@ pub async fn export_mbox(
 mod removal_tests {
     use super::{purge_removed, rename_aside};
 
-    /// The order that makes removal work on Windows: the directory is moved
-    /// out of the way while the database inside it may still be open, and
-    /// the next launch deletes what was moved. A delete in its place fails
-    /// outright there — and used to fail *after* the passwords were gone.
+    /// The order that makes removal work on Windows: the store is closed,
+    /// the directory is moved out of the way, and the next launch deletes
+    /// what was moved. A delete in its place fails outright there — and used
+    /// to fail *after* the passwords were gone.
+    ///
+    /// The close comes first because it has to. Windows refuses to rename a
+    /// directory holding an open file anywhere inside it, which is why the
+    /// command replaces the connection with an in-memory store before it
+    /// gets here; the case below pins that the file is written and closed,
+    /// exactly as the real one is by then.
     #[test]
     fn the_directory_is_renamed_aside_and_deleted_on_the_next_launch() {
         let base = tempfile::tempdir().expect("tempdir");
         let data = base.path().join("Petrel");
         std::fs::create_dir_all(data.join("blobs")).unwrap();
-        // A file still open, as the store's would be.
+        // Written and closed, as the store's file is once the connection has
+        // been replaced.
         let db = data.join("petrel.db");
         std::fs::write(&db, b"pretend database").unwrap();
-        let held = std::fs::File::open(&db).unwrap();
 
         let moved = rename_aside(&data, 1_771_803_000_000).expect("renamed aside");
         assert!(!data.exists(), "the data directory is out of the way");
@@ -363,7 +386,6 @@ mod removal_tests {
                 .starts_with("Petrel.removed-"),
             "{moved:?}"
         );
-        drop(held);
 
         // A second removal before the first was cleaned up gets its own name.
         std::fs::create_dir_all(&data).unwrap();
