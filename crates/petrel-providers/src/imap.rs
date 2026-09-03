@@ -1152,36 +1152,57 @@ pub struct FolderPass {
     pub seed_window: u32,
 }
 
-/// Catch-up fetch after the first seed: a closed UID range, not `{uid}:*`.
-///
-/// The second value is the UIDNEXT to record. If the slice did not reach the
-/// server's UIDNEXT, it is one past the slice so the next cycle continues
-/// instead of treating the folder as quiet.
-pub fn catchup_uid_range(
-    since_uid: u32,
-    server_uid_next: Option<u32>,
-    chunk: u32,
-) -> (String, Option<u32>) {
+/// One slice of a catch-up fetch after the first seed: a closed UID range,
+/// never `{uid}:*`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatchupSlice {
+    /// The UIDs to fetch, or empty when nothing sits above the watermark.
+    pub range: String,
+    /// The highest UID the slice reaches; the next slice starts above it.
+    pub last: u32,
+    /// Whether the slice reaches the server's UIDNEXT. Never true without one.
+    pub covered: bool,
+    /// The UIDNEXT to record once the slice is in: the server's own when
+    /// covered, one past the slice otherwise, and nothing when the server gave
+    /// none — a watermark invented above mail that was never fetched would
+    /// skip that mail for good.
+    pub uid_next: Option<u32>,
+}
+
+/// How many UIDs one catch-up FETCH asks for.
+pub const CATCHUP_SLICE: u32 = 200;
+
+pub fn catchup_slice(since_uid: u32, server_uid_next: Option<u32>, chunk: u32) -> CatchupSlice {
     let start = since_uid.saturating_add(1);
     let chunk = chunk.max(1);
-    let cap_end = start.saturating_add(chunk.saturating_sub(1));
+    let cap_end = start.saturating_add(chunk - 1);
     let server_end = server_uid_next.map(|n| n.saturating_sub(1));
     if let Some(end) = server_end
         && start > end
     {
-        return (String::new(), server_uid_next);
+        return CatchupSlice {
+            range: String::new(),
+            last: since_uid,
+            covered: true,
+            uid_next: server_uid_next,
+        };
     }
     let last = match server_end {
         Some(end) => cap_end.min(end),
         None => cap_end,
     };
     let covered = server_end.is_some_and(|end| last >= end);
-    let reported = if covered {
-        server_uid_next
-    } else {
-        Some(last.saturating_add(1))
+    let uid_next = match server_end {
+        None => None,
+        Some(_) if covered => server_uid_next,
+        Some(_) => Some(last.saturating_add(1)),
     };
-    (format!("{start}:{last}"), reported)
+    CatchupSlice {
+        range: format!("{start}:{last}"),
+        last,
+        covered,
+        uid_next,
+    }
 }
 
 /// What one folder's slice found.
@@ -1356,26 +1377,46 @@ where
                 }
             } else {
                 // Not `{uid}:*`: a stale watermark plus that range is the
-                // rest of the mailbox as full bodies, and macOS keeps the
-                // RSS after the Vecs drop. A slice of 200, with uid_next
-                // reported only as far as the slice reached, lets the next
-                // cycle continue instead of skipping the rest.
-                let (range, reported_next) =
-                    catchup_uid_range(pass.since_uid, mailbox.uid_next.or(status.uid_next), 200);
-                catchup_uid_next = reported_next;
-                if !range.is_empty() {
-                    let mut fetches = session.uid_fetch(range, query).await?;
-                    while let Some(fetch) = fetches.next().await {
-                        let fetch = fetch?;
-                        let bits = flags_to_bits(fetch.flags());
-                        if let (Some(uid), Some(body)) = (fetch.uid, fetch.body()) {
-                            if uid <= pass.since_uid {
-                                continue;
+                // rest of the mailbox as full bodies in one FETCH, and macOS
+                // keeps the RSS after the Vecs drop. Slices of CATCHUP_SLICE
+                // instead, one FETCH each, and every slice in this pass until
+                // the server's UIDNEXT is reached — not one slice per cycle,
+                // or a week's mail would arrive two hundred at a time, oldest
+                // first, five minutes apart. Each message is handed on as it
+                // arrives, so a slice's memory is gone before the next.
+                let server_next = mailbox.uid_next.or(status.uid_next);
+                let mut since = pass.since_uid;
+                loop {
+                    let slice = catchup_slice(since, server_next, CATCHUP_SLICE);
+                    catchup_uid_next = slice.uid_next;
+                    if slice.range.is_empty() {
+                        break;
+                    }
+                    let mut got = 0usize;
+                    {
+                        let mut fetches = session.uid_fetch(slice.range.as_str(), query).await?;
+                        while let Some(fetch) = fetches.next().await {
+                            let fetch = fetch?;
+                            let bits = flags_to_bits(fetch.flags());
+                            if let (Some(uid), Some(body)) = (fetch.uid, fetch.body()) {
+                                if uid <= since {
+                                    continue;
+                                }
+                                on_message(index, uid, bits, body);
+                                fetched += 1;
+                                got += 1;
                             }
-                            on_message(index, uid, bits, body);
-                            fetched += 1;
                         }
                     }
+                    if slice.covered {
+                        break;
+                    }
+                    // With no UIDNEXT there is no end to aim at: the first
+                    // slice that brings nothing is the end.
+                    if server_next.is_none() && got == 0 {
+                        break;
+                    }
+                    since = slice.last;
                 }
             }
         }
@@ -2290,16 +2331,33 @@ mod tests {
     }
 
     #[test]
-    fn catchup_range_is_closed_and_partial_uidnext_lets_the_next_cycle_continue() {
-        let (range, next) = super::catchup_uid_range(100, Some(1000), 200);
-        assert_eq!(range, "101:300");
-        assert_eq!(next, Some(301));
-        let (range, next) = super::catchup_uid_range(800, Some(1000), 200);
-        assert_eq!(range, "801:999");
-        assert_eq!(next, Some(1000));
-        let (range, next) = super::catchup_uid_range(999, Some(1000), 200);
-        assert_eq!(range, "");
-        assert_eq!(next, Some(1000));
+    fn a_catchup_slice_is_closed_and_says_how_far_it_got() {
+        let s = super::catchup_slice(100, Some(1000), 200);
+        assert_eq!(
+            (s.range.as_str(), s.last, s.covered, s.uid_next),
+            ("101:300", 300, false, Some(301))
+        );
+        let s = super::catchup_slice(800, Some(1000), 200);
+        assert_eq!(
+            (s.range.as_str(), s.last, s.covered, s.uid_next),
+            ("801:999", 999, true, Some(1000))
+        );
+        let s = super::catchup_slice(999, Some(1000), 200);
+        assert_eq!(
+            (s.range.as_str(), s.covered, s.uid_next),
+            ("", true, Some(1000))
+        );
+    }
+
+    /// A server that gives no UIDNEXT gets no invented watermark: one past an
+    /// unfetched slice would have skipped everything under it for good.
+    #[test]
+    fn without_a_server_uidnext_no_watermark_is_claimed() {
+        let s = super::catchup_slice(100, None, 200);
+        assert_eq!(s.range, "101:300");
+        assert_eq!(s.last, 300);
+        assert!(!s.covered);
+        assert_eq!(s.uid_next, None);
     }
     use super::{capability_token, parse_capabilities};
 

@@ -25,6 +25,9 @@ PETREL_SPIKE_S2=1 cargo petrel            # webview isolation harness (hostile d
 PETREL_REAL_DB=/copy/of/petrel.db cargo test --release -p petrel-engine --test real_store -- --ignored --nocapture
                                           # every view's count against its listing, and every
                                           # view paged to its end, on a copy of a real store
+cargo test -p petrel-providers --features insecure-plaintext
+                                          # the scripted IMAP servers; plain cargo test never
+                                          # compiles them, which is how they went stale once
 ```
 
 The shell carries a permanent diagnostic init script: it reports the loaded URL, DOM state,

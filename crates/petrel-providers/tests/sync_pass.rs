@@ -243,6 +243,7 @@ async fn a_quiet_cycle_is_status_lines_on_one_connection() {
     let out = sync_pass(
         &cfg,
         &mk(&[(0, None, None), (0, None, None)]),
+        false,
         |i, uid, _f, _raw| {
             got.push((i, uid));
         },
@@ -271,6 +272,7 @@ async fn a_quiet_cycle_is_status_lines_on_one_connection() {
     let out = sync_pass(
         &cfg,
         &mk(&[(2, Some(1), Some(10)), (7, Some(2), Some(5))]),
+        false,
         |_, _, _, _| {
             panic!("a quiet cycle must fetch nothing");
         },
@@ -309,6 +311,7 @@ async fn a_quiet_cycle_is_status_lines_on_one_connection() {
     let out = sync_pass(
         &cfg,
         &mk(&[(2, Some(1), Some(10)), (7, Some(2), Some(5))]),
+        false,
         |i, uid, _f, _raw| {
             got.push((i, uid));
         },
@@ -327,6 +330,7 @@ async fn a_quiet_cycle_is_status_lines_on_one_connection() {
     let out = sync_pass(
         &cfg,
         &mk(&[(3, Some(1), Some(11)), (7, Some(2), Some(5))]),
+        false,
         |_, _, _, _| {
             panic!("flag reconciliation must not refetch bodies");
         },
@@ -349,6 +353,7 @@ async fn a_quiet_cycle_is_status_lines_on_one_connection() {
     let out = sync_pass(
         &cfg,
         &mk(&[(3, Some(1), Some(11)), (7, Some(2), Some(6))]),
+        false,
         |_, _, _, _| {
             panic!("a validity change must fetch nothing");
         },
@@ -420,4 +425,72 @@ async fn backfill_walks_history_in_strides_and_knows_when_it_is_done() {
     .await
     .expect("no-op");
     assert_eq!(n, 0);
+}
+
+/// A backlog is fetched in one pass, slice by slice. A week away must not
+/// mean a week's mail arriving two hundred at a time, oldest first, five
+/// minutes apart — and the watermark must end at the server's own UIDNEXT.
+#[tokio::test]
+async fn a_backlog_is_walked_in_one_pass_slice_by_slice() {
+    let state = Arc::new(Mutex::new(ServerState {
+        folders: [(
+            "INBOX".to_string(),
+            Folder {
+                validity: 1,
+                modseq: 10,
+                messages: (1..=450).map(|u| msg(u, &format!("m{u}"))).collect(),
+            },
+        )]
+        .into(),
+        logins: AtomicUsize::new(0),
+        selects: AtomicUsize::new(0),
+        fetches: AtomicUsize::new(0),
+    }));
+    let port = server(Arc::clone(&state)).await;
+    let cfg = ImapConfig {
+        host: "127.0.0.1".into(),
+        port,
+        user: "u".into(),
+        credential: Credential::password("p"),
+        security: Security::InsecurePlaintext,
+    };
+    let passes = vec![FolderPass {
+        path: "INBOX".into(),
+        since_uid: 10,
+        expected_validity: Some(1),
+        since_uidnext: Some(11),
+        since_modseq: Some(10),
+        seed_window: 200,
+    }];
+    let mut got = Vec::new();
+    let out = sync_pass(&cfg, &passes, false, |_i, uid, _f, _raw| got.push(uid))
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            out[0],
+            PassOutcome::Fetched {
+                fetched: 440,
+                uid_next: Some(451),
+                ..
+            }
+        ),
+        "{out:?}"
+    );
+    assert_eq!(got.len(), 440);
+    assert_eq!(
+        (got[0], got[439]),
+        (11, 450),
+        "oldest first, nothing skipped"
+    );
+    assert_eq!(
+        folders(&state).fetches.load(Ordering::Relaxed),
+        3,
+        "three slices of two hundred, one FETCH each"
+    );
+    assert_eq!(
+        folders(&state).logins.load(Ordering::Relaxed),
+        1,
+        "one connection"
+    );
 }
