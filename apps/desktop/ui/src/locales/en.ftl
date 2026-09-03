@@ -692,6 +692,7 @@ palette-more = { $count ->
 triage-failed = Could not do that: { $error }
 undo-done = Undone
 undo-too-late = Too late to undo. That already went to the server.
+triage-many = { $what } · { $count } conversations
 undo = Undo
 account-switched = Switched to { $email }
 account-none-at = No account at { $n }

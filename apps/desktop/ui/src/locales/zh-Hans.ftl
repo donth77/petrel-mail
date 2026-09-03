@@ -651,6 +651,7 @@ palette-more = 另有 { $count } 条结果
 triage-failed = 无法执行：{ $error }
 undo-done = 已撤销
 undo-too-late = 来不及撤销了。那个已经发到服务器上了。
+triage-many = { $what } · { $count } 个会话
 undo = 撤销
 account-switched = 已切换到 { $email }
 account-none-at = 第 { $n } 个位置没有账户

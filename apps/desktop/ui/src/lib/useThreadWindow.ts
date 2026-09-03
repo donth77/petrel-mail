@@ -179,10 +179,15 @@ export function useThreadWindow(args: {
     if (prev === undefined || messageCount === prev) return;
 
     let live = true;
+    // The answer belongs to the view and sort asked for. A page for the
+    // inbox that arrived after a click on Sent used to be merged into Sent,
+    // and a short one replaced it outright.
+    const askedView = viewRef.current;
+    const askedSort = sortRef.current;
     fetchersRef.current
-      .threads(...firstPageCall(viewRef.current, sortRef.current))
+      .threads(...firstPageCall(askedView, askedSort))
       .then((rows) => {
-        if (!live) return;
+        if (!live || viewRef.current !== askedView || sortRef.current !== askedSort) return;
         const wasEmpty = itemsRef.current.length === 0;
         const sort = sortRef.current;
         setItems((cur) =>
@@ -211,10 +216,12 @@ export function useThreadWindow(args: {
     if (!last) return;
 
     loadMoreInFlight.current = true;
-    const wire = wireSort(sortRef.current);
+    const askedView = viewRef.current;
+    const askedSort = sortRef.current;
+    const wire = wireSort(askedSort);
     fetchersRef.current
       .threads(
-        viewRef.current,
+        askedView,
         0,
         LIST_PAGE,
         wire.key,
@@ -223,6 +230,9 @@ export function useThreadWindow(args: {
         last.thread_id,
       )
       .then((rows) => {
+        // Same rule as the head merge: a page for a view since left is not
+        // appended to whatever is showing now.
+        if (viewRef.current !== askedView || sortRef.current !== askedSort) return;
         const { items: next, reachedEnd } = appendPage(itemsRef.current, rows);
         setItems(next);
         if (reachedEnd) setHasMore(false);

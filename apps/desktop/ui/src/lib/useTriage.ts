@@ -56,6 +56,9 @@ export type UndoOffer = {
   tagDelta?: { tagId: number; delta: number };
   /** The same, for the mailbox numbers. */
   viewDelta?: Record<string, number>;
+  /** The other rows of a batch. One toast, one Z, all of them back: undo
+   *  used to reach the last row only, and the rest stayed archived. */
+  more?: UndoOffer[];
 };
 
 /**
@@ -140,6 +143,9 @@ export function useTriage(opts: {
   // mark it read again — flagging something to come back to is the entire
   // point, and undoing that on the way out is worse than never offering it.
   const heldUnread = useRef<Set<number>>(new Set());
+  // While a batch runs, each row's undo offer is collected here instead of
+  // becoming the toast, so the batch can offer them all at once.
+  const collecting = useRef<UndoOffer[] | null>(null);
 
   const run = useCallback(
     async (kind: ActionKind, threadId?: number, targetId?: number, quiet = false) => {
@@ -237,7 +243,7 @@ export function useTriage(opts: {
         // Reading is not a gesture you undo, and a toast for every conversation
         // you glance at would bury the ones that matter.
         if (quiet) return;
-        lastUndo.current = {
+        const offer: UndoOffer = {
           actionId: receipt.action_id,
           description: receipt.description,
           row,
@@ -247,7 +253,12 @@ export function useTriage(opts: {
           tagDelta: bump ?? undefined,
           viewDelta: movedAny ? moved : undefined,
         };
-        onMessage(receipt.description, lastUndo.current);
+        if (collecting.current) {
+          collecting.current.push(offer);
+        } else {
+          lastUndo.current = offer;
+          onMessage(receipt.description, offer);
+        }
       } catch (err) {
         if (bump) onTagCount?.(bump.tagId, -bump.delta);
         if (movedAny) onViewCount?.(negated(moved));
@@ -286,30 +297,63 @@ export function useTriage(opts: {
     ],
   );
 
+  /** The same action over several conversations, offered as one undo. */
+  const runMany = useCallback(
+    async (kind: ActionKind, ids: number[], targetId?: number) => {
+      if (ids.length <= 1) {
+        for (const id of ids) await run(kind, id, targetId);
+        return;
+      }
+      const offers: UndoOffer[] = [];
+      collecting.current = offers;
+      try {
+        for (const id of ids) await run(kind, id, targetId);
+      } finally {
+        collecting.current = null;
+      }
+      const [first, ...rest] = offers;
+      if (!first) return;
+      const offer: UndoOffer = { ...first, more: rest };
+      lastUndo.current = offer;
+      onMessage(
+        t('triage-many', { what: first.description, count: String(offers.length) }),
+        offer,
+      );
+    },
+    [run, onMessage],
+  );
+
   const undo = useCallback(
     async (offer?: UndoOffer) => {
       const target = offer ?? lastUndo.current;
       if (!target) return false;
-      const ok = await api.undoTriage(target.actionId).catch(() => false);
       lastUndo.current = null;
-      if (ok) {
+      // Lowest index first, so each row lands where it sat and the ones
+      // after it are still counted from the same start.
+      const all = [target, ...(target.more ?? [])].sort((a, b) => a.atIndex - b.atIndex);
+      let undone = 0;
+      for (const one of all) {
+        const ok = await api.undoTriage(one.actionId).catch(() => false);
+        if (!ok) continue;
+        undone += 1;
         // Put the row back where it was, rather than refetching the list. A
         // refetch would scroll you somewhere else and lose whatever you had
         // selected — which defeats the point of an undo you reach for in a
         // hurry. Splice by index, not by appending: the row belongs where it
         // was, and rows either side of it may have moved on since.
         setItems((prev) => {
-          if (!target.removed) {
-            return prev.map((m) => (m.id === target.row.id ? target.row : m));
+          if (!one.removed) {
+            return prev.map((m) => (m.id === one.row.id ? one.row : m));
           }
-          if (prev.some((m) => m.id === target.row.id)) return prev;
-          const at = Math.min(target.atIndex, prev.length);
-          return [...prev.slice(0, at), target.row, ...prev.slice(at)];
+          if (prev.some((m) => m.id === one.row.id)) return prev;
+          const at = Math.min(one.atIndex, prev.length);
+          return [...prev.slice(0, at), one.row, ...prev.slice(at)];
         });
-        if (target.removed && target.wasActive) setActiveId(target.row.id);
-        if (target.tagDelta) onTagCount?.(target.tagDelta.tagId, -target.tagDelta.delta);
-        if (target.viewDelta) onViewCount?.(negated(target.viewDelta));
+        if (one.removed && one.wasActive) setActiveId(one.row.id);
+        if (one.tagDelta) onTagCount?.(one.tagDelta.tagId, -one.tagDelta.delta);
+        if (one.viewDelta) onViewCount?.(negated(one.viewDelta));
       }
+      const ok = undone === all.length;
       onMessage(ok ? t('undo-done') : t('undo-too-late'));
       onSettled?.();
       return ok;
@@ -326,6 +370,7 @@ export function useTriage(opts: {
 
   return {
     run,
+    runMany,
     undo,
     toggleStar,
     pending,

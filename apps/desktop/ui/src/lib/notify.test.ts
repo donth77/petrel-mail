@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULTS, type Settings } from './settings';
-import { notifiable, shouldNotify } from './notify';
+import { notifiable, shouldNotify, arrivalsSince } from './notify';
 import type { Thread } from './api';
 
 /**
@@ -85,3 +85,21 @@ describe('what counts as an arrival', () => {
     expect(notifiable(settings(), [], NOW)).toHaveLength(0);
   });
 });
+
+describe('arrivalsSince', () => {
+  const row = (id: number, date_ms: number) =>
+    ({ id, thread_id: id, date_ms, unread: true }) as unknown as Parameters<typeof arrivalsSince>[0][number];
+
+  it('announces only what is newer than anything announced before', () => {
+    const announced = new Set([1, 2]);
+    const items = [row(3, 5000), row(1, 4000), row(2, 3000), row(9, 100)];
+    expect(arrivalsSince(items, announced, 4000).map((m: { id: number }) => m.id)).toEqual([3]);
+  });
+
+  it('is quiet for a page of older conversations', () => {
+    const announced = new Set([1, 2]);
+    const older = [row(1, 4000), row(2, 3000), row(7, 2000), row(8, 1000)];
+    expect(arrivalsSince(older, announced, 4000)).toEqual([]);
+  });
+});
+

@@ -33,8 +33,14 @@
   // indexes. The scroll probe needs a list taller than the window — otherwise
   // every row mounts and the clip CSS cannot fail.
   var ROW_N = /[?&]probe=scroll(?:&|$)/.test(String(location.search)) ? 400 : 40;
-  // The last triage, so undo_triage can reverse it. See triage below.
-  var lastTriage = null;
+  // Every triage by its action id, so undo_triage can reverse any of them —
+  // a batch undoes several. See triage below.
+  var triageHistory = {};
+  var nextActionId = 900;
+  // Draft rows handed out by save_draft: a new draft gets its own id, an
+  // update keeps the one it was given, so a proof can tell "updated the same
+  // draft" from "made another".
+  var nextDraftId = 1;
   // ?probe=thread: a five-hundred-message conversation as a slim index, so
   // the reader iframe cap can be exercised without a store.
   var THREAD_PROBE = /[?&]probe=thread(?:=|&|$)/.test(String(location.search));
@@ -753,7 +759,8 @@
         // Remembered for undo_triage, which puts the row back the way the
         // engine restores prior state. Without it the recount after an undo
         // reported the action's state, and the badge proof could not close.
-        lastTriage = {
+        nextActionId += 1;
+        triageHistory[nextActionId] = {
           row: row,
           before: Object.assign({}, row, { tags: row.tags.slice() }),
           at: rows.indexOf(row),
@@ -795,16 +802,16 @@
         delete_forever: 'Deleted',
       };
       return {
-        action_id: window.__PETREL_IPC__.length,
+        action_id: nextActionId,
         kind: a.kind,
         message_count: 1,
         description: past[a.kind] || a.kind,
       };
     },
-    undo_triage: function () {
-      if (!lastTriage) return false;
-      var u = lastTriage;
-      lastTriage = null;
+    undo_triage: function (a) {
+      var u = triageHistory[a.actionId];
+      if (!u) return false;
+      delete triageHistory[a.actionId];
       if (rows.indexOf(u.row) < 0) rows.splice(Math.min(u.at, rows.length), 0, u.row);
       Object.assign(u.row, u.before);
       return true;
@@ -1010,7 +1017,11 @@
       // No second window in a browser; recording the call is the assertion.
       return null;
     },
-    save_draft: function () { return 1; },
+    save_draft: function (a) {
+      if (a && a.draftId != null) return a.draftId;
+      nextDraftId += 1;
+      return nextDraftId;
+    },
     delete_draft: function () { return null; },
     create_tag: function (a) {
       var id = 300 + tags.length;

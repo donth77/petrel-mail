@@ -649,6 +649,7 @@ export const STRING_IDS = [
   'triage-failed',
   'undo-done',
   'undo-too-late',
+  'triage-many',
   'undo',
   'account-switched',
   'account-none-at',

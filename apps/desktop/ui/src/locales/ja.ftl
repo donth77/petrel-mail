@@ -651,6 +651,7 @@ palette-more = 他 { $count } 件の結果
 triage-failed = 実行できませんでした: { $error }
 undo-done = 取り消しました
 undo-too-late = 取り消すには遅すぎます。すでにサーバーに送られました。
+triage-many = { $what } · { $count } 件のスレッド
 undo = 取り消す
 account-switched = { $email } に切り替えました
 account-none-at = { $n } 番のアカウントはありません

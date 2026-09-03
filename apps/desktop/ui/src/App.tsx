@@ -25,6 +25,8 @@ import { Picker, type PickerOption } from './components/Picker';
 import { Compose, addresses, type Draft } from './components/Compose';
 import { snoozeOptions } from './lib/snooze';
 import { promisesMissingAttachment } from './lib/compose-checks';
+import { AUTOSAVE_MS, draftSignature, slotFor, unsaved } from './lib/draft-autosave';
+import type { ComposerSlot } from './lib/draft-autosave';
 import { opensComposer } from './lib/draft-view';
 import { draftFromRecord } from './lib/draft-record';
 import { replyTargets } from './lib/reply';
@@ -50,7 +52,7 @@ import { DragPreview } from './components/DragPreview';
 import { startingBody, startingHtml } from './lib/signature';
 import { ATTACHMENT_LIMIT, pickAttachments, stageDropped } from './lib/attachments';
 import { extend, prune, targets, toggle } from './lib/selection';
-import { notifiable, postDesktopNotification, shouldNotify } from './lib/notify';
+import { arrivalsSince, notifiable, postDesktopNotification, shouldNotify } from './lib/notify';
 import { Help } from './components/Help';
 import { Settings } from './components/Settings';
 import { RAIL_COLLAPSED, clampList, clampRail, useSettings } from './lib/settings';
@@ -175,6 +177,21 @@ export function App() {
   // The picker awaits, so the draft may have moved on by the time it returns.
   const draftRef = useRef<Draft | null>(null);
   draftRef.current = draft;
+  // The composer's save bookkeeping. Each message the composer holds gets a
+  // slot: the row it lives in once any save has landed, and what that row
+  // holds, so an autosave can tell an edit from a save that only stamped the
+  // id. A save keeps the slot of the message it was given rather than reading
+  // the composer's when it runs: a save queued behind an in-flight autosave
+  // would otherwise pick up the row id of a draft opened since, and write the
+  // old text over it. `saveChain` runs saves one after another, so a close or
+  // a send that lands while an autosave is in flight updates the same row
+  // instead of creating a second draft. `saveDraftRef` lets the composer
+  // opener, declared earlier, reach the save routine declared later.
+  const slotRef = useRef<ComposerSlot>({ id: null, signature: null });
+  const saveChain = useRef<Promise<number | null>>(Promise.resolve(null));
+  const saveDraftRef = useRef<(d: Draft, opts?: { quiet?: boolean }) => Promise<number | null>>(
+    async () => null,
+  );
   // A message waiting out its undo window. It is held here, in the window, and
   // has not touched the network — which is the whole reason undo can cancel it
   // rather than chase it.
@@ -365,8 +382,23 @@ export function App() {
    *  forgot to clear the attachment warning, so a composer opened from there
    *  had used up its one warning before it began. */
   const openComposer = useCallback((d: Draft) => {
+    // Whatever is in the composer now is saved before it is replaced, and
+    // pushed, as a close would: opening another message used to drop it.
+    const current = draftRef.current;
+    if (current && unsaved(current, slotRef.current)) {
+      void saveDraftRef
+        .current(current, { quiet: true })
+        .then((id) => {
+          if (id != null) void api.pushDraft(id).catch(() => {});
+        })
+        .catch(() => {});
+    }
     attachmentWarned.current = false;
     setComposeGen((n) => n + 1);
+    // The new message's own slot. A draft from the store matches its stored
+    // copy; a fresh message matches what it starts with, so nothing is
+    // written until something is typed.
+    slotRef.current = slotFor(d);
     setDraft(d);
   }, []);
 
@@ -442,7 +474,7 @@ export function App() {
         askDelete(ids);
         return;
       }
-      ids.forEach((id) => void triage.run(kind, id));
+      void triage.runMany(kind, ids);
       if (selected.size > 0) setSelected(new Set());
     },
     toggleStar: () => triage.toggleStar(),
@@ -630,10 +662,12 @@ export function App() {
   /**
    * Conversations dropped on a rail destination.
    *
-   * Routed through the same `triage.run` the keys and menus use, so a drag can
-   * never come to mean something slightly different from the shortcut for the
-   * same thing — and so undo, the toast and the optimistic list update all come
-   * along without being reimplemented for the pointer.
+   * Routed through the same `triage.runMany` the keys and menus use, so a drag
+   * can never come to mean something slightly different from the shortcut for
+   * the same thing — and so undo, the toast and the optimistic list update all
+   * come along without being reimplemented for the pointer. One call for the
+   * whole drop: dragging five conversations onto a folder is one thing done,
+   * with one toast and one undo, not five of each.
    */
   const dropOnRail = (railKey: string, ids: number[]) => {
     const meaning = dropMeaning(railKey);
@@ -642,20 +676,20 @@ export function App() {
     if (meaning.kind === 'tag') {
       const tag = tags.find((x) => x.name === meaning.tag);
       if (!tag) return;
-      ids.forEach((id) => void triage.run('tag', id, tag.id));
+      void triage.runMany('tag', ids, tag.id);
     } else if (meaning.kind === 'move') {
       const folder = folders.find((f) => f.role === meaning.role);
       if (!folder) return;
-      ids.forEach((id) => void triage.run('move', id, folder.id));
+      void triage.runMany('move', ids, folder.id);
     } else if (meaning.kind === 'move-folder') {
-      ids.forEach((id) => void triage.run('move', id, meaning.folderId));
+      void triage.runMany('move', ids, meaning.folderId);
     } else if (meaning.kind === 'trash' && view === 'trash') {
       // Trash is where deletion becomes permanent, and permanent is asked
       // about rather than dragged into.
       askDelete(ids);
       return;
     } else {
-      ids.forEach((id) => void triage.run(meaning.kind, id));
+      void triage.runMany(meaning.kind, ids);
     }
     if (selected.size > 0) setSelected(new Set());
   };
@@ -870,19 +904,54 @@ export function App() {
    * Saves the composer's contents, and remembers the id so saving again
    * updates the same draft rather than leaving a trail of near-identical ones.
    */
-  const saveDraft = async (d: Draft) => {
-    try {
-      const id = await api.saveDraft(d.savedId ?? null, d.to, d.subject, d.body, d.html, envelopeOf(d));
-      setDraft((cur) => (cur ? { ...cur, savedId: id } : cur));
-      setToast(t('compose-saved'));
-      // The Drafts view is a query, so it only changes when the list reloads.
-      if (view === 'drafts') api.threads(view, 0, LIST_PAGE).then(setItems).catch(() => {});
-      return id;
-    } catch (e) {
-      setToast(t('compose-save-failed', { error: String(e) }));
-      return null;
-    }
+  const saveDraft = (d: Draft, opts: { quiet?: boolean } = {}): Promise<number | null> => {
+    const signature = draftSignature(d);
+    // The slot of the message being saved, taken now: by the time this save
+    // runs, the composer may hold another message with a row of its own.
+    const slot = slotRef.current;
+    const run = saveChain.current.then(async () => {
+      // The latest known row for this message, whichever save learned it:
+      // the draft object in hand may predate an autosave that just landed.
+      const known = slot.id ?? d.savedId ?? null;
+      try {
+        const id = await api.saveDraft(known, d.to, d.subject, d.body, d.html, envelopeOf(d));
+        slot.id = id;
+        slot.signature = signature;
+        if (slotRef.current === slot) {
+          setDraft((cur) => (cur ? { ...cur, savedId: id } : cur));
+        }
+        if (!opts.quiet) {
+          setToast(t('compose-saved'));
+          // The Drafts view is a query, so it only changes when the list reloads.
+          if (view === 'drafts') api.threads(view, 0, LIST_PAGE).then(setItems).catch(() => {});
+        }
+        return id;
+      } catch (e) {
+        if (!opts.quiet) setToast(t('compose-save-failed', { error: String(e) }));
+        throw e;
+      }
+    });
+    // The chain must not stay rejected, or every later save would skip.
+    saveChain.current = run.catch(() => null);
+    return run;
   };
+  saveDraftRef.current = saveDraft;
+
+  // Drafts save as they are typed: a pause of AUTOSAVE_MS after the last
+  // change writes the draft, quietly. The signature check means a save that
+  // only stamped the row's id does not start another, and closing or
+  // sending clears the timer through the cleanup.
+  useEffect(() => {
+    if (!draft) {
+      slotRef.current = { id: null, signature: null };
+      return;
+    }
+    if (!unsaved(draft, slotRef.current)) return;
+    const timer = window.setTimeout(() => {
+      void saveDraftRef.current(draft, { quiet: true }).catch(() => {});
+    }, AUTOSAVE_MS);
+    return () => window.clearTimeout(timer);
+  }, [draft]);
 
   /**
    * Attaches files the user picks.
@@ -1101,6 +1170,15 @@ export function App() {
   // are archived would announce the same message twice, and comparing counts
   // cannot tell "two arrived" from "one arrived and one left".
   const announced = useRef<Set<number> | null>(null);
+  // The newest date announced so far. Rows older than this are the past —
+  // a page scrolled into the window, not mail arriving.
+  const newestAnnounced = useRef(0);
+  // Another account is another mailbox: its first list is what it already
+  // held, so it seeds silently like a first launch.
+  useEffect(() => {
+    announced.current = null;
+    newestAnnounced.current = 0;
+  }, [accountEpoch]);
   useEffect(() => {
     if (view !== 'inbox' || query) return;
     // The first list is the mailbox as it already was, not an arrival. Seeding
@@ -1108,11 +1186,13 @@ export function App() {
     if (announced.current === null) {
       if (items.length > 0 || !status?.seeding) {
         announced.current = new Set(items.map((m) => m.id));
+        newestAnnounced.current = items.reduce((n, m) => Math.max(n, m.date_ms), 0);
       }
       return;
     }
-    const fresh = items.filter((m) => !announced.current!.has(m.id));
+    const fresh = arrivalsSince(items, announced.current, newestAnnounced.current);
     items.forEach((m) => announced.current!.add(m.id));
+    newestAnnounced.current = items.reduce((n, m) => Math.max(n, m.date_ms), newestAnnounced.current);
     if (fresh.length === 0) return;
 
     const worth = notifiable(settings, fresh, Date.now());
@@ -2014,22 +2094,20 @@ export function App() {
           onClose={() => {
             // Keeping it, not discarding it. Losing what someone wrote because
             // they hit the wrong corner is unforgivable, and a confirmation on
-            // every close is worse than simply keeping the message.
-            // CC and attachments count as content too. They did not, and a
-            // draft that was only a CC line or only an attached file was
-            // dropped on close without a word — the exact loss the comment
-            // above is about.
-            if (
-              draft.to ||
-              draft.cc ||
-              draft.subject ||
-              draft.body.trim() ||
-              (draft.attachments?.length ?? 0) > 0
-            )
-              void saveDraft(draft).then((id) => {
-                // Closing must not wait out the 30-second debounce.
-                if (id != null) void api.pushDraft(id).catch(() => {});
-              });
+            // every close is worse than simply keeping the message. What has
+            // not been written yet is written now; what an autosave already
+            // wrote only needs its server copy, which must not wait out the
+            // 30-second debounce.
+            const slot = slotRef.current;
+            if (unsaved(draft, slot)) {
+              void saveDraft(draft)
+                .then((id) => {
+                  if (id != null) void api.pushDraft(id).catch(() => {});
+                })
+                .catch(() => {});
+            } else if (slot.id != null) {
+              void api.pushDraft(slot.id).catch(() => {});
+            }
             setDraft(null);
           }}
           onAttach={() => void attach()}
@@ -2043,7 +2121,7 @@ export function App() {
             // the same message.
             const d = draft;
             void saveDraft(d)
-              .then(() => api.popoutCompose(draftRef.current?.savedId ?? d.savedId ?? 0))
+              .then((id) => api.popoutCompose(id ?? 0))
               .then(() => setDraft(null))
               .catch((e) => setToast(t('compose-popout-failed', { error: String(e) })));
           }}
@@ -2075,9 +2153,13 @@ export function App() {
             const wait = Number(settings.undoSendSeconds) || 0;
             const d = draft;
             setDraft(null);
-            void api
-              .saveDraft(d.savedId ?? null, d.to, d.subject, d.body, d.html, envelopeOf(d))
-              .then((id) => api.scheduleSend(id, Date.now() + wait * 1000).then(() => id))
+            // Through the same chain as every other save, so an autosave
+            // still in flight updates this row rather than a twin of it.
+            void saveDraft(d, { quiet: true })
+              .then((id) => {
+                if (id == null) throw new Error('no draft row');
+                return api.scheduleSend(id, Date.now() + wait * 1000).then(() => id);
+              })
               .then((id) => setOutgoing({ id, subject: d.subject, left: wait }))
               .catch((e) => {
                 // Could not even queue it: the draft comes back. Losing what
@@ -2106,9 +2188,13 @@ export function App() {
             const d = draftRef.current;
             setPicker(null);
             if (!d) return;
-            void api
-              .saveDraft(d.savedId ?? null, d.to, d.subject, d.body, d.html, envelopeOf(d))
-              .then((saved) => api.scheduleSend(saved, id))
+            // Through the save chain, so an autosave still in flight updates
+            // this row rather than leaving a twin of it behind in Drafts.
+            void saveDraft(d, { quiet: true })
+              .then((saved) => {
+                if (saved == null) throw new Error('no draft row');
+                return api.scheduleSend(saved, id);
+              })
               .then(() => {
                 setDraft(null);
                 setToast(t('compose-scheduled', { when: new Date(id).toLocaleString() }));

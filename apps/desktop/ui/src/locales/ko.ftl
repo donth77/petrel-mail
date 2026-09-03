@@ -686,6 +686,7 @@ palette-more = 결과 { $count }개 더
 triage-failed = 할 수 없습니다: { $error }
 undo-done = 실행 취소됨
 undo-too-late = 실행을 취소하기에 늦었습니다. 이미 서버로 갔습니다.
+triage-many = { $what } · 대화 { $count }개
 undo = 실행 취소
 account-switched = { $email }(으)로 전환했습니다
 account-none-at = { $n }번에 계정이 없습니다

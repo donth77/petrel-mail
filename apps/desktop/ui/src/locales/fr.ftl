@@ -690,6 +690,7 @@ palette-more = { $count ->
 triage-failed = Impossible de faire cela : { $error }
 undo-done = Annulé
 undo-too-late = Trop tard pour annuler. C’est déjà parti au serveur.
+triage-many = { $what } · { $count } conversations
 undo = Annuler
 account-switched = Basculé sur { $email }
 account-none-at = Aucun compte en { $n }

@@ -690,6 +690,7 @@ palette-more = { $count ->
 triage-failed = Das war nicht möglich: { $error }
 undo-done = Widerrufen
 undo-too-late = Zu spät zum Widerrufen. Das ist bereits an den Server gegangen.
+triage-many = { $what } · { $count } Konversationen
 undo = Widerrufen
 account-switched = Zu { $email } gewechselt
 account-none-at = Kein Konto auf { $n }

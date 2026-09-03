@@ -25,6 +25,14 @@ export function shouldNotify(settings: Settings, now: number): boolean {
   return now >= until;
 }
 
+/** The rows that are new since the last look: not announced before, and no
+ *  older than the newest thing announced so far. A page of older
+ *  conversations scrolled into the window is the past, and without the
+ *  second test it was announced as new mail. */
+export function arrivalsSince(items: Thread[], announced: ReadonlySet<number>, floor: number): Thread[] {
+  return items.filter((m) => !announced.has(m.id) && m.date_ms >= floor);
+}
+
 /** The conversations from a batch that earn an interruption. */
 export function notifiable(settings: Settings, arrivals: Thread[], now: number): Thread[] {
   if (!shouldNotify(settings, now)) return [];

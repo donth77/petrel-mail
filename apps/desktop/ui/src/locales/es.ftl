@@ -711,6 +711,7 @@ palette-more = { $count ->
 triage-failed = No se pudo hacer eso: { $error }
 undo-done = Deshecho
 undo-too-late = Demasiado tarde para deshacerlo. Eso ya fue al servidor.
+triage-many = { $what } · { $count } conversaciones
 undo = Deshacer
 account-switched = Cambiado a { $email }
 account-none-at = No hay ninguna cuenta en { $n }
