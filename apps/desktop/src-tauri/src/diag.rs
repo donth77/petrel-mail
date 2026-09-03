@@ -40,8 +40,10 @@ pub(crate) const DIAG: &str = r#"
     send({ kind: 'dom', scripts: document.scripts.length, root: !!document.getElementById('root') });
     setTimeout(function () {
       var r = document.getElementById('root');
+      // How much text, not which: the first 80 characters of the page are
+      // the rail, and the rail starts with the signed-in address.
       send({ kind: 'settled', rootChildren: r ? r.childElementCount : -1,
-             bodyText: ((document.body && document.body.innerText) || '').slice(0, 80) });
+             bodyChars: ((document.body && document.body.innerText) || '').length });
     }, 2000);
   });
 })();
@@ -284,6 +286,43 @@ fn looks_like_a_dump(raw: &str) -> bool {
 pub(crate) fn is_imap_parse_error(raw: &str) -> bool {
     let r = raw.to_ascii_lowercase();
     r.contains("during parsing") || r.contains("takewhile1")
+}
+
+/// Blanks anything shaped like an address before a line reaches the log.
+///
+/// Server replies quote what they refused: a Postfix rejection reads
+/// `550 5.1.1 <someone@example.com>: Recipient address rejected`, and the
+/// log is the one place the project keeps addresses out of. The row keeps
+/// the full reply; the person can read it there.
+pub(crate) fn without_addresses(text: &str) -> String {
+    text.split(' ')
+        .map(|word| {
+            if word.contains('@') {
+                "<address>"
+            } else {
+                word
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[cfg(test)]
+mod address_tests {
+    use super::without_addresses;
+
+    #[test]
+    fn a_rejection_loses_the_address_and_keeps_the_verdict() {
+        let line = "550 5.1.1 <someone@example.com>: Recipient address rejected: User unknown";
+        let out = without_addresses(line);
+        assert!(!out.contains("someone"), "{out}");
+        assert!(out.contains("550 5.1.1"), "{out}");
+        assert!(out.contains("Recipient address rejected"), "{out}");
+        assert_eq!(
+            without_addresses("250 2.0.0 Ok: queued"),
+            "250 2.0.0 Ok: queued"
+        );
+    }
 }
 
 #[cfg(test)]

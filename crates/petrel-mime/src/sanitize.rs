@@ -84,7 +84,15 @@ const ALLOWED_CSS: &[&str] = &[
 ];
 
 fn is_remote(url: &str) -> bool {
-    let u = url.trim().to_ascii_lowercase();
+    // Read the way the browser reads it: URL parsing strips ASCII tab and
+    // newlines anywhere in the input, so "ht<TAB>tps://" is https to the
+    // frame and has to be https here, or it loads uncounted.
+    let u: String = url
+        .trim()
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+        .collect::<String>()
+        .to_ascii_lowercase();
     u.starts_with("http://") || u.starts_with("https://") || u.starts_with("//")
 }
 
@@ -123,7 +131,15 @@ fn filter_style(value: &str) -> String {
             continue;
         }
         // No fetching, no expressions, no escapes used to smuggle either.
+        // `list-style` takes an image, and image-set() is not url(), so the
+        // fetching functions are named one by one.
         if val_norm.contains("url(")
+            || val_norm.contains("image(")
+            || val_norm.contains("image-set(")
+            || val_norm.contains("cross-fade(")
+            || val_norm.contains("element(")
+            || val_norm.contains("paint(")
+            || val_norm.contains("src(")
             || val_norm.contains("expression")
             || val_norm.contains("javascript:")
             || val_norm.contains("@import")
@@ -424,6 +440,29 @@ mod tests {
 
     fn clean(html: &str) -> String {
         sanitize_html(html, false).html
+    }
+
+    #[test]
+    fn a_tab_in_the_scheme_cannot_hide_a_remote_image() {
+        // Browsers strip tabs and newlines from a URL before reading it, so
+        // this is https to the frame and used to pass the check uncounted.
+        let res = sanitize_html("<img src=\"ht\ttps://evil.example/x.png\">", false);
+        assert_eq!(res.report.blocked_remote, 1);
+        assert!(!res.html.contains("evil.example"), "{}", res.html);
+    }
+
+    #[test]
+    fn a_list_marker_cannot_fetch() {
+        let res = sanitize_html(
+            "<ul style=\"list-style: image-set('https://evil.example/a.png' 1x)\"><li>x</li></ul>",
+            false,
+        );
+        assert!(!res.html.contains("evil.example"), "{}", res.html);
+        let webkit = sanitize_html(
+            "<ul style=\"list-style-type: -webkit-image-set('https://evil.example/a.png' 1x)\"><li>x</li></ul>",
+            true,
+        );
+        assert!(!webkit.html.contains("evil.example"), "{}", webkit.html);
     }
 
     #[test]

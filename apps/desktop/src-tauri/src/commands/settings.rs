@@ -167,11 +167,15 @@ pub fn move_rule(rule_id: i64, up: bool, state: State<Arc<AppState>>) -> Result<
 /// Engine bookkeeping that lives in the settings table but is not a
 /// preference: sync watermarks and one-time markers. They describe *this*
 /// store's conversation with *these* servers, and carrying them to another
-/// machine would hand it a stranger's place-markers.
+/// machine would hand it a stranger's place-markers. `store_id` is the
+/// keychain namespace: imported, it re-keyed every password lookup to the
+/// exporting store's name, and each account showed as configured while
+/// never syncing again.
 const BOOKKEEPING: &[&str] = &[
     "gmail_labels_modseq",
     "gmail_thrid_modseq",
     "keychain_reowned",
+    "store_id",
 ];
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -334,11 +338,31 @@ mod backup_tests {
     use petrel_engine::store::Store;
 
     #[test]
+    fn a_file_that_carries_a_store_id_does_not_rekey_the_keychain() {
+        // A file from an older build, or edited by hand, that names the
+        // exporting store's keychain namespace. Applying it must leave this
+        // store's own, or every password lookup here fails from the next
+        // launch on.
+        let a = Store::open_in_memory().unwrap();
+        a.set_setting("theme", "dark").unwrap();
+        let mut file = build_settings_file(&a).unwrap();
+        file.settings
+            .insert("store_id".to_string(), "store-a".to_string());
+        let b = Store::open_in_memory().unwrap();
+        b.set_setting("store_id", "store-b").unwrap();
+        apply_settings_file(&b, &file).unwrap();
+        let s = b.settings().unwrap();
+        assert_eq!(s.get("store_id").map(String::as_str), Some("store-b"));
+        assert_eq!(s.get("theme").map(String::as_str), Some("dark"));
+    }
+
+    #[test]
     fn a_backup_round_trips_and_merges_rather_than_clobbers() {
         let a = Store::open_in_memory().unwrap();
         let acc = a.ensure_test_account().unwrap();
         a.set_setting("theme", "dark").unwrap();
         a.set_setting("gmail_thrid_modseq", "99").unwrap();
+        a.set_setting("store_id", "store-a").unwrap();
         a.set_account_color(acc, "#9A6B1F").unwrap();
         a.set_identity(acc, "Tom", "— t", true).unwrap();
         let file = build_settings_file(&a).unwrap();
@@ -346,6 +370,10 @@ mod backup_tests {
         assert!(
             !file.settings.contains_key("gmail_thrid_modseq"),
             "bookkeeping stays home"
+        );
+        assert!(
+            !file.settings.contains_key("store_id"),
+            "the keychain namespace stays home"
         );
         assert_eq!(file.accounts.len(), 1);
 

@@ -174,8 +174,8 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
 
         // One connection, one STATUS line per folder, fetch only what moved.
         // A relaunch over a warm store downloads nothing it already holds.
-        let (fresh, failures) =
-            run_sync_cycle(&state, account, &cfg, true, Scope::Everything).await;
+        let report = run_sync_cycle(&state, account, &cfg, true, Scope::Everything).await;
+        let (fresh, failures) = (report.fresh, report.failures);
         let targets = folders_to_sync(&state, account);
         if failures > 0 {
             log_sync(&format!("{failures} folder(s) could not be synced"));
@@ -398,7 +398,8 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
             } else {
                 Scope::Inbox
             };
-            let (fresh, failures) = run_sync_cycle(&state, account, &cfg, false, scope).await;
+            let report = run_sync_cycle(&state, account, &cfg, false, scope).await;
+            let (fresh, failures) = (report.fresh, report.failures);
             if account_is_gmail(&cfg) {
                 // One round trip when nothing changed; live labels when it did.
                 // On both paths: a new message usually arrives with its labels.
@@ -420,6 +421,16 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
             // banner: a poll that failed halfway is not proof that sync is well.
             if trouble.is_none() {
                 *state.sync_error.lock().unwrap() = None;
+            } else if report.attempted > 0 && report.failures >= report.attempted {
+                // A pass that failed everywhere is the account failing, not a
+                // folder. A password revoked after launch used to fail every
+                // cycle with nothing on screen but an ageing "last synced":
+                // only the startup pass ever raised the banner.
+                let raw = report
+                    .last_failure
+                    .clone()
+                    .unwrap_or_else(|| "no folder could be synced".into());
+                *state.sync_error.lock().unwrap() = Some(friendly_sync_error_for(&cfg.host, &raw));
             }
             // The two paths are meant to cost very different amounts, and this
             // is where that stops being a claim.
@@ -470,6 +481,17 @@ fn narrow(targets: Vec<(String, String, i64)>, scope: Scope) -> Vec<(String, Str
     }
 }
 
+/// What one cycle did: what it fetched, what it could not, and the last
+/// failure's text, so the banner can say what went wrong rather than that
+/// something did.
+#[derive(Default)]
+struct CycleReport {
+    fresh: usize,
+    failures: usize,
+    attempted: usize,
+    last_failure: Option<String>,
+}
+
 /// One sync cycle for one account: every folder, one connection.
 ///
 /// The shape of the whole optimisation. A cycle logs in once, asks one
@@ -478,17 +500,17 @@ fn narrow(targets: Vec<(String, String, i64)>, scope: Scope) -> Vec<(String, Str
 /// hundred cheap lines on one connection, and a relaunch re-downloads
 /// nothing it already holds: a folder with a watermark is only ever asked
 /// for what is above it. Flag changes made elsewhere ride along via
-/// CONDSTORE where the server has it. Returns (new messages, failures).
+/// CONDSTORE where the server has it.
 async fn run_sync_cycle(
     state: &Arc<AppState>,
     account: i64,
     cfg: &ImapConfig,
     verbose: bool,
     scope: Scope,
-) -> (usize, usize) {
+) -> CycleReport {
     let targets = narrow(folders_to_sync(state, account), scope);
     if targets.is_empty() {
-        return (0, 0);
+        return CycleReport::default();
     }
     let window: u32 = std::env::var("PETREL_SYNC_LIMIT")
         .ok()
@@ -497,7 +519,7 @@ async fn run_sync_cycle(
 
     let passes: Vec<petrel_providers::imap::FolderPass> = {
         let Ok(store) = state.store.lock() else {
-            return (0, 0);
+            return CycleReport::default();
         };
         targets
             .iter()
@@ -527,7 +549,7 @@ async fn run_sync_cycle(
     let mut arrivals: Vec<i64> = Vec::new();
     let inbox_folder: Option<i64> = {
         let Ok(store) = state.store.lock() else {
-            return (0, 0);
+            return CycleReport::default();
         };
         store.folder_for_role(account, "inbox").ok().flatten()
     };
@@ -577,12 +599,18 @@ async fn run_sync_cycle(
         Ok(o) => o,
         Err(e) => {
             log_sync(&format!("sync cycle failed before any folder: {e}"));
-            return (fresh, targets.len());
+            return CycleReport {
+                fresh,
+                failures: targets.len(),
+                attempted: targets.len(),
+                last_failure: Some(e.to_string()),
+            };
         }
     };
 
     use petrel_providers::imap::PassOutcome;
     let mut failures = 0usize;
+    let mut last_failure: Option<String> = None;
     let mut server_total = 0usize;
     for (((_, path, folder_id), pass), outcome) in targets.iter().zip(&passes).zip(&outcomes) {
         match outcome {
@@ -674,6 +702,7 @@ async fn run_sync_cycle(
                     Ok(_) => {}
                     Err(e) => {
                         log_sync(&format!("{path}: recovery failed: {e}"));
+                        last_failure = Some(e.to_string());
                         failures += 1;
                     }
                 }
@@ -686,6 +715,7 @@ async fn run_sync_cycle(
                         log_sync(&format!("{path}: FAILED: {detail}"));
                     }
                 }
+                last_failure = Some(detail.clone());
                 failures += 1;
             }
         }
@@ -697,7 +727,12 @@ async fn run_sync_cycle(
     if !arrivals.is_empty() {
         apply_rules_to(state, account, &arrivals);
     }
-    (fresh, failures)
+    CycleReport {
+        fresh,
+        failures,
+        attempted: targets.len(),
+        last_failure,
+    }
 }
 
 /// Mends one folder after the server renumbered it (UIDVALIDITY reset).

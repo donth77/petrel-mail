@@ -2,7 +2,7 @@
 
 use crate::commands::compose::guess_content_type;
 use crate::config::{imap_config_from_env, imap_config_from_servers};
-use crate::diag::log_sync;
+use crate::diag::{log_sync, without_addresses};
 use crate::state::{AppState, now_ms};
 use crate::sync::drafts::drop_server_draft_using;
 use petrel_engine::store::Store;
@@ -224,17 +224,20 @@ async fn attempt(
 
     log_sync(&format!("outbox: connecting smtp :{}", smtp.port));
     let (outcome, detail) = match send_tls_with(&smtp, &msg, &raw, |s| {
-        log_sync(&format!("outbox: smtp {s}"));
+        log_sync(&format!("outbox: smtp {}", without_addresses(s)));
     })
     .await
     {
         SendResult::Committed { response } => (AttemptOutcome::Accepted, response),
         SendResult::RejectedPermanently { response } => {
-            log_sync(&format!("send rejected: {response}"));
+            log_sync(&format!("send rejected: {}", without_addresses(&response)));
             (AttemptOutcome::RejectedPermanently, response)
         }
         SendResult::FailedBeforeCommit { stage, detail } => {
-            log_sync(&format!("send failed at {stage}: {detail}"));
+            log_sync(&format!(
+                "send failed at {stage}: {}",
+                without_addresses(&detail)
+            ));
             (
                 AttemptOutcome::FailedBeforeCommit,
                 format!("{stage}: {detail}"),
@@ -505,8 +508,9 @@ pub(crate) async fn send_due(state: Arc<AppState>, account: i64) {
                 let n = attempts + 1;
                 let wait = retry_delay_ms(n);
                 log_sync(&format!(
-                    "queued send failed, retrying in {}s: {detail}",
-                    wait / 1000
+                    "queued send failed, retrying in {}s: {}",
+                    wait / 1000,
+                    without_addresses(&detail)
                 ));
                 let _ = store.set_send_state(
                     id,
@@ -517,7 +521,10 @@ pub(crate) async fn send_due(state: Arc<AppState>, account: i64) {
                 );
             }
             SendState::FailedPermanent => {
-                log_sync(&format!("queued send rejected: {detail}"));
+                log_sync(&format!(
+                    "queued send rejected: {}",
+                    without_addresses(&detail)
+                ));
                 let _ = store.set_send_state(
                     id,
                     SendState::FailedPermanent,
@@ -530,7 +537,10 @@ pub(crate) async fn send_due(state: Arc<AppState>, account: i64) {
                 // The one outcome no amount of engineering resolves. Said in
                 // the row, and raised as a notification, because silence is
                 // the one response that loses mail.
-                log_sync(&format!("queued send needs attention: {detail}"));
+                log_sync(&format!(
+                    "queued send needs attention: {}",
+                    without_addresses(&detail)
+                ));
                 let _ = store.set_send_state(
                     id,
                     SendState::NeedsAttention,
