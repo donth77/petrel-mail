@@ -618,10 +618,9 @@ fn messages_without_a_thread_still_appear_as_single_conversations() {
     assert_eq!(hits.len(), 3, "search returns them too");
 }
 
-/// thread_detail is what the reading pane renders from, so it gets exercised
-/// against a real ingested message rather than trusted to compile. The first
-/// version of this query referenced a column that does not exist, and only the
-/// running app found out.
+/// thread_detail hydrates recipients and files for invitations and tests.
+/// The first version of this query referenced a column that does not exist,
+/// and only the running app found out.
 #[test]
 fn thread_detail_returns_recipients_and_files() {
     let (_d, mut store, blobs, account) = setup();
@@ -910,4 +909,89 @@ fn a_list_page_follows_a_cursor_that_gained_a_reply() {
         !next.iter().any(|r| r.thread_id == cursor.thread_id),
         "the moved conversation is not served again"
     );
+}
+
+#[test]
+fn thread_detail_page_returns_the_newest_slice_then_older() {
+    let (_d, mut store, blobs, account) = setup();
+    let inbox = inboxed(&store, account);
+    let mut parent = String::from("p0@x");
+    let mut ids = Vec::new();
+    for i in 0..5 {
+        let msgid = format!("p{i}@x");
+        let refs: Vec<&str> = if i == 0 {
+            vec![]
+        } else {
+            vec![parent.as_str()]
+        };
+        let raw = mail(&msgid, "Paged thread", &refs, T0 + i * DAY, "body");
+        let ing = store
+            .ingest_raw(&blobs, account, Some(inbox), None, &raw)
+            .unwrap();
+        ids.push(ing.message_id);
+        parent = msgid;
+    }
+    let tid = store.thread_of(ids[0]).unwrap().unwrap();
+    let newest = store.thread_detail_page(tid, Some(2), None).unwrap();
+    assert_eq!(newest.len(), 2);
+    assert_eq!(newest[0].id, ids[3]);
+    assert_eq!(newest[1].id, ids[4]);
+    let older = store
+        .thread_detail_page(tid, Some(2), Some((newest[0].date_ms, newest[0].id)))
+        .unwrap();
+    assert_eq!(older.len(), 2);
+    assert_eq!(older[0].id, ids[1]);
+    assert_eq!(older[1].id, ids[2]);
+    let rest = store
+        .thread_detail_page(tid, Some(2), Some((older[0].date_ms, older[0].id)))
+        .unwrap();
+    assert_eq!(rest.len(), 1);
+    assert_eq!(rest[0].id, ids[0]);
+}
+
+#[test]
+fn thread_index_lists_every_row_without_hydrating() {
+    let (_d, mut store, blobs, account) = setup();
+    let inbox = inboxed(&store, account);
+    let mut parent = String::from("idx0@x");
+    let mut ids = Vec::new();
+    for i in 0..5 {
+        let msgid = format!("idx{i}@x");
+        let refs: Vec<&str> = if i == 0 {
+            vec![]
+        } else {
+            vec![parent.as_str()]
+        };
+        let raw = mail(&msgid, "Indexed thread", &refs, T0 + i * DAY, "body");
+        let ing = store
+            .ingest_raw(&blobs, account, Some(inbox), None, &raw)
+            .unwrap();
+        ids.push(ing.message_id);
+        parent = msgid;
+    }
+    let tid = store.thread_of(ids[0]).unwrap().unwrap();
+    let index = store.thread_index(tid).unwrap();
+    assert_eq!(
+        index.iter().map(|r| r.id).collect::<Vec<_>>(),
+        ids,
+        "index is every surviving message, oldest first"
+    );
+    assert!(
+        index
+            .iter()
+            .all(|r| !r.from_display.is_empty() || !r.from_addr.is_empty()),
+        "each card has a sender"
+    );
+    assert!(
+        store.thread_message(ids[2]).unwrap().is_some(),
+        "opening one card hydrates that id"
+    );
+    let missing = ids[4] + 1_000_000;
+    assert!(
+        store.thread_message(missing).unwrap().is_none(),
+        "an id that is not in the store is not an error"
+    );
+    let fat = store.thread_detail(tid).unwrap();
+    assert_eq!(fat.len(), 5);
+    assert_eq!(fat[0].to, ["me@example.com"]);
 }

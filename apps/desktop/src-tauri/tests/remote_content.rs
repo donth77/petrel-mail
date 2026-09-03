@@ -55,12 +55,12 @@ fn render(allow_remote: bool) -> (String, String) {
 fn the_blocked_count_is_reported_out_of_the_frame() {
     let (html, _) = render(false);
     assert!(
-        html.contains("petrelBlocked: 1"),
+        html.contains("var BLOCKED = 1") && html.contains("petrelBlocked"),
         "the frame must tell the app what it refused: {html}"
     );
     let (allowed, _) = render(true);
     assert!(
-        allowed.contains("petrelBlocked: 0"),
+        allowed.contains("var BLOCKED = 0") && allowed.contains("petrelBlocked"),
         "nothing was refused, and the banner must not appear: {allowed}"
     );
 }

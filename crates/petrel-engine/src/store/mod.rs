@@ -10,6 +10,7 @@ use rusqlite::OptionalExtension;
 use rusqlite::functions::FunctionFlags;
 use rusqlite::{Connection, params};
 use std::path::Path;
+use std::sync::Arc;
 
 mod actions;
 mod drafts;
@@ -162,6 +163,19 @@ pub struct Attachment {
     pub mime: String,
 }
 
+/// One conversation line for the reading pane: enough to draw a collapsed
+/// card. Recipients, attachments and the body stay off this row so a
+/// twenty-thousand-message thread is one SELECT, not one hydrate per id.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ThreadIndexRow {
+    pub id: i64,
+    pub from_display: String,
+    pub from_addr: String,
+    pub snippet: String,
+    pub date_ms: i64,
+    pub unread: bool,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ThreadMessage {
     pub id: i64,
@@ -213,7 +227,10 @@ pub struct TagSummary {
 pub struct PendingAction {
     pub action_id: i64,
     pub kind_json: String,
-    pub payload_json: String,
+    /// Shared per action, not copied onto every `action_messages` row.
+    /// A 22k-message mark_read used to clone a multi-megabyte undo JSON
+    /// once per row and hold tens of gigabytes for the length of a drain.
+    pub payload_json: Arc<str>,
     pub message_id: i64,
     /// Absent when the message was never placed in a folder — nothing to
     /// address on the server, so nothing that can be delivered.

@@ -3,6 +3,8 @@
 //!
 //! Moved verbatim from mod.rs (Phase 1.5).
 use super::*;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 impl Store {
     /// The queued actions, oldest first, with the UID and folder each one needs
@@ -11,8 +13,26 @@ impl Store {
     /// Oldest first matters: two actions on the same message must arrive in the
     /// order the user performed them, or the later one loses.
     pub fn pending_actions(&self, account_id: i64) -> Result<Vec<PendingAction>> {
+        // Payload is read once per action. The JOIN used to select it on every
+        // action_messages row, so a mark_read of a 22k-message thread cloned a
+        // 2.8MB undo snapshot twenty thousand times and the drain held ~60GB.
+        let mut payloads: HashMap<i64, Arc<str>> = HashMap::new();
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, payload_json FROM actions
+                 WHERE account_id = ?1 AND state = 'queued'",
+            )?;
+            let rows = stmt.query_map(params![account_id], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (id, json) = row?;
+                payloads.insert(id, Arc::from(json));
+            }
+        }
+        let empty: Arc<str> = Arc::from("{}");
         let mut stmt = self.conn.prepare(
-            "SELECT a.id, a.kind, a.payload_json, am.message_id, p.uid, f.path,
+            "SELECT a.id, a.kind, am.message_id, p.uid, f.path,
                     m.message_id_hdr
              FROM actions a
              JOIN action_messages am ON am.action_id = a.id
@@ -23,18 +43,24 @@ impl Store {
              ORDER BY a.id, am.message_id",
         )?;
         let rows = stmt.query_map(params![account_id], |r| {
+            let action_id: i64 = r.get(0)?;
             Ok(PendingAction {
-                action_id: r.get(0)?,
+                action_id,
                 kind_json: r.get(1)?,
-                payload_json: r.get(2)?,
-                message_id: r.get(3)?,
-                uid: r.get::<_, Option<i64>>(4)?.map(|u| u as u32),
-                folder_path: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
-                msgid: r.get::<_, Option<String>>(6)?,
+                payload_json: empty.clone(),
+                message_id: r.get(2)?,
+                uid: r.get::<_, Option<i64>>(3)?.map(|u| u as u32),
+                folder_path: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                msgid: r.get::<_, Option<String>>(5)?,
                 candidate_paths: Vec::new(),
             })
         })?;
         let mut out: Vec<PendingAction> = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+        for row in &mut out {
+            if let Some(json) = payloads.get(&row.action_id) {
+                row.payload_json = Arc::clone(json);
+            }
+        }
         // A move deleted the placement its own delivery needed; the address
         // captured at queue time is the fallback that makes such an action
         // deliverable at all.
@@ -157,7 +183,7 @@ impl Store {
         target: Option<i64>,
         policy: crate::actions::PlacementPolicy,
     ) -> Result<crate::actions::ActionReceipt> {
-        use crate::actions::{ActionKind, ActionPayload, ActionReceipt, PriorState};
+        use crate::actions::{ActionKind, ActionPayload, ActionReceipt};
 
         // Refused here rather than defaulted to something plausible: a move with
         // no destination is a bug in the caller, and inventing one would file
@@ -203,61 +229,88 @@ impl Store {
             }
         }
 
+        let flag_filter = match kind {
+            ActionKind::MarkRead => format!(" AND flags & {} = 0", flags::SEEN),
+            ActionKind::MarkUnread => format!(" AND flags & {} != 0", flags::SEEN),
+            _ => String::new(),
+        };
         let ids: Vec<i64> = {
-            let mut stmt = self.conn.prepare_cached(
+            let sql = format!(
                 "SELECT id FROM messages
-                 WHERE coalesce(thread_id, -id) = ?1 AND deleted_at_ms IS NULL",
-            )?;
+                 WHERE coalesce(thread_id, -id) = ?1 AND deleted_at_ms IS NULL{flag_filter}
+                 ORDER BY id"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
             stmt.query_map(params![thread_id], |r| r.get(0))?
                 .collect::<std::result::Result<Vec<_>, _>>()?
         };
-
-        // Captured *before* anything changes: undo restores what was, rather
-        // than guessing an inverse — which breaks as soon as two actions touch
-        // the same message.
-        let mut prior = Vec::with_capacity(ids.len());
-        for id in &ids {
-            let flags: i64 = self.conn.query_row(
-                "SELECT flags FROM messages WHERE id = ?1",
-                params![id],
-                |r| r.get(0),
-            )?;
-            // The server address rides with the action from birth. A move is
-            // about to delete the placement row that holds it, and delivery
-            // read the row at drain time — so a delivered-after-move queue
-            // was structurally impossible.
-            let source: Option<(String, i64)> = self
-                .conn
-                .query_row(
-                    "SELECT f.path, p.uid FROM placements p
-                     JOIN folders f ON f.id = p.folder_id
-                     WHERE p.message_id = ?1 AND p.uid IS NOT NULL
-                     ORDER BY (f.role = 'inbox') DESC LIMIT 1",
-                    params![id],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .optional()?;
-            prior.push(PriorState {
-                message_id: *id,
-                flags,
-                tag_ids: self.tags_of(*id)?,
-                snoozed_until: self.conn.query_row(
-                    "SELECT snoozed_until_ms FROM messages WHERE id = ?1",
-                    params![id],
-                    |r| r.get(0),
-                )?,
-                folder_ids: self.folders_of(*id)?,
-                source_path: source.as_ref().map(|(p, _)| p.clone()),
-                source_uid: source.as_ref().map(|(_, u)| *u as u32),
+        if ids.is_empty() {
+            return Ok(ActionReceipt {
+                action_id: 0,
+                kind,
+                message_count: 0,
+                description: kind.past_tense().to_string(),
             });
         }
 
+        // Captured *before* anything changes: undo restores what was, rather
+        // than guessing an inverse — which breaks as soon as two actions touch
+        // the same message. One pass per table, not one query per message —
+        // a 22k-message mark_read used to hold the store lock for fifteen
+        // seconds while status waited.
+        let prior = self.capture_thread_priors(thread_id, &flag_filter)?;
+
+        // Queue rows before the local flag flip. The INSERT SELECT reuses the
+        // same unread/read filter; if SEEN is already set, it would insert
+        // nothing and the drain would never see the work.
+        let payload = ActionPayload {
+            kind,
+            thread_id,
+            target,
+            prior,
+        };
+        let json = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".into());
+        self.conn.execute(
+            "INSERT INTO actions(account_id, kind, payload_json, state, created_ms)
+             VALUES (?1, ?2, ?3, ?5, ?4)",
+            params![
+                account_id,
+                serde_json::to_string(&kind).unwrap_or_default(),
+                json,
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0),
+                if kind.is_local_only() {
+                    "local"
+                } else {
+                    "queued"
+                }
+            ],
+        )?;
+        let action_id = self.conn.last_insert_rowid();
+        self.conn.execute(
+            &format!(
+                "INSERT OR IGNORE INTO action_messages(action_id, message_id)
+                 SELECT ?1, id FROM messages
+                 WHERE coalesce(thread_id, -id) = ?2 AND deleted_at_ms IS NULL{flag_filter}"
+            ),
+            params![action_id, thread_id],
+        )?;
+
+        match kind {
+            ActionKind::Star => self.set_thread_flags(thread_id, flags::FLAGGED, 0)?,
+            ActionKind::Unstar => self.set_thread_flags(thread_id, 0, flags::FLAGGED)?,
+            ActionKind::MarkRead => self.set_thread_flags(thread_id, flags::SEEN, 0)?,
+            ActionKind::MarkUnread => self.set_thread_flags(thread_id, 0, flags::SEEN)?,
+            _ => {}
+        }
         for id in &ids {
             match kind {
-                ActionKind::Star => self.set_flags(*id, flags::FLAGGED, 0)?,
-                ActionKind::Unstar => self.set_flags(*id, 0, flags::FLAGGED)?,
-                ActionKind::MarkRead => self.set_flags(*id, flags::SEEN, 0)?,
-                ActionKind::MarkUnread => self.set_flags(*id, 0, flags::SEEN)?,
+                ActionKind::Star
+                | ActionKind::Unstar
+                | ActionKind::MarkRead
+                | ActionKind::MarkUnread => {}
                 ActionKind::Snooze => {
                     self.conn.execute(
                         "UPDATE messages SET snoozed_until_ms = ?2 WHERE id = ?1",
@@ -329,40 +382,6 @@ impl Store {
                     self.place_message(*id, dest)?;
                 }
             }
-        }
-
-        let payload = ActionPayload {
-            kind,
-            thread_id,
-            target,
-            prior,
-        };
-        let json = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".into());
-        self.conn.execute(
-            "INSERT INTO actions(account_id, kind, payload_json, state, created_ms)
-             VALUES (?1, ?2, ?3, ?5, ?4)",
-            params![
-                account_id,
-                serde_json::to_string(&kind).unwrap_or_default(),
-                json,
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0),
-                if kind.is_local_only() {
-                    "local"
-                } else {
-                    "queued"
-                }
-            ],
-        )?;
-
-        let action_id = self.conn.last_insert_rowid();
-        for id in &ids {
-            self.conn.execute(
-                "INSERT OR IGNORE INTO action_messages(action_id, message_id) VALUES (?1, ?2)",
-                params![action_id, id],
-            )?;
         }
 
         Ok(ActionReceipt {
@@ -478,11 +497,125 @@ impl Store {
         Ok(())
     }
 
-    /// Conversations by most recent activity — the message list's real query.
-    ///
-    /// One row per thread, showing the newest message. `GROUP BY` after the
-    /// join collapses ties where two messages share the newest timestamp,
-    /// which would otherwise show a conversation twice.
+    /// Priors for every message an action will touch, in one pass per table.
+    fn capture_thread_priors(
+        &self,
+        thread_id: i64,
+        flag_filter: &str,
+    ) -> Result<Vec<crate::actions::PriorState>> {
+        use crate::actions::PriorState;
+
+        let mut by_id: HashMap<i64, PriorState> = HashMap::new();
+        let mut order: Vec<i64> = Vec::new();
+        {
+            let sql = format!(
+                "SELECT id, flags, snoozed_until_ms FROM messages
+                 WHERE coalesce(thread_id, -id) = ?1 AND deleted_at_ms IS NULL{flag_filter}
+                 ORDER BY id"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(params![thread_id], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, Option<i64>>(2)?,
+                ))
+            })?;
+            for row in rows {
+                let (id, flags, snoozed_until) = row?;
+                order.push(id);
+                by_id.insert(
+                    id,
+                    PriorState {
+                        message_id: id,
+                        flags,
+                        folder_ids: Vec::new(),
+                        tag_ids: Vec::new(),
+                        source_path: None,
+                        source_uid: None,
+                        snoozed_until,
+                    },
+                );
+            }
+        }
+        {
+            let sql = format!(
+                "SELECT mt.message_id, mt.tag_id FROM message_tags mt
+                 JOIN messages m ON m.id = mt.message_id
+                 WHERE coalesce(m.thread_id, -m.id) = ?1 AND m.deleted_at_ms IS NULL{flag_filter}"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(params![thread_id], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+            })?;
+            for row in rows {
+                let (id, tag) = row?;
+                if let Some(p) = by_id.get_mut(&id) {
+                    p.tag_ids.push(tag);
+                }
+            }
+        }
+        {
+            let sql = format!(
+                "SELECT p.message_id, p.folder_id FROM placements p
+                 JOIN messages m ON m.id = p.message_id
+                 WHERE coalesce(m.thread_id, -m.id) = ?1 AND m.deleted_at_ms IS NULL{flag_filter}"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(params![thread_id], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+            })?;
+            for row in rows {
+                let (id, folder) = row?;
+                if let Some(p) = by_id.get_mut(&id) {
+                    p.folder_ids.push(folder);
+                }
+            }
+        }
+        {
+            // Inbox first so a message in two folders keeps the same address
+            // the per-row query used to pick.
+            let sql = format!(
+                "SELECT p.message_id, f.path, p.uid, (f.role = 'inbox') FROM placements p
+                 JOIN folders f ON f.id = p.folder_id
+                 JOIN messages m ON m.id = p.message_id
+                 WHERE coalesce(m.thread_id, -m.id) = ?1 AND m.deleted_at_ms IS NULL
+                   AND p.uid IS NOT NULL{flag_filter}
+                 ORDER BY p.message_id, (f.role = 'inbox') DESC"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(params![thread_id], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })?;
+            for row in rows {
+                let (id, path, uid) = row?;
+                if let Some(p) = by_id.get_mut(&id)
+                    && p.source_uid.is_none()
+                {
+                    p.source_path = Some(path);
+                    p.source_uid = Some(uid as u32);
+                }
+            }
+        }
+        Ok(order
+            .into_iter()
+            .filter_map(|id| by_id.remove(&id))
+            .collect())
+    }
+
+    fn set_thread_flags(&self, thread_id: i64, add: i64, remove: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE messages SET flags = (flags | ?2) & ~?3
+             WHERE coalesce(thread_id, -id) = ?1 AND deleted_at_ms IS NULL",
+            params![thread_id, add, remove],
+        )?;
+        Ok(())
+    }
+
     /// IMAP STORE semantics: add some flags, remove others, in one statement.
     /// Modelled on `+FLAGS`/`-FLAGS` rather than a whole-value setter because
     /// that is what the action queue has to replay against a server, and a

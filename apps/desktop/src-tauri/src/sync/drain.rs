@@ -15,6 +15,53 @@ use std::sync::atomic::Ordering;
 /// and the change it carried was never made and never abandoned either.
 const GIVE_UP_AFTER: i64 = 5;
 
+/// Same kind, same folder, already-resolved UIDs: one STORE instead of one
+/// connection per message.
+fn flag_op(kind: &petrel_engine::actions::ActionKind) -> Option<(&'static str, bool)> {
+    use petrel_engine::actions::ActionKind;
+    match kind {
+        ActionKind::MarkRead => Some(("\\Seen", true)),
+        ActionKind::MarkUnread => Some(("\\Seen", false)),
+        ActionKind::Star => Some(("\\Flagged", true)),
+        ActionKind::Unstar => Some(("\\Flagged", false)),
+        _ => None,
+    }
+}
+
+/// How many following rows share this flag STORE.
+///
+/// Stops at the first row that would need a search or a different folder —
+/// those must stay in order relative to this action.
+fn consecutive_flag_uids(
+    pending: &[petrel_engine::store::PendingAction],
+    start: usize,
+    kind_json: &str,
+    folder: &str,
+    first_uid: u32,
+    max: usize,
+) -> Vec<(usize, i64, u32)> {
+    let mut out = vec![(start, pending[start].action_id, first_uid)];
+    let mut i = start + 1;
+    while out.len() < max && i < pending.len() {
+        let row = &pending[i];
+        if row.kind_json != kind_json {
+            break;
+        }
+        let later = if row.folder_path.is_empty() {
+            "INBOX"
+        } else {
+            row.folder_path.as_str()
+        };
+        if later != folder {
+            break;
+        }
+        let Some(uid) = row.uid else { break };
+        out.push((i, row.action_id, uid));
+        i += 1;
+    }
+    out
+}
+
 /// Whether the server's refusal is one that asking again cannot fix.
 ///
 /// A mailbox that does not exist will not start existing on the two hundredth
@@ -137,7 +184,11 @@ pub(crate) async fn drain_actions(
     // so a failing thread of ten would otherwise spend ten tries in a single
     // cycle. One count per action per pass.
     let mut counted: std::collections::HashSet<i64> = std::collections::HashSet::new();
-    for item in pending {
+    let mut batched: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    for (idx, item) in pending.iter().enumerate() {
+        if batched.contains(&idx) {
+            continue;
+        }
         let Ok(kind) = serde_json::from_str::<ActionKind>(&item.kind_json) else {
             continue;
         };
@@ -208,17 +259,34 @@ pub(crate) async fn drain_actions(
         };
 
         let result = match kind {
-            ActionKind::MarkRead => {
-                petrel_providers::imap::store_flag(&cfg, &folder, uid, "\\Seen", true).await
-            }
-            ActionKind::MarkUnread => {
-                petrel_providers::imap::store_flag(&cfg, &folder, uid, "\\Seen", false).await
-            }
-            ActionKind::Star => {
-                petrel_providers::imap::store_flag(&cfg, &folder, uid, "\\Flagged", true).await
-            }
-            ActionKind::Unstar => {
-                petrel_providers::imap::store_flag(&cfg, &folder, uid, "\\Flagged", false).await
+            ActionKind::MarkRead
+            | ActionKind::MarkUnread
+            | ActionKind::Star
+            | ActionKind::Unstar => {
+                let (flag, add) = flag_op(&kind).expect("flag kind");
+                let group = consecutive_flag_uids(
+                    &pending,
+                    idx,
+                    &item.kind_json,
+                    &folder,
+                    uid,
+                    petrel_providers::imap::STORE_FLAG_BATCH,
+                );
+                let uids: Vec<u32> = group.iter().map(|(_, _, u)| *u).collect();
+                let result =
+                    petrel_providers::imap::store_flags(&cfg, &folder, &uids, flag, add).await;
+                if result.is_ok() {
+                    for (i, action_id, _) in &group {
+                        if *i != idx {
+                            batched.insert(*i);
+                            delivered += 1;
+                            if let Ok(store) = state.store.lock() {
+                                let _ = store.mark_action_state(*action_id, "sent");
+                            }
+                        }
+                    }
+                }
+                result
             }
             ActionKind::Archive | ActionKind::Trash | ActionKind::Spam | ActionKind::Move => {
                 // The local move has already happened, so the destination is
@@ -427,5 +495,54 @@ mod refusal_tests {
     #[test]
     fn anything_unrecognised_is_retried_rather_than_discarded() {
         assert!(!permanent_refusal("server said something new and strange"));
+    }
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use petrel_engine::store::PendingAction;
+
+    fn row(kind: &str, folder: &str, uid: Option<u32>, action: i64) -> PendingAction {
+        PendingAction {
+            action_id: action,
+            kind_json: kind.to_string(),
+            payload_json: "{}".into(),
+            message_id: action,
+            uid,
+            folder_path: folder.into(),
+            msgid: None,
+            candidate_paths: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn consecutive_flag_uids_stop_at_a_gap_and_cap_at_a_hundred() {
+        let mut pending: Vec<PendingAction> = (0..120)
+            .map(|i| row("\"mark_read\"", "INBOX", Some(i as u32 + 1), i))
+            .collect();
+        pending[40].uid = None;
+        let group = super::consecutive_flag_uids(
+            &pending,
+            0,
+            "\"mark_read\"",
+            "INBOX",
+            1,
+            petrel_providers::imap::STORE_FLAG_BATCH,
+        );
+        assert_eq!(group.len(), 40, "stops before the row with no UID");
+        assert_eq!(group.last().map(|(_, _, u)| *u), Some(40));
+
+        let full: Vec<PendingAction> = (0..150)
+            .map(|i| row("\"mark_read\"", "INBOX", Some(i as u32 + 1), i))
+            .collect();
+        let group = super::consecutive_flag_uids(
+            &full,
+            0,
+            "\"mark_read\"",
+            "INBOX",
+            1,
+            petrel_providers::imap::STORE_FLAG_BATCH,
+        );
+        assert_eq!(group.len(), 100);
     }
 }

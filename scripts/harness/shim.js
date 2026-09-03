@@ -35,6 +35,98 @@
   var ROW_N = /[?&]probe=scroll(?:&|$)/.test(String(location.search)) ? 400 : 40;
   // The last triage, so undo_triage can reverse it. See triage below.
   var lastTriage = null;
+  // ?probe=thread: a five-hundred-message conversation as a slim index, so
+  // the reader iframe cap can be exercised without a store.
+  var THREAD_PROBE = /[?&]probe=thread(?:=|&|$)/.test(String(location.search));
+  var THREAD_PROBE_N = (function () {
+    var m = /[?&]probe=thread=(\d+)/.exec(String(location.search));
+    if (m) return Math.max(1, Number(m[1]) || 500);
+    if (typeof window.__PETREL_THREAD_PROBE__ === 'number' && window.__PETREL_THREAD_PROBE__ > 0) {
+      return window.__PETREL_THREAD_PROBE__;
+    }
+    return 500;
+  })();
+
+  function clampThreadLimit(limit) {
+    var n = typeof limit === 'number' && limit > 0 ? Math.floor(limit) : 50;
+    return Math.min(100, Math.max(1, n));
+  }
+
+  function threadProbeMessages(n, opts) {
+    var limit = clampThreadLimit((opts && opts.limit) || 50);
+    var base = now - n * 60000;
+    var all = Array.from({ length: n }, function (_, i) {
+      var id = i + 1;
+      var sender = SENDERS[id % SENDERS.length];
+      return {
+        id: id,
+        from_display: sender[0],
+        from_addr: sender[1],
+        to: ['reader@example.test'],
+        cc: [],
+        snippet: 'Synthetic probe message ' + id,
+        unread: id === n,
+        date_ms: base + id * 60000,
+        subject: 'Probe thread message ' + id,
+        recipients: ['Reader'],
+        recipient_addrs: ['reader@example.test'],
+        attachments: [],
+        has_calendar: false,
+        invite_response: null,
+      };
+    });
+    var slice = all;
+    if (opts && opts.beforeDateMs != null && opts.beforeId != null) {
+      var at = -1;
+      for (var j = 0; j < all.length; j += 1) {
+        if (all[j].date_ms === opts.beforeDateMs && all[j].id === opts.beforeId) {
+          at = j;
+          break;
+        }
+      }
+      slice = at > 0 ? all.slice(0, at) : [];
+    }
+    return slice.slice(-limit);
+  }
+
+  function threadProbeIndex(n) {
+    var base = now - n * 60000;
+    return Array.from({ length: n }, function (_, i) {
+      var id = i + 1;
+      var sender = SENDERS[id % SENDERS.length];
+      return {
+        id: id,
+        from_display: sender[0],
+        from_addr: sender[1],
+        snippet: 'Synthetic probe message ' + id,
+        date_ms: base + id * 60000,
+        unread: id === n,
+      };
+    });
+  }
+
+  function threadProbeOne(n, messageId) {
+    var base = now - n * 60000;
+    if (messageId < 1 || messageId > n) return null;
+    var sender = SENDERS[messageId % SENDERS.length];
+    return {
+      id: messageId,
+      from_display: sender[0],
+      from_addr: sender[1],
+      to: ['reader@example.test'],
+      cc: [],
+      snippet: 'Synthetic probe message ' + messageId,
+      unread: messageId === n,
+      date_ms: base + messageId * 60000,
+      subject: 'Probe thread message ' + messageId,
+      recipients: ['Reader'],
+      recipient_addrs: ['reader@example.test'],
+      attachments: [],
+      has_calendar: false,
+      invite_response: null,
+    };
+  }
+
   var rows = Array.from({ length: ROW_N }, function (_, i) {
     return {
       // Negative thread ids on purpose: real unthreaded mail is keyed by
@@ -68,6 +160,10 @@
       snoozed: 0,
     };
   });
+
+  if (THREAD_PROBE) {
+    rows.forEach(function (r) { r.message_count = THREAD_PROBE_N; });
+  }
 
   // A few rows start out filed and tagged, so the views that are not the inbox
   // have something in them. Without these, Sent, Drafts and the tag views were
@@ -429,6 +525,15 @@
       return null;
     },
     thread_detail: function (a) {
+      var limit = clampThreadLimit(a.limit);
+      window.__THREAD_PROBE__ = { limit: limit, threadId: a.threadId };
+      if (THREAD_PROBE) {
+        return threadProbeMessages(THREAD_PROBE_N, {
+          limit: limit,
+          beforeDateMs: a.beforeDateMs,
+          beforeId: a.beforeId,
+        });
+      }
       // Read off the row rather than hardcoded: the list now shows four
       // senders, and a pane that answered "Sam Ortiz" for all of them would
       // make every sender bug invisible here.
@@ -457,6 +562,50 @@
           invite_response: null,
         },
       ];
+    },
+    thread_index: function (a) {
+      var rec = window.__THREAD_PROBE__ || {};
+      rec.threadId = a.threadId;
+      rec.index = THREAD_PROBE ? THREAD_PROBE_N : 1;
+      window.__THREAD_PROBE__ = rec;
+      if (THREAD_PROBE) return threadProbeIndex(THREAD_PROBE_N);
+      var row = rows.filter(function (r) { return r.thread_id === a.threadId; })[0]
+        || rows[0];
+      return [{
+        id: row.id,
+        from_display: row.from_display,
+        from_addr: row.from_addr,
+        snippet: row.snippet,
+        date_ms: row.date_ms,
+        unread: !!row.unread,
+      }];
+    },
+    thread_message: function (a) {
+      var rec = window.__THREAD_PROBE__ || {};
+      rec.fatCalls = (rec.fatCalls || 0) + 1;
+      window.__THREAD_PROBE__ = rec;
+      if (THREAD_PROBE) return threadProbeOne(THREAD_PROBE_N, a.messageId);
+      var row = rows.filter(function (r) { return r.id === a.messageId; })[0]
+        || rows[0];
+      return {
+        id: row.id,
+        from_display: row.from_display,
+        from_addr: row.from_addr,
+        to: ['me'],
+        cc: [],
+        snippet: row.snippet,
+        unread: !!row.unread,
+        date_ms: row.date_ms,
+        subject: row.subject,
+        recipients: ['me'],
+        recipient_addrs: ['you@example.com'],
+        attachments: [
+          { filename: 'diagram.png', size: 48123, part: 0, mime: 'image/png' },
+          { filename: 'setup.sh', size: 1290, part: 1, mime: 'text/x-shellscript' },
+        ],
+        has_calendar: true,
+        invite_response: null,
+      };
     },
     invitation: function (a) {
       // Message 1 wears a live REQUEST; ask with ?invCancel=1 for the

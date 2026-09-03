@@ -73,18 +73,20 @@ pub fn status(state: State<Arc<AppState>>) -> Status {
         // global `seeded` counter stays what it is — an internal
         // change-signal — and stops being shown as if it were a fact about
         // whatever account is on screen.
-        count: state
-            .store
-            .lock()
-            .ok()
-            .and_then(|s| {
-                s.active_account()
+        count: match state.store.lock() {
+            Ok(s) => {
+                let n = s
+                    .active_account()
                     .ok()
                     .flatten()
                     .and_then(|a| s.message_count_for(a).ok())
-            })
-            .map(|n| n as usize)
-            .unwrap_or_else(|| state.seeded.load(Ordering::Relaxed)),
+                    .map(|n| n as usize)
+                    .unwrap_or(0);
+                state.status_count.store(n, Ordering::Relaxed);
+                n
+            }
+            Err(_) => state.status_count.load(Ordering::Relaxed),
+        },
         server_total: state.server_total.load(Ordering::Relaxed),
         last_sync_ms: state.last_sync_ms.load(Ordering::Relaxed),
         source: state

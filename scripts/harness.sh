@@ -25,13 +25,16 @@ cp -R "$ui/dist/." "$out/"
 cp "$root/scripts/harness/shim.js" "$out/shim.js"
 cp "$root/scripts/harness/msg.html" "$out/msg.html"
 cp "$root/scripts/harness/scroll-probe.js" "$out/scroll-probe.js"
+cp "$root/scripts/harness/fit-probe.js" "$out/fit-probe.js"
+cp "$root/scripts/harness/thread-probe.js" "$out/thread-probe.js"
+cp "$root/apps/desktop/src-tauri/src/height_reporter.js" "$out/height_reporter.js"
 
 # Inject the shim ahead of the module script. A classic script tag runs during
 # parsing, so window.__TAURI_INTERNALS__ exists before the deferred module ever
 # evaluates — which is the only ordering that works.
-python3 - "$out/index.html" "$out/shim.js" "$out/scroll-probe.js" <<'PY'
+python3 - "$out/index.html" "$out/shim.js" "$out/scroll-probe.js" "$out/fit-probe.js" "$out/thread-probe.js" <<'PY'
 import hashlib, re, sys
-path, shim, probe = sys.argv[1], sys.argv[2], sys.argv[3]
+path, shim, scroll, fit, thread = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
 html = open(path).read()
 if 'shim.js' not in html:
     # Stamped with the shim's own hash. Without it the browser keeps the copy
@@ -42,11 +45,17 @@ if 'shim.js' not in html:
     html = re.sub(r'(<script type="module")',
                   f'<script src="./shim.js?v={tag}"></script>\n    \\1', html, count=1)
     print(f"shim injected (v={tag})")
-if 'scroll-probe.js' not in html:
-    ptag = hashlib.blake2s(open(probe, 'rb').read(), digest_size=6).hexdigest()
+def inject(name, src):
+    global html
+    if name in html:
+        return
+    tag = hashlib.blake2s(open(src, 'rb').read(), digest_size=6).hexdigest()
     html = re.sub(r'(<script type="module")',
-                  f'<script src="./scroll-probe.js?v={ptag}"></script>\n    \\1', html, count=1)
-    print(f"scroll-probe injected (v={ptag})")
+                  f'<script src="./{name}?v={tag}"></script>\n    \\1', html, count=1)
+    print(f"{name} injected (v={tag})")
+inject('scroll-probe.js', scroll)
+inject('fit-probe.js', fit)
+inject('thread-probe.js', thread)
 open(path, 'w').write(html)
 PY
 

@@ -1152,6 +1152,38 @@ pub struct FolderPass {
     pub seed_window: u32,
 }
 
+/// Catch-up fetch after the first seed: a closed UID range, not `{uid}:*`.
+///
+/// The second value is the UIDNEXT to record. If the slice did not reach the
+/// server's UIDNEXT, it is one past the slice so the next cycle continues
+/// instead of treating the folder as quiet.
+pub fn catchup_uid_range(
+    since_uid: u32,
+    server_uid_next: Option<u32>,
+    chunk: u32,
+) -> (String, Option<u32>) {
+    let start = since_uid.saturating_add(1);
+    let chunk = chunk.max(1);
+    let cap_end = start.saturating_add(chunk.saturating_sub(1));
+    let server_end = server_uid_next.map(|n| n.saturating_sub(1));
+    if let Some(end) = server_end
+        && start > end
+    {
+        return (String::new(), server_uid_next);
+    }
+    let last = match server_end {
+        Some(end) => cap_end.min(end),
+        None => cap_end,
+    };
+    let covered = server_end.is_some_and(|end| last >= end);
+    let reported = if covered {
+        server_uid_next
+    } else {
+        Some(last.saturating_add(1))
+    };
+    (format!("{start}:{last}"), reported)
+}
+
 /// What one folder's slice found.
 #[derive(Debug)]
 pub enum PassOutcome {
@@ -1302,6 +1334,7 @@ where
         };
 
         let mut fetched = 0usize;
+        let mut catchup_uid_next: Option<u32> = None;
         if new_mail {
             let query = "(UID FLAGS BODY.PEEK[])";
             if pass.since_uid == 0 {
@@ -1322,17 +1355,26 @@ where
                     }
                 }
             } else {
-                let range = format!("{}:*", pass.since_uid.saturating_add(1));
-                let mut fetches = session.uid_fetch(range, query).await?;
-                while let Some(fetch) = fetches.next().await {
-                    let fetch = fetch?;
-                    let bits = flags_to_bits(fetch.flags());
-                    if let (Some(uid), Some(body)) = (fetch.uid, fetch.body()) {
-                        if uid <= pass.since_uid {
-                            continue;
+                // Not `{uid}:*`: a stale watermark plus that range is the
+                // rest of the mailbox as full bodies, and macOS keeps the
+                // RSS after the Vecs drop. A slice of 200, with uid_next
+                // reported only as far as the slice reached, lets the next
+                // cycle continue instead of skipping the rest.
+                let (range, reported_next) =
+                    catchup_uid_range(pass.since_uid, mailbox.uid_next.or(status.uid_next), 200);
+                catchup_uid_next = reported_next;
+                if !range.is_empty() {
+                    let mut fetches = session.uid_fetch(range, query).await?;
+                    while let Some(fetch) = fetches.next().await {
+                        let fetch = fetch?;
+                        let bits = flags_to_bits(fetch.flags());
+                        if let (Some(uid), Some(body)) = (fetch.uid, fetch.body()) {
+                            if uid <= pass.since_uid {
+                                continue;
+                            }
+                            on_message(index, uid, bits, body);
+                            fetched += 1;
                         }
-                        on_message(index, uid, bits, body);
-                        fetched += 1;
                     }
                 }
             }
@@ -1364,7 +1406,7 @@ where
             fetched,
             uid_validity: mailbox.uid_validity.or(status.uid_validity),
             highest_modseq: mailbox.highest_modseq.or(status.highest_modseq),
-            uid_next: mailbox.uid_next.or(status.uid_next),
+            uid_next: catchup_uid_next.or(mailbox.uid_next).or(status.uid_next),
             flag_updates,
             keyword_updates,
             total: mailbox.exists,
@@ -1779,6 +1821,69 @@ where
     Ok(())
 }
 
+/// How many UIDs one STORE carries. A mark-read on a twenty-thousand-message
+/// thread used to open that many connections; a hundred on one session is
+/// what the drain now asks for.
+pub const STORE_FLAG_BATCH: usize = 100;
+
+/// Same as [`store_flag`], for many UIDs on one connection.
+pub async fn store_flags(
+    cfg: &ImapConfig,
+    folder: &str,
+    uids: &[u32],
+    flag: &str,
+    add: bool,
+) -> Result<()> {
+    if uids.is_empty() {
+        return Ok(());
+    }
+    if uids.len() == 1 {
+        return store_flag(cfg, folder, uids[0], flag, add).await;
+    }
+    match cfg.security {
+        Security::Tls => {
+            let client = Client::new(tls_stream(&cfg.host, cfg.port).await?);
+            store_flags_session(client, cfg, folder, uids, flag, add).await
+        }
+        #[cfg(feature = "insecure-plaintext")]
+        Security::InsecurePlaintext => {
+            let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await?;
+            store_flags_session(Client::new(tcp), cfg, folder, uids, flag, add).await
+        }
+    }
+}
+
+async fn store_flags_session<S>(
+    client: Client<S>,
+    cfg: &ImapConfig,
+    folder: &str,
+    uids: &[u32],
+    flag: &str,
+    add: bool,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
+{
+    let mut session = sign_in(client, cfg).await?;
+    session.select(folder).await?;
+    let op = if add {
+        "+FLAGS.SILENT"
+    } else {
+        "-FLAGS.SILENT"
+    };
+    let set = uids
+        .iter()
+        .map(|u| u.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    {
+        let mut updates = session.uid_store(set, format!("{op} ({flag})")).await?;
+        while updates.next().await.is_some() {}
+    }
+    session.logout().await?;
+    Ok(())
+}
+
 /// Quotes a label for an IMAP command.
 ///
 /// Labels are user-written, so they arrive with spaces, quotes and backslashes
@@ -2182,6 +2287,19 @@ mod tests {
         assert_eq!(super::quote_imap("Work stuff"), "\"Work stuff\"");
         assert_eq!(super::quote_imap(r#"say "hi""#), r#""say \"hi\"""#);
         assert_eq!(super::quote_imap(r"back\slash"), r#""back\\slash""#);
+    }
+
+    #[test]
+    fn catchup_range_is_closed_and_partial_uidnext_lets_the_next_cycle_continue() {
+        let (range, next) = super::catchup_uid_range(100, Some(1000), 200);
+        assert_eq!(range, "101:300");
+        assert_eq!(next, Some(301));
+        let (range, next) = super::catchup_uid_range(800, Some(1000), 200);
+        assert_eq!(range, "801:999");
+        assert_eq!(next, Some(1000));
+        let (range, next) = super::catchup_uid_range(999, Some(1000), 200);
+        assert_eq!(range, "");
+        assert_eq!(next, Some(1000));
     }
     use super::{capability_token, parse_capabilities};
 
