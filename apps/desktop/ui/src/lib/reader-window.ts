@@ -1,3 +1,5 @@
+import type { Thread, ThreadIndexRow } from './api';
+
 /** Estimated height of a collapsed reader card, including the gap below it. */
 export const COLLAPSED_ROW = 52;
 
@@ -19,13 +21,40 @@ export const MAX_OPEN_BODIES = 3;
 
 /** Keep drawing the current cards while the same conversation reloads.
  *
- *  A first open, or a switch to another thread, still shows the placeholder.
- *  Reloading the thread you are already in must not blank the pane. */
+ *  A first open, or a switch to another thread, paints the listing's newest
+ *  message at once. Reloading the thread you are already in must not blank
+ *  the pane. */
 export function keepExistingPane(args: {
   loadedThreadId: number | null;
   requestedThreadId: number;
 }): boolean {
   return args.loadedThreadId === args.requestedThreadId;
+}
+
+/** Slim card from the list row. The pane mounts this before `thread_index`
+ *  returns, so the newest body does not wait on the rest of the conversation. */
+export function previewCard(thread: Thread): ThreadIndexRow {
+  return {
+    id: thread.id,
+    from_display: thread.from_display,
+    from_addr: thread.from_addr,
+    snippet: thread.snippet,
+    date_ms: thread.date_ms,
+    unread: thread.unread,
+  };
+}
+
+/** Cards that sit above the pinned newest body.
+ *
+ *  The index is oldest-first and includes the message already on screen.
+ *  Those older rows are the conversation; the newest stays outside the
+ *  list so its frame is not rebuilt when they arrive. A one-message
+ *  conversation has nothing to put here. */
+export function olderCards(args: {
+  index: readonly ThreadIndexRow[];
+  newestId: number;
+}): ThreadIndexRow[] {
+  return args.index.filter((row) => row.id !== args.newestId);
 }
 
 /** Clamp a requested page size to what thread_detail accepts. */

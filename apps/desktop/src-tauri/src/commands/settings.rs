@@ -45,24 +45,6 @@ pub(crate) struct Status {
 #[tauri::command(async)]
 pub fn status(state: State<Arc<AppState>>) -> Status {
     let _t = Timed::new("status");
-    let configured = state
-        .store
-        .lock()
-        .ok()
-        .and_then(|s| {
-            s.active_account().ok().flatten().and_then(|a| {
-                // Presence of stored servers, deliberately not a password
-                // read: this runs on every status poll, and a keychain read
-                // here meant a consent dialog every few seconds on unsigned
-                // dev builds.
-                s.account_servers(a)
-                    .ok()
-                    .flatten()
-                    .map(|v| !v.imap_host.is_empty())
-            })
-        })
-        .unwrap_or(false)
-        || imap_config_from_env().is_some();
     let notify = state
         .pending_notify
         .lock()
@@ -73,32 +55,57 @@ pub fn status(state: State<Arc<AppState>>) -> Status {
         .lock()
         .map(|mut p| std::mem::take(&mut *p))
         .unwrap_or_default();
+    let (configured, count, retention) = match state.store_read() {
+        Ok(s) => {
+            let account = s.active_account().ok().flatten();
+            // Presence of stored servers, deliberately not a password
+            // read: this runs on every status poll, and a keychain read
+            // here meant a consent dialog every few seconds on unsigned
+            // dev builds.
+            let configured = account
+                .and_then(|a| {
+                    s.account_servers(a)
+                        .ok()
+                        .flatten()
+                        .map(|v| !v.imap_host.is_empty())
+                })
+                .unwrap_or(false)
+                || imap_config_from_env().is_some();
+            // The active account's held mail, not the store's total: while one
+            // account backfills a deep archive, the other's empty folders were
+            // announcing thousands of messages that belonged next door. The
+            // global `seeded` counter stays what it is — an internal
+            // change-signal — and stops being shown as if it were a fact about
+            // whatever account is on screen.
+            let count = account
+                .and_then(|a| s.message_count_for(a).ok())
+                .map(|n| n as usize)
+                .unwrap_or(0);
+            state.status_count.store(count, Ordering::Relaxed);
+            // The account on screen, not the one this launch happened to start
+            // with. Retention is per account — one may keep server deletions
+            // locally and the other not — and the status bar states the active
+            // policy, so naming the wrong account's is worse than saying nothing.
+            let retention = s
+                .retention_mode(account.unwrap_or(state.account_id))
+                .ok()
+                .map(|m| m.describe().to_string())
+                .unwrap_or_default();
+            (configured, count, retention)
+        }
+        Err(_) => (
+            imap_config_from_env().is_some(),
+            state.status_count.load(Ordering::Relaxed),
+            String::new(),
+        ),
+    };
     Status {
         configured,
         demo: state.demo.load(Ordering::Relaxed),
         notify,
         alerts,
         seeding: state.seeding.load(Ordering::Relaxed),
-        // The active account's held mail, not the store's total: while one
-        // account backfills a deep archive, the other's empty folders were
-        // announcing thousands of messages that belonged next door. The
-        // global `seeded` counter stays what it is — an internal
-        // change-signal — and stops being shown as if it were a fact about
-        // whatever account is on screen.
-        count: match state.store.lock() {
-            Ok(s) => {
-                let n = s
-                    .active_account()
-                    .ok()
-                    .flatten()
-                    .and_then(|a| s.message_count_for(a).ok())
-                    .map(|n| n as usize)
-                    .unwrap_or(0);
-                state.status_count.store(n, Ordering::Relaxed);
-                n
-            }
-            Err(_) => state.status_count.load(Ordering::Relaxed),
-        },
+        count,
         server_total: state.server_total.load(Ordering::Relaxed),
         last_sync_ms: state.last_sync_ms.load(Ordering::Relaxed),
         source: state
@@ -106,24 +113,7 @@ pub fn status(state: State<Arc<AppState>>) -> Status {
             .lock()
             .map(|s| s.clone())
             .unwrap_or_else(|_| "unknown".into()),
-        // The account on screen, not the one this launch happened to start
-        // with. Retention is per account — one may keep server deletions
-        // locally and the other not — and the status bar states the active
-        // policy, so naming the wrong account's is worse than saying nothing.
-        retention: state
-            .store
-            .lock()
-            .ok()
-            .and_then(|s| {
-                let account = s
-                    .active_account()
-                    .ok()
-                    .flatten()
-                    .unwrap_or(state.account_id);
-                s.retention_mode(account).ok()
-            })
-            .map(|m| m.describe().to_string())
-            .unwrap_or_default(),
+        retention,
         data_dir: state.data_dir.clone(),
         sync_error: state.sync_error.lock().ok().and_then(|e| e.clone()),
     }

@@ -10,7 +10,9 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
+use crate::diag::log_sync;
 use petrel_engine::blob::BlobStore;
 use tauri::http::{Request, Response};
 
@@ -127,6 +129,19 @@ impl ViewTokens {
 impl Default for ViewTokens {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Same threshold as `Timed` on IPC commands. The protocol handler is not
+/// a command, so those logs never saw a slow body.
+struct ViewClock(Instant);
+
+impl Drop for ViewClock {
+    fn drop(&mut self) {
+        let ms = self.0.elapsed().as_millis();
+        if ms > 50 {
+            log_sync(&format!("SLOW message_view: {ms}ms"));
+        }
     }
 }
 
@@ -587,6 +602,7 @@ pub fn handle(
     let Some(token) = path.strip_prefix("/message/") else {
         return error_response(404, "not found");
     };
+    let _clock = ViewClock(Instant::now());
     let Some(message_id) = tokens.resolve(token) else {
         return error_response(403, "unknown or expired message token");
     };
@@ -748,6 +764,20 @@ mod tests {
         assert!(doc.contains("fit.style.height"), "height not reserved");
         // And it still ends in the dialog.
         assert!(doc.contains("window.print()"));
+    }
+
+    /// The screen frame sizes itself from the fitted box, not scrollHeight.
+    ///
+    /// A wide message is scaled with a transform. That leaves the unscaled
+    /// height in the document, and posting scrollHeight stretched the iframe
+    /// by that leftover, which showed as a blank band under the text.
+    #[test]
+    fn the_frame_reports_the_fitted_box_not_the_unscaled_document() {
+        let doc = document("<p>hi</p>", 0, "n", FrameTheme::AlwaysLight);
+        assert!(doc.contains("getBoundingClientRect().bottom"), "{doc}");
+        assert!(doc.contains("paddingBottom"), "{doc}");
+        // scrollHeight remains only as the path when the box is missing.
+        assert!(doc.contains("scrollHeight"), "{doc}");
     }
 
     /// The preview is laid out as the sheet, which is what makes the fit

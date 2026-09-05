@@ -13,7 +13,17 @@ import { t } from '../lib/strings';
  * by the sanitizer and could never carry a matching nonce anyway; the frame is
  * still opaque-origin, still network-blocked by CSP, still cut off from IPC.
  */
-export function MessageBody({ messageId, title }: { messageId: number; title: string }) {
+export function MessageBody({
+  messageId,
+  title,
+  onReady,
+}: {
+  messageId: number;
+  title: string;
+  /** Fired once the frame URL is asked for, so chrome that reads the blob
+   *  (auth, unsubscribe) can wait until the body is already on the wire. */
+  onReady?: () => void;
+}) {
   const { settings } = useSettings();
   const [url, setUrl] = useState<string | null>(null);
   // Set when the body could not be asked for. Distinct from "not yet": a
@@ -27,6 +37,8 @@ export function MessageBody({ messageId, title }: { messageId: number; title: st
   // Bumped to re-fetch the body once the policy for it has changed. The URL is
   // single-use, so a new one is the only way to render the same message again.
   const [reload, setReload] = useState(0);
+  const onReadyRef = useRef(onReady);
+  onReadyRef.current = onReady;
   // The per-message escape from the dark transform (and from a sender's own
   // dark styling): render this one light. Session-local by intent.
   const [forceLight, setForceLight] = useState(false);
@@ -66,11 +78,13 @@ export function MessageBody({ messageId, title }: { messageId: number; title: st
         const resolved = appDark ? 'dark' : 'light';
         const force = forceLight ? '&force=light' : '';
         setUrl(u ? `${u}${u.includes('?') ? '&' : '?'}theme=${resolved}${force}` : null);
+        onReadyRef.current?.();
       })
       .catch((e) => {
         if (!live) return;
         setUrl(null);
         setFailed(String(e));
+        onReadyRef.current?.();
       });
     return () => {
       live = false;

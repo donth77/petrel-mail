@@ -29,7 +29,7 @@ pub fn list_threads(
         key: petrel_engine::store::SortKey::parse(sort.as_deref().unwrap_or("date")),
         ascending: ascending.unwrap_or(false),
     };
-    let store = state.store()?;
+    let store = state.store_read()?;
     // A hundred is the page the list asks for. The UI used to ask for 500
     // and the cap was 2000; both held the store lock for a mailbox-sized
     // amount of work while the window tried to scroll.
@@ -51,7 +51,7 @@ pub fn thread_by_id(
     thread_id: i64,
     state: State<Arc<AppState>>,
 ) -> Result<Option<ThreadListing>, String> {
-    let store = state.store()?;
+    let store = state.store_read()?;
     store.thread_by_id(thread_id).map_err(|e| e.to_string())
 }
 
@@ -70,7 +70,7 @@ pub fn thread_detail(
 ) -> Result<Vec<ThreadMessage>, String> {
     let _t = Timed::new("thread_detail");
     note_ui_touch(&state);
-    let store = state.store()?;
+    let store = state.store_read()?;
     let limit = limit.unwrap_or(50).min(100);
     let before = match (before_date_ms, before_id) {
         (Some(d), Some(k)) => Some((d, k)),
@@ -83,27 +83,33 @@ pub fn thread_detail(
 
 /// Slim cards for one conversation: sender, snippet, date. No recipients,
 /// no attachments, no IPC page cap — a long thread is still one SELECT.
-#[tauri::command(async)]
-pub fn thread_index(
+#[tauri::command]
+pub async fn thread_index(
     thread_id: i64,
-    state: State<Arc<AppState>>,
+    state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<ThreadIndexRow>, String> {
-    let _t = Timed::new("thread_index");
-    note_ui_touch(&state);
-    let store = state.store()?;
-    store.thread_index(thread_id).map_err(|e| e.to_string())
+    super::off_runtime(state, move |state| {
+        let _t = Timed::new("thread_index");
+        note_ui_touch(&state);
+        let store = state.store_read()?;
+        store.thread_index(thread_id).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// One message, hydrated. The pane calls this when a card is opened.
-#[tauri::command(async)]
-pub fn thread_message(
+#[tauri::command]
+pub async fn thread_message(
     message_id: i64,
-    state: State<Arc<AppState>>,
+    state: State<'_, Arc<AppState>>,
 ) -> Result<Option<ThreadMessage>, String> {
-    let _t = Timed::new("thread_message");
-    note_ui_touch(&state);
-    let store = state.store()?;
-    store.thread_message(message_id).map_err(|e| e.to_string())
+    super::off_runtime(state, move |state| {
+        let _t = Timed::new("thread_message");
+        note_ui_touch(&state);
+        let store = state.store_read_open()?;
+        store.thread_message(message_id).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// The numbers beside the rail's mailboxes.
@@ -126,7 +132,7 @@ pub fn view_counts(
         .iter()
         .map(|(k, v)| (k.clone(), petrel_engine::store::CountMode::parse(v)))
         .collect();
-    let store = state.store()?;
+    let store = state.store_read()?;
     store.view_counts(&modes).map_err(|e| e.to_string())
 }
 
@@ -136,7 +142,7 @@ pub fn view_count(view: Option<String>, state: State<Arc<AppState>>) -> Result<i
     let _t = Timed::new("view_count");
     note_ui_touch(&state);
     let view = ListView::parse(view.as_deref().unwrap_or("inbox"));
-    let store = state.store()?;
+    let store = state.store_read()?;
     store.conversations_in(&view).map_err(|e| e.to_string())
 }
 
@@ -156,7 +162,7 @@ pub fn search_messages(
         key: petrel_engine::store::SortKey::parse(&key),
         ascending: ascending.unwrap_or(false),
     });
-    let store = state.store()?;
+    let store = state.store_read()?;
     store
         .search_threads_sorted(&query, 200, sort)
         .map_err(|e| e.to_string())
@@ -164,17 +170,24 @@ pub fn search_messages(
 
 /// A one-message URL for the reading pane, spelled for this platform's
 /// webview — see `message_origin` for why the spelling varies.
-#[tauri::command(async)]
-pub fn message_url(message_id: i64, state: State<Arc<AppState>>) -> Result<String, String> {
-    let store = state.store()?;
-    match store.blob_hash_for(message_id).map_err(|e| e.to_string())? {
-        Some(_) => Ok(format!(
-            "{}/message/{}",
-            message_origin(),
-            state.tokens.issue(message_id)
-        )),
-        None => Err("message has no stored body".into()),
-    }
+#[tauri::command]
+pub async fn message_url(
+    message_id: i64,
+    state: State<'_, Arc<AppState>>,
+) -> Result<String, String> {
+    super::off_runtime(state, move |state| {
+        let _t = Timed::new("message_url");
+        let store = state.store_read_open()?;
+        match store.blob_hash_for(message_id).map_err(|e| e.to_string())? {
+            Some(_) => Ok(format!(
+                "{}/message/{}",
+                message_origin(),
+                state.tokens.issue(message_id)
+            )),
+            None => Err("message has no stored body".into()),
+        }
+    })
+    .await
 }
 
 /// Opens a message in its own window as a printable page.
