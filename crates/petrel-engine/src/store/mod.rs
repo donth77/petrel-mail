@@ -442,7 +442,11 @@ pub struct OutboxRow {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ThreadListing {
     pub thread_id: i64,
-    /// Newest message in the conversation — what the row displays.
+    /// The message the row stands for: the newest one in the view being
+    /// listed, which is not always the conversation's newest. A conversation
+    /// answered from the inbox carries the other side's last message here
+    /// while the reply sits in Sent. Search rows and `thread_by_id` carry the
+    /// conversation's newest.
     pub id: i64,
     pub from_display: String,
     pub from_addr: String,
@@ -1131,12 +1135,14 @@ fn register_functions(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn apply_runtime_pragmas(conn: &Connection) -> Result<()> {
-    let _mode: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
+/// Returns the journal mode the file ended up in: "wal" unless the
+/// filesystem refused it, in which case SQLite keeps the rollback journal.
+fn apply_runtime_pragmas(conn: &Connection) -> Result<String> {
+    let mode: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     conn.busy_timeout(std::time::Duration::from_millis(5000))?;
-    Ok(())
+    Ok(mode)
 }
 
 impl Store {
@@ -1156,7 +1162,17 @@ impl Store {
     pub fn open_secondary(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
         register_functions(&conn)?;
-        apply_runtime_pragmas(&conn)?;
+        let mode = apply_runtime_pragmas(&conn)?;
+        // Only WAL lets a reader run beside the writer. On a rollback
+        // journal, which is what a filesystem that refuses WAL leaves the
+        // file on, a second connection would take shared locks that block
+        // every commit, and the busy timeout would turn that into stalls.
+        // Better no reader than that one.
+        if !mode.eq_ignore_ascii_case("wal") {
+            return Err(StoreError::Rejected(format!(
+                "the mailbox is on a {mode} journal, not WAL; a second connection would contend with the writer"
+            )));
+        }
         conn.pragma_update(None, "query_only", "ON")?;
         Ok(Store { conn })
     }

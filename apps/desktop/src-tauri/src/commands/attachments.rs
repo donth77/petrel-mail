@@ -14,7 +14,7 @@ fn attachment_bytes(
     part: usize,
 ) -> Result<(petrel_mime::Attachment, Vec<u8>), String> {
     let hash = {
-        let store = state.store()?;
+        let store = state.store_read_open()?;
         store
             .blob_hash_for(message_id)
             .map_err(|e| e.to_string())?

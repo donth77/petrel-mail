@@ -17,7 +17,12 @@ export type Listing = {
 /** A conversation row. The list shows these, not individual messages. */
 export type Thread = {
   thread_id: number;
-  /** Newest message in the conversation — what the row displays and opens. */
+  /** The message the row stands for: the newest one *in the view being
+   *  listed*, which is not always the conversation's newest. In the inbox, a
+   *  conversation you have answered carries the other side's last message
+   *  here while your reply sits in Sent. Search rows and a window opened by
+   *  conversation id carry the conversation's newest. The reading pane takes
+   *  the newest from the thread index, never from this. */
   id: number;
   from_display: string;
   from_addr: string;

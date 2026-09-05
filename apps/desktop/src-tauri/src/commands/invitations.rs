@@ -64,7 +64,7 @@ fn time_view(t: &IcalTime) -> TimeView {
 
 fn load_invitation(state: &Arc<AppState>, message_id: i64) -> Result<Invitation, String> {
     let hash = {
-        let store = state.store()?;
+        let store = state.store_read_open()?;
         store
             .blob_hash_for(message_id)
             .map_err(|e| e.to_string())?

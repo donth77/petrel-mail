@@ -22,7 +22,7 @@ pub(crate) struct RemoteStatus {
 
 #[tauri::command(async)]
 pub fn remote_status(message_id: i64, state: State<Arc<AppState>>) -> Result<RemoteStatus, String> {
-    let store = state.store()?;
+    let store = state.store_read()?;
     let from = store
         .message_sender(message_id)
         .map_err(|e| e.to_string())?
@@ -164,7 +164,7 @@ pub async fn authentication_info(
 
 fn raw_message_of(state: &AppState, message_id: i64) -> Result<Vec<u8>, String> {
     let hash = {
-        let store = state.store()?;
+        let store = state.store_read_open()?;
         store
             .blob_hash_for(message_id)
             .map_err(|e| e.to_string())?

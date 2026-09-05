@@ -205,7 +205,7 @@ pub fn print_message(
 ) -> Result<(), String> {
     use tauri::{WebviewUrl, WebviewWindowBuilder};
     let token = {
-        let store = state.store()?;
+        let store = state.store_read_open()?;
         store
             .blob_hash_for(message_id)
             .map_err(|e| e.to_string())?
