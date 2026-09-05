@@ -193,6 +193,7 @@ compose-too-large = { $name } は収まりません。メッセージはエン�
 compose-attach-failed = 添付できませんでした: { $error }
 compose-missing-attachment = 添付に触れていますが、何も添付されていません。もう一度送信を押すとそのまま送信します。
 compose-no-recipient = 宛先を追加してください。
+compose-bad-recipient = アドレスではありません: { $addr }
 compose-sending = { $count } 秒後に送信
 compose-send-now = 今すぐ送信
 compose-sent = 送信しました

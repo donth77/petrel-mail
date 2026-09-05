@@ -208,6 +208,7 @@ compose-too-large = { $name } não cabe. As mensagens levam cerca de { $limit } 
 compose-attach-failed = Não foi possível anexar isso: { $error }
 compose-missing-attachment = Isto fala de um anexo e não tem nenhum. Aperte Enviar de novo para enviar mesmo assim.
 compose-no-recipient = Adicione alguém para enviar.
+compose-bad-recipient = Não é um endereço: { $addr }
 compose-sending = Envio em { $count } s
 compose-send-now = Enviar agora
 compose-sent = Enviada

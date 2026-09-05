@@ -39,7 +39,7 @@ pub(crate) fn clean_header(value: &str) -> String {
 mod header_tests {
     use super::clean_header;
 
-    /// The probe's own subject: a decoded RFC 2047 word carrying a CRLF.
+    /// A decoded RFC 2047 word carrying a CRLF, as a crafted message delivers it.
     #[test]
     fn a_header_value_cannot_carry_a_second_header() {
         let hostile = "Invoice\r\nBcc: attacker@example.com";

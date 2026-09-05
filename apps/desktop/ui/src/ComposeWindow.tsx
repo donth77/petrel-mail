@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api } from './lib/api';
 import { draftFromRecord } from './lib/draft-record';
 import { Compose, addresses, type Draft } from './components/Compose';
+import { firstUnsendable } from './lib/recipients';
 import { Picker } from './components/Picker';
 import { ATTACHMENT_LIMIT, pickAttachments, stageDropped } from './lib/attachments';
 import { settleDraft } from './lib/close-draft';
@@ -219,6 +220,11 @@ export function ComposeWindow({ draftId }: { draftId: number }) {
             setToast(t('compose-no-recipient'));
             return;
           }
+          const bad = firstUnsendable(d);
+          if (bad != null) {
+            setToast(t('compose-bad-recipient', { addr: bad }));
+            return;
+          }
           // Into the outbox with the same undo window the main composer
           // gives, rather than straight onto the wire. A popped-out send
           // had no window at all before this — and no retry, no outbox row
@@ -245,6 +251,11 @@ export function ComposeWindow({ draftId }: { draftId: number }) {
         onCreate={() => {}}
         onChoose={(at) => {
           setScheduling(false);
+          const bad = firstUnsendable(draft);
+          if (bad != null) {
+            setToast(t('compose-bad-recipient', { addr: bad }));
+            return;
+          }
           void save(draft)
             .then((id) => {
               if (id == null) throw new Error('no draft row');

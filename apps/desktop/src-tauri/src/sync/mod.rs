@@ -31,7 +31,15 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
         *state.source.lock().unwrap_or_else(|p| p.into_inner()) = format!("syncing {}…", cfg.host);
         // Between the steps of the first pass, and around the long ones: a
         // removed account stands down here rather than at the end.
-        let stand_down = || log_sync(&format!("account {account}: sync stopped"));
+        let stand_down = || {
+            log_sync(&format!("account {account}: sync stopped"));
+            // The first pass never reaches its end, so what it clears there
+            // is cleared here: otherwise "fetching your mail" stays on
+            // screen for the life of the process over an account that no
+            // longer exists.
+            state.seeding.store(false, Ordering::Relaxed);
+            *state.source.lock().unwrap_or_else(|p| p.into_inner()) = "sync stopped".into();
+        };
 
         // Mail already held was indexed by whatever the extraction did then.
         // When that improves, the improvement has to be applied backwards or it
@@ -798,6 +806,17 @@ async fn run_sync_cycle(
                     ));
                 }
             }
+            // A server that answered STATUS always names UIDVALIDITY. One
+            // that named nothing did not answer — a session that died
+            // mid-pass reads every later folder as empty — and re-mapping on
+            // that stripped the server numbers from all but a folder's
+            // newest messages. Not a reset; a failure.
+            PassOutcome::ValidityChanged { now: None } => {
+                log_sync(&format!(
+                    "folder {folder_id}: STATUS named no UIDVALIDITY; not treated as a reset"
+                ));
+                failures += 1;
+            }
             PassOutcome::ValidityChanged { now } => {
                 log_sync(&format!(
                     "folder {folder_id}: UIDVALIDITY reset ({:?} -> {now:?}); re-mapping",
@@ -1254,6 +1273,13 @@ async fn number_swept_inbox_placements(state: &Arc<AppState>, account: i64, cfg:
             return;
         };
         let id = store.folder_for_role(account, "inbox").ok().flatten();
+        // Nothing to number means nothing to list: a sweep that refiled
+        // messages the inbox already knew by number leaves no work here.
+        if let Some(id) = id
+            && store.unnumbered_placement_count(id).unwrap_or(0) == 0
+        {
+            return;
+        }
         let path = store
             .folders(account)
             .ok()

@@ -175,27 +175,15 @@ impl Store {
             let hits = self.messages_meeting(&q, wide, account)?;
             self.gather_threads(&hits, &mut seen, &mut order, &mut why)?;
         } else {
-            // The account filter is applied after the ranking, so a page of
-            // hits is not a page of results: the ranking is walked a page at
-            // a time until this account has enough conversations of its own.
-            // The cap is what keeps a word that matches most of a large
-            // mailbox from walking all of it — the answer is then the best
-            // matches rather than every match, which is what a search is.
-            const SCAN_CAP: u32 = 12_000;
-            let mut offset = 0u32;
-            loop {
-                let found = self.search_listing_page(&q.text, wide, offset)?;
-                let exhausted = (found.len() as u32) < wide;
-                let ids: Vec<i64> = found.iter().map(|h| h.id).collect();
-                let keep = self.ids_meeting(&ids, &q, account)?;
-                let kept: Vec<Listing> =
-                    found.into_iter().filter(|h| keep.contains(&h.id)).collect();
-                self.gather_threads(&kept, &mut seen, &mut order, &mut why)?;
-                offset = offset.saturating_add(wide);
-                if exhausted || order.len() >= limit as usize || offset >= SCAN_CAP {
-                    break;
-                }
-            }
+            // Ranked once, with the account and the conditions inside the
+            // same statement, so every hit is this account's and the ranking
+            // is walked exactly once. Filtering after the ranking was tried:
+            // it either took a fixed slice, which a common word in the other
+            // account could fill entirely, or walked the ranking a page at a
+            // time, which re-ranked every match per page and held the store
+            // for seconds on a two-letter query.
+            let hits = self.ranked_meeting(&q, wide, account)?;
+            self.gather_threads(&hits, &mut seen, &mut order, &mut why)?;
         }
         order.truncate(limit as usize);
         if order.is_empty() {
@@ -322,35 +310,113 @@ impl Store {
         (sql, args)
     }
 
-    /// Which of these messages meet the query's conditions.
-    fn ids_meeting(
+    /// The best `limit` matches for the words that also meet the conditions,
+    /// in rank order, with their snippets.
+    ///
+    /// The ranking and the filter are one statement: the join puts the
+    /// account and the conditions where the planner sees them, so a match
+    /// in the other account is never ranked, fetched or discarded. Snippets
+    /// come afterwards, one lookup per survivor. They are the expensive half
+    /// of a hit — a sorter has to build every row it orders, so a snippet in
+    /// the ranking query is computed for every match and then thrown away
+    /// for all but the first page.
+    fn ranked_meeting(
         &self,
-        ids: &[i64],
         q: &crate::search_query::SearchQuery,
+        limit: u32,
         account: i64,
-    ) -> Result<std::collections::HashSet<i64>> {
-        if ids.is_empty() {
-            return Ok(std::collections::HashSet::new());
-        }
+    ) -> Result<Vec<Listing>> {
+        let cjk = q.text.chars().any(is_cjk);
+        let expr = if cjk {
+            cjk_match_expr(&q.text)
+        } else {
+            match_expr(&q.text, true)
+        };
+        let Some(expr) = expr else {
+            return Ok(Vec::new());
+        };
         let (conds, mut args) = Self::conditions(q, account);
-        if conds.is_empty() {
-            return Ok(ids.iter().copied().collect());
-        }
-        let holes = std::iter::repeat_n("?", ids.len())
-            .collect::<Vec<_>>()
-            .join(",");
-        let sql = format!(
-            "SELECT m.id FROM messages m
-             WHERE m.deleted_at_ms IS NULL AND m.id IN ({holes}){conds}"
-        );
-        let mut all: Vec<Box<dyn rusqlite::ToSql>> = ids
-            .iter()
-            .map(|i| Box::new(*i) as Box<dyn rusqlite::ToSql>)
-            .collect();
+        let sql = if cjk {
+            format!(
+                "SELECT f.rowid, bm25(fts_cjk, 4.0, 1.0) AS r
+                 FROM fts_cjk f
+                 JOIN messages m ON m.id = f.rowid
+                 WHERE fts_cjk MATCH ? AND m.deleted_at_ms IS NULL{conds}
+                 ORDER BY r
+                 LIMIT ?"
+            )
+        } else {
+            format!(
+                "SELECT f.rowid, bm25(fts_messages, 4.0, 1.0, 2.0, 2.0) AS r
+                 FROM fts_messages f
+                 JOIN messages m ON m.id = f.rowid
+                 WHERE fts_messages MATCH ? AND m.deleted_at_ms IS NULL{conds}
+                 ORDER BY r
+                 LIMIT ?"
+            )
+        };
+        let mut all: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(expr.clone())];
         all.append(&mut args);
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(rusqlite::params_from_iter(all), |r| r.get::<_, i64>(0))?;
-        Ok(rows.collect::<std::result::Result<std::collections::HashSet<_>, _>>()?)
+        all.push(Box::new(limit));
+        let ids: Vec<i64> = {
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(all), |r| r.get::<_, i64>(0))?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        };
+
+        let mut fields = self.conn.prepare_cached(
+            "SELECT coalesce(from_display,''), coalesce(from_addr,''),
+                    coalesce(subject,''), date_ms
+             FROM messages WHERE id = ?1",
+        )?;
+        // A match evaluated against one row by rowid is a lookup, not a scan.
+        let mut unicode_snippet = self.conn.prepare_cached(
+            "SELECT snippet(fts_messages, 1, char(57344), char(57345), '…', 12)
+             FROM fts_messages WHERE fts_messages MATCH ?1 AND rowid = ?2",
+        )?;
+        let mut cjk_body = self
+            .conn
+            .prepare_cached("SELECT body_text FROM fts_content WHERE message_id = ?1")?;
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            // The join has already proven the message row exists; the index
+            // row is the one that can be missing, and then the hit simply
+            // has no snippet rather than failing the search.
+            let Some(row) = fields
+                .query_row(params![id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                })
+                .optional()?
+            else {
+                continue;
+            };
+            let snippet = if cjk {
+                cjk_body
+                    .query_row(params![id], |r| r.get::<_, String>(0))
+                    .optional()?
+                    .map(|body| cjk_snippet(&body, &q.text))
+                    .unwrap_or_default()
+            } else {
+                unicode_snippet
+                    .query_row(params![expr, id], |r| r.get::<_, String>(0))
+                    .optional()?
+                    .unwrap_or_default()
+            };
+            out.push(Listing {
+                id,
+                from_display: row.0,
+                from_addr: row.1,
+                subject: row.2,
+                snippet,
+                date_ms: row.3,
+            });
+        }
+        Ok(out)
     }
 
     /// Every message meeting the conditions, newest first — the answer when a

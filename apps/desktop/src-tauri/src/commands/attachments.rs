@@ -258,7 +258,7 @@ pub fn attachment_url(message_id: i64, part: usize, state: State<Arc<AppState>>)
 mod tests {
     use super::{is_executable_attachment, safe_filename};
 
-    /// The bypass this closes, in the probe's own words: the warning read the
+    /// The bypass this closes: the warning read the
     /// extension of the raw MIME name, and the file opened was the trimmed
     /// one. A trailing space or dot was the whole trick.
     #[test]

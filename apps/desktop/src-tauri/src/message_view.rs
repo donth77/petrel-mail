@@ -329,10 +329,13 @@ fn print_document(
 /// not admit `http://anywhere.example`. That distinction is the whole bug this
 /// function exists to keep fixed.
 fn img_src(allow_remote: bool) -> &'static str {
+    // `data:` is an image carried inside the message — a pasted screenshot,
+    // a signature from another client. The sanitizer admits it for images
+    // only, and it fetches nothing, so it is allowed in both modes.
     if allow_remote {
-        "cid: petrel-msg: http://petrel-msg.localhost https: http:"
+        "cid: data: petrel-msg: http://petrel-msg.localhost https: http:"
     } else {
-        "cid: petrel-msg: http://petrel-msg.localhost"
+        "cid: data: petrel-msg: http://petrel-msg.localhost"
     }
 }
 

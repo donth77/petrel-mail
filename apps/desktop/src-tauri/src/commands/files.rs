@@ -20,7 +20,7 @@ fn open_filters(purpose: &str) -> (&'static str, Vec<(&'static str, &'static [&'
     match purpose {
         "mail" => (
             "Choose mail to import",
-            vec![("Mail", &["mbox", "eml"][..])],
+            vec![("Mail", &["mbox", "mbx", "eml"][..])],
         ),
         "settings" => (
             "Choose a settings file",

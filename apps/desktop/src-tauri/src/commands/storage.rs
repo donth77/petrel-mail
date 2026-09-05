@@ -185,8 +185,9 @@ pub async fn remove_all_local_data(
             *store = petrel_engine::store::Store::open_in_memory()
                 .map_err(|e| format!("could not close the mailbox: {e}"))?;
         }
-        let moved = rename_aside(&dir, crate::state::now_ms())
-            .map_err(|e| format!("could not remove the mail: {e}"))?;
+        let moved = rename_aside(&dir, crate::state::now_ms()).map_err(|e| {
+            format!("could not remove the mail: {e}. Nothing was deleted; quit and reopen Petrel.")
+        })?;
         log_sync("local data set aside; it goes on the next launch");
         // Now that the mail is certainly gone, and not before.
         for id in accounts {

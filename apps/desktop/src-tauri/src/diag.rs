@@ -241,7 +241,16 @@ enum Provider {
 /// it sends a person to fix something that was never broken.
 pub(crate) fn friendly_sync_error_for(host: &str, raw: &str) -> String {
     let r = raw.to_ascii_uppercase();
-    if r.contains("AUTHENTICATIONFAILED") || r.contains("INVALID CREDENTIALS") {
+    // IMAP says AUTHENTICATIONFAILED; submission says 535, or "not accepted",
+    // and the send worker records it under its stage. All of them are the
+    // password, and all of them get the same advice.
+    if r.contains("AUTHENTICATIONFAILED")
+        || r.contains("INVALID CREDENTIALS")
+        || r.starts_with("AUTH:")
+        || r.contains("535 ")
+        || r.contains("NOT ACCEPTED")
+        || r.contains("AUTHENTICATION FAILED")
+    {
         return match provider_of(host) {
             Provider::Gmail => "Sign-in was refused. Gmail needs 2-Step Verification \
                 switched on and an app password — your ordinary account password will \

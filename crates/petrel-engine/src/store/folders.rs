@@ -795,6 +795,17 @@ impl Store {
 
     /// How many placements in this folder claim a server UID — the number a
     /// folder's STATUS should agree with, ghosts aside.
+    /// Placements in a folder that carry no UID yet: what a label sweep makes
+    /// when it files by Message-ID, and what a full listing of the folder can
+    /// number. Zero means that listing has nothing to do.
+    pub fn unnumbered_placement_count(&self, folder_id: i64) -> Result<i64> {
+        Ok(self.conn.query_row(
+            "SELECT count(*) FROM placements WHERE folder_id = ?1 AND uid IS NULL",
+            params![folder_id],
+            |r| r.get(0),
+        )?)
+    }
+
     pub fn uid_placement_count(&self, folder_id: i64) -> Result<i64> {
         Ok(self.conn.query_row(
             "SELECT count(*) FROM placements WHERE folder_id = ?1 AND uid IS NOT NULL",

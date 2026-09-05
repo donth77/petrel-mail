@@ -66,8 +66,16 @@ async fn server(mute: &'static str) -> (u16, Arc<AtomicUsize>) {
                     let reply = if upper.contains(" CAPABILITY") {
                         format!("* CAPABILITY IMAP4rev1 IDLE CONDSTORE\r\n{tag} OK done\r\n")
                     } else if upper.contains(" STATUS ") {
+                        // Named as asked: a STATUS answered under another
+                        // name is one the client discards, and that would
+                        // look like a reset rather than an answer.
+                        let asked = line
+                            .split_whitespace()
+                            .nth(2)
+                            .map(|w| w.trim_matches('"').to_string())
+                            .unwrap_or_else(|| "INBOX".to_string());
                         format!(
-                            "* STATUS \"INBOX\" (MESSAGES 3 UIDNEXT 4 UIDVALIDITY 1 HIGHESTMODSEQ 7)\r\n{tag} OK done\r\n"
+                            "* STATUS \"{asked}\" (MESSAGES 3 UIDNEXT 4 UIDVALIDITY 1 HIGHESTMODSEQ 7)\r\n{tag} OK done\r\n"
                         )
                     } else if upper.contains(" EXAMINE ") || upper.contains(" SELECT ") {
                         format!(
@@ -175,4 +183,59 @@ async fn a_watch_whose_done_is_never_answered_ends() {
         0,
         "the wake is never delivered from a session still in IDLE"
     );
+}
+
+/// A socket that dies in the middle of a pass takes the session with it,
+/// and every folder after that point must say so — not answer as though the
+/// server had spoken. The stream yields nothing forever once it has closed,
+/// so a STATUS asked on it comes back empty, and an empty STATUS names no
+/// UIDVALIDITY: read as a reset, that sent every remaining folder into a
+/// re-mapping that stripped the server numbers from all but its newest
+/// messages. A lid closed mid-pass was enough to trigger it.
+#[tokio::test]
+async fn a_socket_that_dies_mid_pass_fails_the_remaining_folders_rather_than_resetting_them() {
+    shorten_the_deadlines();
+    let (port, muted) = server("FETCH").await;
+    let passes: Vec<FolderPass> = ["INBOX", "Archive", "Sent", "Receipts"]
+        .iter()
+        .map(|path| FolderPass {
+            path: path.to_string(),
+            since_uid: 0,
+            expected_validity: Some(1),
+            since_uidnext: None,
+            since_modseq: None,
+            seed_window: 50,
+        })
+        .collect();
+
+    let outcomes = tokio::time::timeout(
+        Duration::from_secs(30),
+        sync_pass(&cfg(port), &passes, false, |_, _, _, _| {}),
+    )
+    .await
+    .expect("the pass must not outlive the test")
+    .expect("the pass reports rather than failing whole");
+
+    assert_eq!(
+        muted.load(Ordering::SeqCst),
+        1,
+        "the first FETCH was reached"
+    );
+    assert_eq!(
+        outcomes.len(),
+        4,
+        "every folder gets a verdict: {outcomes:?}"
+    );
+    for (i, outcome) in outcomes.iter().enumerate() {
+        match outcome {
+            PassOutcome::Failed { detail } if i == 0 => {
+                assert!(detail.contains("said nothing"), "{detail}")
+            }
+            PassOutcome::Failed { detail } => assert!(
+                detail.contains("connection was lost"),
+                "folder {i} was never reached, and says so: {detail}"
+            ),
+            other => panic!("folder {i} must fail, not report a reset or a fetch: {other:?}"),
+        }
+    }
 }

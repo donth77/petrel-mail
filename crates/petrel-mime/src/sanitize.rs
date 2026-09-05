@@ -306,6 +306,34 @@ fn tag_attributes() -> HashMap<&'static str, HashSet<&'static str>> {
 /// thread the window draws on.
 const MAX_NESTING: usize = 512;
 
+/// Pops what the parser closes on its own before opening `name`.
+///
+/// The optional-end-tag rules that matter for mail: another paragraph, item,
+/// row, cell, option or table section ends the one before it, and a block
+/// element ends an open paragraph. Only the nearest levels are looked at,
+/// as the parser looks no further either.
+fn implicitly_close(open: &mut Vec<String>, name: &str) {
+    let closes: &[&str] = match name {
+        "p" => &["p"],
+        "li" => &["li"],
+        "dt" | "dd" => &["dt", "dd"],
+        "tr" => &["tr", "td", "th"],
+        "td" | "th" => &["td", "th"],
+        "option" => &["option"],
+        "thead" | "tbody" | "tfoot" => &["thead", "tbody", "tfoot", "tr", "td", "th"],
+        "div" | "table" | "ul" | "ol" | "dl" | "blockquote" | "pre" | "h1" | "h2" | "h3" | "h4"
+        | "h5" | "h6" | "hr" | "form" | "section" | "article" | "header" | "footer" | "nav"
+        | "aside" | "center" | "address" | "fieldset" | "figure" => &["p"],
+        _ => return,
+    };
+    while open
+        .last()
+        .is_some_and(|top| closes.contains(&top.as_str()))
+    {
+        open.pop();
+    }
+}
+
 /// Drops tags that would nest deeper than the cap, keeping their content.
 ///
 /// A pre-pass rather than a limit inside the sanitizer, because the parser
@@ -319,7 +347,13 @@ fn cap_nesting(html: &str) -> std::borrow::Cow<'_, str> {
         "source", "track", "wbr",
     ];
     let bytes = html.as_bytes();
-    let mut depth = 0usize;
+    // What is open, nearest last. A stack rather than a count, because the
+    // parser closes some elements on its own: a <p> ends the previous <p>, a
+    // <tr> ends the previous row and its last cell. Counting each of those
+    // as a level deeper read six hundred unclosed paragraphs — the ordinary
+    // shape of older generated mail — as a nest past the cap, and ran the
+    // rest of the message into one.
+    let mut open: Vec<String> = Vec::new();
     // Opens dropped for being too deep, whose closing tags must go too.
     let mut dropped = 0usize;
     let mut out: Option<String> = None;
@@ -371,15 +405,23 @@ fn cap_nesting(html: &str) -> std::borrow::Cow<'_, str> {
                 dropped -= 1;
                 true
             } else {
-                depth = depth.saturating_sub(1);
+                // Closes the nearest open element of that name, and the
+                // ones opened inside it. A close with nothing to match is
+                // ignored, as the parser ignores it.
+                if let Some(at) = open.iter().rposition(|t| *t == name) {
+                    open.truncate(at);
+                }
                 false
             }
-        } else if depth >= MAX_NESTING {
-            dropped += 1;
-            true
         } else {
-            depth += 1;
-            false
+            implicitly_close(&mut open, &name);
+            if open.len() >= MAX_NESTING {
+                dropped += 1;
+                true
+            } else {
+                open.push(name.clone());
+                false
+            }
         };
         if drop_it {
             let buffer = out.get_or_insert_with(|| String::with_capacity(html.len()));
@@ -1053,5 +1095,54 @@ mod tests {
             out.contains("class=\"q\""),
             "quotes should be marked: {out}"
         );
+    }
+}
+
+#[cfg(test)]
+mod nesting_tests {
+    use super::{MAX_NESTING, cap_nesting};
+    use std::borrow::Cow;
+
+    /// The ordinary shape of older generated mail: hundreds of paragraphs
+    /// and not one closing tag. The parser closes each at the next, and so
+    /// must the cap, or it reads them as a nest and runs the rest together.
+    #[test]
+    fn unclosed_paragraphs_are_not_a_nest() {
+        let html = "<p>para ".repeat(MAX_NESTING + 200);
+        assert!(
+            matches!(cap_nesting(&html), Cow::Borrowed(_)),
+            "left untouched"
+        );
+        let items = format!("<ul>{}</ul>", "<li>item ".repeat(MAX_NESTING + 200));
+        assert!(matches!(cap_nesting(&items), Cow::Borrowed(_)));
+        let rows = format!(
+            "<table>{}</table>",
+            "<tr><td>row ".repeat(MAX_NESTING + 200)
+        );
+        assert!(matches!(cap_nesting(&rows), Cow::Borrowed(_)));
+        // A closed table returns to the top; an unclosed one would nest, as
+        // a table inside a cell legitimately does, and the parser agrees.
+        let mixed = "<p>one<div>two</div><p>three<table><tr><td>four</table>".repeat(MAX_NESTING);
+        assert!(matches!(cap_nesting(&mixed), Cow::Borrowed(_)));
+    }
+
+    /// The thing the cap is for is still capped.
+    #[test]
+    fn a_real_nest_is_still_flattened_past_the_cap() {
+        let html = "<div>".repeat(10_000) + "x" + &"</div>".repeat(10_000);
+        let Cow::Owned(capped) = cap_nesting(&html) else {
+            panic!("a nest past the cap is rewritten");
+        };
+        assert_eq!(capped.matches("<div>").count(), MAX_NESTING);
+        assert_eq!(capped.matches("</div>").count(), MAX_NESTING);
+        assert!(capped.contains('x'), "the content survives");
+    }
+
+    /// A close with nothing open of that name is ignored, as the parser
+    /// ignores it, rather than popping something else.
+    #[test]
+    fn a_stray_closing_tag_does_not_unbalance_the_count() {
+        let html = format!("<div>{}</p></p></p><span>y</span></div>", "<p>a".repeat(3));
+        assert!(matches!(cap_nesting(&html), Cow::Borrowed(_)));
     }
 }

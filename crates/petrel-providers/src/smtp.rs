@@ -297,6 +297,18 @@ fn parse_recipients(list: &[String]) -> Vec<Recipient> {
     list.iter().filter_map(|r| parse_recipient(r)).collect()
 }
 
+/// The entries `parse_recipients` would leave out, so a caller can refuse
+/// the whole message rather than send it to everyone else. A half-typed
+/// address dropped in silence is worse than a message that does not go:
+/// the person believes it reached someone it never did. Blank entries are
+/// not a problem, only a trailing comma.
+pub fn unsendable_recipients(list: &[String]) -> Vec<String> {
+    list.iter()
+        .filter(|r| !r.trim().is_empty() && parse_recipient(r).is_none())
+        .cloned()
+        .collect()
+}
+
 /// The pairs as one address-list header.
 fn address_list(list: &[Recipient]) -> mail_builder::headers::address::Address<'_> {
     use mail_builder::headers::address::Address;
@@ -494,6 +506,14 @@ impl Outgoing {
     /// A recipient whose text is not an address is dropped here rather than
     /// escaped; a message with nobody left to send to is refused by the caller
     /// rather than sent into the void.
+    /// Entries in To or Cc that the envelope would drop; see
+    /// `unsendable_recipients`.
+    pub fn unsendable(&self) -> Vec<String> {
+        let mut all: Vec<String> = self.to.clone();
+        all.extend(self.cc.iter().cloned());
+        unsendable_recipients(&all)
+    }
+
     pub fn recipients(&self) -> Vec<String> {
         self.to
             .iter()
@@ -729,9 +749,12 @@ async fn expect_reply<R: AsyncBufReadExt + Unpin>(
     if code == want {
         return Ok(reply);
     }
-    // 535 is "bad credentials" and 530 "authentication required"; both are
-    // about the account, not the message.
-    if stage == "auth" && matches!(code, 530 | 535) {
+    // Nothing about the message has been said yet, so no refusal here can
+    // be about it: 535 is a bad password, 530 "authentication required",
+    // 534 Gmail asking for an app password or a browser sign-in, 454 a
+    // temporary refusal. All of them are the account, and dead-lettering the
+    // message over any of them told the person the wrong thing.
+    if stage == "auth" {
         return Err(OpenError::Auth(reply));
     }
     if code / 100 == 5 {
@@ -1255,6 +1278,27 @@ mod tests {
                                 250-AUTH LOGIN XOAUTH2\r\n\
                                 250 SMTPUTF8";
 
+    /// What the envelope would leave out is what the sender has to be told
+    /// about first. A blank from a trailing comma is not a recipient at all,
+    /// and a display name in front of a good address is not a problem.
+    #[test]
+    fn the_entries_the_envelope_would_drop_are_named() {
+        let list: Vec<String> = [
+            "sam@example.com",
+            "dan",
+            "Dana Wu",
+            "<>",
+            "bob@",
+            "",
+            "  ",
+            "Dana Wu <dana@example.com>",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(unsendable_recipients(&list), vec!["dan", "Dana Wu", "<>"]);
+    }
+
     #[test]
     fn the_auth_line_is_read_off_the_ehlo_reply() {
         assert_eq!(auth_mechanisms(OUTLOOK_EHLO), vec!["LOGIN", "XOAUTH2"]);
@@ -1405,6 +1449,45 @@ mod tests {
                 assert!(detail.contains("535"), "{detail}");
             }
             other => panic!("a refused password must not dead-letter the message: {other:?}"),
+        }
+    }
+
+    /// Gmail's other refusals at AUTH — an app password required, a browser
+    /// sign-in wanted — are 534, not 535, and they used to dead-letter the
+    /// message as a rejection. Nothing about the message has been said at
+    /// that stage, so no refusal there can be about it.
+    #[tokio::test]
+    async fn every_refusal_at_auth_is_about_the_account_not_the_message() {
+        let (client, server) = tokio::io::duplex(4096);
+        tokio::spawn(async move {
+            let (rx, mut tx) = tokio::io::split(server);
+            let mut reader = BufReader::new(rx);
+            let mut line = String::new();
+            let _ = reader.read_line(&mut line).await;
+            let _ = tx
+                .write_all(
+                    b"534-5.7.9 Application-specific password required.\r\n\
+                      534 5.7.9 Learn more at https://support.example\r\n",
+                )
+                .await;
+        });
+        let (rx, mut tx) = tokio::io::split(client);
+        let mut reader = BufReader::new(rx);
+        let cfg = SmtpConfig {
+            host: "mail.example".into(),
+            port: 587,
+            user: "tom@example.com".into(),
+            credential: Credential::password("account-password-not-app-password"),
+        };
+        let err = authenticate(&mut reader, &mut tx, &cfg, &["PLAIN".to_string()])
+            .await
+            .expect_err("534 is a refusal");
+        match err.into_send_result() {
+            SendResult::FailedBeforeCommit { stage, detail } => {
+                assert_eq!(stage, "auth");
+                assert!(detail.contains("534"), "{detail}");
+            }
+            other => panic!("an app-password demand must not dead-letter the message: {other:?}"),
         }
     }
 }

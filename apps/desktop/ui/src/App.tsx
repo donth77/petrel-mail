@@ -23,6 +23,7 @@ import { TitleBar } from './components/TitleBar';
 import { Palette } from './components/Palette';
 import { Picker, type PickerOption } from './components/Picker';
 import { Compose, addresses, type Draft } from './components/Compose';
+import { firstUnsendable } from './lib/recipients';
 import { snoozeOptions } from './lib/snooze';
 import { key } from './lib/keys';
 import { promisesMissingAttachment } from './lib/compose-checks';
@@ -846,7 +847,11 @@ export function App() {
       // to add with X, and clearing there made a non-contiguous selection
       // impossible to build.
       if (!mods.keyboard && selected.size > 0) setSelected(new Set());
-      if (!mods.keyboard) setAnchor(id);
+      // The anchor follows the cursor however it moved. Anchoring only on
+      // clicks made ⇧J extend from the last row clicked, wherever the cursor
+      // had walked since; X still sets it too, so a selection built by hand
+      // keeps its own anchor.
+      setAnchor(id);
       setActiveId(id);
       // In Drafts, selecting one means resuming it. Showing an
       // unfinished message in a reading pane is showing it to the
@@ -1303,8 +1308,13 @@ export function App() {
   useEffect(() => {
     const alerts = status?.alerts ?? [];
     if (alerts.length === 0) return;
-    const said = ALERT_TEXT[alerts[0]];
-    if (said) setToast(t(said));
+    // All of them: two alerts in one poll are two things that happened, and
+    // the queue was drained on read, so a second one shown nowhere is gone.
+    const said = alerts
+      .map((key) => ALERT_TEXT[key])
+      .filter((id): id is StringId => id != null)
+      .map((id) => t(id));
+    if (said.length > 0) setToast(said.join(' '));
   }, [status]);
 
   // Moving off a conversation marks it read — the rule every mail client with
@@ -2198,6 +2208,11 @@ export function App() {
               setToast(t('compose-no-recipient'));
               return;
             }
+            const bad = firstUnsendable(d);
+            if (bad != null) {
+              setToast(t('compose-bad-recipient', { addr: bad }));
+              return;
+            }
             // Asked once. A second Send goes, because a warning you cannot get
             // past is a bug rather than a safeguard — sometimes you really did
             // mean to write "as attached" about something sent last week.
@@ -2255,6 +2270,11 @@ export function App() {
             const d = draftRef.current;
             setPicker(null);
             if (!d) return;
+            const bad = firstUnsendable(d);
+            if (bad != null) {
+              setToast(t('compose-bad-recipient', { addr: bad }));
+              return;
+            }
             // Through the save chain, so an autosave still in flight updates
             // this row rather than leaving a twin of it behind in Drafts.
             void saveDraft(d, { quiet: true })

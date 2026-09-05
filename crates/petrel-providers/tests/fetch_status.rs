@@ -331,3 +331,121 @@ async fn an_item_with_no_uid_stops_the_watermark_moving_at_all() {
         "nothing is recorded, so the range is asked for again"
     );
 }
+
+/// A server may volunteer `* n FETCH (FLAGS ...)` for another message in the
+/// middle of answering a body fetch — Gmail does, on a busy folder, most
+/// cycles. It names no UID and carries no body; it is not this command's
+/// answer, and it must not be read as an item that could not be placed.
+#[tokio::test]
+async fn an_unsolicited_flags_line_between_items_holds_nothing_back() {
+    let port = server(|tag, line| {
+        if let Some(r) = baseline(tag, line, 2, 103) {
+            return r;
+        }
+        if line.to_ascii_uppercase().contains("FETCH") {
+            return bytes(format!(
+                "{}* 7 FETCH (FLAGS (\\Seen))\r\n{}{tag} OK fetched\r\n",
+                fetch_line(1, 101),
+                fetch_line(2, 102)
+            ));
+        }
+        bytes(format!("{tag} OK done\r\n"))
+    })
+    .await;
+
+    let (outcome, ingested) = run(port, pass(100, Some(101))).await;
+    let PassOutcome::Fetched { uid_next, .. } = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(ingested, vec![101, 102]);
+    assert_eq!(
+        uid_next,
+        Some(103),
+        "both items were placed, so the watermark moves as usual"
+    );
+}
+
+/// A flag diff the server refuses is not a folder that failed: what the pass
+/// fetched stands, and the old flag baseline is kept so the diff is asked for
+/// again next cycle. Failing the folder recorded no watermark, and so
+/// re-fetched every new message on the next cycle as well.
+#[tokio::test]
+async fn a_refused_flag_diff_keeps_the_baseline_and_the_mail_that_arrived() {
+    let port = server(|tag, line| {
+        let upper = line.to_ascii_uppercase();
+        // Flags moved since the baseline of 7.
+        if upper.contains(" STATUS ") {
+            return bytes(format!(
+                "* STATUS \"INBOX\" (MESSAGES 2 UIDNEXT 103 UIDVALIDITY 1 HIGHESTMODSEQ 9)\r\n{tag} OK done\r\n"
+            ));
+        }
+        if let Some(r) = baseline(tag, line, 2, 103) {
+            return r;
+        }
+        if upper.contains("CHANGEDSINCE") {
+            return bytes(format!("{tag} NO [SERVERBUG] cannot diff\r\n"));
+        }
+        if upper.contains("FETCH") {
+            return bytes(format!("{}{tag} OK fetched\r\n", fetch_line(2, 102)));
+        }
+        bytes(format!("{tag} OK done\r\n"))
+    })
+    .await;
+
+    let (outcome, ingested) = run(port, pass(101, Some(102))).await;
+    let PassOutcome::Fetched {
+        uid_next,
+        highest_modseq,
+        ..
+    } = outcome
+    else {
+        panic!("a refused diff is not a failed folder: {outcome:?}");
+    };
+    assert_eq!(ingested, vec![102], "the new message still arrived");
+    assert_eq!(uid_next, Some(103), "and is not asked for again");
+    assert_eq!(
+        highest_modseq,
+        Some(7),
+        "the flag baseline stays where it was, so the diff is retried"
+    );
+}
+
+/// An emptied mailbox has no flags to diff, and servers refuse `1:*` on one.
+/// Asking every cycle and failing every cycle was a folder stuck forever.
+#[tokio::test]
+async fn an_empty_mailbox_is_not_asked_for_a_flag_diff() {
+    let asked = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::clone(&asked);
+    let port = server(move |tag, line| {
+        let upper = line.to_ascii_uppercase();
+        if upper.contains(" STATUS ") {
+            return bytes(format!(
+                "* STATUS \"INBOX\" (MESSAGES 0 UIDNEXT 103 UIDVALIDITY 1 HIGHESTMODSEQ 9)\r\n{tag} OK done\r\n"
+            ));
+        }
+        if upper.contains("CHANGEDSINCE") {
+            seen.fetch_add(1, Ordering::SeqCst);
+            return bytes(format!("{tag} BAD nothing to diff\r\n"));
+        }
+        if let Some(r) = baseline(tag, line, 0, 103) {
+            return r;
+        }
+        bytes(format!("{tag} OK done\r\n"))
+    })
+    .await;
+
+    let (outcome, ingested) = run(port, pass(102, Some(103))).await;
+    assert!(ingested.is_empty());
+    assert!(
+        matches!(
+            outcome,
+            PassOutcome::Fetched { .. } | PassOutcome::Unchanged { .. }
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        asked.load(Ordering::SeqCst),
+        0,
+        "no diff was asked of an empty mailbox"
+    );
+}

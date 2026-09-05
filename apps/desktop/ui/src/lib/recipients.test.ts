@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addressOf, looksLikeAddress, splitRecipients } from './recipients';
+import { addressOf, firstUnsendable, looksLikeAddress, sendable, splitRecipients } from './recipients';
 
 describe('splitRecipients', () => {
   it('takes the separators people actually type', () => {
@@ -77,5 +77,28 @@ describe('looksLikeAddress with a display name', () => {
     expect(addressOf('Dana Wu <dana@example.com>')).toBe('dana@example.com');
     expect(addressOf('dana@example.com')).toBe('dana@example.com');
     expect(addressOf('  dana@example.com  ')).toBe('dana@example.com');
+  });
+});
+
+describe('sendable', () => {
+  it('is the rule the wire applies: an @, and nothing that makes two addresses', () => {
+    expect(sendable('sam@example.com')).toBe(true);
+    expect(sendable('Dana Wu <dana@example.com>')).toBe(true);
+    expect(sendable('"Doe, John" <j@x.example>')).toBe(true);
+    expect(sendable('bob@localhost')).toBe(true);
+    expect(sendable('dan')).toBe(false);
+    expect(sendable('Dana Wu')).toBe(false);
+    expect(sendable('<>')).toBe(false);
+    expect(sendable('a b@example.com')).toBe(false);
+  });
+});
+
+describe('firstUnsendable', () => {
+  it('names the first entry that would be left off the envelope, in To then Cc', () => {
+    expect(firstUnsendable({ to: 'sam@example.com', cc: '' })).toBeNull();
+    expect(firstUnsendable({ to: 'sam@example.com, dan', cc: '' })).toBe('dan');
+    expect(firstUnsendable({ to: 'sam@example.com', cc: 'Dana Wu' })).toBe('Dana Wu');
+    // A trailing comma is not an entry.
+    expect(firstUnsendable({ to: 'sam@example.com,', cc: '' })).toBeNull();
   });
 });

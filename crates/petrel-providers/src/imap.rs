@@ -1370,8 +1370,9 @@ where
         // EOF mid-fetch is a truncated answer too, and the loudest kind: the
         // slice is incomplete and there is not even a status to read.
         let Some(response) = session.read_response().await? else {
-            return Err(ImapError::Protocol(format!(
-                "{name}: the connection closed before the server answered"
+            return Err(ImapError::Io(std::io::Error::new(
+                std::io::ErrorKind::ConnectionAborted,
+                format!("{name}: the connection closed before the server answered"),
             )));
         };
         match response.parsed() {
@@ -1397,9 +1398,12 @@ where
                 information,
                 ..
             } => {
-                return Err(ImapError::Protocol(format!(
-                    "{name}: the server closed the connection ({})",
-                    information.as_deref().unwrap_or_default()
+                return Err(ImapError::Io(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionAborted,
+                    format!(
+                        "{name}: the server closed the connection ({})",
+                        information.as_deref().unwrap_or_default()
+                    ),
                 )));
             }
             // EXISTS, EXPUNGE, an unsolicited FLAGS: not this command's
@@ -1407,6 +1411,34 @@ where
             _ => {}
         }
     }
+}
+
+/// Marks every folder the pass never reached as failed, so the caller sees
+/// "the connection was lost" rather than a verdict about mail it never saw.
+fn fail_the_rest(out: &mut Vec<PassOutcome>, total: usize) {
+    while out.len() < total {
+        out.push(PassOutcome::Failed {
+            detail: "the connection was lost before this folder was reached".into(),
+        });
+    }
+}
+
+/// Whether an error means the session is gone, as opposed to the server
+/// refusing one command on a session that is still there.
+///
+/// The difference decides what the rest of a pass does. After a refusal the
+/// next folder can be asked as usual. After a dead socket it cannot: the
+/// stream yields nothing forever, every STATUS comes back empty, and an
+/// empty STATUS reads as a UIDVALIDITY reset — which used to send every
+/// remaining folder into a re-mapping that stripped the server numbers from
+/// all but its newest messages. A lid closed mid-pass is all it took.
+fn session_is_dead(e: &ImapError) -> bool {
+    matches!(
+        e,
+        ImapError::Io(_)
+            | ImapError::Imap(async_imap::error::Error::Io(_))
+            | ImapError::Imap(async_imap::error::Error::ConnectionLost)
+    )
 }
 
 /// The UID a FETCH item named, if it named one.
@@ -1773,9 +1805,15 @@ where
         {
             Ok(s) => s,
             Err(e) => {
+                let e: ImapError = e.into();
+                let dead = session_is_dead(&e);
                 out.push(PassOutcome::Failed {
                     detail: e.to_string(),
                 });
+                if dead {
+                    fail_the_rest(&mut out, passes.len());
+                    break;
+                }
                 continue;
             }
         };
@@ -1842,6 +1880,8 @@ where
         let mut refused_uid: Option<u32> = None;
         let mut unplaceable_item = false;
         let mut failure: Option<String> = None;
+        // Whether a failure took the session with it; see `session_is_dead`.
+        let mut dead = false;
         if new_mail {
             let query = "(UID FLAGS BODY.PEEK[])";
             if pass.since_uid == 0 {
@@ -1869,11 +1909,16 @@ where
                                 refused_uid =
                                     Some(refused_uid.map_or(uid, |lowest| lowest.min(uid)))
                             }
-                            (None, _) => unplaceable_item = true,
+                            // An item with a body but no UID cannot be placed; a bare
+                            // `* n FETCH (FLAGS ...)` the server volunteers mid-way
+                            // is not this command's answer and holds nothing back.
+                            (None, Some(_)) => unplaceable_item = true,
+                            (None, None) => {}
                         },
                     )
                     .await;
                     if let Err(e) = result {
+                        dead |= session_is_dead(&e);
                         failure = Some(e.to_string());
                     }
                 }
@@ -1916,7 +1961,11 @@ where
                                 refused_uid =
                                     Some(refused_uid.map_or(uid, |lowest| lowest.min(uid)))
                             }
-                            (None, _) => unplaceable_item = true,
+                            // An item with a body but no UID cannot be placed; a bare
+                            // `* n FETCH (FLAGS ...)` the server volunteers mid-way
+                            // is not this command's answer and holds nothing back.
+                            (None, Some(_)) => unplaceable_item = true,
+                            (None, None) => {}
                         },
                     )
                     .await;
@@ -1924,6 +1973,7 @@ where
                         // The slice is incomplete, so the watermark stays
                         // where it was and this slice is asked for again next
                         // cycle rather than skipped.
+                        dead |= session_is_dead(&e);
                         failure = Some(e.to_string());
                         break;
                     }
@@ -1941,11 +1991,25 @@ where
         }
         if let Some(detail) = failure {
             out.push(PassOutcome::Failed { detail });
+            if dead {
+                fail_the_rest(&mut out, passes.len());
+                break;
+            }
             continue;
         }
 
         let mut flag_updates = Vec::new();
-        if flags_moved && let Some(seen) = pass.since_modseq {
+        // A refused diff keeps the old baseline, so the changes it would
+        // have reported are asked for again next cycle; what this pass
+        // fetched still stands. Failing the folder instead re-fetched every
+        // new message on the next cycle too, since the watermark was never
+        // recorded — and on an emptied mailbox the diff is refused every
+        // time, so it is not asked at all.
+        let mut diff_refused = false;
+        if flags_moved
+            && status.exists > 0
+            && let Some(seen) = pass.since_modseq
+        {
             // A refused diff is not a folder with nothing to report. Recording
             // the new modseq after one loses those flag changes for good,
             // because the next diff starts above them.
@@ -1963,17 +2027,25 @@ where
             )
             .await;
             if let Err(e) = result {
-                out.push(PassOutcome::Failed {
-                    detail: e.to_string(),
-                });
-                continue;
+                if session_is_dead(&e) {
+                    out.push(PassOutcome::Failed {
+                        detail: e.to_string(),
+                    });
+                    fail_the_rest(&mut out, passes.len());
+                    break;
+                }
+                diff_refused = true;
             }
         }
 
         out.push(PassOutcome::Fetched {
             fetched,
             uid_validity: mailbox.uid_validity.or(status.uid_validity),
-            highest_modseq: mailbox.highest_modseq.or(status.highest_modseq),
+            highest_modseq: if diff_refused {
+                pass.since_modseq
+            } else {
+                mailbox.highest_modseq.or(status.highest_modseq)
+            },
             // A pass that fetched nothing must not move the watermark past
             // mail it never saw. STATUS said "no new mail" with one UIDNEXT;
             // EXAMINE, a moment later, can report a higher one because a

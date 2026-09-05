@@ -193,6 +193,7 @@ compose-too-large = { $name } 放不下。邮件编码后大约能带 { $limit }
 compose-attach-failed = 无法添加附件：{ $error }
 compose-missing-attachment = 这封邮件提到了附件却一个也没有。再按一次发送即可照常发出。
 compose-no-recipient = 请添加收件人。
+compose-bad-recipient = 不是地址：{ $addr }
 compose-sending = { $count } 秒后发送
 compose-send-now = 立即发送
 compose-sent = 已发送

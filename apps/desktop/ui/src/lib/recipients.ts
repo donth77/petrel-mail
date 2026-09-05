@@ -64,3 +64,33 @@ export function looksLikeAddress(entry: string): boolean {
   if (!domain.includes('.') || domain.startsWith('.') || domain.endsWith('.')) return false;
   return !/\s/.test(addr);
 }
+
+/** Whether the sender would put this entry on the envelope at all.
+ *
+ * The rule the wire applies, no looser and no stricter: an address with an
+ * @ and nothing in it that would make it two addresses or two lines. This is
+ * the one that decides whether a message may go — `looksLikeAddress` above
+ * is only advice. An entry that fails here would be left off the envelope
+ * silently, and the message would reach everyone else with nobody told.
+ */
+export function sendable(entry: string): boolean {
+  const addr = addressOf(entry);
+  if (addr.length === 0 || !addr.includes('@')) return false;
+  for (const ch of addr) {
+    const code = ch.charCodeAt(0);
+    // A control character would start a second line on the wire; the rest
+    // would make this two addresses.
+    if (code < 0x20 || code === 0x7f) return false;
+    if (/[\s<>,;]/.test(ch)) return false;
+  }
+  return true;
+}
+
+/** The first To or Cc entry the wire would drop, or null when every entry
+ *  would go. What a send checks before it does anything else. */
+export function firstUnsendable(d: { to: string; cc: string }): string | null {
+  for (const entry of [...splitRecipients(d.to), ...splitRecipients(d.cc)]) {
+    if (!sendable(entry)) return entry;
+  }
+  return null;
+}

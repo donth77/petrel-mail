@@ -207,6 +207,7 @@ compose-too-large = { $name } passt nicht. Nachrichten fassen codiert etwa { $li
 compose-attach-failed = Anhängen nicht möglich: { $error }
 compose-missing-attachment = Hier ist von einem Anhang die Rede, aber keiner dabei. Drücken Sie erneut auf Senden, um trotzdem zu senden.
 compose-no-recipient = Fügen Sie jemanden hinzu, an den gesendet werden soll.
+compose-bad-recipient = Keine Adresse: { $addr }
 compose-sending = Wird in { $count } s gesendet
 compose-send-now = Jetzt senden
 compose-sent = Gesendet

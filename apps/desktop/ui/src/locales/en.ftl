@@ -207,6 +207,7 @@ compose-too-large = { $name } does not fit. Messages can carry about { $limit } 
 compose-attach-failed = Could not attach that: { $error }
 compose-missing-attachment = This mentions an attachment and has none. Send again to send anyway.
 compose-no-recipient = Add someone to send to.
+compose-bad-recipient = Not an address: { $addr }
 compose-sending = Sending in { $count }s
 compose-send-now = Send now
 compose-sent = Sent

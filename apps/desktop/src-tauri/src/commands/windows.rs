@@ -32,6 +32,9 @@ pub fn popout_compose(draft_id: i64, app: tauri::AppHandle) -> Result<(), String
     .title("Petrel")
     .inner_size(720.0, 620.0)
     .min_inner_size(420.0, 360.0)
+    // The same allow-list as the main window: this is the same bundle, and
+    // the popped-out reader shows the same links.
+    .on_navigation(crate::main_navigation_allowed)
     .build()
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -62,6 +65,9 @@ pub fn popout_message(thread_id: i64, app: tauri::AppHandle) -> Result<(), Strin
     .title("Petrel")
     .inner_size(780.0, 700.0)
     .min_inner_size(420.0, 360.0)
+    // The same allow-list as the main window: this is the same bundle, and
+    // the popped-out reader shows the same links.
+    .on_navigation(crate::main_navigation_allowed)
     .build()
     .map_err(|e| e.to_string())?;
     Ok(())

@@ -228,6 +228,7 @@ compose-too-large = { $name }은(는) 크기를 넘습니다. 메시지는 인�
 compose-attach-failed = 첨부할 수 없습니다: { $error }
 compose-missing-attachment = 첨부를 언급했지만 첨부된 파일이 없습니다. 그래도 보내려면 다시 보내기를 누르세요.
 compose-no-recipient = 보낼 사람을 추가하세요.
+compose-bad-recipient = 주소가 아닙니다: { $addr }
 compose-sending = { $count }초 후 전송
 compose-send-now = 지금 보내기
 compose-sent = 보냈습니다

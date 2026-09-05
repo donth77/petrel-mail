@@ -207,6 +207,7 @@ compose-too-large = { $name } ne passe pas. Les messages acceptent environ { $li
 compose-attach-failed = Impossible de joindre ceci : { $error }
 compose-missing-attachment = Ce message parle d’une pièce jointe et n’en a aucune. Appuyez de nouveau sur Envoyer pour l’envoyer quand même.
 compose-no-recipient = Ajoutez un destinataire.
+compose-bad-recipient = Ce n’est pas une adresse : { $addr }
 compose-sending = Envoi dans { $count } s
 compose-send-now = Envoyer maintenant
 compose-sent = Envoyé

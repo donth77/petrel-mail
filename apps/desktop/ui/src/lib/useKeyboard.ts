@@ -82,7 +82,14 @@ export function useKeyboard(actions: KeyActions) {
           const k = e.key.toLowerCase();
           if (k === 'k') return e.preventDefault(), a.openPalette();
           if (k === ',') return e.preventDefault(), a.openSettings();
-          if (/^[1-9]$/.test(e.key)) return e.preventDefault(), a.switchAccount(Number(e.key));
+          if (/^[1-9]$/.test(e.key)) {
+            // Not from inside a composer being typed in. Switching saves and
+            // closes the draft, but a recipient still being typed lives in
+            // the field, not the draft, and would go with the window.
+            const el = e.target as HTMLElement | null;
+            if (isTyping(e.target) && el?.closest?.('.compose')) return;
+            return e.preventDefault(), a.switchAccount(Number(e.key));
+          }
           // Free because modified keys stopped falling through to the
           // single-key commands; before that this forwarded the message.
           if (k === 'f') return e.preventDefault(), a.findInMessage();

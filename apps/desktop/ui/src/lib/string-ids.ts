@@ -191,6 +191,7 @@ export const STRING_IDS = [
   'compose-attach-failed',
   'compose-missing-attachment',
   'compose-no-recipient',
+  'compose-bad-recipient',
   'compose-sending',
   'compose-send-now',
   'compose-sent',

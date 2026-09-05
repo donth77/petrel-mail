@@ -17,6 +17,19 @@ use std::sync::{MutexGuard, TryLockError};
 /// not simply use the address. The identity holds the address the account
 /// was set up with; the login is only for AUTH, and only stands in here when
 /// the identity somehow has no address at all.
+/// What an outbox row records about a failure before anything was
+/// committed: the stage, then the server's words.
+fn record_failure(stage: &str, detail: &str) -> String {
+    format!("{stage}: {detail}")
+}
+
+/// Whether a recorded failure is the server refusing the password. The
+/// sign-in banner is raised on this, so it is the one string the send worker
+/// and the outbox row have to agree on.
+fn is_refused_password(recorded: &str) -> bool {
+    recorded.starts_with("auth:")
+}
+
 pub(crate) fn sender_address(identity: Option<&Identity>, login: &str) -> String {
     identity
         .map(|i| i.address.trim())
@@ -253,6 +266,14 @@ async fn attempt(
     if msg.recipients().is_empty() {
         return Err("a message needs at least one recipient".into());
     }
+    // Refused here rather than narrowed to the people who were named
+    // properly. At the wire a half-typed address is simply left out, and the
+    // person would never learn the message did not reach them; the reason
+    // lands on the outbox row instead, as a server's refusal would have.
+    let bad = msg.unsendable();
+    if !bad.is_empty() {
+        return Err(format!("not an address: {}", bad.join(", ")));
+    }
     let (message_id, raw) =
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| msg.render(&domain)))
             .map_err(|_| "could not assemble the message".to_string())?;
@@ -275,7 +296,7 @@ async fn attempt(
             ));
             (
                 AttemptOutcome::FailedBeforeCommit,
-                format!("{stage}: {detail}"),
+                record_failure(stage, &detail),
             )
         }
         SendResult::UnknownAfterTransmit { detail } => {
@@ -530,7 +551,7 @@ pub(crate) async fn send_due(state: Arc<AppState>, account: i64) {
         // will keep the message and keep trying, and without this the only
         // sign would be mail that never leaves. The same banner the sync loop
         // raises says what is wrong and where to fix it.
-        if detail.starts_with("auth:") {
+        if is_refused_password(&detail) {
             *state.sync_error.lock().unwrap_or_else(|p| p.into_inner()) =
                 Some(friendly_sync_error_for(&cfg.host, &detail));
         }
@@ -673,27 +694,23 @@ mod evidence_tests {
 
 #[cfg(test)]
 mod auth_banner_tests {
-    use petrel_providers::smtp::SendResult;
+    use super::{is_refused_password, record_failure};
 
-    /// The banner is raised on a string, so the string is the contract. If
-    /// the providers crate ever renames the stage, this is what notices —
-    /// otherwise a refused password would go back to being invisible, with
-    /// the outbox quietly retrying against a server that will keep saying no.
+    /// The banner is raised on the recorded string, so the recording and the
+    /// check have to agree. If the providers crate ever renames the stage,
+    /// or the recording changes shape, this is what notices — otherwise a
+    /// refused password goes back to being invisible, with the outbox
+    /// quietly retrying against a server that will keep saying no.
     #[test]
-    fn a_refused_password_is_recognisable_from_the_detail_alone() {
-        let refused = SendResult::FailedBeforeCommit {
-            stage: "auth",
-            detail: "535 5.7.8 Username and Password not accepted".into(),
-        };
-        let SendResult::FailedBeforeCommit { stage, detail } = refused else {
-            unreachable!("built as a pre-commit failure")
-        };
-        let recorded = format!("{stage}: {detail}");
-        assert!(recorded.starts_with("auth:"), "{recorded}");
-
-        // And a failure at any other stage must not raise it: a refused
+    fn a_refused_password_is_recognisable_from_what_the_row_records() {
+        let recorded = record_failure("auth", "535 5.7.8 Username and Password not accepted");
+        assert!(is_refused_password(&recorded), "{recorded}");
+        // A failure at any other stage must not raise it: a refused
         // recipient is about the message, not the account.
-        let rcpt = format!("{}: {}", "rcpt", "550 no such user");
-        assert!(!rcpt.starts_with("auth:"));
+        assert!(!is_refused_password(&record_failure(
+            "rcpt",
+            "550 no such user"
+        )));
+        assert!(!is_refused_password(&record_failure("connect", "refused")));
     }
 }
