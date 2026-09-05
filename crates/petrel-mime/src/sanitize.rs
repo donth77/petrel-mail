@@ -306,14 +306,68 @@ fn tag_attributes() -> HashMap<&'static str, HashSet<&'static str>> {
 /// thread the window draws on.
 const MAX_NESTING: usize = 512;
 
+/// ASCII tag name, kept on the stack. A `String` per tag made ordinary
+/// newsletters allocate once per element on the thread that draws the frame.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct TagName {
+    len: u8,
+    bytes: [u8; 24],
+}
+
+impl TagName {
+    fn parse(raw: &str) -> Option<Self> {
+        let mut bytes = [0u8; 24];
+        let mut n = 0usize;
+        for &b in raw.as_bytes() {
+            if b.is_ascii_alphanumeric() || b == b'-' {
+                if n >= 24 {
+                    break;
+                }
+                bytes[n] = b.to_ascii_lowercase();
+                n += 1;
+            } else {
+                break;
+            }
+        }
+        (n > 0).then_some(Self {
+            len: n as u8,
+            bytes,
+        })
+    }
+
+    fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.bytes[..self.len as usize]).unwrap_or("")
+    }
+
+    fn is_void(self) -> bool {
+        matches!(
+            self.as_str(),
+            "area"
+                | "base"
+                | "br"
+                | "col"
+                | "embed"
+                | "hr"
+                | "img"
+                | "input"
+                | "link"
+                | "meta"
+                | "param"
+                | "source"
+                | "track"
+                | "wbr"
+        )
+    }
+}
+
 /// Pops what the parser closes on its own before opening `name`.
 ///
 /// The optional-end-tag rules that matter for mail: another paragraph, item,
 /// row, cell, option or table section ends the one before it, and a block
 /// element ends an open paragraph. Only the nearest levels are looked at,
 /// as the parser looks no further either.
-fn implicitly_close(open: &mut Vec<String>, name: &str) {
-    let closes: &[&str] = match name {
+fn implicitly_close(open: &mut Vec<TagName>, name: TagName) {
+    let closes: &[&str] = match name.as_str() {
         "p" => &["p"],
         "li" => &["li"],
         "dt" | "dd" => &["dt", "dd"],
@@ -341,11 +395,6 @@ fn implicitly_close(open: &mut Vec<String>, name: &str) {
 /// this returns the input untouched, so ordinary mail is not reshaped by a
 /// defence it never triggers.
 fn cap_nesting(html: &str) -> std::borrow::Cow<'_, str> {
-    // Elements that never open a level: they have no closing tag to match.
-    const VOID: &[&str] = &[
-        "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param",
-        "source", "track", "wbr",
-    ];
     let bytes = html.as_bytes();
     // What is open, nearest last. A stack rather than a count, because the
     // parser closes some elements on its own: a <p> ends the previous <p>, a
@@ -353,7 +402,7 @@ fn cap_nesting(html: &str) -> std::borrow::Cow<'_, str> {
     // as a level deeper read six hundred unclosed paragraphs — the ordinary
     // shape of older generated mail — as a nest past the cap, and ran the
     // rest of the message into one.
-    let mut open: Vec<String> = Vec::new();
+    let mut open: Vec<TagName> = Vec::new();
     // Opens dropped for being too deep, whose closing tags must go too.
     let mut dropped = 0usize;
     let mut out: Option<String> = None;
@@ -390,13 +439,12 @@ fn cap_nesting(html: &str) -> std::borrow::Cow<'_, str> {
             break;
         }
         let end = j + 1;
-        let name: String = html[name_at..j]
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
-            .collect::<String>()
-            .to_ascii_lowercase();
+        let Some(name) = TagName::parse(&html[name_at..j]) else {
+            i = end;
+            continue;
+        };
         let self_closing = html[name_at..j].trim_end().ends_with('/');
-        if VOID.contains(&name.as_str()) || self_closing {
+        if name.is_void() || self_closing {
             i = end;
             continue;
         }
@@ -414,12 +462,12 @@ fn cap_nesting(html: &str) -> std::borrow::Cow<'_, str> {
                 false
             }
         } else {
-            implicitly_close(&mut open, &name);
+            implicitly_close(&mut open, name);
             if open.len() >= MAX_NESTING {
                 dropped += 1;
                 true
             } else {
-                open.push(name.clone());
+                open.push(name);
                 false
             }
         };
@@ -1144,5 +1192,19 @@ mod nesting_tests {
     fn a_stray_closing_tag_does_not_unbalance_the_count() {
         let html = format!("<div>{}</p></p></p><span>y</span></div>", "<p>a".repeat(3));
         assert!(matches!(cap_nesting(&html), Cow::Borrowed(_)));
+    }
+
+    /// Width, not depth: a newsletter is thousands of siblings. The cap must
+    /// leave it borrowed and finish on the same budget as a deep nest.
+    #[test]
+    fn a_wide_message_is_left_untouched() {
+        let html = "<p>hello</p>".repeat(2_000);
+        let started = std::time::Instant::now();
+        assert!(matches!(cap_nesting(&html), Cow::Borrowed(_)));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "took {:?}",
+            started.elapsed()
+        );
     }
 }

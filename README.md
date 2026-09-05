@@ -107,8 +107,9 @@ pnpm install
 pnpm --dir apps/desktop/ui build
 cargo petrel
 
-# Or build a .app bundle (macOS)
+# Or a relaunchable app (macOS / Windows)
 ./scripts/rebuild.sh
+scripts\rebuild.bat
 ```
 
 > `cargo petrel` is an alias for `cargo run --release -p petrel-desktop --features

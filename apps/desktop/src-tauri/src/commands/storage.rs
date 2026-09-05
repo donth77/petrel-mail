@@ -178,6 +178,10 @@ pub async fn remove_all_local_data(
         }
         log_sync("removing all local data at the user's request");
         {
+            // Readers hold the same file. Close them first or the rename
+            // below fails on a still-open secondary, and a SELECT after the
+            // wipe would keep answering from the mailbox we just discarded.
+            state.drop_readers();
             // Replaced rather than dropped: every other command reaches for
             // this lock, and an empty in-memory store answers them honestly
             // in the seconds between here and the app quitting.

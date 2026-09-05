@@ -4,11 +4,20 @@ use crate::diag::log_sync;
 use crate::message_view::ViewTokens;
 use petrel_engine::blob::BlobStore;
 use petrel_engine::store::Store;
-use std::sync::atomic::{AtomicBool, AtomicUsize};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, TryLockError};
 
 pub(crate) struct AppState {
     pub(crate) store: Mutex<Store>,
+    /// Extra connections for SELECTs. WAL already allows them to run during
+    /// a write; two of them so a recount and an index do not share one lock.
+    /// Empty stand-ins when `readers_live` is false (tests, after a wipe).
+    pub(crate) reads: [Mutex<Store>; 2],
+    /// One more connection, only for opening a message. Recount and the
+    /// conversation index keep the pool above busy; the body URL must not
+    /// wait for them.
+    pub(crate) read_open: Mutex<Store>,
+    pub(crate) readers_live: AtomicBool,
     pub(crate) blobs: BlobStore,
     pub(crate) seeding: AtomicBool,
     /// True when the window is showing synthetic mail because no account is
@@ -265,6 +274,57 @@ impl AppState {
             .lock()
             .map_err(|_| "store lock poisoned".to_string())
     }
+
+    /// A connection that may read while the writer is busy.
+    ///
+    /// Falls back to the write store when no secondary was opened — in-memory
+    /// tests have no file a second connection can attach to.
+    pub(crate) fn store_read(&self) -> Result<std::sync::MutexGuard<'_, Store>, String> {
+        if !self.readers_live.load(Ordering::Relaxed) {
+            return self.store();
+        }
+        for slot in &self.reads {
+            match slot.try_lock() {
+                Ok(g) => return Ok(g),
+                Err(TryLockError::Poisoned(p)) => return Ok(p.into_inner()),
+                Err(TryLockError::WouldBlock) => {}
+            }
+        }
+        self.reads[0]
+            .lock()
+            .map_err(|_| "store lock poisoned".to_string())
+    }
+
+    /// The connection that issues a body URL and serves the frame.
+    ///
+    /// Separate from [`Self::store_read`] so a recount or a long index cannot
+    /// hold the only remaining reader while the pane waits for one hash.
+    pub(crate) fn store_read_open(&self) -> Result<std::sync::MutexGuard<'_, Store>, String> {
+        if !self.readers_live.load(Ordering::Relaxed) {
+            return self.store();
+        }
+        self.read_open
+            .lock()
+            .map_err(|_| "store lock poisoned".to_string())
+    }
+
+    /// Drops file-backed readers so the mailbox can be moved aside.
+    /// Further reads use the write store, which the wipe replaces with memory.
+    pub(crate) fn drop_readers(&self) {
+        self.readers_live.store(false, Ordering::Relaxed);
+        for slot in &self.reads {
+            if let Ok(mut g) = slot.lock()
+                && let Ok(empty) = Store::open_in_memory()
+            {
+                *g = empty;
+            }
+        }
+        if let Ok(mut g) = self.read_open.lock()
+            && let Ok(empty) = Store::open_in_memory()
+        {
+            *g = empty;
+        }
+    }
 }
 
 /// Resolves once the account has been told to stop — at once, if it already
@@ -383,6 +443,12 @@ pub(crate) fn test_state(dir: &std::path::Path) -> Arc<AppState> {
     let account = store.ensure_test_account().expect("account");
     Arc::new(AppState {
         store: Mutex::new(store),
+        reads: [
+            Mutex::new(Store::open_in_memory().expect("reader")),
+            Mutex::new(Store::open_in_memory().expect("reader")),
+        ],
+        read_open: Mutex::new(Store::open_in_memory().expect("reader")),
+        readers_live: AtomicBool::new(false),
         blobs: BlobStore::open(&dir.join("blobs")).expect("blobs"),
         seeding: AtomicBool::new(false),
         demo: AtomicBool::new(false),

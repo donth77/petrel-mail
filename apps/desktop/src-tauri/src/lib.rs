@@ -299,12 +299,39 @@ pub fn run() {
             &e.to_string(),
         ),
     };
+    let read_a = match Store::open_secondary(&db) {
+        Ok(s) => s,
+        Err(e) => cannot_start(
+            "Its mailbox could not be opened for reading.",
+            &db,
+            &e.to_string(),
+        ),
+    };
+    let read_b = match Store::open_secondary(&db) {
+        Ok(s) => s,
+        Err(e) => cannot_start(
+            "Its mailbox could not be opened for reading.",
+            &db,
+            &e.to_string(),
+        ),
+    };
+    let read_open = match Store::open_secondary(&db) {
+        Ok(s) => s,
+        Err(e) => cannot_start(
+            "Its mailbox could not be opened for reading.",
+            &db,
+            &e.to_string(),
+        ),
+    };
 
     // Startup housekeeping: clear temp files left by an interrupted write, then
     // destroy anything whose grace period expired while the app was closed.
     let _ = blobs.sweep_tmp();
     let state = Arc::new(AppState {
         store: Mutex::new(store),
+        reads: [Mutex::new(read_a), Mutex::new(read_b)],
+        read_open: Mutex::new(read_open),
+        readers_live: AtomicBool::new(true),
         blobs,
         seeding: AtomicBool::new(true),
         demo: AtomicBool::new(false),
@@ -703,8 +730,7 @@ pub fn run() {
             let state = ctx.app_handle().state::<Arc<AppState>>();
             let lookup = |id: i64| {
                 state
-                    .store
-                    .lock()
+                    .store_read_open()
                     .ok()
                     .and_then(|s| s.blob_hash_for(id).ok().flatten())
             };
@@ -718,8 +744,7 @@ pub fn run() {
             // engine already trusts. Any failure along the way blocks.
             let policy_state = Arc::clone(&state);
             let blocking_off = state
-                .store
-                .lock()
+                .store_read_open()
                 .ok()
                 .and_then(|s| s.settings().ok())
                 .map(|s| s.get("blockRemoteContent").map(String::as_str) == Some("off"))
@@ -737,8 +762,7 @@ pub fn run() {
                     return true;
                 }
                 policy_state
-                    .store
-                    .lock()
+                    .store_read_open()
                     .ok()
                     .and_then(|s| s.remote_content_allowed(message_id).ok())
                     .unwrap_or(false)

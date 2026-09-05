@@ -56,8 +56,19 @@
     fitting = false;
   }
 
+  // The host sizes the iframe to this number. scrollHeight still includes
+  // the unscaled overflow of a transformed message, which is how a short
+  // wide mail left a blank band under the text. The box already has the
+  // height the fitter decided; its bottom plus the padding under it is
+  // the space the message actually occupies.
   function h() {
-    var d = document.documentElement, b = document.body;
+    var box = document.getElementById('petrel-box');
+    var b = document.body;
+    if (box && b) {
+      var pad = parseFloat(getComputedStyle(b).paddingBottom) || 0;
+      return Math.ceil(box.getBoundingClientRect().bottom + pad);
+    }
+    var d = document.documentElement;
     return Math.max(d.scrollHeight, b ? b.scrollHeight : 0);
   }
 

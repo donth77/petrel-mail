@@ -143,20 +143,23 @@ fn word(v: Option<petrel_mime::AuthVerdict>) -> Option<String> {
 }
 
 /// Reads the sender authentication verdicts for one message.
-#[tauri::command(async)]
-pub fn authentication_info(
+#[tauri::command]
+pub async fn authentication_info(
     message_id: i64,
-    state: State<Arc<AppState>>,
+    state: State<'_, Arc<AppState>>,
 ) -> Result<Option<AuthInfo>, String> {
-    let raw = raw_message_of(&state, message_id)?;
-    Ok(petrel_mime::authentication(&raw).map(|a| AuthInfo {
-        verified: a.identity_verified(),
-        domain: a.domain.clone(),
-        authserv: a.authserv.clone(),
-        spf: word(a.spf),
-        dkim: word(a.dkim),
-        dmarc: word(a.dmarc),
-    }))
+    super::off_runtime(state, move |state| {
+        let raw = raw_message_of(&state, message_id)?;
+        Ok(petrel_mime::authentication(&raw).map(|a| AuthInfo {
+            verified: a.identity_verified(),
+            domain: a.domain.clone(),
+            authserv: a.authserv.clone(),
+            spf: word(a.spf),
+            dkim: word(a.dkim),
+            dmarc: word(a.dmarc),
+        }))
+    })
+    .await
 }
 
 fn raw_message_of(state: &AppState, message_id: i64) -> Result<Vec<u8>, String> {
@@ -174,17 +177,20 @@ fn raw_message_of(state: &AppState, message_id: i64) -> Result<Vec<u8>, String> 
 }
 
 /// Reads the List-Unsubscribe offer for one message, if it makes one.
-#[tauri::command(async)]
-pub fn unsubscribe_info(
+#[tauri::command]
+pub async fn unsubscribe_info(
     message_id: i64,
-    state: State<Arc<AppState>>,
+    state: State<'_, Arc<AppState>>,
 ) -> Result<Option<UnsubInfo>, String> {
-    let raw = raw_message_of(&state, message_id)?;
-    Ok(petrel_mime::unsubscribe_info(&raw).map(|u| UnsubInfo {
-        one_click: u.one_click.is_some(),
-        url: u.url,
-        mailto: u.mailto,
-    }))
+    super::off_runtime(state, move |state| {
+        let raw = raw_message_of(&state, message_id)?;
+        Ok(petrel_mime::unsubscribe_info(&raw).map(|u| UnsubInfo {
+            one_click: u.one_click.is_some(),
+            url: u.url,
+            mailto: u.mailto,
+        }))
+    })
+    .await
 }
 
 /// Sends the RFC 8058 one-click POST for this message.

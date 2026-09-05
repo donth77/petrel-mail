@@ -1,5 +1,9 @@
 //! The IPC surface, one file per area of the UI that calls it.
 
+use crate::state::AppState;
+use std::sync::Arc;
+use tauri::State;
+
 pub(crate) mod accounts;
 pub(crate) mod attachments;
 pub(crate) mod compose;
@@ -13,6 +17,24 @@ pub(crate) mod storage;
 pub(crate) mod triage;
 pub(crate) mod updates;
 pub(crate) mod windows;
+
+/// Runs store and blob work off the async runtime.
+///
+/// `#[tauri::command(async)]` on a synchronous function is scheduled with
+/// `async_runtime::spawn`. The body still blocks that worker: opening a
+/// message fired `thread_index`, `message_url`, `authentication_info` and
+/// `unsubscribe_info` together, and the last two decompress the same blob
+/// on the runtime that is supposed to stay free. Storage commands already
+/// use `spawn_blocking`; the reading path follows them.
+pub(crate) async fn off_runtime<T: Send + 'static>(
+    state: State<'_, Arc<AppState>>,
+    work: impl FnOnce(Arc<AppState>) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let state = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || work(state))
+        .await
+        .map_err(|e| e.to_string())?
+}
 
 /// Strips the characters that would end a header line and start another one.
 ///
