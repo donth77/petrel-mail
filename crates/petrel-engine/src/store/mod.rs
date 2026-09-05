@@ -1115,6 +1115,30 @@ impl ListView {
     }
 }
 
+fn register_functions(conn: &Connection) -> Result<()> {
+    // Registered before the schema runs: the FTS triggers call these on
+    // every write, so they must exist on every connection that opens the
+    // store, not only the one that created it.
+    let flags = FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC;
+    conn.create_scalar_function("petrel_cjk", 1, flags, |ctx| {
+        let s: Option<String> = ctx.get(0)?;
+        Ok(s.map(|s| cjk_spaced(&s)))
+    })?;
+    conn.create_scalar_function("petrel_has_cjk", 1, flags, |ctx| {
+        let s: Option<String> = ctx.get(0)?;
+        Ok(s.is_some_and(|s| has_cjk(&s)))
+    })?;
+    Ok(())
+}
+
+fn apply_runtime_pragmas(conn: &Connection) -> Result<()> {
+    let _mode: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    conn.busy_timeout(std::time::Duration::from_millis(5000))?;
+    Ok(())
+}
+
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         Self::init(Connection::open(path)?)
@@ -1124,23 +1148,35 @@ impl Store {
         Self::init(Connection::open_in_memory()?)
     }
 
-    fn init(conn: Connection) -> Result<Self> {
-        // Registered before the schema runs: the FTS triggers call these on
-        // every write, so they must exist on every connection that opens the
-        // store, not only the one that created it.
-        let flags = FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC;
-        conn.create_scalar_function("petrel_cjk", 1, flags, |ctx| {
-            let s: Option<String> = ctx.get(0)?;
-            Ok(s.map(|s| cjk_spaced(&s)))
-        })?;
-        conn.create_scalar_function("petrel_has_cjk", 1, flags, |ctx| {
-            let s: Option<String> = ctx.get(0)?;
-            Ok(s.is_some_and(|s| has_cjk(&s)))
-        })?;
+    /// A second connection to a store that is already open.
+    ///
+    /// WAL lets this connection read while the writer is mid-transaction.
+    /// It does not migrate: the primary connection owns the schema. Writes
+    /// are refused so a SELECT helper cannot become a second writer.
+    pub fn open_secondary(path: &Path) -> Result<Self> {
+        let conn = Connection::open(path)?;
+        register_functions(&conn)?;
+        apply_runtime_pragmas(&conn)?;
+        conn.pragma_update(None, "query_only", "ON")?;
+        Ok(Store { conn })
+    }
 
-        let _mode: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
-        conn.pragma_update(None, "synchronous", "NORMAL")?;
-        conn.pragma_update(None, "foreign_keys", "ON")?;
+    /// Holds an uncommitted IMMEDIATE transaction while `f` runs, then
+    /// rolls it back. Used to prove a secondary reader is not blocked by
+    /// a writer that has reserved the file.
+    #[cfg(feature = "testkit")]
+    pub fn with_uncommitted_write<R>(&mut self, f: impl FnOnce() -> R) -> Result<R> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let r = f();
+        drop(tx);
+        Ok(r)
+    }
+
+    fn init(conn: Connection) -> Result<Self> {
+        register_functions(&conn)?;
+        apply_runtime_pragmas(&conn)?;
         // Migrations apply in order from whatever version the file is at, so a
         // fresh database runs the baseline and then every step, and an existing
         // one runs only what it is missing. Re-running schema.sql over a
