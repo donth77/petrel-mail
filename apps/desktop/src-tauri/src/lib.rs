@@ -299,20 +299,25 @@ pub fn run() {
             &e.to_string(),
         ),
     };
-    // Three more connections, for reading while the sync loop writes. They
+    // Four more connections, for reading while the sync loop writes. They
     // need WAL, which the store asked for above; a filesystem that refused it
     // leaves the store on a rollback journal, where extra connections would
     // contend with the writer rather than run beside it. So a reader that
     // cannot be opened is not fatal: every read falls back to the write
     // connection, as it did before, and the log says so once.
+    //
+    // Two share listing and recounts. One is only for a body URL. One is
+    // only for the conversation index, so older cards do not wait behind
+    // a recount and a body does not wait behind a long index.
     let (readers, readers_live) = match (
         Store::open_secondary(&db),
         Store::open_secondary(&db),
         Store::open_secondary(&db),
+        Store::open_secondary(&db),
     ) {
-        (Ok(a), Ok(b), Ok(open)) => ([a, b, open], true),
-        (a, b, open) => {
-            let why = [a.err(), b.err(), open.err()]
+        (Ok(a), Ok(b), Ok(open), Ok(index)) => ([a, b, open, index], true),
+        (a, b, open, index) => {
+            let why = [a.err(), b.err(), open.err(), index.err()]
                 .into_iter()
                 .flatten()
                 .map(|e| e.to_string())
@@ -325,10 +330,10 @@ pub fn run() {
                 Ok(s) => s,
                 Err(e) => cannot_start("Its mailbox could not be opened.", &db, &e.to_string()),
             };
-            ([stand_in(), stand_in(), stand_in()], false)
+            ([stand_in(), stand_in(), stand_in(), stand_in()], false)
         }
     };
-    let [read_a, read_b, read_open] = readers;
+    let [read_a, read_b, read_open, read_index] = readers;
 
     // Startup housekeeping: clear temp files left by an interrupted write, then
     // destroy anything whose grace period expired while the app was closed.
@@ -337,6 +342,7 @@ pub fn run() {
         store: Mutex::new(store),
         reads: [Mutex::new(read_a), Mutex::new(read_b)],
         read_open: Mutex::new(read_open),
+        read_index: Mutex::new(read_index),
         readers_live: AtomicBool::new(readers_live),
         blobs,
         seeding: AtomicBool::new(true),

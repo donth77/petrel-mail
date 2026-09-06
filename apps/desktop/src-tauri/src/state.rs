@@ -10,13 +10,16 @@ use std::sync::{Arc, Mutex, TryLockError};
 pub(crate) struct AppState {
     pub(crate) store: Mutex<Store>,
     /// Extra connections for SELECTs. WAL already allows them to run during
-    /// a write; two of them so a recount and an index do not share one lock.
+    /// a write; two of them so a recount and a listing do not share one lock.
     /// Empty stand-ins when `readers_live` is false (tests, after a wipe).
     pub(crate) reads: [Mutex<Store>; 2],
-    /// One more connection, only for opening a message. Recount and the
-    /// conversation index keep the pool above busy; the body URL must not
-    /// wait for them.
+    /// One more connection, only for opening a message. Recounts keep the
+    /// pool busy; the conversation index has its own. The body URL must
+    /// not wait for either.
     pub(crate) read_open: Mutex<Store>,
+    /// One more connection, only for the conversation index. Recounts
+    /// keep the pool busy; older cards must not wait behind them.
+    pub(crate) read_index: Mutex<Store>,
     pub(crate) readers_live: AtomicBool,
     pub(crate) blobs: BlobStore,
     pub(crate) seeding: AtomicBool,
@@ -297,13 +300,28 @@ impl AppState {
 
     /// The connection that issues a body URL and serves the frame.
     ///
-    /// Separate from [`Self::store_read`] so a recount or a long index cannot
-    /// hold the only remaining reader while the pane waits for one hash.
+    /// Separate from [`Self::store_read`] and [`Self::store_read_index`] so a
+    /// recount or a long index cannot hold the reader while the pane waits
+    /// for one hash.
     pub(crate) fn store_read_open(&self) -> Result<std::sync::MutexGuard<'_, Store>, String> {
         if !self.readers_live.load(Ordering::Relaxed) {
             return self.store();
         }
         self.read_open
+            .lock()
+            .map_err(|_| "store lock poisoned".to_string())
+    }
+
+    /// The connection that lists a conversation's cards.
+    ///
+    /// Separate from the listing pool so a recount does not hold the index,
+    /// and from [`Self::store_read_open`] so a long index does not hold the
+    /// body URL.
+    pub(crate) fn store_read_index(&self) -> Result<std::sync::MutexGuard<'_, Store>, String> {
+        if !self.readers_live.load(Ordering::Relaxed) {
+            return self.store();
+        }
+        self.read_index
             .lock()
             .map_err(|_| "store lock poisoned".to_string())
     }
@@ -320,6 +338,11 @@ impl AppState {
             }
         }
         if let Ok(mut g) = self.read_open.lock()
+            && let Ok(empty) = Store::open_in_memory()
+        {
+            *g = empty;
+        }
+        if let Ok(mut g) = self.read_index.lock()
             && let Ok(empty) = Store::open_in_memory()
         {
             *g = empty;
@@ -448,6 +471,7 @@ pub(crate) fn test_state(dir: &std::path::Path) -> Arc<AppState> {
             Mutex::new(Store::open_in_memory().expect("reader")),
         ],
         read_open: Mutex::new(Store::open_in_memory().expect("reader")),
+        read_index: Mutex::new(Store::open_in_memory().expect("reader")),
         readers_live: AtomicBool::new(false),
         blobs: BlobStore::open(&dir.join("blobs")).expect("blobs"),
         seeding: AtomicBool::new(false),
