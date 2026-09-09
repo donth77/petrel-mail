@@ -27,6 +27,8 @@ import {
   EXPANDED_ROW_ESTIMATE,
   keepExistingPane,
   nextExpanded,
+  olderCards,
+  previewCard,
 } from '../lib/reader-window';
 import { FindBar } from './FindBar';
 import { Icon } from './Icon';
@@ -292,17 +294,18 @@ export function Reader({
   const [details, setDetails] = useState<Map<number, ThreadMessage>>(() => new Map());
   const [loadedThreadId, setLoadedThreadId] = useState<number | null>(null);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Which message [ and ] move from. Separate from `expanded` because you can
   // have several open at once and still be reading one of them.
   const [focused, setFocused] = useState<number | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const pinnedThread = useRef<number | null>(null);
+  const olderSizeRef = useRef(0);
   const loadedThreadIdRef = useRef(loadedThreadId);
   loadedThreadIdRef.current = loadedThreadId;
   const cardsRef = useRef(cards);
-  cardsRef.current = cards;
+  const olderRef = useRef<ThreadIndexRow[]>([]);
+  const newestIdRef = useRef<number | null>(null);
   const focusedRef = useRef(focused);
   focusedRef.current = focused;
   const threadIdRef = useRef(thread?.thread_id);
@@ -371,15 +374,36 @@ export function Reader({
     let live = true;
     setError(null);
     if (!thread) {
-      setLoading(false);
       return;
     }
     const requested = thread.thread_id;
+    const rowId = thread.id;
     const hold = keepExistingPane({
       loadedThreadId: loadedThreadIdRef.current,
       requestedThreadId: requested,
     });
-    if (!hold) setLoading(true);
+    const applyFat = (fat: ThreadMessage) => {
+      setDetails((prev) => {
+        const next = new Map(prev);
+        next.set(fat.id, fat);
+        return next;
+      });
+    };
+    if (!hold) {
+      setCards([]);
+      setDetails(new Map());
+      setExpanded(new Set([rowId]));
+      setFocused(rowId);
+      void api
+        .threadMessage(rowId)
+        .then((fat) => {
+          if (!live || !fat) return;
+          applyFat(fat);
+        })
+        .catch((err: unknown) => {
+          api.log(`thread_message FAILED id=${rowId}: ${err}`);
+        });
+    }
     api
       .threadIndex(requested)
       .then((index) => {
@@ -387,21 +411,19 @@ export function Reader({
         setCards(index);
         setLoadedThreadId(requested);
         const last = index[index.length - 1];
-        if (!hold) {
-          setDetails(new Map());
-          setExpanded(new Set(last ? [last.id] : []));
-          setFocused(last?.id ?? null);
+        if (!hold && last) {
+          setExpanded(new Set([last.id]));
+          setFocused(last.id);
         }
         api.log(`thread_index ok thread=${requested} messages=${index.length}`);
-        setLoading(false);
         if (!last) return;
+        // Already in flight for the list row on a first open. Fetch the
+        // conversation newest only when it is a different message, or when
+        // the same conversation grew and we do not have that row yet.
+        if (hold ? detailsRef.current.has(last.id) : last.id === rowId) return;
         return api.threadMessage(last.id).then((fat) => {
           if (!live || !fat) return;
-          setDetails((prev) => {
-            const next = new Map(prev);
-            next.set(fat.id, fat);
-            return next;
-          });
+          applyFat(fat);
         });
       })
       // Never swallow this: an empty reading pane and a failed call look
@@ -410,7 +432,6 @@ export function Reader({
         if (!live) return;
         setError(String(err));
         if (!hold) setLoadedThreadId(null);
-        setLoading(false);
         api.log(`thread_index FAILED thread=${requested}: ${err}`);
       });
     return () => {
@@ -420,7 +441,7 @@ export function Reader({
     // changed the header's "3 messages" and not the cards until you left
     // and came back. Same thread, so the pane is held and only the index
     // and the newest message are fetched.
-  }, [thread?.thread_id, thread?.message_count]);
+  }, [thread?.thread_id, thread?.message_count, thread?.id]);
 
   // [ and ] walk the conversation. Handled here rather than in the global map
   // for the same reason j/k live in the list: the keys mean "within the thing
@@ -475,10 +496,17 @@ export function Reader({
       if (!target) return;
 
       setFocused(target.id);
-      const newestId = list[list.length - 1]?.id ?? null;
+      const newestId = newestIdRef.current;
       setExpanded((prev) => nextExpanded({ prev, add: target.id, newestId }));
       hydrate(target.id);
-      virtualizerRef.current?.scrollToIndex(nextIndex, { align: 'auto' });
+      const olderAt = olderRef.current.findIndex((m) => m.id === target.id);
+      if (olderAt >= 0) {
+        virtualizerRef.current?.scrollToIndex(olderAt, { align: 'auto' });
+      } else {
+        document.getElementById(`msg-body-${target.id}`)?.scrollIntoView({
+          block: 'nearest',
+        });
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -490,26 +518,44 @@ export function Reader({
         requestedThreadId: thread.thread_id,
       })
     : false;
-  const paneCards = hold || !loading ? cards : [];
-  const newest = paneCards[paneCards.length - 1];
-  const newestId = newest?.id ?? null;
-  const mounted = bodiesToMount(expanded, newestId);
+  // Conversation newest is the last index row. Until the index arrives the
+  // pinned card is the list row, which is not claimed to be that newest.
+  const conversationNewestId =
+    hold && cards.length > 0 ? (cards[cards.length - 1]?.id ?? null) : null;
+  const newestId = conversationNewestId ?? thread?.id ?? null;
+  const newestCard = thread
+    ? conversationNewestId != null
+      ? (cards.find((c) => c.id === conversationNewestId) ?? previewCard(thread))
+      : previewCard(thread)
+    : null;
+  const older =
+    hold && conversationNewestId != null
+      ? olderCards({ index: cards, newestId: conversationNewestId })
+      : [];
+  const newestExpanded = Boolean(thread && (!hold || (newestId != null && expanded.has(newestId))));
+  const paintedExpanded =
+    newestExpanded && newestId != null ? new Set([...expanded, newestId]) : expanded;
+  const mounted = bodiesToMount(paintedExpanded, newestId);
   const subject = thread?.subject || t('no-subject');
+  const walkCards = hold && cards.length > 0 ? cards : newestCard ? [newestCard] : [];
+  cardsRef.current = walkCards;
+  olderRef.current = older;
+  newestIdRef.current = newestId;
 
   const estimateSize = useCallback(
     (index: number) => {
-      const card = paneCards[index];
+      const card = older[index];
       if (!card) return COLLAPSED_ROW;
-      return expanded.has(card.id) ? EXPANDED_ROW_ESTIMATE : COLLAPSED_ROW;
+      return paintedExpanded.has(card.id) ? EXPANDED_ROW_ESTIMATE : COLLAPSED_ROW;
     },
-    [paneCards, expanded],
+    [older, paintedExpanded],
   );
 
   const virtualizer = useVirtualizer({
-    count: paneCards.length,
+    count: older.length,
     getScrollElement: () => bodyRef.current,
     estimateSize,
-    getItemKey: (index) => paneCards[index]?.id ?? index,
+    getItemKey: (index) => older[index]?.id ?? index,
     overscan: 8,
     useFlushSync: false,
   });
@@ -519,17 +565,27 @@ export function Reader({
     virtualizer.measure();
   }, [expanded, virtualizer]);
 
+  // A new conversation starts with the row on screen. Older rows arriving
+  // above it grow the stack; add that growth to scrollTop so the pinned
+  // body stays where it was.
   useLayoutEffect(() => {
     if (!thread) {
       pinnedThread.current = null;
+      olderSizeRef.current = 0;
       return;
     }
-    if (loadedThreadId !== thread.thread_id || paneCards.length === 0) return;
-    if (pinnedThread.current === thread.thread_id) return;
-    pinnedThread.current = thread.thread_id;
+    if (pinnedThread.current !== thread.thread_id) {
+      pinnedThread.current = thread.thread_id;
+      olderSizeRef.current = 0;
+      if (bodyRef.current) bodyRef.current.scrollTop = 0;
+    }
     const body = bodyRef.current;
-    if (body) body.scrollTop = body.scrollHeight;
-  }, [thread?.thread_id, loadedThreadId, paneCards.length, virtualizer]);
+    if (!body) return;
+    const size = virtualizer.getTotalSize();
+    const delta = size - olderSizeRef.current;
+    olderSizeRef.current = size;
+    if (delta !== 0) body.scrollTop += delta;
+  }, [thread?.thread_id, older.length, virtualizer]);
 
   if (!thread) {
     return (
@@ -543,7 +599,6 @@ export function Reader({
   }
 
   const paneReady = hold;
-  const showPlaceholder = loading && !hold;
 
   return (
     <section className="reader" aria-label={subject}>
@@ -634,12 +689,11 @@ export function Reader({
             <p className="mono" style={{ fontSize: 11.5 }}>{error}</p>
           </div>
         )}
-        {showPlaceholder && !error && <div className="body-loading" aria-busy="true" />}
         <div className="reader-stack" style={{ height: virtualizer.getTotalSize() }}>
           {virtualizer.getVirtualItems().map((v) => {
-            const card = paneCards[v.index];
+            const card = older[v.index];
             if (!card) return null;
-            const isExpanded = expanded.has(card.id);
+            const isExpanded = paintedExpanded.has(card.id);
             return (
               <div
                 className="msg-slot"
@@ -681,6 +735,39 @@ export function Reader({
             );
           })}
         </div>
+        {newestCard && (
+          <div className="reader-newest">
+            {newestExpanded ? (
+              <Expanded
+                m={messageFromCard(newestCard, subject, details.get(newestCard.id))}
+                focused={focused === newestCard.id}
+                mountBody={mounted.has(newestCard.id)}
+                onReply={onReplyTo}
+                onForward={onForwardFrom}
+                onToast={onToast}
+                onComposeMailto={onComposeMailto}
+                onCollapse={() =>
+                  setExpanded((prev) => {
+                    const next = new Set(prev);
+                    next.delete(newestCard.id);
+                    return next;
+                  })
+                }
+              />
+            ) : (
+              <Collapsed
+                m={newestCard}
+                onExpand={() => {
+                  setFocused(newestCard.id);
+                  setExpanded((prev) =>
+                    nextExpanded({ prev, add: newestCard.id, newestId }),
+                  );
+                  hydrate(newestCard.id);
+                }}
+              />
+            )}
+          </div>
+        )}
 
         {/* These answer the newest message, which is what the conversation's
             Reply means everywhere — the per-message controls in each header
@@ -690,26 +777,26 @@ export function Reader({
             Shown only where there is something to open. The popped-out window
             has no composer, and three buttons that do nothing when pressed are
             worse than three buttons that are not there. */}
-        {paneCards.length > 0 && newest && (onReplyTo || onForwardFrom) && paneReady && (
+        {newestCard && (onReplyTo || onForwardFrom) && paneReady && (
           <div className="reply-row">
             {onReplyTo && (
               <button
                 type="button"
                 className="reply primary"
-                onClick={() => onReplyTo(newest.id, false)}
+                onClick={() => onReplyTo(newestCard.id, false)}
               >
                 <Icon icon={CornerUpLeft} size={14} />
                 {t('reader-reply')} <span className="kbd on-accent">R</span>
               </button>
             )}
             {onReplyTo && (
-              <button type="button" className="reply" onClick={() => onReplyTo(newest.id, true)}>
+              <button type="button" className="reply" onClick={() => onReplyTo(newestCard.id, true)}>
                 <Icon icon={ReplyAll} size={14} />
                 {t('reader-reply-all')} <span className="kbd">A</span>
               </button>
             )}
             {onForwardFrom && (
-              <button type="button" className="reply" onClick={() => onForwardFrom(newest.id)}>
+              <button type="button" className="reply" onClick={() => onForwardFrom(newestCard.id)}>
                 <Icon icon={ForwardIcon} size={14} />
                 {t('reader-forward')} <span className="kbd">F</span>
               </button>

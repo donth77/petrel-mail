@@ -91,7 +91,7 @@ pub async fn thread_index(
     super::off_runtime(state, move |state| {
         let _t = Timed::new("thread_index");
         note_ui_touch(&state);
-        let store = state.store_read()?;
+        let store = state.store_read_index()?;
         store.thread_index(thread_id).map_err(|e| e.to_string())
     })
     .await

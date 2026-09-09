@@ -64,7 +64,7 @@ fn a_secondary_reads_while_the_writer_holds_a_transaction() {
 }
 
 #[test]
-fn three_secondaries_read_at_once() {
+fn four_secondaries_read_at_once() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("petrel.db");
     let mut store = Store::open(&path).expect("store");
@@ -76,13 +76,14 @@ fn three_secondaries_read_at_once() {
             account,
             None,
             Some(1),
-            &fixture("three-readers@example.com"),
+            &fixture("four-readers@example.com"),
         )
         .expect("ingest");
 
     let a = Store::open_secondary(&path).expect("a");
     let b = Store::open_secondary(&path).expect("b");
     let open = Store::open_secondary(&path).expect("open");
+    let index = Store::open_secondary(&path).expect("index");
 
     store
         .with_uncommitted_write(|| {
@@ -91,19 +92,24 @@ fn three_secondaries_read_at_once() {
                 .expect("a")
                 .expect("stored");
             let hb = b
+                .blob_hash_for(ingested.message_id)
+                .expect("b")
+                .expect("stored");
+            let ho = open
+                .blob_hash_for(ingested.message_id)
+                .expect("open")
+                .expect("stored");
+            let cards = index
                 .thread_index(
                     a.thread_of(ingested.message_id)
                         .expect("thread")
                         .expect("id"),
                 )
                 .expect("index");
-            let ho = open
-                .blob_hash_for(ingested.message_id)
-                .expect("open")
-                .expect("stored");
             assert_eq!(ha, ingested.blob_hash);
+            assert_eq!(hb, ingested.blob_hash);
             assert_eq!(ho, ingested.blob_hash);
-            assert_eq!(hb.len(), 1);
+            assert_eq!(cards.len(), 1);
         })
         .expect("immediate tx");
 }
