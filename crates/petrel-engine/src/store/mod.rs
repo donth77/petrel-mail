@@ -448,6 +448,12 @@ pub struct ThreadListing {
     /// while the reply sits in Sent. Search rows and `thread_by_id` carry the
     /// conversation's newest.
     pub id: i64,
+    /// The conversation's newest live message, wherever it sits, as a card
+    /// the reading pane can open before it has asked for the index. Usually
+    /// the message `id` names; in an answered inbox conversation it is the
+    /// reply in Sent. A per-message view (drafts) lists messages rather than
+    /// conversations, so there it is the row's own message.
+    pub newest: ThreadIndexRow,
     pub from_display: String,
     pub from_addr: String,
     pub subject: String,

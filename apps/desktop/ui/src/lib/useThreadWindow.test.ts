@@ -21,14 +21,19 @@ let nextId = 1;
 
 function thread(over: Partial<Thread> & Pick<Thread, 'thread_id'>): Thread {
   const id = over.id ?? nextId++;
+  const from_display = over.from_display ?? 'Sender';
+  const from_addr = over.from_addr ?? 'sender@example.com';
+  const snippet = over.snippet ?? 'Snippet';
+  const date_ms = over.date_ms ?? 1_000_000 - over.thread_id;
   return {
     id,
     thread_id: over.thread_id,
-    from_display: over.from_display ?? 'Sender',
-    from_addr: over.from_addr ?? 'sender@example.com',
+    newest: over.newest ?? { id, from_display, from_addr, snippet, date_ms, unread: false },
+    from_display,
+    from_addr,
     subject: over.subject ?? 'Subject',
-    snippet: over.snippet ?? 'Snippet',
-    date_ms: over.date_ms ?? 1_000_000 - over.thread_id,
+    snippet,
+    date_ms,
     message_count: over.message_count ?? 1,
     participants: over.participants ?? '',
     unread: over.unread ?? false,

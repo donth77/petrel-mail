@@ -21,10 +21,14 @@ export type Thread = {
    *  listed*, which is not always the conversation's newest. In the inbox, a
    *  conversation you have answered carries the other side's last message
    *  here while your reply sits in Sent. Search rows and a window opened by
-   *  conversation id carry the conversation's newest. The reading pane may
-   *  paint this body at once; pin, Reply and "newest" come from the thread
-   *  index, never from this. */
+   *  conversation id carry the conversation's newest. The reading pane opens
+   *  `newest`, never this. */
   id: number;
+  /** The conversation's newest message, wherever it sits, as the card the
+   *  reading pane pins and opens before the index has arrived. Usually the
+   *  message `id` names; in an answered inbox conversation it is your reply
+   *  in Sent. The index's last row confirms it. */
+  newest: ThreadIndexRow;
   from_display: string;
   from_addr: string;
   subject: string;
@@ -472,14 +476,24 @@ function mockRows(n: number, offset = 0): Thread[] {
   return Array.from({ length: n }, (_, i) => {
     const k = offset + i;
     const [display, addr] = NAMES[k % NAMES.length];
+    const date_ms = Date.now() - k * 37 * 60 * 1000;
+    const snippet = 'the twelve-month term works, and the volume tier resets annually rather than…';
     return {
       thread_id: k + 1,
       id: k + 1,
+      newest: {
+        id: k + 1,
+        from_display: display,
+        from_addr: addr,
+        snippet,
+        date_ms,
+        unread: k % 3 === 2,
+      },
       from_display: display,
       from_addr: addr,
       subject: `${SUBJECTS[k % SUBJECTS.length]}${k > 5 ? ` (${k})` : ''}`,
-      snippet: 'the twelve-month term works, and the volume tier resets annually rather than…',
-      date_ms: Date.now() - k * 37 * 60 * 1000,
+      snippet,
+      date_ms,
       message_count: [1, 1, 4, 1, 2, 1, 7][k % 7],
       participants: k % 3 === 2 ? `${display}, Dana Wu, you` : display,
       unread: k % 3 === 2,

@@ -170,6 +170,41 @@
       snoozed: 0,
     };
   });
+  // The engine puts the conversation's newest message on every row, as the
+  // card the reading pane opens before the index arrives. For most rows that
+  // is the row's own message.
+  rows.forEach(function (r) {
+    r.newest = {
+      id: r.id,
+      from_display: r.from_display,
+      from_addr: r.from_addr,
+      snippet: r.snippet,
+      date_ms: r.date_ms,
+      unread: !!r.unread,
+    };
+  });
+  // Two conversations with more than one message, the shapes the reading
+  // pane's open path has to get right. Conversation 2 was answered: its
+  // inbox row is the other side's message, its newest is the reply in Sent.
+  // Conversation 3 has an older message above the row. ?indexDelay=N holds
+  // thread_index for N ms so the order things paint in can be seen.
+  var REPLY_ID = 1002;
+  var OLDER_ID = 1003;
+  rows[1].message_count = 2;
+  rows[1].newest = {
+    id: REPLY_ID,
+    from_display: 'Me',
+    from_addr: 'me@example.test',
+    snippet: 'my reply',
+    date_ms: rows[1].date_ms + 60000,
+    unread: false,
+  };
+  rows[2].message_count = 2;
+  var INDEX_DELAY = Number((String(location.search).match(/[?&]indexDelay=(\d+)/) || [])[1] || 0);
+  function afterIndexDelay(value) {
+    if (!INDEX_DELAY) return value;
+    return new Promise(function (resolve) { setTimeout(function () { resolve(value); }, INDEX_DELAY); });
+  }
 
   if (THREAD_PROBE) {
     rows.forEach(function (r) { r.message_count = THREAD_PROBE_N; });
@@ -596,14 +631,26 @@
       if (THREAD_PROBE) return threadProbeIndex(THREAD_PROBE_N);
       var row = rows.filter(function (r) { return r.thread_id === a.threadId; })[0]
         || rows[0];
-      return [{
+      var card = {
         id: row.id,
         from_display: row.from_display,
         from_addr: row.from_addr,
         snippet: row.snippet,
         date_ms: row.date_ms,
         unread: !!row.unread,
-      }];
+      };
+      if (row === rows[1]) return afterIndexDelay([card, row.newest]);
+      if (row === rows[2]) {
+        return afterIndexDelay([{
+          id: OLDER_ID,
+          from_display: 'Dana Wu',
+          from_addr: 'dana@example.test',
+          snippet: 'earlier note',
+          date_ms: row.date_ms - 60000,
+          unread: false,
+        }, card]);
+      }
+      return [card];
     },
     thread_message: function (a) {
       var rec = window.__THREAD_PROBE__ || {};
@@ -611,11 +658,14 @@
       window.__THREAD_PROBE__ = rec;
       if (THREAD_PROBE) return threadProbeOne(THREAD_PROBE_N, a.messageId);
       var row = rows.filter(function (r) { return r.id === a.messageId; })[0]
-        || rows[0];
+        || (a.messageId === REPLY_ID ? rows[1] : a.messageId === OLDER_ID ? rows[2] : rows[0]);
+      var card = a.messageId === REPLY_ID ? rows[1].newest
+        : a.messageId === OLDER_ID ? { id: OLDER_ID, from_display: 'Dana Wu', from_addr: 'dana@example.test' }
+        : row;
       return {
-        id: row.id,
-        from_display: row.from_display,
-        from_addr: row.from_addr,
+        id: card.id,
+        from_display: card.from_display,
+        from_addr: card.from_addr,
         to: ['me'],
         cc: [],
         snippet: row.snippet,

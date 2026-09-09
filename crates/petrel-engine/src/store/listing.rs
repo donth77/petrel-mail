@@ -57,6 +57,23 @@ type ThreadDetailRow = (
 /// address and attachment `IN` lists on a fat hydrate.
 const HYDRATE_IN_CHUNK: usize = 400;
 
+/// The columns an index card is read from; the WHERE and ORDER BY vary.
+const INDEX_COLS: &str = "SELECT id, coalesce(from_display,''), coalesce(from_addr,''),
+                    coalesce(snippet,''), date_ms, flags
+             FROM messages";
+
+fn index_row(r: &rusqlite::Row) -> rusqlite::Result<ThreadIndexRow> {
+    let flags: i64 = r.get(5)?;
+    Ok(ThreadIndexRow {
+        id: r.get(0)?,
+        from_display: r.get(1)?,
+        from_addr: r.get(2)?,
+        snippet: r.get(3)?,
+        date_ms: r.get(4)?,
+        unread: flags & flags::SEEN == 0,
+    })
+}
+
 fn thread_detail_row(r: &rusqlite::Row) -> rusqlite::Result<ThreadDetailRow> {
     Ok((
         r.get(0)?,
@@ -592,17 +609,34 @@ impl Store {
             args.push(Box::new(b));
         }
         let rows = stmt.query_map(rusqlite::params_from_iter(args), |row| {
+            let id: i64 = row.get(1)?;
+            let from_display: String = row.get(2)?;
+            let from_addr: String = row.get(3)?;
+            let snippet: String = row.get(5)?;
+            let date_ms: i64 = row.get(6)?;
+            let unread = row.get::<_, i64>(9)? != 0;
             Ok(ThreadListing {
                 thread_id: row.get(0)?,
-                id: row.get(1)?,
-                from_display: row.get(2)?,
-                from_addr: row.get(3)?,
+                // The row's own message stands in until `attach_newest`
+                // looks the conversation's newest up; a per-message view
+                // keeps it.
+                newest: ThreadIndexRow {
+                    id,
+                    from_display: from_display.clone(),
+                    from_addr: from_addr.clone(),
+                    snippet: snippet.clone(),
+                    date_ms,
+                    unread,
+                },
+                id,
+                from_display,
+                from_addr,
                 subject: row.get(4)?,
-                snippet: row.get(5)?,
-                date_ms: row.get(6)?,
+                snippet,
+                date_ms,
                 message_count: row.get(7)?,
                 participants: row.get(8)?,
-                unread: row.get::<_, i64>(9)? != 0,
+                unread,
                 starred: row.get::<_, i64>(10)? != 0,
                 has_attachments: row.get::<_, i64>(11)? != 0,
                 tags: parse_row_tags(row.get::<_, Option<String>>(12)?),
@@ -611,6 +645,7 @@ impl Store {
             })
         })?;
         let mut out = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+        self.attach_newest(&mut out, per_message)?;
         // Back into the order the page was chosen in. The query above ends in
         // ORDER BY date DESC, which is not the list's order and cannot be:
         // it groups, and saying "the order these ids arrived in" in SQL means
@@ -1013,17 +1048,34 @@ impl Store {
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map([], |row| {
+            let id: i64 = row.get(1)?;
+            let from_display: String = row.get(2)?;
+            let from_addr: String = row.get(3)?;
+            let snippet: String = row.get(5)?;
+            let date_ms: i64 = row.get(6)?;
+            let unread = row.get::<_, i64>(9)? != 0;
             Ok(ThreadListing {
                 thread_id: row.get(0)?,
-                id: row.get(1)?,
-                from_display: row.get(2)?,
-                from_addr: row.get(3)?,
+                // The row's own message stands in until `attach_newest`
+                // looks the conversation's newest up; a per-message view
+                // keeps it.
+                newest: ThreadIndexRow {
+                    id,
+                    from_display: from_display.clone(),
+                    from_addr: from_addr.clone(),
+                    snippet: snippet.clone(),
+                    date_ms,
+                    unread,
+                },
+                id,
+                from_display,
+                from_addr,
                 subject: row.get(4)?,
-                snippet: row.get(5)?,
-                date_ms: row.get(6)?,
+                snippet,
+                date_ms,
                 message_count: row.get(7)?,
                 participants: row.get(8)?,
-                unread: row.get::<_, i64>(9)? != 0,
+                unread,
                 starred: row.get::<_, i64>(10)? != 0,
                 has_attachments: row.get::<_, i64>(11)? != 0,
                 tags: parse_row_tags(row.get::<_, Option<String>>(12)?),
@@ -1031,7 +1083,9 @@ impl Store {
                 match_snippet: None,
             })
         })?;
-        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        let mut out = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+        self.attach_newest(&mut out, false)?;
+        Ok(out)
     }
 
     /// One conversation, every message. Invitations and tests still need the
@@ -1045,25 +1099,44 @@ impl Store {
     /// One query, no recipients or attachments. The reading pane virtualizes
     /// these rows and hydrates a body only when a card is opened.
     pub fn thread_index(&self, thread_id: i64) -> Result<Vec<ThreadIndexRow>> {
-        let mut stmt = self.conn.prepare_cached(
-            "SELECT id, coalesce(from_display,''), coalesce(from_addr,''),
-                    coalesce(snippet,''), date_ms, flags
-             FROM messages
-             WHERE coalesce(thread_id, -id) = ?1 AND deleted_at_ms IS NULL
-             ORDER BY date_ms ASC, id ASC",
-        )?;
-        let rows = stmt.query_map(params![thread_id], |r| {
-            let flags: i64 = r.get(5)?;
-            Ok(ThreadIndexRow {
-                id: r.get(0)?,
-                from_display: r.get(1)?,
-                from_addr: r.get(2)?,
-                snippet: r.get(3)?,
-                date_ms: r.get(4)?,
-                unread: flags & flags::SEEN == 0,
-            })
-        })?;
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "{INDEX_COLS} WHERE coalesce(thread_id, -id) = ?1 AND deleted_at_ms IS NULL
+             ORDER BY date_ms ASC, id ASC"
+        ))?;
+        let rows = stmt.query_map(params![thread_id], index_row)?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// The conversation's newest live message as a card, or None when
+    /// nothing live carries that key.
+    ///
+    /// The same ordering as `thread_index`, read from the other end, so the
+    /// card here is always the index's last row.
+    fn newest_card(&self, thread_key: i64) -> Result<Option<ThreadIndexRow>> {
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "{INDEX_COLS} WHERE coalesce(thread_id, -id) = ?1 AND deleted_at_ms IS NULL
+             ORDER BY date_ms DESC, id DESC LIMIT 1"
+        ))?;
+        Ok(stmt.query_row(params![thread_key], index_row).optional()?)
+    }
+
+    /// Gives each listing row the conversation's newest message.
+    ///
+    /// A row's own message is the newest *in the view*; the reading pane
+    /// opens the conversation's newest, and asking the index for it first
+    /// is the wait this column removes. One indexed lookup per row. A
+    /// per-message view lists messages, not conversations, and keeps the
+    /// row's own message.
+    fn attach_newest(&self, rows: &mut [ThreadListing], per_message: bool) -> Result<()> {
+        if per_message {
+            return Ok(());
+        }
+        for row in rows.iter_mut() {
+            if let Some(card) = self.newest_card(row.thread_id)? {
+                row.newest = card;
+            }
+        }
+        Ok(())
     }
 
     /// One message, fully hydrated — the reading pane asks for this when a

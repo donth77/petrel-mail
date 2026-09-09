@@ -59,6 +59,14 @@ describe('previewCard', () => {
   const thread: Thread = {
     thread_id: 10,
     id: 42,
+    newest: {
+      id: 99,
+      from_display: 'Me',
+      from_addr: 'me@example.com',
+      snippet: 'my reply',
+      date_ms: 2,
+      unread: false,
+    },
     from_display: 'Sam',
     from_addr: 'sam@example.com',
     subject: 'Hello',
@@ -74,14 +82,16 @@ describe('previewCard', () => {
     match_snippet: null,
   };
 
-  it('names the listing row so a body can mount before the index', () => {
+  it('is the newest the engine put on the row, not the row itself', () => {
+    // The row is the other side's inbox message; the newest is the reply in
+    // Sent. Painting the row first is the swap #21 shipped with.
     expect(previewCard(thread)).toEqual({
-      id: 42,
-      from_display: 'Sam',
-      from_addr: 'sam@example.com',
-      snippet: 'Hi',
-      date_ms: 1,
-      unread: true,
+      id: 99,
+      from_display: 'Me',
+      from_addr: 'me@example.com',
+      snippet: 'my reply',
+      date_ms: 2,
+      unread: false,
     });
   });
 

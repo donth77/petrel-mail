@@ -30,19 +30,13 @@ export function keepExistingPane(args: {
   return args.loadedThreadId === args.requestedThreadId;
 }
 
-/** Slim card from the list row. The pane mounts this before `thread_index`
- *  returns, so the body of the row you opened does not wait on the rest of
- *  the conversation. This id is the newest message in the view, not always
- *  the conversation's newest. */
+/** The card the pane pins before `thread_index` returns: the conversation's
+ *  newest message, which the engine puts on every list row. Not the row's own
+ *  message, which is only the newest *in the view*: an answered inbox
+ *  conversation's row is the other side's last message, and opening that
+ *  first meant a body that painted and was then swapped for the reply. */
 export function previewCard(thread: Thread): ThreadIndexRow {
-  return {
-    id: thread.id,
-    from_display: thread.from_display,
-    from_addr: thread.from_addr,
-    snippet: thread.snippet,
-    date_ms: thread.date_ms,
-    unread: thread.unread,
-  };
+  return thread.newest;
 }
 
 /** Cards that sit above the pinned conversation-newest body.

@@ -377,7 +377,10 @@ export function Reader({
       return;
     }
     const requested = thread.thread_id;
-    const rowId = thread.id;
+    // The conversation's newest, which the engine put on the row. Opening
+    // it here rather than the row's own message is what keeps the pane
+    // from painting one body and then swapping it for another.
+    const openId = thread.newest.id;
     const hold = keepExistingPane({
       loadedThreadId: loadedThreadIdRef.current,
       requestedThreadId: requested,
@@ -392,16 +395,16 @@ export function Reader({
     if (!hold) {
       setCards([]);
       setDetails(new Map());
-      setExpanded(new Set([rowId]));
-      setFocused(rowId);
+      setExpanded(new Set([openId]));
+      setFocused(openId);
       void api
-        .threadMessage(rowId)
+        .threadMessage(openId)
         .then((fat) => {
           if (!live || !fat) return;
           applyFat(fat);
         })
         .catch((err: unknown) => {
-          api.log(`thread_message FAILED id=${rowId}: ${err}`);
+          api.log(`thread_message FAILED id=${openId}: ${err}`);
         });
     }
     api
@@ -417,10 +420,11 @@ export function Reader({
         }
         api.log(`thread_index ok thread=${requested} messages=${index.length}`);
         if (!last) return;
-        // Already in flight for the list row on a first open. Fetch the
-        // conversation newest only when it is a different message, or when
-        // the same conversation grew and we do not have that row yet.
-        if (hold ? detailsRef.current.has(last.id) : last.id === rowId) return;
+        // Already in flight on a first open. Fetch the index's newest only
+        // when it is not the one the row named (mail that arrived between
+        // the listing and the open), or when the held conversation grew and
+        // that row is not hydrated yet.
+        if (hold ? detailsRef.current.has(last.id) : last.id === openId) return;
         return api.threadMessage(last.id).then((fat) => {
           if (!live || !fat) return;
           applyFat(fat);
@@ -441,7 +445,7 @@ export function Reader({
     // changed the header's "3 messages" and not the cards until you left
     // and came back. Same thread, so the pane is held and only the index
     // and the newest message are fetched.
-  }, [thread?.thread_id, thread?.message_count, thread?.id]);
+  }, [thread?.thread_id, thread?.message_count, thread?.newest.id]);
 
   // [ and ] walk the conversation. Handled here rather than in the global map
   // for the same reason j/k live in the list: the keys mean "within the thing
@@ -518,11 +522,12 @@ export function Reader({
         requestedThreadId: thread.thread_id,
       })
     : false;
-  // Conversation newest is the last index row. Until the index arrives the
-  // pinned card is the list row, which is not claimed to be that newest.
+  // The newest is the index's last row once the index is here, and the card
+  // the engine put on the list row until then. They name the same message
+  // unless mail arrived in between, in which case the index wins.
   const conversationNewestId =
     hold && cards.length > 0 ? (cards[cards.length - 1]?.id ?? null) : null;
-  const newestId = conversationNewestId ?? thread?.id ?? null;
+  const newestId = conversationNewestId ?? thread?.newest.id ?? null;
   const newestCard = thread
     ? conversationNewestId != null
       ? (cards.find((c) => c.id === conversationNewestId) ?? previewCard(thread))
@@ -736,7 +741,10 @@ export function Reader({
           })}
         </div>
         {newestCard && (
-          <div className="reader-newest">
+          // Keyed by message so a change of newest, rare as it is, mounts a
+          // fresh card rather than handing one message's frame state to
+          // another.
+          <div className="reader-newest" key={newestCard.id}>
             {newestExpanded ? (
               <Expanded
                 m={messageFromCard(newestCard, subject, details.get(newestCard.id))}
