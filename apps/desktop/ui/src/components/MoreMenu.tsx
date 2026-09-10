@@ -26,7 +26,7 @@ export function MoreMenu(props: ThreadMenuProps) {
           <Icon icon={MoreVertical} />
         </MenuButton>
       </Tip>
-      <Menu portal gutter={6} className="menu" aria-label={t('reader-more')}>
+      <Menu portal fitViewport gutter={6} className="menu" aria-label={t('reader-more')}>
         <ThreadMenuItems {...props} />
       </Menu>
     </MenuProvider>

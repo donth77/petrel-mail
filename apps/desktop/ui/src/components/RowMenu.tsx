@@ -19,6 +19,12 @@ type Props = ThreadMenuProps & {
  * popover a position rather than an element: the menu then flips and shifts on
  * its own near an edge, so a right-click at the bottom of the list opens
  * upward instead of off-screen.
+ *
+ * Flipping is not enough on a short window. The list is taller than the space
+ * on either side of a click in the middle of the pane, so whichever way it
+ * opened it ran off the edge, and the last items — Trash among them — could
+ * not be reached. `fitViewport` caps it at the space there is, and the menu
+ * scrolls for the rest.
  */
 export function RowMenu({ at, onClose, ...items }: Props) {
   const menu = useMenuStore({
@@ -39,6 +45,7 @@ export function RowMenu({ at, onClose, ...items }: Props) {
     <MenuProvider store={menu}>
       <Menu
         portal
+        fitViewport
         className="menu"
         aria-label={t('reader-more')}
         getAnchorRect={() => ({ x: at.x, y: at.y, width: 0, height: 0 })}

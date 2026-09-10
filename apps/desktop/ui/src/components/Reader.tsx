@@ -196,7 +196,7 @@ function Expanded({
                   one decision with three answers, and offering two of them in
                   a place the third is missing from is how people conclude the
                   third does not exist. */}
-              <Menu portal gutter={6} className="menu" aria-label={t('msg-actions')}>
+              <Menu portal fitViewport gutter={6} className="menu" aria-label={t('msg-actions')}>
                 {onReply && (
                   <MenuItem className="menu-item" onClick={() => onReply(m.id, false)}>
                     <Icon icon={ReplyIcon} size={14} />

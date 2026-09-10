@@ -1,9 +1,18 @@
 /* Overflow menu behind the ⋮ button. Anchored to the button rather than
-   centred on screen: the whole point is that it acts on *this* conversation. */
+   centred on screen: the whole point is that it acts on *this* conversation.
+   Scrolls when the window is shorter than the list of items. With
+   `fitViewport` on the menu, Ariakit measures the space between the anchor and
+   the window's edge and hands it over as a variable; the cap below is what
+   turns that into a height, and the scroll is what keeps the last items
+   reachable once it bites. Without the cap, twelve items on a short window
+   ran past the edge and Trash could not be clicked. */
 .menu {
   z-index: 50;
   min-inline-size: 232px;
+  max-block-size: var(--popover-available-height, none);
   padding: 5px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   border: 1px solid var(--hair);
   border-radius: 10px;
   background: var(--surface);
