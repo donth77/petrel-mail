@@ -41,13 +41,18 @@
    way, down to the floors their resize handles already enforce, before the
    reader does. Fixed tracks added up to more than the window's minimum width,
    and the reader — the last column — was the one pushed off the right edge,
-   toolbar first, with nothing to scroll it back. */
+   toolbar first, with nothing to scroll it back.
+
+   The rail's floor is a variable because a collapsed rail is narrower than
+   the floor, and minmax() answers a minimum above its maximum with the
+   minimum: written as 180px, collapsing the rail left it 180px wide. */
 .shell {
   flex-grow: 1;
   min-block-size: 0;
   display: grid;
   grid-template-columns:
-    minmax(180px, var(--rail-size)) minmax(300px, var(--list-size)) 0 minmax(380px, 1fr);
+    minmax(var(--rail-min, 180px), var(--rail-size)) minmax(300px, var(--list-size)) 0
+    minmax(380px, 1fr);
   grid-template-rows: 1fr auto;
 }
 

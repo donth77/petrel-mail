@@ -167,11 +167,17 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
     root.style.setProperty('--accent-user', settings.accent);
     root.style.setProperty('--reading-size', `${settings.readingTextSize}px`);
     // The rail's width is a token so the three-pane grid picks it up without
-    // the layout needing to know a drag happened.
+    // the layout needing to know a drag happened. Its floor travels with it:
+    // the grid holds the rail at a minimum so the reader is not pushed off
+    // the right edge, and a floor of 180px against a collapsed rail of 56px
+    // is a rail that does not collapse — a minimum larger than the size
+    // asked for is the width the track ends up at.
+    const collapsed = settings.railCollapsed === 'on';
     root.style.setProperty(
       '--rail-size',
-      settings.railCollapsed === 'on' ? `${RAIL_COLLAPSED}px` : `${clampRail(settings.railWidth)}px`,
+      collapsed ? `${RAIL_COLLAPSED}px` : `${clampRail(settings.railWidth)}px`,
     );
+    root.style.setProperty('--rail-min', collapsed ? `${RAIL_COLLAPSED}px` : `${RAIL_MIN}px`);
     root.style.setProperty('--list-size', `${clampList(settings.listWidth)}px`);
     // Depends on the whole object, not a hand-listed subset. `settings` is
     // memoised on `stored`, so this runs exactly when a preference changes —
