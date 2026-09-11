@@ -186,6 +186,15 @@ export function App() {
   const [selected, setSelected] = useState<Set<number>>(new Set());
   // Where a range grows from, so reversing direction shrinks it again.
   const [anchor, setAnchor] = useState<number | null>(null);
+  // Where the last range from that anchor ended. A new range redraws only
+  // this much, so rows picked before it survive a ⇧-click.
+  const [rangeEnd, setRangeEnd] = useState<number | null>(null);
+  // A new anchor starts a new range: everything that moves the anchor forgets
+  // the old end, or the next ⇧-click would un-pick rows the old range held.
+  const anchorTo = useCallback((id: number | null) => {
+    setAnchor(id);
+    setRangeEnd(null);
+  }, []);
   const [draft, setDraft] = useState<Draft | null>(null);
   // Keys the composer. The editor keeps the body it was created with, so a
   // different message needs a fresh one: every way a message opens for
@@ -565,18 +574,29 @@ export function App() {
     select: () => {
       if (activeId == null) return;
       setSelected((cur) => toggle(cur, activeId));
-      setAnchor(activeId);
+      anchorTo(activeId);
     },
     extendSelection: (down) => {
-      const at = items.findIndex((m) => m.id === activeId);
-      const next = items[at + (down ? 1 : -1)];
-      if (!next) return;
+      const order = items.map((m) => m.id);
       // The row the range grows from, remembered on the first extension.
       // Without this the anchor stayed null, every ⇧J re-anchored on the row
       // it had just moved to, and a range of six collapsed to the last two.
       const from = anchor ?? activeId;
+      // Where the range ends now: the last row ⇧J or ⇧K reached; else the
+      // anchor, when the cursor is not part of the selection — a row checked
+      // with the circle while the reader sat elsewhere used to grow its
+      // range from wherever the cursor had been left; else the cursor.
+      const end =
+        rangeEnd ??
+        (selected.size > 0 && activeId != null && !selected.has(activeId) && anchor != null
+          ? anchor
+          : activeId);
+      if (from == null || end == null) return;
+      const next = items[order.indexOf(end) + (down ? 1 : -1)];
+      if (!next) return;
       if (anchor == null) setAnchor(from);
-      setSelected((cur) => extend(cur, items.map((m) => m.id), from, next.id));
+      setSelected((cur) => extend(cur, order, from, next.id, rangeEnd));
+      setRangeEnd(next.id);
       setActiveId(next.id);
     },
     clearSelection: () => {
@@ -589,7 +609,7 @@ export function App() {
         return;
       }
       setSelected(new Set());
-      setAnchor(null);
+      anchorTo(null);
     },
     openMove: () => setPicker('folder'),
     openTag: () => setPicker('tag'),
@@ -718,7 +738,13 @@ export function App() {
     } else {
       void triage.runMany(meaning.kind, ids);
     }
-    if (selected.size > 0) setSelected(new Set());
+    // The selection goes only when it is what moved. A row dragged from
+    // outside it acts alone, and the rows gathered so far stay gathered —
+    // the rule the drag helper states, and which this used to break.
+    if (ids.some((id) => selected.has(id))) {
+      setSelected(new Set());
+      anchorTo(null);
+    }
   };
 
   const startReply = async (id: number, all: boolean, targetId?: number) => {
@@ -821,10 +847,13 @@ export function App() {
     }
   }, [locale, openComposer]);
 
-  const onToggleSelect = useCallback((id: number) => {
-    setSelected((cur) => toggle(cur, id));
-    setAnchor(id);
-  }, []);
+  const onToggleSelect = useCallback(
+    (id: number) => {
+      setSelected((cur) => toggle(cur, id));
+      anchorTo(id);
+    },
+    [anchorTo],
+  );
 
   const onActivate = useCallback(
     (id: number, mods: { toggle: boolean; range: boolean; keyboard?: boolean }) => {
@@ -834,11 +863,18 @@ export function App() {
       // you accidentally mark something read while gathering a batch.
       if (mods.toggle) {
         setSelected((cur) => toggle(cur, id));
-        setAnchor(id);
+        anchorTo(id);
         return;
       }
       if (mods.range) {
-        setSelected((cur) => extend(cur, items.map((m) => m.id), anchor, id));
+        // From the anchor, or from the open conversation when nothing has
+        // set one: after Escape, after a right-click outside the selection
+        // or before any click, a ⇧-click used to select only itself and
+        // leave the anchor unset, so the next one did the same.
+        const from = anchor ?? activeId;
+        if (anchor == null) setAnchor(from);
+        setSelected((cur) => extend(cur, items.map((m) => m.id), from, id, rangeEnd));
+        setRangeEnd(id);
         return;
       }
       // A plain click is "just this one", so it puts a selection away
@@ -851,14 +887,14 @@ export function App() {
       // clicks made ⇧J extend from the last row clicked, wherever the cursor
       // had walked since; X still sets it too, so a selection built by hand
       // keeps its own anchor.
-      setAnchor(id);
+      anchorTo(id);
       setActiveId(id);
       // In Drafts, selecting one means resuming it. Showing an
       // unfinished message in a reading pane is showing it to the
       // person who wrote it, in the one form they cannot edit.
       if (opensComposer(view)) void resumeDraft(id);
     },
-    [items, anchor, selected, view, resumeDraft],
+    [items, anchor, activeId, rangeEnd, selected, view, resumeDraft, anchorTo],
   );
 
   const onListAction = useCallback(
@@ -881,12 +917,12 @@ export function App() {
       // user was no longer pointing at.
       if (!selected.has(id)) {
         setSelected(new Set());
-        setAnchor(null);
+        anchorTo(null);
         setActiveId(id);
       }
       setRowMenu({ id, x, y });
     },
-    [selected],
+    [selected, anchorTo],
   );
 
   /** Settles a draft conflict the chosen way and shows it in the composer. */
@@ -1339,6 +1375,12 @@ export function App() {
   const triageRef = useRef(triage);
   triageRef.current = triage;
 
+  // While rows are being gathered, nothing is read. ⇧J and ⇧K move the
+  // cursor to grow the range, and the reader follows the cursor, so every
+  // unread conversation the range passed over was being marked read — the
+  // very thing the mouse path was written to avoid. The selection clearing
+  // re-runs this, and the conversation then on screen is read as usual.
+  const gathering = selected.size > 0;
   useEffect(() => {
     if (settings.layout === 'off') return;
     const current = activeRef.current;
@@ -1346,7 +1388,7 @@ export function App() {
     previousId.current = current?.id ?? null;
 
     // The one you just left.
-    if (leaving != null && leaving !== current?.id) {
+    if (!gathering && leaving != null && leaving !== current?.id) {
       const row = itemsRef.current.find((m) => m.id === leaving);
       if (row?.unread && !triageRef.current.isHeldUnread(leaving)) {
         autoRead.current = leaving;
@@ -1364,7 +1406,7 @@ export function App() {
     }
 
     // And the one you are on, if you stay.
-    if (!current || autoRead.current === current.id) return;
+    if (gathering || !current || autoRead.current === current.id) return;
     if (!current.unread) {
       autoRead.current = current.id;
       return;
@@ -1376,7 +1418,7 @@ export function App() {
       void triageRef.current.run('mark_read', id, undefined, true);
     }, 900);
     return () => clearTimeout(h);
-  }, [active?.id, settings.layout]);
+  }, [active?.id, settings.layout, gathering]);
 
   // Null while the answer is not known yet, which is not the same as none.
   //

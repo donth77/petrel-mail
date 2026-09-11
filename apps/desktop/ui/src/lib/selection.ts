@@ -36,13 +36,25 @@ export function extend(
   order: readonly number[],
   anchorId: number | null,
   id: number,
+  /** Where the last range from this anchor ended. That range is redrawn;
+   *  rows picked before it, or outside it, stay picked. Without this a
+   *  ⇧-click replaced the whole selection with the new range, and a row
+   *  checked earlier was quietly dropped. */
+  prevEndId: number | null = null,
 ): Set<number> {
   const from = anchorId == null ? -1 : order.indexOf(anchorId);
   const to = order.indexOf(id);
   if (to < 0) return new Set(selected);
   if (from < 0) return new Set([id]);
+  const next = new Set(selected);
+  const prev = prevEndId == null ? -1 : order.indexOf(prevEndId);
+  if (prev >= 0) {
+    const [plo, phi] = from <= prev ? [from, prev] : [prev, from];
+    for (const rid of order.slice(plo, phi + 1)) next.delete(rid);
+  }
   const [lo, hi] = from <= to ? [from, to] : [to, from];
-  return new Set(order.slice(lo, hi + 1));
+  for (const rid of order.slice(lo, hi + 1)) next.add(rid);
+  return next;
 }
 
 /** Drops ids no longer in the list, so a selection cannot outlive its rows. */

@@ -198,7 +198,8 @@ const MessageRow = memo(function MessageRow({
           className="row-check"
           onClick={(e) => {
             e.stopPropagation();
-            onToggleSelect(m.id);
+            if (e.shiftKey) onActivate(m.id, { toggle: false, range: true });
+            else onToggleSelect(m.id);
           }}
         >
           {isSelected && <Icon icon={Check} size={11} />}
@@ -237,7 +238,8 @@ const MessageRow = memo(function MessageRow({
               className="row-check"
               onClick={(e) => {
                 e.stopPropagation();
-                onToggleSelect(m.id);
+                if (e.shiftKey) onActivate(m.id, { toggle: false, range: true });
+                else onToggleSelect(m.id);
               }}
             >
               {isSelected && <Icon icon={Check} size={11} />}
@@ -251,7 +253,13 @@ const MessageRow = memo(function MessageRow({
                 ? undefined
                 : (e) => {
                     e.stopPropagation();
-                    onToggleSelect(m.id);
+                    // Shift reaches back to the last row clicked or checked,
+                    // exactly as it does on the row itself. The circle used to
+                    // ignore the key and toggle one row, so "check one, shift-
+                    // check another" gave two rows where the row body gave the
+                    // range — and which of the two you had hit was invisible.
+                    if (e.shiftKey) onActivate(m.id, { toggle: false, range: true });
+                    else onToggleSelect(m.id);
                   }
             }
           >

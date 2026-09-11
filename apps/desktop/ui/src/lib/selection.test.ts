@@ -43,15 +43,27 @@ describe('extend', () => {
   });
 
   it('works backwards', () => {
-    expect([...extend(new Set([4]), order, 4, 2)]).toEqual([2, 3, 4]);
+    expect([...extend(new Set([4]), order, 4, 2)].sort()).toEqual([2, 3, 4]);
   });
 
   it('shrinks when the direction reverses', () => {
     // Growing to 5 then back to 3 should leave 2..3, not a trail of everything
-    // the cursor ever touched.
+    // the cursor ever touched. The caller says where the last range ended.
     const grown = extend(new Set([2]), order, 2, 5);
     expect([...grown]).toEqual([2, 3, 4, 5]);
-    expect([...extend(grown, order, 2, 3)]).toEqual([2, 3]);
+    expect([...extend(grown, order, 2, 3, 5)]).toEqual([2, 3]);
+  });
+
+  it('keeps rows picked outside the range', () => {
+    // Check 1, check 4, then reach back to 2: 1 is not part of the range and
+    // is not the caller's to lose.
+    expect([...extend(new Set([1, 4]), order, 4, 2)].sort()).toEqual([1, 2, 3, 4]);
+  });
+
+  it('redraws only the range it drew last', () => {
+    const first = extend(new Set([1]), order, 3, 5);
+    expect([...first].sort()).toEqual([1, 3, 4, 5]);
+    expect([...extend(first, order, 3, 4, 5)].sort()).toEqual([1, 3, 4]);
   });
 
   it('starts a selection when there is no anchor yet', () => {
