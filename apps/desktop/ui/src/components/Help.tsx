@@ -127,7 +127,6 @@ export function Help({ open, onClose }: { open: boolean; onClose: () => void }) 
           ))}
           {filteredOps.length > 0 && !q && (
             <div className="op-example">
-              <div className="op-example-label">{t('help-together')}</div>
               <div className="mono op-example-query">
                 from:sam has:attachment after:2026-06-01 annex
               </div>

@@ -44,6 +44,14 @@ const OPERATOR_IDS: { title: StringId; ops: OperatorIds[] }[] = [
     ],
   },
   {
+    title: 'search-op-group-3',
+    ops: [
+      { op: 'after:', means: 'search-op-after', example: 'after:2026-06-01' },
+      { op: 'before:', means: 'search-op-before', example: 'before:2026-06-01' },
+      { op: 'date:', means: 'search-op-date', example: 'date:2026-08-14' },
+    ],
+  },
+  {
     title: 'search-op-group-2',
     ops: [
       { op: 'in:', means: 'search-op-in' },
@@ -53,19 +61,11 @@ const OPERATOR_IDS: { title: StringId; ops: OperatorIds[] }[] = [
     ],
   },
   {
-    title: 'search-op-group-3',
-    ops: [
-      { op: 'after:', means: '', example: 'after:2026-06-01' },
-      { op: 'before:', means: 'search-op-before' },
-      { op: 'date:', means: 'search-op-date' },
-    ],
-  },
-  {
     title: 'search-op-group-4',
     ops: [
       { op: 'annex pricing', means: 'search-op-annex-pricing' },
       { op: '"board pack"', means: 'search-op-board-pack' },
-      { op: '-draft', means: 'search-op-draft' },
+      { op: '-draft', means: 'search-op-draft', example: 'contract -draft' },
       { op: 'OR', means: 'search-op-or', example: 'from:sam OR from:dana' },
       { op: 'AND', means: 'search-op-and', example: 'invoice AND receipt' },
       { op: 'NOT', means: 'search-op-not', example: 'contract NOT draft' },
