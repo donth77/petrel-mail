@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { extend, prune, targets, toggle } from './selection';
+import { extend, facing, prune, rowsOf, tagsOnAll, targets, toggle } from './selection';
 
 const order = [1, 2, 3, 4, 5];
 
@@ -84,5 +84,76 @@ describe('prune', () => {
 
   it('leaves a valid selection alone', () => {
     expect([...prune(new Set([2, 4]), order)]).toEqual([2, 4]);
+  });
+});
+
+describe('facing', () => {
+  const read = { unread: false, starred: false };
+  const unread = { unread: true, starred: false };
+  const starred = { unread: false, starred: true };
+
+  it('is unread while anything in the group is, so the offer is Mark as read', () => {
+    // Right-clicking a read row inside a mixed selection offered "Mark as
+    // unread" and turned the unread rows unread along with the rest.
+    expect(facing([read, read, unread]).unread).toBe(true);
+    expect(facing([unread, read]).unread).toBe(true);
+  });
+
+  it('is read only when every conversation is', () => {
+    expect(facing([read, read]).unread).toBe(false);
+  });
+
+  it('is starred only when every conversation is, so a mixed group is offered Star', () => {
+    expect(facing([starred, starred]).starred).toBe(true);
+    expect(facing([starred, read]).starred).toBe(false);
+  });
+
+  it('matches the row itself when there is only one', () => {
+    expect(facing([unread])).toEqual({ unread: true, starred: false });
+    expect(facing([starred])).toEqual({ unread: false, starred: true });
+  });
+
+  it('offers nothing to reverse for an empty group', () => {
+    expect(facing([])).toEqual({ unread: false, starred: false });
+  });
+});
+
+describe('rowsOf', () => {
+  const items = [
+    { id: 1, thread_id: 10 },
+    { id: 2, thread_id: 20 },
+    { id: 3, thread_id: 30 },
+  ];
+
+  it('finds rows by their own id or by conversation id, in the order asked', () => {
+    expect(rowsOf([3, 10], items).map((r) => r.id)).toEqual([3, 1]);
+  });
+
+  it('skips ids the list no longer holds', () => {
+    // A selection can outlive a row that moved; the action must not.
+    expect(rowsOf([2, 99], items).map((r) => r.id)).toEqual([2]);
+  });
+});
+
+describe('tagsOnAll', () => {
+  const urgent = { name: 'Urgent' };
+  const later = { name: 'Later' };
+
+  it('is only the tags every conversation carries', () => {
+    // Urgent on one of two: offering to remove it took it off that one and
+    // gave the other nothing. Off for the group means the offer is to apply.
+    expect(tagsOnAll([{ tags: [urgent, later] }, { tags: [later] }])).toEqual(new Set(['Later']));
+  });
+
+  it('is all of them when every conversation carries them', () => {
+    expect(tagsOnAll([{ tags: [urgent] }, { tags: [urgent] }])).toEqual(new Set(['Urgent']));
+  });
+
+  it('matches the row itself when there is only one', () => {
+    expect(tagsOnAll([{ tags: [urgent, later] }])).toEqual(new Set(['Urgent', 'Later']));
+  });
+
+  it('is empty for an empty group', () => {
+    expect(tagsOnAll([])).toEqual(new Set());
   });
 });

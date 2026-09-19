@@ -31,6 +31,12 @@ export type ThreadMenuProps = {
   /** Shown when the menu was opened on more than one selected conversation, so
    *  it is obvious the next click applies to all of them. */
   count?: number;
+  /** How the conversations the menu acts on read and shine, taken over all
+   *  of them. The star and read toggles offer a direction, and on a selection
+   *  that direction belongs to the selection, not to the row under the
+   *  pointer. Absent, the row itself decides, which is right when it is the
+   *  only one. */
+  facing?: { unread: boolean; starred: boolean };
   /** Reply to the conversation. Absent where no composer can open, and hidden
    *  on a multiple selection: there is no sensible message to reply to when
    *  the menu is acting on twelve conversations at once. */
@@ -51,7 +57,7 @@ export type ThreadMenuProps = {
  */
 export function ThreadMenuItems({
   thread, view, onAction, onMove, onMoveInbox, onTag, onSnooze, onPopOut, onToggleFull, full,
-  count, onReply, onForward,
+  count, onReply, onForward, facing,
 }: ThreadMenuProps) {
   const inTrash = view === 'trash';
   // Junk is not something a draft can be: there is no sender to report, because
@@ -59,6 +65,9 @@ export function ThreadMenuItems({
   // message, so this is about not offering a gesture with no meaning.
   const offersSpam = view !== 'drafts';
   const many = (count ?? 1) > 1;
+  // What the toggles below are toggling: the group when there is one, else
+  // this row.
+  const state = facing ?? thread;
 
   return (
     <>
@@ -124,20 +133,20 @@ export function ThreadMenuItems({
         </>
       )}
 
-      <MenuItem className="menu-item" onClick={() => onAction(thread.starred ? 'unstar' : 'star')}>
+      <MenuItem className="menu-item" onClick={() => onAction(state.starred ? 'unstar' : 'star')}>
         <Icon icon={Star} size={14} />
-        <span className="menu-label">{thread.starred ? t('menu-unstar') : t('menu-star')}</span>
+        <span className="menu-label">{state.starred ? t('menu-unstar') : t('menu-star')}</span>
         <span className="menu-key">S</span>
       </MenuItem>
       <MenuItem
         className="menu-item"
-        onClick={() => onAction(thread.unread ? 'mark_read' : 'mark_unread')}
+        onClick={() => onAction(state.unread ? 'mark_read' : 'mark_unread')}
       >
-        <Icon icon={thread.unread ? MailOpen : Mail} size={14} />
+        <Icon icon={state.unread ? MailOpen : Mail} size={14} />
         <span className="menu-label">
-          {thread.unread ? t('reader-mark-read') : t('reader-mark-unread')}
+          {state.unread ? t('reader-mark-read') : t('reader-mark-unread')}
         </span>
-        <span className="menu-key">{thread.unread ? key('read') : key('unread')}</span>
+        <span className="menu-key">{state.unread ? key('read') : key('unread')}</span>
       </MenuItem>
 
       <MenuSeparator className="menu-sep" />

@@ -411,18 +411,10 @@ export function useTriage(opts: {
     [setItems, setActiveId, onMessage, onTagCount, onViewCount, onSettled],
   );
 
-  /** S toggles, as it does everywhere else — one key, not two. */
-  const toggleStar = useCallback(() => {
-    const row = items.find((m) => m.id === activeId);
-    if (!row) return;
-    void run(row.starred ? 'unstar' : 'star');
-  }, [items, activeId, run]);
-
   return {
     run,
     runMany,
     undo,
-    toggleStar,
     pending,
     hasUndo: () => lastUndo.current != null,
     /** Whether the user asked for this conversation to stay unread. */

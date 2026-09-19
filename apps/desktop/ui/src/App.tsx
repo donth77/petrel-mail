@@ -29,7 +29,7 @@ import { draftFromRecord } from './lib/draft-record';
 import { settleDraft } from './lib/close-draft';
 import { replyHeaders, replyTargets } from './lib/reply';
 import { forwardBody, replyBody } from './lib/quote';
-import { dropMeaning } from './lib/dnd';
+import { draggedIds, dropMeaning } from './lib/dnd';
 import {
   binDestination,
   ARCHIVE_VERB,
@@ -49,7 +49,7 @@ import { AppDialogs } from './components/AppDialogs';
 import { DragPreview } from './components/DragPreview';
 import { startingBody, startingHtml } from './lib/signature';
 import { ATTACHMENT_LIMIT, pickAttachments, stageDropped } from './lib/attachments';
-import { extend, prune, targets, toggle } from './lib/selection';
+import { extend, facing, prune, rowsOf, tagsOnAll, targets, toggle } from './lib/selection';
 import { arrivalsSince, notifiable, postDesktopNotification, shouldNotify } from './lib/notify';
 import { Help } from './components/Help';
 import { Settings } from './components/Settings';
@@ -180,6 +180,17 @@ export function App() {
   const [undoOffer, setUndoOffer] = useState<UndoOffer | null>(null);
   const [readerOverlay, setReaderOverlay] = useState(false);
   const [picker, setPicker] = useState<'folder' | 'tag' | 'snooze' | 'send-later' | null>(null);
+  // Which conversations the open picker is for. Null means what the keys
+  // would act on: the selection, else the highlighted row. Set when a picker
+  // is opened *for* something else — one row's hover button, the reading
+  // pane's own conversation — so the choice lands where the gesture pointed.
+  // Before this every picker fell back to the selection, or in snooze's case
+  // to the highlighted row, whatever had been clicked to open it.
+  const [pickerFor, setPickerFor] = useState<number[] | null>(null);
+  const openPicker = useCallback((kind: 'folder' | 'tag' | 'snooze', ids: number[] | null) => {
+    setPickerFor(ids);
+    setPicker(kind);
+  }, []);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   // Where a range grows from, so reversing direction shrinks it again.
   const [anchor, setAnchor] = useState<number | null>(null);
@@ -502,6 +513,23 @@ export function App() {
       .catch((e) => setToast(t('compose-resume-failed', { error: String(e) })));
   };
 
+  /** A triage verb the way the keys mean it: on the selection when there is
+   *  one, else on the highlighted row, as one batch with one undo. The
+   *  palette prints the same key names beside its commands, so it has to
+   *  mean the same thing; it used to act on the highlighted row alone. */
+  const triageSelection = (kind: ActionKind) => {
+    const ids = targets(selected, activeId);
+    // Inside the trash there is nowhere further to move something, so the
+    // bin key means the permanent thing — behind the dialog, never straight
+    // through. Same key, same place, and the only irreversible one asks.
+    if (kind === 'trash' && view === 'trash') {
+      askDelete(ids);
+      return;
+    }
+    void triage.runMany(kind, ids);
+    if (selected.size > 0) setSelected(new Set());
+  };
+
   useKeyboard({
     openConversation: () => {
       // Drafts have no reading pane. Enter is resume, same as a click.
@@ -531,22 +559,20 @@ export function App() {
       target.focus();
     },
     goTo: goToView,
-    triage: (kind) => {
-      // One key, more things. Acting on the selection when there is one is
-      // what makes X worth having: nothing new to learn, it just applies to
-      // more than one conversation.
+    // One key, more things. Acting on the selection when there is one is
+    // what makes X worth having: nothing new to learn, it just applies to
+    // more than one conversation.
+    triage: triageSelection,
+    // S on a selection used to star the highlighted row alone, the one key
+    // that ignored what was ticked. The direction comes from the whole
+    // selection, as the menu's does: anything unstarred means Star.
+    toggleStar: () => {
       const ids = targets(selected, activeId);
-      // Inside the trash there is nowhere further to move something, so the
-      // bin key means the permanent thing — behind the dialog, never straight
-      // through. Same key, same place, and the only irreversible one asks.
-      if (kind === 'trash' && view === 'trash') {
-        askDelete(ids);
-        return;
-      }
-      void triage.runMany(kind, ids);
+      const rows = rowsOf(ids, items);
+      if (rows.length === 0) return;
+      void triage.runMany(facing(rows).starred ? 'unstar' : 'star', ids);
       if (selected.size > 0) setSelected(new Set());
     },
-    toggleStar: () => triage.toggleStar(),
     // Only where there is a reading pane to fill. With the layout off there is
     // no pane, and with nothing open there would be nothing to look at.
     findInMessage: () => {
@@ -609,7 +635,7 @@ export function App() {
     forward: () => {
       if (active) void startForward(active.id);
     },
-    snooze: () => setPicker('snooze'),
+    snooze: () => openPicker('snooze', null),
     select: () => {
       if (activeId == null) return;
       setSelected((cur) => toggle(cur, activeId));
@@ -650,8 +676,8 @@ export function App() {
       setSelected(new Set());
       anchorTo(null);
     },
-    openMove: () => setPicker('folder'),
-    openTag: () => setPicker('tag'),
+    openMove: () => openPicker('folder', null),
+    openTag: () => openPicker('tag', null),
     openPalette: () => setPaletteOpen(true),
     openHelp: () => setHelpOpen(true),
     openSettings: () => setSettingsOpen('appearance'),
@@ -729,6 +755,10 @@ export function App() {
   }, [query, view, viewName, status?.count, locale]);
 
   const active = useMemo(() => items.find((m) => m.id === activeId) ?? null, [items, activeId]);
+  const pickerIds = useMemo(
+    () => pickerFor ?? targets(selected, activeId),
+    [pickerFor, selected, activeId],
+  );
 
   /**
    * Opens a reply to the newest message in a conversation.
@@ -949,8 +979,10 @@ export function App() {
 
   const onSnoozeRow = useCallback((threadId: number) => {
     setActiveId(threadId);
-    setPicker('snooze');
-  }, []);
+    // The row under the button, not the selection: a hover button acts on
+    // its own row, as the archive one beside it does.
+    openPicker('snooze', [threadId]);
+  }, [openPicker]);
 
   const onRowContextMenu = useCallback(
     (id: number, x: number, y: number) => {
@@ -1128,8 +1160,17 @@ export function App() {
     view,
     dropOnRail,
     // A tag dropped onto a conversation. The same call the picker makes, so a
-    // drag cannot come to mean something slightly different from the menu.
-    (tagId, threadId) => void triage.run('tag', threadId, tagId),
+    // drag cannot come to mean something slightly different from the menu —
+    // and the same rule as dragging rows the other way: onto a row inside
+    // the selection means all of it, onto one outside means that row.
+    (tagId, threadId) => {
+      const ids = draggedIds(threadId, selected);
+      void triage.runMany('tag', ids, tagId);
+      if (ids.some((id) => selected.has(id))) {
+        setSelected(new Set());
+        anchorTo(null);
+      }
+    },
     // A folder dropped onto a new parent: re-nesting is a rename, which on
     // IMAP is the move, and the store cascades it through the subtree.
     (folderId, targetPath) => {
@@ -1511,13 +1552,20 @@ export function App() {
     // start of a working day, not twenty-four hours from now.
     if (picker === 'snooze' || picker === 'send-later') return snoozeOptions();
     if (picker === 'tag') {
-      const on = new Set((active?.tags ?? []).map((x) => x.name));
+      // Over every conversation the choice will reach, not the one on
+      // screen. Read off the highlighted row, a tag it wore showed as on
+      // for the whole selection, and choosing it took the tag off the rows
+      // that had it instead of putting it on the rows that did not.
+      const rows = rowsOf(pickerIds, items);
+      const on = tagsOnAll(rows);
       const listed = new Set(tags.map((tg) => tg.name));
-      // Whatever the conversation actually carries, even if the rail's list
-      // does not have it. A tag visible on the message but absent from the
+      // Whatever the conversations actually carry, even if the rail's list
+      // does not have it. A tag visible on a message but absent from the
       // options is one the reader can see and cannot take off — the list being
       // briefly incomplete should not make a message impossible to untag.
-      const carried = (active?.tags ?? []).filter((x) => !listed.has(x.name));
+      const carried = rows
+        .flatMap((r) => r.tags)
+        .filter((x, i, all) => !listed.has(x.name) && all.findIndex((y) => y.name === x.name) === i);
       return [...tags, ...carried].map((tg) => ({
         id: tg.id,
         label: tg.name,
@@ -1573,7 +1621,7 @@ export function App() {
           anchor: r.anchor,
         };
       });
-  }, [picker, folders, tags, active, view]);
+  }, [picker, folders, tags, pickerIds, items, view]);
   useEffect(() => {
     let live = true;
     setViewTotal(null);
@@ -2202,14 +2250,19 @@ export function App() {
               .popoutMessage(active.thread_id)
               .catch((e) => setToast(t('popout-failed', { error: String(e) })));
           }}
-          onAction={(kind) => (kind === 'delete_forever' ? askDelete() : void triage.run(kind))}
-          onMove={() => setPicker('folder')}
+          // The reading pane is about the conversation in it, every verb
+          // included. Delete used to be the one exception, falling through to
+          // the selection while Archive beside it took the open conversation.
+          onAction={(kind) =>
+            kind === 'delete_forever' ? askDelete(active ? [active.id] : []) : void triage.run(kind)
+          }
+          onMove={() => openPicker('folder', active ? [active.id] : null)}
           onMoveInbox={() => {
             const inbox = folders.find((f) => f.role === 'inbox');
             if (inbox) void triage.run('move', undefined, inbox.id);
           }}
-          onTag={() => setPicker('tag')}
-          onSnooze={() => setPicker('snooze')}
+          onTag={() => openPicker('tag', active ? [active.id] : null)}
+          onSnooze={() => openPicker('snooze', active ? [active.id] : null)}
         />
       )}
 
@@ -2346,7 +2399,16 @@ export function App() {
         labelsNotFolders={activeAccount?.kind === 'gmail'}
         open={picker !== null}
         mode={picker === 'send-later' ? 'snooze' : (picker ?? 'folder')}
-        subject={active?.subject ?? null}
+        // What the choice will land on. One conversation is named; several
+        // are counted, as the row menu counts them. It used to name the open
+        // conversation even when the choice was about to hit three others.
+        subject={
+          picker === 'send-later'
+            ? (active?.subject ?? null)
+            : pickerIds.length > 1
+              ? t('menu-applies-to', { count: pickerIds.length })
+              : (rowsOf(pickerIds, items)[0]?.subject ?? null)
+        }
         options={pickerOptions}
         onClose={() => setPicker(null)}
         onChoose={(id, on) => {
@@ -2375,18 +2437,24 @@ export function App() {
               .catch((e) => setToast(t('compose-save-failed', { error: String(e) })));
             return;
           }
+          // Whatever the picker was opened for, as one batch. Acting on the
+          // active row alone tagged one of six selected conversations; acting
+          // on them one at a time gave six toasts and an undo that reached
+          // only the last. Snooze used to be the straggler here, and snoozed
+          // the highlighted row while the selection sat untouched.
+          const ids = pickerIds;
+          // The selection goes only when it is what moved.
+          const leaveSelection = () => {
+            if (ids.some((x) => selected.has(x))) setSelected(new Set());
+          };
           if (picker === 'snooze') {
             // The id *is* the instant to come back at — a snooze has no row to
             // point at, only a time.
-            void triage.run('snooze', undefined, id);
+            void triage.runMany('snooze', ids, id);
             setPicker(null);
+            leaveSelection();
             return;
           }
-          // Whatever is selected, or the conversation on screen when nothing
-          // is, as one batch. Acting on the active row alone tagged one of
-          // six selected conversations; acting on them one at a time gave
-          // six toasts and an undo that reached only the last.
-          const ids = targets(selected, activeId);
           if (picker === 'folder') {
             // The two rows that are verbs rather than destinations. Reading
             // them as folder ids would archive by moving the mail into
@@ -2396,7 +2464,7 @@ export function App() {
               id === ARCHIVE_VERB ? 'archive' : id === TRASH_VERB ? 'trash' : null;
             void (kind ? triage.runMany(kind, ids) : triage.runMany('move', ids, id));
             setPicker(null);
-            if (selected.size > 0) setSelected(new Set());
+            leaveSelection();
           } else {
             // Toggling: `on` is the state being moved to, so an applied tag
             // untags rather than re-applying and reporting "Tagged" twice.
@@ -2409,7 +2477,9 @@ export function App() {
             .then((id) => {
               if (picker === 'folder') {
                 setPicker(null);
-                return triage.run('move', undefined, id).then(() => api.folders().then(setFolders));
+                // Into the new folder goes what the picker was for, not only
+                // the highlighted row.
+                return triage.runMany('move', pickerIds, id).then(() => api.folders().then(setFolders));
               }
               // Re-read the tags *before* applying, not after. The row shows a
               // tag by name and colour, which the optimistic patch looks up by
@@ -2417,8 +2487,8 @@ export function App() {
               // not in that list yet, so applying first left the row bare until
               // something else reloaded it.
               return api.tags().then(setTags).then(() => {
-                // ...and to everything selected, not only the row underneath.
-                return triage.runMany('tag', targets(selected, activeId), id);
+                // ...and to everything the picker was for, not only the row underneath.
+                return triage.runMany('tag', pickerIds, id);
               });
             })
             .catch((e) => setToast(t('triage-failed', { error: String(e) })));
@@ -2449,10 +2519,10 @@ export function App() {
           hasThread: !!active,
           // Every one of these is the same call the keyboard makes. The palette
           // finds a command; it does not reimplement one.
-          onAction: (kind) => void triage.run(kind),
-          onSnooze: () => setPicker('snooze'),
-          onMove: () => setPicker('folder'),
-          onTag: () => setPicker('tag'),
+          onAction: triageSelection,
+          onSnooze: () => openPicker('snooze', null),
+          onMove: () => openPicker('folder', null),
+          onTag: () => openPicker('tag', null),
           onCompose: startCompose,
           onReply: () => {
             if (active) void startReply(active.id, settings.replyDefault === 'reply-all');
@@ -2528,6 +2598,11 @@ export function App() {
           const row = items.find((m) => m.thread_id === rowMenu.id || m.id === rowMenu.id);
           if (!row) return null;
           const ids = selected.has(rowMenu.id) ? [...selected] : [rowMenu.id];
+          // The toggles in the menu name a direction, and on a selection that
+          // direction is the selection's, not the pointed-at row's. Looked up
+          // the way run() will look them up, so the menu and the action agree
+          // about which conversations are in play.
+          const rows = rowsOf(ids, items);
           const close = () => setRowMenu(null);
           // Every item routes through the same paths the rest of the app uses,
           // so a right-click cannot become a second, subtly different way to
@@ -2540,6 +2615,7 @@ export function App() {
               thread={row}
               view={view}
               count={ids.length}
+              facing={facing(rows)}
               onAction={(kind) => {
                 close();
                 if (kind === 'delete_forever') {
@@ -2558,7 +2634,7 @@ export function App() {
               }}
               onMove={() => {
                 close();
-                setPicker('folder');
+                openPicker('folder', ids);
               }}
               // Reply, reply all and forward, to the newest message in the
               // conversation — the same thing the R, A and F keys mean, and
@@ -2576,11 +2652,11 @@ export function App() {
               }}
               onTag={() => {
                 close();
-                setPicker('tag');
+                openPicker('tag', ids);
               }}
               onSnooze={() => {
                 close();
-                setPicker('snooze');
+                openPicker('snooze', ids);
               }}
               onPopOut={() => {
                 close();
