@@ -62,6 +62,14 @@ export const DEFAULTS = {
   /// secretly a checkbox is a thing you have to be told.
   checkboxes: 'off' as 'off' | 'on',
 
+  /// Mark a search's words where they were found: in the list's subjects and
+  /// previews, and in the message once it is open.
+  ///
+  /// On by default, because a result that does not show why it is there reads
+  /// as a wrong result. Off for anyone who finds a page of yellow harder to
+  /// read than a page without it, which on a common word it can be.
+  searchHighlight: 'on' as 'on' | 'off',
+
   /// Seconds to hold a message before it goes. Nothing reaches the server while
   /// the countdown runs, which is what makes undo a cancel rather than a recall
   /// — the only kind that actually works.

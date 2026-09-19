@@ -67,6 +67,9 @@ const OPERATOR_IDS: { title: StringId; ops: OperatorIds[] }[] = [
       { op: '"board pack"', means: 'search-op-board-pack' },
       { op: '-draft', means: 'search-op-draft' },
       { op: 'OR', means: '', example: 'from:sam OR from:dana' },
+      { op: 'AND', means: '', example: 'invoice AND receipt' },
+      { op: 'NOT', means: '', example: 'contract NOT draft' },
+      { op: '( )', means: '', example: '(from:sam OR from:dana) invoice' },
     ],
   },
 ];

@@ -69,7 +69,6 @@ pub(crate) fn spawn_demo_seeding(state: Arc<AppState>, account: i64) {
             }
             state.seeded.fetch_add(n, Ordering::Relaxed);
         }
-        state.seeding.store(false, Ordering::Relaxed);
         // Stamp and decorate here rather than leaving both to the next launch.
         // Seeded-but-undecorated is not a state worth showing anyone: the mail
         // exists but belongs to no folder, and the Inbox reads placement, so
@@ -80,6 +79,14 @@ pub(crate) fn spawn_demo_seeding(state: Arc<AppState>, account: i64) {
             let _ = store.set_meta("demo_seed_version", DEMO_SEED_VERSION);
         }
         decorate_demo_store(&state, account);
+        // Only now is seeding over. Decorating is what files the mail into the
+        // inbox, and it changes no message count — the one thing the window
+        // watches to know a list is out of date. Declared finished before it,
+        // the window read an inbox with nothing in it, said "Inbox is clear",
+        // and had no reason ever to look again. It used to come right by
+        // accident: every read waited on the store's lock, which decorating
+        // holds throughout. Reads have connections of their own now.
+        state.seeding.store(false, Ordering::Relaxed);
     });
 }
 

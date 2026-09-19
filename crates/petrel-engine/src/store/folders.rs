@@ -12,7 +12,7 @@ use super::*;
 /// both — `glassdoor+102025_2` is an ordinary mailbox. Escaping with a
 /// backslash, declared by `ESCAPE '\\'` at the call site, makes the pattern
 /// mean the name.
-fn like_escape(literal: &str) -> String {
+pub(super) fn like_escape(literal: &str) -> String {
     let mut out = String::with_capacity(literal.len());
     for c in literal.chars() {
         if matches!(c, '\\' | '%' | '_') {
