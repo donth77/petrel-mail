@@ -180,8 +180,15 @@
   color: var(--ink2);
 }
 
+/* A column of the search tab: its groups stacked, with the room between them
+   that the grid's row gap used to give. */
+.ops-col {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
 .op-example {
-  grid-column: 2;
   border: 1px solid var(--hair);
   border-radius: 8px;
   padding: 11px 13px;

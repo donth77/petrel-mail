@@ -787,13 +787,13 @@ sc-spam = Report spam
 sc-star = Star
 sc-trash = Move to trash
 sc-undo = Undo the last thing
-search-op-annex-pricing = mail containing both words. A space means AND
-search-op-after = sent on or after this date
-search-op-before = sent before this date
-search-op-board-pack = the exact phrase: these words together, in this order
+search-op-annex-pricing = mail with both words
+search-op-after = this date or later
+search-op-before = earlier than this date
+search-op-board-pack = this exact phrase
 search-op-cc = anyone copied
-search-op-date = sent on this day. A month or a year works too
-search-op-draft = leaves out mail containing this word. Works on filters too, like -from:sam
+search-op-date = this day, month or year
+search-op-draft = mail without this word
 search-op-filename = an attached file's name
 search-op-from = sender name or address
 search-op-group-1 = Who and what
@@ -806,10 +806,10 @@ search-op-is = unread · read · starred · snoozed
 search-op-subject = the subject line only, not the body
 search-op-tag = a tag you applied
 search-op-to = anyone in To
-search-op-or = either side can match (type it in capitals)
-search-op-and = both sides must match, the same as a space
-search-op-not = leaves out what comes next, the same as a minus sign
-search-op-brackets = groups terms, so OR only covers what is inside
+search-op-or = either one
+search-op-and = both, same as a space
+search-op-not = without, same as -draft
+search-op-brackets = group terms
 
 # Sender authentication. Silence is the default: most legitimate mail
 # carries no verdict, so nothing is shown unless DMARC actually decided.
