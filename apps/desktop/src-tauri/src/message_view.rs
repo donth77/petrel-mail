@@ -161,14 +161,14 @@ pub fn source_document(raw: &[u8], theme: Option<&str>, nonce: &str) -> String {
   }}
   @media (prefers-color-scheme: dark) {{
     :root:not([data-theme='light']) {{
-      --bg: #0f1b21; --surface: #142329; --ink: #e4edee; --ink2: #96a9af;
-      --hair: #24363d;
+      --bg: #0f1b21; --surface: #142329; --ink: #e4edee; --ink2: #b6cad0;
+      --hair: #3e5159;
       color-scheme: dark;
     }}
   }}
   :root[data-theme='dark'] {{
-    --bg: #0f1b21; --surface: #142329; --ink: #e4edee; --ink2: #96a9af;
-    --hair: #24363d;
+    --bg: #0f1b21; --surface: #142329; --ink: #e4edee; --ink2: #b6cad0;
+    --hair: #3e5159;
     color-scheme: dark;
   }}
   body {{
@@ -659,8 +659,8 @@ fn document(body: &str, blocked_remote: usize, nonce: &str, theme: FrameTheme) -
         FrameTheme::AlwaysLight => String::new(),
         FrameTheme::Adaptive { .. } => {
             const DARK_VARS: &str = "color-scheme: dark; \
-             --mv-bg: #142329; --mv-ink: #E4EDEE; --mv-ink2: #96A9AF; \
-             --mv-hair: #24363D; --mv-mark: #6B5410; --mv-mark-on: #F6C945; \
+             --mv-bg: #142329; --mv-ink: #E4EDEE; --mv-ink2: #B6CAD0; \
+             --mv-hair: #3E5159; --mv-mark: #6B5410; --mv-mark-on: #F6C945; \
              --mv-mark-on-ink: #182730;";
             format!(
                 "@media (prefers-color-scheme: dark) {{ \

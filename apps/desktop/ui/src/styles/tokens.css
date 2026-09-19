@@ -61,27 +61,48 @@
   color-scheme: light;
 }
 
+/* The dark values are measured with APCA, not with the WCAG 2 ratio the light
+   ones were tuned to. That ratio overstates contrast on a dark ground: by it
+   this palette matched the light one pair for pair, while APCA put secondary
+   text at 52 against the light theme's 80, tertiary at 38 against 73, and a
+   hairline at 5 against 19. Tertiary ink is the one that mattered most, since
+   it carries times, counts and section labels at 10 to 11px.
+
+   So the two quiet inks are lifted to 70 and 60 on the surface, which keeps
+   three clear steps under the primary at 93, and the lines and fills are
+   lifted to roughly what their light counterparts measure. Hue and chroma are
+   unchanged; only lightness moved. The backgrounds stay where they were,
+   because no background is dark enough to buy that separation back: pure
+   black under this surface still measures 3, so the lines have to do it.
+
+   The selected-row wash is still a mix with the accent, so a custom accent
+   tints it. It is mixed into a lighter base rather than given more accent,
+   which would have reached the same brightness as a much louder row.
+
+   Both blocks below carry the same values and move together. The reading
+   pane's frame and the message source page keep their own copies of ink2 and
+   hair in message_view.rs, because those pages cannot see this stylesheet. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme='light']) {
     --bg: #0f1b21;
     --surface: #142329;
     --raised: #17282f;
     --ink: #e4edee;
-    --ink2: #96a9af;
-    --ink3: #7c8f96;
-    --hair: #24363d;
-    --hair2: #1d2e35;
+    --ink2: #b6cad0;
+    --ink3: #a5b8c0;
+    --hair: #3e5159;
+    --hair2: #304149;
     --accent: color-mix(in oklab, var(--accent-user, #0e7c86) 62%, #ffffff);
     --accent-ink: color-mix(in oklab, var(--accent-user, #0e7c86) 44%, #ffffff);
-    --accent-wash: color-mix(in oklab, var(--accent-user, #0e7c86) 26%, #0f1b21);
+    --accent-wash: color-mix(in oklab, var(--accent-user, #0e7c86) 26%, #27343a);
     --good: #5fb98d;
     --amber: #d2a45b;
     --amber-bg: #2a2416;
-    --amber-line: #443a22;
+    --amber-line: #594f36;
     --danger: #e0938a;
     --danger-bg: #2c1b18;
-    --danger-line: #4a2f2b;
-    --kbd: #1c2e35;
+    --danger-line: #634742;
+    --kbd: #2c3f46;
     --hit: #6b5410;
     color-scheme: dark;
   }
@@ -92,21 +113,21 @@
   --surface: #142329;
   --raised: #17282f;
   --ink: #e4edee;
-  --ink2: #96a9af;
-  --ink3: #7c8f96;
-  --hair: #24363d;
-  --hair2: #1d2e35;
+  --ink2: #b6cad0;
+  --ink3: #a5b8c0;
+  --hair: #3e5159;
+  --hair2: #304149;
   --accent: color-mix(in oklab, var(--accent-user, #0e7c86) 62%, #ffffff);
   --accent-ink: color-mix(in oklab, var(--accent-user, #0e7c86) 44%, #ffffff);
-  --accent-wash: color-mix(in oklab, var(--accent-user, #0e7c86) 26%, #0f1b21);
+  --accent-wash: color-mix(in oklab, var(--accent-user, #0e7c86) 26%, #27343a);
   --good: #5fb98d;
   --amber: #d2a45b;
   --amber-bg: #2a2416;
-  --amber-line: #443a22;
+  --amber-line: #594f36;
   --danger: #e0938a;
   --danger-bg: #2c1b18;
-  --danger-line: #4a2f2b;
-  --kbd: #1c2e35;
+  --danger-line: #634742;
+  --kbd: #2c3f46;
   --hit: #6b5410;
   color-scheme: dark;
 }

@@ -120,19 +120,19 @@
   flex-shrink: 0;
 }
 
-/* The line box is deliberately roomier than the text needs, and the padding
-   gives back what it takes so the label sits where it did and the box is the
-   same 32px.
+/* Never shrinks. `.rail-scroll .rail-label` hides this element's overflow to
+   get an ellipsis on a name too long for the rail, and hiding overflow also
+   sets a flex item's automatic minimum size to zero. The rail is a column of
+   flex items, so once its content was taller than the window these labels were
+   the only things allowed to give, and gave: all three went from 32px to 22px,
+   the bottom of MAILBOXES was sliced off, and the rail never scrolled because
+   the labels had absorbed the shortfall. It only happens in a window shorter
+   than the rail's content, which is why it was reported from the shipped app
+   and could not be reproduced in a tall test window.
 
-   `.rail-scroll .rail-label` clips this element to get an ellipsis on a name
-   too long for the rail, and `overflow: hidden` has no axis: clipping the
-   inline one clips the block one too. At 10px in a 15px line box there was
-   about a pixel of slack under the capitals, which is fine until an engine
-   rounds the line box down or sets the baseline a pixel lower — and then the
-   bottom of MAILBOXES is sliced off. Reported in the shipped app, which runs in
-   the system WebKit; not reproducible in either engine here, at 1x or 2x, with
-   the bundled face or its fallback. So this does not chase the rounding, it
-   leaves enough room that no rounding can reach the edge. */
+   The roomier line box is from an earlier guess that an engine was rounding
+   the line down. It was not the cause. It is harmless, the box is the same
+   32px either way, so it stays rather than move the label by a pixel again. */
 .rail-label {
   font-family: var(--mono);
   font-size: 10px;
@@ -141,6 +141,7 @@
   text-transform: uppercase;
   color: var(--ink3);
   padding: 10px 9px 4px;
+  flex-shrink: 0;
 }
 
 .rail-item {
