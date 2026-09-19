@@ -42,6 +42,7 @@ import { MoreMenu } from './MoreMenu';
 import { Tip } from './Tip';
 import { key } from '../lib/keys';
 import { useHoveredLink } from '../lib/links';
+import { Marked } from '../lib/search-highlight';
 import { t } from '../lib/strings';
 import { Unsubscribe } from './Unsubscribe';
 
@@ -714,7 +715,9 @@ export function Reader({
       <header className="reader-head">
         <div className="reader-headrow">
           <div className="reader-title">
-            <h1 className="reader-subject">{subject}</h1>
+            <h1 className="reader-subject">
+              <Marked text={subject} />
+            </h1>
             <div className="reader-meta">
               {thread.participants || thread.from_display || thread.from_addr}
               {thread.message_count > 1 && (

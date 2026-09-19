@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, type ActionKind, type Folder, type OutboxRow, type Status } from './lib/api';
 import { chips, folderScopeName, hasToken, scopeFor, toggleToken } from './lib/search-chips';
+import { SearchTerms, termsOf } from './lib/search-highlight';
 import { arrangementFor, countFor, countModes, visibleMailboxes } from './lib/mailboxes';
 import { count as fmtCount, fileSize } from './lib/format';
 import { t, type StringId } from './lib/strings';
@@ -136,6 +137,13 @@ export function App() {
   // search bar is open, which is a different thing: the bar can be focused
   // with nothing typed in it, and an empty box is a mailbox.
   const hasQuery = query.trim().length > 0;
+  // The words to mark wherever a result is shown. Empty when there is no
+  // search and when highlighting is off, so the list, the reader and the
+  // message frames all ask one question and none of them asks the setting.
+  const searchTerms = useMemo(
+    () => (settings.searchHighlight === 'on' ? termsOf(query) : []),
+    [query, settings.searchHighlight],
+  );
   const activeSort = effectiveSort(hasQuery ? searchSort : listSort, hasQuery);
   // Whether the search field has the user's attention, which is when the
   // filters are worth showing.
@@ -288,6 +296,24 @@ export function App() {
       clearTimeout(handle);
     };
   }, []);
+
+  // Seeding ending over an empty list is a reason to look again.
+  //
+  // A list refreshes when the message count moves, and the last step of
+  // seeding moves no count: it files mail that already exists into the inbox.
+  // A window that read the inbox a moment too early therefore said "Inbox is
+  // clear" over four thousand conversations, and went on saying it until the
+  // view was left and come back to. Only an empty list is replaced — one with
+  // rows in it is somebody's place in their mail, and the end of a first sync
+  // is no reason to take that away.
+  const wasSeeding = useRef(false);
+  useEffect(() => {
+    const seeding = status?.seeding ?? false;
+    if (wasSeeding.current && !seeding && items.length === 0) setAccountEpoch((n) => n + 1);
+    wasSeeding.current = seeding;
+    // Read at the moment seeding ends; `items` changing is not the trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status?.seeding]);
 
   // Highlight and selection follow a replaced window (view, query, sort,
   // account, or the first mail into an empty list). Paging and new mail at
@@ -1771,6 +1797,7 @@ export function App() {
   }
 
   return (
+    <SearchTerms.Provider value={searchTerms}>
     <div className="app-frame">
       <TitleBar
         synced={((): string => {
@@ -2074,7 +2101,7 @@ export function App() {
                     // caret in the field too, which is where it wants to be
                     // after narrowing.
                     onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => setQuery(toggleToken(query, c.token))}
+                    onClick={() => setQuery(c.rewrite ?? toggleToken(query, c.token))}
                   >
                     {c.label}
                   </button>
@@ -2784,5 +2811,6 @@ export function App() {
       </footer>
       </div>
     </div>
+    </SearchTerms.Provider>
   );
 }

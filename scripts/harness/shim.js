@@ -523,14 +523,22 @@
       // Modelled, not stubbed: results have to carry why they matched, and the
       // ordering has to change when the sort does — a shim that returned the
       // inbox would let both look right while doing nothing.
-      var q = (a.query || '').toLowerCase();
+      //
+      // The words of the query, the way the engine takes them out of it:
+      // operators, brackets and AND/OR/NOT are not text to look for. Matching
+      // the raw string meant `(from:sam OR from:dana) vendor` found nothing
+      // here, so nothing about a real query's results could be looked at.
+      var words = (a.query || '').replace(/[()"]/g, ' ').split(/\s+/).filter(function (w) {
+        return w && w.indexOf(':') < 0 && w.charAt(0) !== '-' && !/^(AND|OR|NOT)$/.test(w);
+      }).map(function (w) { return w.toLowerCase(); });
       var found = rows.filter(function (r) {
-        return !r.filed && (r.subject + ' ' + r.snippet).toLowerCase().indexOf(q) >= 0;
+        var text = (r.subject + ' ' + r.snippet).toLowerCase();
+        return !r.filed && words.every(function (w) { return text.indexOf(w) >= 0; });
       }).map(function (r) {
         return Object.assign({}, r, {
           // The engine's markers, not brackets — see the Snippet renderer.
           match_snippet:
-            '…the revised \u{E000}' + (a.query || '') + '\u{E001} and the pricing sheet…',
+            '…the revised \u{E000}' + (words[0] || '') + '\u{E001} and the pricing sheet…',
         });
       });
       return a.sort ? sorted(found, a) : found;

@@ -43,6 +43,14 @@ export function Help({ open, onClose }: { open: boolean; onClose: () => void }) 
       })).filter((g) => g.ops.length > 0),
     [q, locale],
   );
+  const opColumns = useMemo(
+    () =>
+      [
+        filteredOps.filter((g) => g.side === 'left'),
+        filteredOps.filter((g) => g.side === 'right'),
+      ].filter((column) => column.length > 0),
+    [filteredOps],
+  );
 
   const close = () => {
     setFilter('');
@@ -109,31 +117,39 @@ export function Help({ open, onClose }: { open: boolean; onClose: () => void }) 
           )}
         </TabPanel>
 
+        {/* Two columns that each pack their own groups. As one grid the rows
+            were as tall as their taller cell, so the short group beside
+            "Combining terms" left a hole under itself and the panel scrolled
+            for no reason. When a filter leaves one side empty, what is left
+            takes the first column rather than sitting beside a blank one. */}
         <TabPanel store={tabs} tabId="search" className="help-panel ops">
-          {filteredOps.map((g) => (
-            <div key={g.title}>
-              <div className="grp">{g.title}</div>
-              {g.ops.map((o) => (
-                <div className="op" key={o.op}>
-                  <code>{o.op}</code>
-                  <span>
-                    {o.means}
-                    {o.means && o.example ? ': ' : ''}
-                    {o.example && <code className="bare">{o.example}</code>}
-                  </span>
+          {opColumns.map((column, i) => (
+            <div className="ops-col" key={i}>
+              {column.map((g) => (
+                <div key={g.title}>
+                  <div className="grp">{g.title}</div>
+                  {g.ops.map((o) => (
+                    <div className="op" key={o.op}>
+                      <code>{o.op}</code>
+                      <span>
+                        {o.means}
+                        {o.means && o.example ? ': ' : ''}
+                        {o.example && <code className="bare">{o.example}</code>}
+                      </span>
+                    </div>
+                  ))}
                 </div>
               ))}
+              {i === opColumns.length - 1 && !q && (
+                <div className="op-example">
+                  <div className="mono op-example-query">
+                    from:sam has:attachment after:2026-06-01 annex
+                  </div>
+                  <div className="op-example-note">{t('help-together-note')}</div>
+                </div>
+              )}
             </div>
           ))}
-          {filteredOps.length > 0 && !q && (
-            <div className="op-example">
-              <div className="op-example-label">{t('help-together')}</div>
-              <div className="mono op-example-query">
-                from:sam has:attachment after:2026-06-01 annex
-              </div>
-              <div className="op-example-note">{t('help-together-note')}</div>
-            </div>
-          )}
           {filteredOps.length === 0 && (
             <div className="palette-none">{t('palette-empty', { query: filter })}</div>
           )}

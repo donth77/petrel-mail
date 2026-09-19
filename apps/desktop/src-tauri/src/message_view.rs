@@ -660,7 +660,8 @@ fn document(body: &str, blocked_remote: usize, nonce: &str, theme: FrameTheme) -
         FrameTheme::Adaptive { .. } => {
             const DARK_VARS: &str = "color-scheme: dark; \
              --mv-bg: #142329; --mv-ink: #E4EDEE; --mv-ink2: #96A9AF; \
-             --mv-hair: #24363D; --mv-mark: #453A14; --mv-mark-on: #8F6E17;";
+             --mv-hair: #24363D; --mv-mark: #6B5410; --mv-mark-on: #F6C945; \
+             --mv-mark-on-ink: #182730;";
             format!(
                 "@media (prefers-color-scheme: dark) {{ \
                    :root:not([data-theme='light']) {{ {DARK_VARS} }} }} \
@@ -682,7 +683,13 @@ fn document(body: &str, blocked_remote: usize, nonce: &str, theme: FrameTheme) -
   html {{ overflow-y: hidden; overflow-x: auto; }}
   :root {{ color-scheme: light;
           --mv-bg: #fff; --mv-ink: #182730; --mv-ink2: #54666e;
-          --mv-hair: #d9e1e2; --mv-mark: #fbf0c9; --mv-mark-on: #f6c945; }}
+          --mv-hair: #d9e1e2;
+          /* A matched word has to be findable at a glance, and what makes a
+             highlighter findable is how yellow it is: on white it can never
+             be much darker than the page. The match find is standing on is
+             orange in light and bright yellow with dark ink in dark, so it is
+             a different colour from the rest and not a slightly stronger one. */
+          --mv-mark: #ffe27a; --mv-mark-on: #ffb84d; --mv-mark-on-ink: inherit; }}
   {dark_css}
   :root {{ --petrel-size: 15px; }}
   body {{ margin: 0; padding: 14px 16px; background: var(--mv-bg); color: var(--mv-ink);
@@ -711,7 +718,8 @@ fn document(body: &str, blocked_remote: usize, nonce: &str, theme: FrameTheme) -
                   font: calc(var(--petrel-size) * 0.92)/1.6 ui-monospace, SFMono-Regular, monospace; }}
   .petrel-plain .q {{ color: var(--mv-ink2); }}
   mark.petrel-find {{ background: var(--mv-mark); color: inherit; }}
-  mark.petrel-find.on {{ background: var(--mv-mark-on); }}
+  mark.petrel-find.on {{ background: var(--mv-mark-on); color: var(--mv-mark-on-ink); }}
+  mark.petrel-hit {{ background: var(--mv-mark); color: inherit; }}
 </style></head><body>{banner}<div id="petrel-box"><div id="petrel-fit">{body}</div></div><script nonce="{nonce}">{reporter}</script></body></html>"#
     )
 }

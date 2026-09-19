@@ -122,6 +122,21 @@ export function Appearance() {
         />
       </section>
 
+      {/* On first, unlike the row above: this one is on unless somebody turns
+          it off, and a pill reads left to right as "the usual, then the
+          other". */}
+      <section className="field">
+        <div className="flabel">{t('appearance-search-highlight')}</div>
+        <Pill
+          value={settings.searchHighlight}
+          onChange={(v) => set('searchHighlight', v)}
+          options={[
+            { value: 'on', label: t('search-highlight-on') },
+            { value: 'off', label: t('search-highlight-off') },
+          ]}
+        />
+      </section>
+
       <section className="field last">
         <div className="flabel">{t('appearance-text-size')}</div>
         <div className="slider-row">
