@@ -806,6 +806,10 @@ search-op-is = unread · read · starred · snoozed
 search-op-subject = the subject line only, not the body
 search-op-tag = a tag you applied
 search-op-to = anyone in To
+search-op-or = either one
+search-op-and = both, the same as a space
+search-op-not = leave out what follows, the same as a minus sign
+search-op-brackets = group terms together
 
 # Sender authentication. Silence is the default: most legitimate mail
 # carries no verdict, so nothing is shown unless DMARC actually decided.
