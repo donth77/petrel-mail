@@ -716,7 +716,7 @@ export function Reader({
         <div className="reader-headrow">
           <div className="reader-title">
             <h1 className="reader-subject">
-              <Marked text={subject} />
+              {thread?.subject ? <Marked text={thread.subject} /> : subject}
             </h1>
             <div className="reader-meta">
               {thread.participants || thread.from_display || thread.from_addr}

@@ -436,6 +436,42 @@ fn a_query_stays_bounded_and_says_when_it_was_cut() {
         all(held.root.unwrap()),
         [yes(Term::From("x".repeat(MAX_VALUE_CHARS)))]
     );
+
+    // Lowering can lengthen: `İ` becomes two characters. The limit holds
+    // after it as well as before.
+    let dotted = parse(&format!("in:{}", "İ".repeat(MAX_VALUE_CHARS)));
+    assert!(dotted.truncated);
+    let named = all(dotted.root.unwrap());
+    let [
+        Clause {
+            term: Term::In(name),
+            ..
+        },
+    ] = &named[..]
+    else {
+        panic!("one mailbox");
+    };
+    assert_eq!(name.chars().count(), MAX_VALUE_CHARS);
+}
+
+/// A run of NOTs is counted, not descended into. One call per NOT went as
+/// deep as the field was long, and ten thousand pasted in overflowed the
+/// stack, which aborts the process rather than failing a search. Read here on
+/// a stack far smaller than any the app runs on, so that coming back is the
+/// proof.
+#[test]
+fn a_long_run_of_nots_is_no_deeper_than_one() {
+    let reader = std::thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(|| {
+            let run = |lead: &str, count: usize| format!("{}word", lead.repeat(count));
+            assert_eq!(parse(&run("NOT ", 100_000)).root, parse("word").root);
+            assert_eq!(parse(&run("NOT ", 100_001)).root, parse("-word").root);
+            assert_eq!(parse(&run("-(", 100_000)).root, parse("word").root);
+            assert_eq!(parse(&run("NOT( ", 100_001)).root, parse("-word").root);
+        })
+        .unwrap();
+    reader.join().unwrap();
 }
 
 #[test]
@@ -587,6 +623,14 @@ fn reading_back_is_the_identity() {
         "(annex",
         "pricing)",
         "foo(bar)",
+        "--(",
+        // Values a bare `)` would cut short, or close a group with.
+        r#"from:"a)""#,
+        r#"in:"Archive (old)""#,
+        r#"tag:"p(1)""#,
+        r#"filename:"a))b""#,
+        r#"subject:"f(x)""#,
+        "tag:p(1)x",
         "東京",
         "-会議",
         "subject:契約",
@@ -713,6 +757,37 @@ fn half_typed_boolean_is_what_it_says_so_far() {
     // A bracket that closes nothing closes one taken to open at the start.
     assert_eq!(parse("a OR b) c").root, parse("(a OR b) c").root);
     assert_eq!(parse(") annex").root, parse("annex").root);
+    // And what follows it carries on from that group: an OR after it is
+    // still an OR. A word that ends in a bracket is the usual way to meet
+    // one, and it must not turn the rest of the query into AND.
+    assert_eq!(parse("a) OR b").root, parse("a OR b").root);
+    assert_eq!(
+        parse("a OR b) OR c) d").root,
+        parse("((a OR b) OR c) d").root
+    );
+    assert_eq!(alternatives("fn(x) OR draft memo").len(), 2);
+    // A control character is spacing, so a bracket closes before one.
+    assert_eq!(parse("(a OR b)\u{0}c").root, parse("(a OR b) c").root);
+    // However many dashes, one exclusion, in front of a group as of a word.
+    assert_eq!(parse("--(a OR b)").root, parse("-(a OR b)").root);
+}
+
+/// A value cut at the length limit reads back as itself, even when the cut
+/// lands on a space or leaves a `)` at the end.
+#[test]
+fn a_value_cut_at_the_limit_still_reads_back() {
+    let filler = "x".repeat(MAX_VALUE_CHARS - 1);
+    for typed in [
+        format!(r#""{filler} and more words""#),
+        format!(r#"from:"{filler} and more words""#),
+        format!("subject:{filler})and-more"),
+        format!("{filler})and-more"),
+    ] {
+        let first = parse(&typed);
+        assert!(first.truncated);
+        let written = first.to_string();
+        assert_eq!(parse(&written).root, first.root, "written as {written:?}");
+    }
 }
 
 #[test]

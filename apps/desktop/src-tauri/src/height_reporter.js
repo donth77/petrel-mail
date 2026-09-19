@@ -310,6 +310,13 @@
   var searchTerms = [];
   var searchMarks = [];
   var WORD = /[\p{L}\p{N}]/u;
+  var ACCENT = /\p{M}/u;
+
+  function accents(low, from) {
+    var to = from;
+    while (to < low.length && ACCENT.test(low.charAt(to))) to++;
+    return to;
+  }
 
   function fold(s) {
     var out = '';
@@ -340,7 +347,10 @@
         }
         if (!whole) continue;
         if (!term.c) {
-          if (term.p) { while (word(end)) end++; }
+          // An accent typed as its own character belongs to the letter before
+          // it: neither the end of the word nor outside the mark.
+          end = accents(low, end);
+          if (term.p) { while (word(end)) end = accents(low, end + 1); }
           else if (word(end)) continue;
         }
         hits.push([at, end]);

@@ -31,6 +31,25 @@ const OPERATORS = [
 ];
 const CJK = /[぀-ヿ㐀-䶿一-鿿豈-﫿가-힯]/;
 const WORD = /[\p{L}\p{N}]/u;
+/** An accent written as a character of its own, after the letter it sits on. */
+const ACCENT = /\p{M}/u;
+
+/** Whether the engine reads `key:value` as the operator. One it does not
+ *  recognise, or a value it cannot take, is searched for as words
+ *  (`search_query.rs`), so those are words to mark as well. */
+function operates(key: string, value: string): boolean {
+  if (!OPERATORS.includes(key) || !value) return false;
+  const low = value.toLowerCase();
+  if (key === 'is') return ['unread', 'read', 'starred', 'flagged', 'snoozed'].includes(low);
+  if (key === 'has') return ['attachment', 'attachments', 'file'].includes(low);
+  if (key === 'after' || key === 'before' || key === 'date') {
+    const parts = /^(\d{4})(?:[-/](\d{1,2})(?:[-/](\d{1,2}))?)?[-/]?$/.exec(value);
+    if (!parts) return false;
+    const [month, day] = [parts[2], parts[3]].map((n) => (n === undefined ? 1 : Number(n)));
+    return month >= 1 && month <= 12 && day >= 1 && day <= 31;
+  }
+  return true;
+}
 
 /** Lowercase and without its accents, one character for one character, so a
  *  position in the folded text is the same position in the original. FTS5
@@ -62,6 +81,8 @@ export function termsOf(query: string): Term[] {
       pending = false;
     } else if (l.kind === 'close') {
       if (excluded.length > 1) excluded.pop();
+      // A NOT with nothing after it but the bracket excludes nothing.
+      pending = false;
     } else if (isKeyword(l)) {
       pending = l.says === 'NOT' ? !pending : false;
     } else {
@@ -72,23 +93,31 @@ export function termsOf(query: string): Term[] {
       const colon = l.phrase ? -1 : says.indexOf(':');
       const key = colon > 0 ? says.slice(0, colon).toLowerCase() : '';
       const value = says.slice(colon + 1);
-      if (OPERATORS.includes(key) && value) {
-        if (key === 'subject') terms.push({ text: value, typed: false });
+      if (operates(key, value)) {
+        // As-you-type reaches into `subject:` too: `subject:invo` finds
+        // "Invoice", and the subject is the one place it has to be marked.
+        if (key === 'subject') terms.push({ text: value, typed: l.plain });
       } else terms.push({ text: says, typed: l.plain });
     }
   }
   const last = terms.length - 1;
-  return terms
-    .map(({ text, typed }, i) => {
-      const folded = fold(text);
-      const cjk = CJK.test(folded);
-      return {
-        tokens: cjk ? [folded.replace(/\s+/g, '')] : folded.split(/[^\p{L}\p{N}]+/u).filter(Boolean),
-        prefix: typed && i === last,
-        cjk,
-      };
-    })
-    .filter((term) => term.tokens.length > 0 && term.tokens[0] !== '');
+  return terms.flatMap(({ text, typed }, i): Term[] => {
+    const folded = fold(text);
+    // CJK is matched a run at a time, each wherever it falls: the index has
+    // no phrases for it, so `"회의 일정"` is both runs and not the two joined.
+    if (CJK.test(folded)) {
+      return folded
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((run) => ({ tokens: [run], prefix: false, cjk: true }));
+    }
+    const tokens = folded.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+    if (tokens.length === 0) return [];
+    // The engine only completes a word of two letters or more. `vitamin c`
+    // means the letter, not every word that starts with one.
+    const growing = typed && i === last && [...tokens[tokens.length - 1]].length > 1;
+    return [{ tokens, prefix: growing, cjk: false }];
+  });
 }
 
 /**
@@ -125,7 +154,15 @@ export function hitsIn(text: string, terms: readonly Term[]): [number, number][]
       }
       if (!whole) continue;
       if (!term.cjk) {
-        if (term.prefix) while (word(end)) end += 1;
+        // An accent typed as its own character belongs to the letter before
+        // it: it is neither the end of the word nor outside the mark.
+        const rest = (from: number) => {
+          let to = from;
+          while (to < low.length && ACCENT.test(low[to])) to += 1;
+          return to;
+        };
+        end = rest(end);
+        if (term.prefix) while (word(end)) end = rest(end + 1);
         else if (word(end)) continue;
       }
       found.push([at, end]);
@@ -139,6 +176,20 @@ export function hitsIn(text: string, terms: readonly Term[]): [number, number][]
     else merged.push(hit);
   }
   return merged;
+}
+
+/** Whether two lists of terms say the same thing. */
+export function sameTerms(a: readonly Term[], b: readonly Term[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every(
+      (term, i) =>
+        term.prefix === b[i].prefix &&
+        term.cjk === b[i].cjk &&
+        term.tokens.length === b[i].tokens.length &&
+        term.tokens.every((token, k) => token === b[i].tokens[k]),
+    )
+  );
 }
 
 /** The terms of the search on screen — empty when there is none, and when

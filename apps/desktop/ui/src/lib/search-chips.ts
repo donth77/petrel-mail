@@ -52,18 +52,36 @@ export type Lexeme = {
   phrase: boolean;
   /** Led by a `-` that is outside any quotes: what it says is excluded. */
   negated: boolean;
+  /** The chunks of the `NOT`s standing directly in front of a piece. An odd
+   *  number of them excludes it, exactly as a `-` would, and they go wherever
+   *  the piece goes: taken out without them, a `NOT` would be left to fall on
+   *  whatever came next. */
+  nots: number[];
 };
 
 const QUOTES = '"“”„';
 const KEYWORDS = ['AND', 'OR', 'NOT'];
+/** Whitespace, and the control characters the engine reads as the same. */
+// eslint-disable-next-line no-control-regex
+const SPACING = /[\s\u0000-\u001f\u007f-\u009f]/;
 
-export function read(query: string): { chunks: string[]; lexemes: Lexeme[] } {
+export const isKeyword = (l: Lexeme) =>
+  l.kind === 'piece' && l.plain && KEYWORDS.includes(l.says);
+
+export function read(query: string): {
+  chunks: string[];
+  lexemes: Lexeme[];
+  /** What it would take to close the quote and the brackets still open at
+   *  the end, which is what a query looks like while it is being typed. */
+  unclosed: string;
+} {
   const chunks: string[] = [];
   const lexemes: Lexeme[] = [];
   let raw = '';
   let says = '';
   let quoteAt: number | null = null;
   let quoted = false;
+  let openedWith = '"';
   let depth = 0;
   const push = (kind: Lexeme['kind']) => {
     const before = depth;
@@ -77,6 +95,7 @@ export function read(query: string): { chunks: string[]; lexemes: Lexeme[] } {
       plain: true,
       phrase: false,
       negated: false,
+      nots: [],
     });
   };
   const flushPiece = () => {
@@ -90,6 +109,7 @@ export function read(query: string): { chunks: string[]; lexemes: Lexeme[] } {
         plain: quoteAt === null,
         phrase: quoteAt === (negated ? 1 : 0),
         negated,
+        nots: [],
       });
     }
     says = '';
@@ -106,23 +126,25 @@ export function read(query: string): { chunks: string[]; lexemes: Lexeme[] } {
     const next = chars[i + 1];
     if (QUOTES.includes(ch)) {
       quoted = !quoted;
+      if (quoted) openedWith = ch;
       quoteAt ??= says.length;
       raw += ch;
-    } else if (/\s/.test(ch)) {
+    } else if (SPACING.test(ch)) {
       if (!quoted) flushChunk();
       else {
         raw += ch;
         if (!says.endsWith(' ')) says += ' ';
       }
-    } else if (ch === '(' && bare && (says === '' || says === '-' || KEYWORDS.includes(says))) {
-      // A bracket groups only where it could not be part of a word.
-      if (says === '-') {
+    } else if (ch === '(' && bare && (/^-*$/.test(says) || KEYWORDS.includes(says))) {
+      // A bracket groups only where it could not be part of a word. However
+      // many dashes stand in front of it, they are one exclusion.
+      if (says !== '' && !KEYWORDS.includes(says)) {
         says = '';
         push('minus');
       } else flushPiece();
       push('open');
       raw += ch;
-    } else if (ch === ')' && !quoted && (next === undefined || next === ')' || /\s/.test(next))) {
+    } else if (ch === ')' && !quoted && (next === undefined || next === ')' || SPACING.test(next))) {
       flushPiece();
       push('close');
       raw += ch;
@@ -132,7 +154,17 @@ export function read(query: string): { chunks: string[]; lexemes: Lexeme[] } {
     }
   });
   flushChunk();
-  return { chunks, lexemes };
+
+  let run: number[] = [];
+  for (const l of lexemes) {
+    if (isKeyword(l) && l.says === 'NOT') run.push(l.chunk);
+    else {
+      if (l.kind === 'piece' && !isKeyword(l)) l.nots = run;
+      run = [];
+    }
+  }
+  const closer = openedWith === '“' || openedWith === '„' ? '”' : '"';
+  return { chunks, lexemes, unclosed: (quoted ? closer : '') + ')'.repeat(depth) };
 }
 
 /** Splits a query the way the engine does, keeping `from:"Dana Wu"` whole. */
@@ -141,9 +173,6 @@ export function tokensOf(query: string): string[] {
     .lexemes.filter((l) => l.kind === 'piece')
     .map((l) => l.says);
 }
-
-export const isKeyword = (l: Lexeme) =>
-  l.kind === 'piece' && l.plain && KEYWORDS.includes(l.says);
 
 /** What `OR` separates outside every bracket, each a run of lexemes. */
 function alternativesOf(lexemes: Lexeme[]): Lexeme[][] {
@@ -156,9 +185,21 @@ function alternativesOf(lexemes: Lexeme[]): Lexeme[][] {
 }
 
 /** Whether a lexeme is this operator, standing outside every bracket — as
- *  opposed to a phrase that spells it, or one side of a bracketed choice. */
+ *  opposed to a phrase that spells it, or one side of a bracketed choice.
+ *  Any number of leading dashes is one, as it is to the engine. */
 const is = (l: Lexeme, want: string) =>
-  l.kind === 'piece' && l.depth === 0 && !l.phrase && l.says.toLowerCase() === want;
+  l.kind === 'piece' &&
+  l.depth === 0 &&
+  !l.phrase &&
+  l.says.toLowerCase().replace(/^-+/, '-') === want;
+
+/** Whether `NOT` excludes it. `NOT is:unread` asks for the opposite of what
+ *  the chip means, and a chip that lit for it took the token out when clicked
+ *  and left the `NOT` to exclude whatever stood next. */
+const excluded = (l: Lexeme) => l.nots.length % 2 === 1;
+
+/** The operator, asked for rather than excluded. */
+const applies = (l: Lexeme, want: string) => is(l, want) && !excluded(l);
 
 /** Whether the query already carries this operator.
  *
@@ -178,7 +219,7 @@ export function hasToken(query: string, token: string): boolean {
   const groups = alternativesOf(lexemes).filter(
     (g) => g.length > 0,
   );
-  return groups.length > 0 && groups.every((g) => g.some((l) => is(l, want)));
+  return groups.length > 0 && groups.every((g) => g.some((l) => applies(l, want)));
 }
 
 /**
@@ -224,19 +265,25 @@ export function toggleToken(query: string, token: string): string {
   const want = tokensOf(token)[0]?.toLowerCase();
   if (want === undefined) return query;
   const key = want.includes(':') ? `${want.split(':')[0]}:` : null;
-  const { chunks, lexemes } = read(query);
+  const { chunks, lexemes, unclosed } = read(query);
   const groups = alternativesOf(lexemes).filter(
     (g) => g.length > 0,
   );
+  // A piece leaves with the NOTs in front of it, or they would fall on
+  // whatever stood next.
   const without = (dropped: (l: Lexeme) => boolean) => {
-    const gone = new Set(lexemes.filter(dropped).map((l) => l.chunk));
+    const gone = new Set(lexemes.filter(dropped).flatMap((l) => [l.chunk, ...l.nots]));
     return chunks.filter((_, i) => !gone.has(i));
   };
 
   if (hasToken(query, token)) {
-    return unwrapped(without((l) => is(l, want)).join(' '));
+    return unwrapped(without((l) => applies(l, want)).join(' '));
   }
   if (groups.length === 0) return token;
+  // A quote or a bracket still open is closed first. The engine runs both to
+  // the end of the field, so a token written after them landed inside: part
+  // of the phrase, where it never lit the chip and every click added another.
+  if (unclosed) chunks[chunks.length - 1] += unclosed;
   if (groups.length > 1) return `(${chunks.join(' ')}) ${token}`;
 
   // One alternative, or none yet. The opposite of what is being asked for
@@ -245,19 +292,23 @@ export function toggleToken(query: string, token: string): string {
   const kept = without(
     (l) =>
       is(l, `-${want}`) ||
+      (is(l, want) && excluded(l)) ||
       Boolean(
         key &&
           SINGLE_VALUE.includes(key) &&
           l.kind === 'piece' &&
           l.depth === 0 &&
           !l.phrase &&
+          !excluded(l) &&
           l.says.toLowerCase().startsWith(key),
       ),
   );
-  // An `OR` left dangling at the end is somebody mid-way through typing the
-  // next alternative; the token belongs before it, with what it narrows.
-  const dangling = groups.length === 1 && kept[kept.length - 1] === 'OR';
-  return (dangling ? [...kept.slice(0, -1), token, 'OR'] : [...kept, token]).join(' ');
+  // An `OR` or a `NOT` left dangling at the end is somebody mid-way through
+  // typing what comes after it; the token belongs before it, with what it
+  // narrows, and not as the thing a trailing `NOT` excludes.
+  let end = kept.length;
+  while (end > 0 && KEYWORDS.includes(kept[end - 1])) end -= 1;
+  return [...kept.slice(0, end), token, ...kept.slice(end)].join(' ');
 }
 
 /** The first `in:` or `from:` the query applies, as the bare token — not one
@@ -269,6 +320,7 @@ function appliedValue(query: string, key: string): string | undefined {
       l.kind === 'piece' &&
       l.depth === 0 &&
       !l.phrase &&
+      !excluded(l) &&
       l.says.length > key.length &&
       l.says.toLowerCase().startsWith(key),
   )?.says;
@@ -306,8 +358,13 @@ export function asWords(query: string): { words: string; rewrite: string } | nul
     !l.says.includes(':') &&
     !l.says.startsWith('-') &&
     chunks[l.chunk] === l.says;
+  // Two letters or more: `I` and `A` are capitals by spelling, not by shouting.
   const capitals = (l: Lexeme | undefined) =>
-    word(l) && !isKeyword(l) && l.says !== l.says.toLowerCase() && l.says === l.says.toUpperCase();
+    word(l) &&
+    !isKeyword(l) &&
+    [...l.says].length > 1 &&
+    l.says !== l.says.toLowerCase() &&
+    l.says === l.says.toUpperCase();
   const doubtful = lexemes
     .map((l, at) => at)
     .filter(
@@ -325,8 +382,14 @@ export function asWords(query: string): { words: string; rewrite: string } | nul
     let last = at;
     while (word(lexemes[first - 1]) && lexemes[first - 1].depth === lexemes[at].depth) first -= 1;
     while (word(lexemes[last + 1]) && lexemes[last + 1].depth === lexemes[at].depth) last += 1;
+    // A phrase has a word at each end. `(FOO) AND BAR` has none before its
+    // keyword, and `"AND BAR"` is nothing anybody pasted.
+    while (first < at && isKeyword(lexemes[first])) first += 1;
+    while (last > at && isKeyword(lexemes[last])) last -= 1;
+    if (first === at || last === at) continue;
     phrases.set(lexemes[first].chunk, lexemes[last].chunk);
   }
+  if (phrases.size === 0) return null;
   const out: string[] = [];
   let shown = '';
   for (let i = 0; i < chunks.length; i += 1) {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, type ActionKind, type Folder, type OutboxRow, type Status } from './lib/api';
 import { chips, folderScopeName, hasToken, scopeFor, toggleToken } from './lib/search-chips';
-import { SearchTerms, termsOf } from './lib/search-highlight';
+import { SearchTerms, sameTerms, termsOf, type Term } from './lib/search-highlight';
 import { arrangementFor, countFor, countModes, visibleMailboxes } from './lib/mailboxes';
 import { count as fmtCount, fileSize } from './lib/format';
 import { t, type StringId } from './lib/strings';
@@ -95,6 +95,9 @@ function statusNeedsRender(prev: Status | null, next: Status): boolean {
  *  translated. An unrecognised key says nothing rather than showing a code —
  *  a newer engine talking to an older window must not put `sent-copy-failed`
  *  on screen. */
+/** No search, or highlighting switched off: one list, so it is never news. */
+const NO_TERMS: readonly Term[] = [];
+
 const ALERT_TEXT: Record<string, StringId> = {
   'sent-copy-failed': 'alert-sent-copy-failed',
 };
@@ -140,10 +143,17 @@ export function App() {
   // The words to mark wherever a result is shown. Empty when there is no
   // search and when highlighting is off, so the list, the reader and the
   // message frames all ask one question and none of them asks the setting.
-  const searchTerms = useMemo(
-    () => (settings.searchHighlight === 'on' ? termsOf(query) : []),
-    [query, settings.searchHighlight],
-  );
+  //
+  // The same list is handed back while the words in it have not changed.
+  // Every keystroke inside `from:…` made a new one that said the same thing,
+  // and each new one had every open message clear its marks, walk its whole
+  // text again and report its height.
+  const lastTerms = useRef<readonly Term[]>(NO_TERMS);
+  const searchTerms = useMemo(() => {
+    const next = settings.searchHighlight === 'on' ? termsOf(query) : NO_TERMS;
+    if (!sameTerms(next, lastTerms.current)) lastTerms.current = next;
+    return lastTerms.current;
+  }, [query, settings.searchHighlight]);
   const activeSort = effectiveSort(hasQuery ? searchSort : listSort, hasQuery);
   // Whether the search field has the user's attention, which is when the
   // filters are worth showing.
@@ -2091,7 +2101,8 @@ export function App() {
                     key={c.id}
                     type="button"
                     className={hasToken(query, c.token) ? 'filter-chip on' : 'filter-chip'}
-                    aria-pressed={hasToken(query, c.token)}
+                    // A suggestion rewrites the query once; it is not a switch.
+                    aria-pressed={c.rewrite === undefined ? hasToken(query, c.token) : undefined}
                     // The click must not take focus off the field. It fires
                     // after blur, and blur empties a field holding nothing but
                     // the pre-applied scope — so clicking Unread in Receipts

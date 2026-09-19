@@ -715,3 +715,220 @@ fn a_keyword_in_quotes_is_the_word() {
     assert_eq!(found(&m.store, "do not reply"), ["Your statement"]);
     assert!(found(&m.store, "statement NOT reply").is_empty());
 }
+
+/* What a review of the grammar found, each held here so it stays found. */
+
+/// An `OR` with a word on one side and a condition on the other is asked a
+/// statement per side, and several of them multiply. Past the limit the
+/// first eight statements were kept and the rest left out, so a query whose
+/// only match took the second side of its first choice found nothing, and
+/// nothing said so. It is asked whole now, as lookups.
+#[test]
+fn a_query_too_wide_to_multiply_out_is_still_answered() {
+    let m = mailbox();
+    // Four choices are sixteen statements.
+    assert_eq!(
+        found(
+            &m.store,
+            "(zzone OR from:sam) (zztwo OR to:dana) (zzthree OR cc:legal) (zzfour OR has:attachment)"
+        ),
+        ["Q3 vendor contracts"]
+    );
+    // Nine alternatives, each a word and a condition, and the match in the last.
+    let nine = (0..8)
+        .map(|i| format!("(zz{i} from:nobody{i})"))
+        .chain(["(annex from:sam)".to_string()])
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    assert_eq!(found(&m.store, &nine), ["Q3 vendor contracts"]);
+    // The word still being typed is still a prefix there…
+    assert_eq!(
+        found(
+            &m.store,
+            "(zzone OR from:sam) (zztwo OR to:dana) (zzthree OR cc:legal) (zzfour OR contr)"
+        ),
+        ["Q3 vendor contracts"]
+    );
+    // …an excluded word is still excluded, and nothing matches by default.
+    assert!(
+        found(
+            &m.store,
+            "(zzone OR from:sam) (zztwo OR to:dana) (zzthree OR cc:legal) (zzfour OR has:attachment) -annex"
+        )
+        .is_empty()
+    );
+    assert!(
+        found(
+            &m.store,
+            "(zzone OR from:nobody) (zztwo OR to:dana) (zzthree OR cc:legal) (zzfour OR has:attachment)"
+        )
+        .is_empty()
+    );
+}
+
+/// The CJK index holds a message's subject and body, a character to a token,
+/// and nothing else. A Latin word excluded beside a CJK one was asked there:
+/// it never saw the address `sato` is in, and it lost the phrase in
+/// `"board pack"` and dropped mail that had the two words apart.
+#[test]
+fn a_latin_word_is_excluded_from_a_cjk_search() {
+    let mut m = mailbox();
+    m.store
+        .ingest_raw(
+            &BlobStore::open(&m._dir.path().join("blobs")).unwrap(),
+            m.account,
+            None,
+            None,
+            &raw(&Mail {
+                id: "crates",
+                from: "Sam Ortiz <sam@example.com>",
+                to: "me@example.com",
+                cc: "",
+                subject: "Crates for 東京",
+                body: "We pack the crates once the board has met. 東京",
+                file: None,
+            }),
+        )
+        .unwrap();
+    assert_eq!(
+        found(&m.store, "東京"),
+        ["Annex for 東京", "Crates for 東京", "東京の会議"]
+    );
+    assert_eq!(found(&m.store, "東京 -sato"), ["Crates for 東京"]);
+    assert_eq!(found(&m.store, "東京 -from:sato"), ["Crates for 東京"]);
+    // Both words, but not side by side: the phrase is not there to exclude.
+    assert_eq!(
+        found(&m.store, r#"東京 -"board pack""#),
+        ["Annex for 東京", "Crates for 東京", "東京の会議"]
+    );
+    assert_eq!(
+        found(&m.store, "東京 -crates"),
+        ["Annex for 東京", "東京の会議"]
+    );
+}
+
+/// A choice keeps the sides that did not name the bin out of it. Not when
+/// the bin is what the whole of it is being asked of.
+#[test]
+fn a_choice_inside_the_bin_is_not_kept_out_of_it() {
+    let m = mailbox();
+    let trash = m.store.ensure_folder(m.account, "trash", "Trash").unwrap();
+    let q3 = m.store.search_threads("subject:vendor", 5).unwrap()[0].id;
+    assert!(m.store.remove_placement(q3, m.account, "INBOX").unwrap());
+    m.store.place_message(q3, trash).unwrap();
+
+    assert_eq!(
+        found(&m.store, "in:trash from:sam"),
+        ["Q3 vendor contracts"]
+    );
+    assert_eq!(
+        found(&m.store, "in:trash (in:spam OR from:sam)"),
+        ["Q3 vendor contracts"]
+    );
+    assert_eq!(
+        found(&m.store, "in:trash (from:dana OR from:sam)"),
+        ["Q3 vendor contracts"]
+    );
+    // Outside the bin the choice still keeps its other side out.
+    assert!(found(&m.store, "in:spam OR from:sam").is_empty());
+}
+
+/// `is:snoozed` lifts the inbox's rule about snoozed mail for what it is
+/// asked alongside, not for the whole statement.
+#[test]
+fn asking_for_snoozed_mail_on_one_side_does_not_show_it_on_the_other() {
+    use petrel_engine::actions::{ActionKind, PlacementPolicy};
+
+    let m = mailbox();
+    let lunch = m.store.search_threads("subject:lunch", 5).unwrap()[0].id;
+    let thread = m.store.thread_of(lunch).unwrap().unwrap_or(-lunch);
+    m.store
+        .apply_thread_action(
+            m.account,
+            thread,
+            ActionKind::Snooze,
+            Some(1_900_000_000_000),
+            PlacementPolicy::Exclusive,
+        )
+        .unwrap();
+
+    assert!(found(&m.store, "in:inbox from:billing").is_empty());
+    assert_eq!(
+        found(&m.store, "in:inbox is:snoozed from:billing"),
+        ["Lunch"]
+    );
+    assert_eq!(
+        found(&m.store, "is:snoozed (in:inbox OR in:archive)"),
+        ["Lunch"]
+    );
+    // Lunch is snoozed, so it is not in the inbox; and it is not from Dana.
+    assert!(
+        found(
+            &m.store,
+            "(in:inbox from:billing) OR (is:snoozed from:dana)"
+        )
+        .is_empty()
+    );
+}
+
+/// The word being typed is the last one the index keeps, and there is one
+/// of it for the whole query.
+#[test]
+fn the_word_being_typed_is_the_same_word_however_the_query_is_asked() {
+    let m = mailbox();
+    // Starting an exclusion, or a bracket, after a partial word used to take
+    // the prefix off it and empty the list for a keystroke.
+    for typed in ["lun", "lun -", "lun &", "lun ["] {
+        assert_eq!(found(&m.store, typed), ["Lunch"], "{typed}");
+    }
+    // `ann` is not the last word in either of these, so it is a whole word
+    // in both. Chosen a statement at a time it was a prefix in the second.
+    assert_eq!(found(&m.store, "ann OR draft"), ["Draft contract terms"]);
+    assert_eq!(
+        found(&m.store, "ann OR (from:dana draft)"),
+        ["Draft contract terms"]
+    );
+    assert_eq!(
+        found(&m.store, "draft OR ann"),
+        [
+            "Annex for 東京",
+            "Draft contract terms",
+            "Q3 vendor contracts"
+        ]
+    );
+}
+
+/// Punctuation asks nothing, so as one side of a choice it is no side at
+/// all. Written as "true of every message" it listed the whole mailbox for
+/// the keystroke before `-[acme]` became a word.
+#[test]
+fn punctuation_is_no_side_of_a_choice() {
+    let m = mailbox();
+    assert_eq!(found(&m.store, "lunch OR -["), ["Lunch"]);
+    assert_eq!(found(&m.store, "from:sam OR -["), ["Q3 vendor contracts"]);
+    assert_eq!(
+        found(&m.store, "(& OR from:sam) contract"),
+        ["Q3 vendor contracts"]
+    );
+    assert_eq!(
+        found(&m.store, "(& OR annex) contract"),
+        ["Q3 vendor contracts"]
+    );
+    // Among things that all have to hold it is still simply skipped.
+    assert_eq!(found(&m.store, "from:sam OR (from:dana -[)").len(), 2);
+}
+
+/// `in:` escapes what was typed as well. The mailbox needs a folder the
+/// unescaped pattern would have matched, or this could never fail.
+#[test]
+fn a_mailbox_name_is_never_a_wildcard() {
+    let m = mailbox();
+    let filed = m.store.ensure_folder(m.account, "", "Work/Inbox").unwrap();
+    let lunch = m.store.search_threads("subject:lunch", 5).unwrap()[0].id;
+    m.store.place_message(lunch, filed).unwrap();
+
+    assert_eq!(found(&m.store, "in:work/inbox"), ["Lunch"]);
+    assert_eq!(found(&m.store, "in:inbox lunch"), ["Lunch"]);
+    assert!(found(&m.store, "in:inbo_").is_empty());
+    assert!(found(&m.store, "in:%").is_empty());
+}

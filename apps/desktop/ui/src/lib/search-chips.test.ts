@@ -262,11 +262,48 @@ describe('what was typed survives a chip', () => {
     );
   });
 
-  it('keeps curly quotes and a quote still being typed', () => {
+  it('keeps curly quotes', () => {
     expect(toggleToken('“board pack”', 'is:unread')).toBe(
       '“board pack” is:unread',
     );
-    expect(toggleToken('annex "board pa', 'is:unread')).toBe('annex "board pa is:unread');
+  });
+
+  /* The engine runs an open quote or bracket to the end of the field, so a
+     token written after one landed inside it: the chip never lit, and every
+     click added another copy. */
+  it('closes a quote or a bracket still being typed before writing after it', () => {
+    expect(toggleToken('annex "board pa', 'is:unread')).toBe('annex "board pa" is:unread');
+    expect(toggleToken('annex “board pa', 'is:unread')).toBe('annex “board pa” is:unread');
+    expect(toggleToken('(from:sam OR from:dana', 'is:unread')).toBe(
+      '(from:sam OR from:dana) is:unread',
+    );
+    expect(toggleToken('a OR "b c', 'is:unread')).toBe('(a OR "b c") is:unread');
+    for (const typing of ['annex "board pa', '(from:sam OR from:dana', '(']) {
+      const once = toggleToken(typing, 'is:unread');
+      expect(hasToken(once, 'is:unread')).toBe(true);
+      expect(hasToken(toggleToken(once, 'is:unread'), 'is:unread')).toBe(false);
+    }
+  });
+
+  /* `NOT is:unread` asks for the opposite of the chip. Lit for it, the chip
+     took the token out and left the NOT to exclude whatever stood next. */
+  it('does not take a NOT for the filter it excludes', () => {
+    expect(hasToken('NOT is:unread from:sam', 'is:unread')).toBe(false);
+    expect(hasToken('NOT NOT is:unread from:sam', 'is:unread')).toBe(true);
+    expect(toggleToken('NOT is:unread from:sam', 'is:unread')).toBe('from:sam is:unread');
+    expect(toggleToken('NOT has:attachment invoice', 'has:attachment')).toBe(
+      'invoice has:attachment',
+    );
+    // Taken off, it takes its NOTs with it.
+    expect(toggleToken('NOT NOT is:unread from:sam', 'is:unread')).toBe('from:sam');
+    // An excluded mailbox is neither replaced nor the one being searched.
+    expect(toggleToken('NOT in:spam x', 'in:inbox')).toBe('NOT in:spam x in:inbox');
+    const scope = chips(null, 2026, 'inbox', null, 'NOT in:spam x').find((c) => c.id === 'scope');
+    expect(scope?.token).toBe('in:inbox');
+    // A NOT still waiting for its word does not get the chip's token.
+    expect(toggleToken('invoice NOT', 'is:unread')).toBe('invoice is:unread NOT');
+    // However many dashes, one exclusion.
+    expect(toggleToken('x --is:unread', 'is:unread')).toBe('x is:unread');
   });
 
   it('does not take a phrase for the operator it spells', () => {
@@ -392,6 +429,17 @@ describe('a keyword that may have been meant as a word', () => {
     expect(asWords('2024 OR 2025')).toBeNull();
     // Already in quotes: already a word.
     expect(asWords('DO "NOT" REPLY')).toBeNull();
+    // A phrase has a word at each end. These have a keyword at one, and
+    // `"AND BAR"` is nothing anybody pasted.
+    expect(asWords('(FOO) AND BAR')).toBeNull();
+    expect(asWords('-FOO AND BAR')).toBeNull();
+    expect(asWords('FOO AND -BAR')).toBeNull();
+    expect(asWords('"TERMS" AND CONDITIONS')).toBeNull();
+    // `I` and `A` are capitals by spelling, not by shouting.
+    expect(asWords('A OR B')).toBeNull();
+    expect(asWords('I OR you')).toBeNull();
+    // The run keeps its words and leaves a keyword at its end where it was.
+    expect(asWords('DO NOT REPLY OR')?.rewrite).toBe('"DO NOT REPLY" OR');
   });
 
   it('is a chip at the end of the row, never lit, that swaps the query', () => {

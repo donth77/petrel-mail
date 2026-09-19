@@ -30,12 +30,24 @@ fn without_nots<'a>(expr: &'a Expr, flip: bool) -> Node<'a> {
         }),
         Expr::Not(inner) => without_nots(inner, !flip),
         // Not (a and b) is (not a) or (not b), and the other way about.
+        //
+        // Flattened as it is built. The parser's tree is tidy, but taking a
+        // NOT off `a OR NOT (b c)` leaves a choice inside a choice, and those
+        // are one choice of three: read as two, the inner one counted as a
+        // statement of its own and the query reached the limit sooner.
         Expr::All(parts) | Expr::Any(parts) => {
-            let parts = parts.iter().map(|p| without_nots(p, flip)).collect();
-            if matches!(expr, Expr::All(_)) != flip {
-                Node::All(parts)
+            let all = matches!(expr, Expr::All(_)) != flip;
+            let mut flat = Vec::new();
+            for part in parts {
+                match (without_nots(part, flip), all) {
+                    (Node::All(inner), true) | (Node::Any(inner), false) => flat.extend(inner),
+                    (other, _) => flat.push(other),
+                }
+            }
+            if all {
+                Node::All(flat)
             } else {
-                Node::Any(parts)
+                Node::Any(flat)
             }
         }
     }
@@ -53,6 +65,9 @@ enum Words<'a> {
 #[derive(Clone)]
 enum Cond<'a> {
     Lit(Lit<'a>),
+    /// Words that must be there, looked up on their own. Only a query too
+    /// wide to ask a statement at a time is written this way (`as_lookups`).
+    With(Option<&'static str>, &'a Text),
     /// Words that must not be there, looked up on their own and taken away.
     Without(Option<&'static str>, &'a Text),
     All(Vec<Cond<'a>>),
@@ -83,6 +98,14 @@ impl Words<'_> {
         match self {
             Words::Leaf(_, text) => out.push(text),
             Words::All(parts) | Words::Any(parts) => parts.iter().for_each(|p| p.leaves(out)),
+        }
+    }
+
+    /// Whether any of it is a word the index keeps.
+    fn indexable(&self) -> bool {
+        match self {
+            Words::Leaf(_, text) => indexable(text),
+            Words::All(parts) | Words::Any(parts) => parts.iter().any(Words::indexable),
         }
     }
 }
@@ -137,6 +160,75 @@ fn as_cond<'a>(node: &Node<'a>) -> Option<Cond<'a>> {
     }
 }
 
+/// The whole node as conditions, the words in it as lookups of their own.
+///
+/// Always possible, and always right: every leaf is a set of messages and
+/// SQL does the algebra. It is not how a query is normally asked, because a
+/// lookup cannot rank and has no snippet to show. It is how one is asked when
+/// multiplying it out would pass the limit, where the choice used to be
+/// between a hundred statements and quietly leaving some out.
+fn as_lookups<'a>(node: &Node<'a>) -> Cond<'a> {
+    match node {
+        Node::Lit(lit) => match text_of(lit.term) {
+            None => Cond::Lit(*lit),
+            Some((column, text)) if lit.negated => Cond::Without(column, text),
+            Some((column, text)) => Cond::With(column, text),
+        },
+        Node::All(parts) => Cond::All(parts.iter().map(as_lookups).collect()),
+        Node::Any(parts) => Cond::Any(parts.iter().map(as_lookups).collect()),
+    }
+}
+
+/// A condition with the parts that ask nothing taken out, or `None` when
+/// that was all of it.
+///
+/// Punctuation is not in the index, so a word made of it asks nothing,
+/// wanted or not. Among things that all have to hold it is simply skipped.
+/// As one side of a choice it is no side at all: written as "true of every
+/// message", `lunch OR -[` listed the whole mailbox for the length of the
+/// keystroke before `-[acme]` became a word.
+fn pruned(cond: Cond<'_>) -> Option<Cond<'_>> {
+    fn kept(parts: Vec<Cond<'_>>) -> Vec<Cond<'_>> {
+        parts.into_iter().filter_map(pruned).collect()
+    }
+    match cond {
+        Cond::With(_, text) | Cond::Without(_, text) if !indexable(text) => None,
+        Cond::All(parts) => match kept(parts) {
+            parts if parts.is_empty() => None,
+            mut parts if parts.len() == 1 => parts.pop(),
+            parts => Some(Cond::All(parts)),
+        },
+        Cond::Any(parts) => match kept(parts) {
+            parts if parts.is_empty() => None,
+            mut parts if parts.len() == 1 => parts.pop(),
+            parts => Some(Cond::Any(parts)),
+        },
+        other => Some(other),
+    }
+}
+
+/// The word still being typed: the last one asked for that the index keeps,
+/// unless it was put in quotes, which is somebody saying it is finished.
+///
+/// One word for the whole query, not one per statement. Chosen a statement
+/// at a time, `ann` in `ann OR (from:dana draft)` was the last word of its
+/// own statement and found "annex", while in `ann OR draft` it was not and
+/// did not. Last among the words the index keeps, too: `lun -` is somebody
+/// starting an exclusion, and the dash took the prefix off `lun` and emptied
+/// the list for a keystroke.
+fn typing_word<'a>(node: &Node<'a>) -> Option<&'a Text> {
+    fn last<'a>(node: &Node<'a>) -> Option<&'a Text> {
+        match node {
+            Node::Lit(lit) if !lit.negated => text_of(lit.term)
+                .map(|(_, text)| text)
+                .filter(|text| indexable(text)),
+            Node::Lit(_) => None,
+            Node::All(parts) | Node::Any(parts) => parts.iter().rev().find_map(last),
+        }
+    }
+    last(node).filter(|text| !text.exact)
+}
+
 /// One statement's worth of a query: words to rank by, words to leave out,
 /// and conditions, all of which have to hold.
 #[derive(Default, Clone)]
@@ -154,15 +246,21 @@ struct Bundle<'a> {
 /// ranking, and costs what `from:sam invoice` costs. Only an `OR` with words
 /// on one side and a condition on the other has to be asked once per side —
 /// a ranking has nothing to say about a message that matched no words — and
-/// those are multiplied out, up to the limit.
-fn bundles<'a>(node: &Node<'a>) -> Vec<Bundle<'a>> {
+/// those are multiplied out.
+///
+/// `None` when that would pass the limit. Four bracketed choices of a word
+/// or a condition are sixteen statements, and keeping the first eight left
+/// out every one that took the second side of the first choice: a query
+/// whose only match was there found nothing, and nothing said so. The caller
+/// asks it as one statement of lookups instead (`as_lookups`).
+fn bundles<'a>(node: &Node<'a>) -> Option<Vec<Bundle<'a>>> {
     if let Some(words) = as_words(node) {
-        return vec![Bundle {
+        return Some(vec![Bundle {
             wanted: vec![words],
             ..Bundle::default()
-        }];
+        }]);
     }
-    match node {
+    Some(match node {
         Node::Lit(lit) => vec![match text_of(lit.term) {
             Some(unwanted) => Bundle {
                 unwanted: vec![unwanted],
@@ -176,7 +274,15 @@ fn bundles<'a>(node: &Node<'a>) -> Vec<Bundle<'a>> {
         Node::All(parts) => {
             let mut out = vec![Bundle::default()];
             for part in parts {
-                let options = bundles(part);
+                let options = bundles(part)?;
+                // A choice with nothing left in it asked nothing, and is
+                // skipped the way a word of punctuation is.
+                if options.is_empty() {
+                    continue;
+                }
+                if out.len() * options.len() > MAX_ALTERNATIVES {
+                    return None;
+                }
                 out = out
                     .iter()
                     .flat_map(|left| {
@@ -188,7 +294,6 @@ fn bundles<'a>(node: &Node<'a>) -> Vec<Bundle<'a>> {
                             both
                         })
                     })
-                    .take(MAX_ALTERNATIVES)
                     .collect();
             }
             out
@@ -197,11 +302,18 @@ fn bundles<'a>(node: &Node<'a>) -> Vec<Bundle<'a>> {
             let (mut latin, mut cjk, mut conds, mut rest) = (vec![], vec![], vec![], vec![]);
             for part in parts {
                 if let Some(words) = as_words(part) {
+                    // Words the index does not keep find nothing, so they
+                    // are no alternative: `(& OR from:sam) contract` is mail
+                    // from Sam, where `&` as a statement of its own was
+                    // skipped inside it and became every contract there is.
+                    if !words.indexable() {
+                        continue;
+                    }
                     if words.cjk() { &mut cjk } else { &mut latin }.push(words);
                 } else if let Some(cond) = as_cond(part) {
-                    conds.push(cond);
+                    conds.extend(pruned(cond));
                 } else {
-                    rest.extend(bundles(part));
+                    rest.extend(bundles(part)?);
                 }
             }
             let mut out = Vec::new();
@@ -227,10 +339,12 @@ fn bundles<'a>(node: &Node<'a>) -> Vec<Bundle<'a>> {
                 });
             }
             out.extend(rest);
-            out.truncate(MAX_ALTERNATIVES);
+            if out.len() > MAX_ALTERNATIVES {
+                return None;
+            }
             out
         }
-    }
+    })
 }
 
 /// A word with no letter or digit in it is nothing the tokenizer keeps.
@@ -292,13 +406,46 @@ fn fts(words: &Words, for_cjk: bool, typing: Option<&Text>) -> Option<String> {
 fn asks(cond: &Cond, wanted: &dyn Fn(&Term) -> bool) -> bool {
     match cond {
         Cond::Lit(lit) => !lit.negated && wanted(lit.term),
-        Cond::Without(..) => false,
+        Cond::With(..) | Cond::Without(..) => false,
         Cond::All(parts) | Cond::Any(parts) => parts.iter().any(|p| asks(p, wanted)),
     }
 }
 
 fn is_the_bin(term: &Term) -> bool {
     matches!(term, Term::In(role) if role == "spam" || role == "trash")
+}
+
+fn is_snoozed(term: &Term) -> bool {
+    *term == Term::Is(State::Snoozed)
+}
+
+/// Whether one of these, which all have to hold, is the thing itself: asked
+/// for outright, not somewhere inside a choice further down.
+fn alongside(parts: &[Cond], wanted: &dyn Fn(&Term) -> bool) -> bool {
+    parts
+        .iter()
+        .any(|p| matches!(p, Cond::Lit(lit) if !lit.negated && wanted(lit.term)))
+}
+
+/// What holds around a condition, which changes what it means.
+///
+/// Both are about the things a condition is ANDed with, so both are carried
+/// down the tree rather than read off the whole statement. Read off the
+/// whole, `(in:inbox from:billing) OR (is:snoozed from:dana)` showed snoozed
+/// mail from billing, because somewhere in the statement snoozed mail had
+/// been asked for; and `in:trash (in:spam OR from:sam)` found nothing,
+/// because the choice kept its second side out of the very bin the query
+/// was searching.
+#[derive(Clone, Copy)]
+struct Around<'a> {
+    /// `is:snoozed` is asked alongside, so `in:inbox` does not hide snoozed
+    /// mail here.
+    snoozed: bool,
+    /// Spam or Trash is asked for alongside, so nothing here is kept out
+    /// of it.
+    binned: bool,
+    /// The word still being typed.
+    typing: Option<&'a Text>,
 }
 
 /// One alternative of a query, bound into SQL.
@@ -543,8 +690,19 @@ impl Store {
         let Some(root) = &q.root else {
             return Ok((Vec::new(), asked));
         };
-        for bundle in bundles(&without_nots(root, false)) {
-            let Some(mut bound) = self.bind(&bundle, account)? else {
+        let node = without_nots(root, false);
+        let typing = typing_word(&node);
+        // Too wide to ask a statement at a time: asked whole, as lookups.
+        // Those hits are listed by date and carry no snippet, which is the
+        // price of being right about a query this size.
+        let statements = bundles(&node).unwrap_or_else(|| {
+            vec![Bundle {
+                conds: pruned(as_lookups(&node)).into_iter().collect(),
+                ..Bundle::default()
+            }]
+        });
+        for bundle in statements {
+            let Some(mut bound) = self.bind(&bundle, account, typing)? else {
                 continue;
             };
             match bound.asked.take() {
@@ -708,7 +866,7 @@ impl Store {
     /// is. Every value is a bound parameter; every word that reaches MATCH is
     /// a quoted phrase. The only text written into a statement here is text
     /// this file wrote.
-    fn bind(&self, bundle: &Bundle, account: i64) -> Result<Option<Bound>> {
+    fn bind(&self, bundle: &Bundle, account: i64, typing: Option<&Text>) -> Result<Option<Bound>> {
         // The words first, because they decide which index is asked.
         //
         // A word with no letter or digit in it is simply skipped among other
@@ -719,11 +877,11 @@ impl Store {
         bundle.wanted.iter().for_each(|w| w.leaves(&mut leaves));
         let cjk = bundle.wanted.iter().any(Words::cjk);
         // As-you-type: the last word is a prefix while it is still being
-        // typed. Last among the words, not last in the field — a chip writes
-        // its token after them, and clicking one mid-word must not empty the
-        // list. Never a quoted word, which somebody finished; never one in
-        // the CJK index, where a character is already a whole token.
-        let typing = leaves.last().copied().filter(|text| !text.exact);
+        // typed (`typing_word`). Last among the words, not last in the field
+        // — a chip writes its token after them, and clicking one mid-word
+        // must not empty the list. Never a quoted word, which somebody
+        // finished; never one in the CJK index, where a character is already
+        // a whole token.
         let wanted: Vec<String> = bundle
             .wanted
             .iter()
@@ -760,21 +918,26 @@ impl Store {
             sql.push_str(&format!(" AND {guard}"));
         }
 
-        // Words that must not be there. Beside the wanted ones they are FTS5's
-        // own NOT, which costs nothing. Otherwise they are looked up on their
-        // own and taken away: NOT needs something on its left, so `-draft`
-        // with no other word cannot be a MATCH, and a CJK word has to be asked
-        // of the CJK index whichever index the wanted words are in.
+        // Words that must not be there. Beside wanted ones of the same script
+        // they are FTS5's own NOT, which costs nothing. Otherwise they are
+        // looked up on their own and taken away: NOT needs something on its
+        // left, so `-draft` with no other word cannot be a MATCH, and a word
+        // has to be asked of the index its script is in, whichever index the
+        // wanted words are in. That holds both ways round. The CJK index has
+        // a message's subject and body and nothing else, one character to a
+        // token, so `東京 -sato` asked there never saw the address sato is in,
+        // and `東京 -"board pack"` lost the phrase and dropped mail that had
+        // the two words apart.
         let mut refused: Vec<String> = Vec::new();
         let mut excluded = 0;
         for (column, text) in bundle.unwanted.iter().filter(|(_, t)| indexable(t)) {
             excluded += 1;
-            if !wanted.is_empty() && (cjk || !has_cjk(&text.value)) {
+            if !wanted.is_empty() && cjk == has_cjk(&text.value) {
                 refused.push(phrase(*column, text, cjk, false));
             } else {
                 sql.push_str(&format!(
                     " AND {}",
-                    Self::without_sql(*column, text, &mut args)
+                    Self::lookup_sql(*column, text, false, false, &mut args)
                 ));
             }
         }
@@ -782,12 +945,13 @@ impl Store {
             expr = format!("({expr}) NOT ({})", refused.join(" OR "));
         }
 
-        let snoozed = bundle
-            .conds
-            .iter()
-            .any(|c| asks(c, &|term| *term == Term::Is(State::Snoozed)));
+        let around = Around {
+            snoozed: alongside(&bundle.conds, &is_snoozed),
+            binned: alongside(&bundle.conds, &is_the_bin),
+            typing,
+        };
         for cond in &bundle.conds {
-            let predicate = self.cond_sql(cond, snoozed, &guard, &mut args)?;
+            let predicate = self.cond_sql(cond, around, &guard, &mut args)?;
             sql.push_str(&format!(" AND {predicate}"));
         }
 
@@ -811,17 +975,20 @@ impl Store {
         }))
     }
 
-    /// Words that must not be there, as a lookup of their own in whichever
-    /// index holds their script, taken away from the rest.
-    fn without_sql(
+    /// Words as a lookup of their own, in whichever index holds their
+    /// script: the messages that have them, or the ones that do not.
+    fn lookup_sql(
         column: Option<&str>,
         text: &Text,
+        there: bool,
+        prefix: bool,
         args: &mut Vec<Box<dyn rusqlite::ToSql>>,
     ) -> String {
         let cjk = has_cjk(&text.value);
         let index = if cjk { "fts_cjk" } else { "fts_messages" };
-        args.push(Box::new(phrase(column, text, cjk, false)));
-        format!("m.id NOT IN (SELECT rowid FROM {index} WHERE {index} MATCH ?)")
+        args.push(Box::new(phrase(column, text, cjk, prefix)));
+        let not = if there { "" } else { "NOT " };
+        format!("m.id {not}IN (SELECT rowid FROM {index} WHERE {index} MATCH ?)")
     }
 
     /// A tree of conditions as one SQL predicate, its values bound in the
@@ -829,35 +996,46 @@ impl Store {
     fn cond_sql(
         &self,
         cond: &Cond,
-        snoozed: bool,
+        around: Around,
         guard: &str,
         args: &mut Vec<Box<dyn rusqlite::ToSql>>,
     ) -> Result<String> {
         Ok(match cond {
             Cond::Lit(lit) if lit.negated => {
-                format!("NOT ({})", self.predicate(lit.term, snoozed, args)?)
+                format!("NOT ({})", self.predicate(lit.term, around.snoozed, args)?)
             }
-            Cond::Lit(lit) => self.predicate(lit.term, snoozed, args)?,
-            Cond::Without(column, text) if indexable(text) => {
-                Self::without_sql(*column, text, args)
+            Cond::Lit(lit) => self.predicate(lit.term, around.snoozed, args)?,
+            // Punctuation asks nothing. `pruned` takes it out before it gets
+            // here; what is left says "true", which is what skipping means
+            // among things that all have to hold.
+            Cond::With(_, text) | Cond::Without(_, text) if !indexable(text) => "1".to_string(),
+            Cond::With(column, text) => {
+                let prefix = around.typing.is_some_and(|last| std::ptr::eq(last, *text));
+                Self::lookup_sql(*column, text, true, prefix, args)
             }
-            // Punctuation that must not be there: true of every message.
-            Cond::Without(..) => "1".to_string(),
+            Cond::Without(column, text) => Self::lookup_sql(*column, text, false, false, args),
             Cond::All(parts) => {
+                let around = Around {
+                    snoozed: around.snoozed || alongside(parts, &is_snoozed),
+                    binned: around.binned || alongside(parts, &is_the_bin),
+                    ..around
+                };
                 let parts = parts
                     .iter()
-                    .map(|p| self.cond_sql(p, snoozed, guard, args))
+                    .map(|p| self.cond_sql(p, around, guard, args))
                     .collect::<Result<Vec<_>>>()?;
                 format!("({})", parts.join(" AND "))
             }
             Cond::Any(parts) => {
                 // The bin is let in one alternative at a time, in brackets as
-                // out of them: the side that named it, and no other.
-                let named = parts.iter().any(|p| asks(p, &is_the_bin));
+                // out of them: the side that named it, and no other. Unless
+                // the bin is what all of this is being asked of, and then no
+                // side needs keeping out of it.
+                let named = !around.binned && parts.iter().any(|p| asks(p, &is_the_bin));
                 let parts = parts
                     .iter()
                     .map(|p| {
-                        let sql = self.cond_sql(p, snoozed, guard, args)?;
+                        let sql = self.cond_sql(p, around, guard, args)?;
                         Ok(if named && !asks(p, &is_the_bin) {
                             format!("({sql} AND {guard})")
                         } else {

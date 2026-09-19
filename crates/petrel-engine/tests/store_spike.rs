@@ -520,6 +520,12 @@ fn bench_search_grammar() {
                 "(from:avery OR from:blake) (meeting OR budget)",
             ),
             ("excluded-group", "meeting -(report OR from:avery)"),
+            // Sixteen statements if it were multiplied out, so it is asked
+            // whole, as lookups. It has to stay inside the budget too.
+            (
+                "too-wide",
+                "(meeting OR from:avery) (budget OR from:blake) (report OR from:casey) (update OR from:drew)",
+            ),
             ("subject", "subject:meeting"),
             ("to", "to:casey meeting"),
             ("to-alone", "to:casey"),

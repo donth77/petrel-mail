@@ -26,7 +26,11 @@ describe('the words a query asks for', () => {
 
   it('include a phrase whole, and the words of subject:', () => {
     expect(words('"board pack" annex')).toEqual(['board pack', 'annex*']);
-    expect(words('subject:invoice')).toEqual(['invoice']);
+    // As-you-type reaches into subject: as it does in the engine, where
+    // `subject:invo` finds "Invoice 2214".
+    expect(words('subject:invoice')).toEqual(['invoice*']);
+    expect(words('subject:"invoice"')).toEqual(['invoice']);
+    expect(marked('Invoice 2214', 'subject:invo')).toBe('[Invoice] 2214');
     expect(words('subject:"board pack" annex')).toEqual(['board pack', 'annex*']);
   });
 
@@ -57,15 +61,45 @@ describe('the words a query asks for', () => {
     expect(words('ann has:attachment')).toEqual(['ann*']);
   });
 
+  /* The engine completes a word of two letters or more and no shorter. */
+  it('do not complete a single letter', () => {
+    expect(words('vitamin c')).toEqual(['vitamin', 'c']);
+    expect(marked('Vitamin C and calcium citrate', 'vitamin c')).toBe(
+      '[Vitamin] [C] and calcium citrate',
+    );
+    expect(marked('An apple a day', 'a')).toBe('An apple [a] day');
+  });
+
+  it('forget a NOT that a bracket closed with nothing after it', () => {
+    expect(words('(contract NOT) annex')).toEqual(['contract', 'annex*']);
+  });
+
   it('read an unknown operator as the words it is', () => {
     expect(words('re:pricing')).toEqual(['re pricing*']);
+  });
+
+  /* A value the operator cannot take is searched for, in the engine, so it
+     is words here as well. */
+  it('read an operator with a value it cannot take as words too', () => {
+    expect(words('is:whatever')).toEqual(['is whatever*']);
+    expect(words('has:pdf')).toEqual(['has pdf*']);
+    expect(words('after:soon')).toEqual(['after soon*']);
+    expect(words('after:2026-13')).toEqual(['after 2026 13*']);
+    expect(words('is:unread has:file after:2026-06 before:2026/7/1 date:2026-')).toEqual([]);
   });
 
   it('keep CJK as the run of characters it is', () => {
     expect(termsOf('東京 会議')).toEqual<Term[]>([
       { tokens: ['東京'], prefix: false, cjk: true },
-      { tokens: ['会議'], prefix: true, cjk: true },
+      { tokens: ['会議'], prefix: false, cjk: true },
     ]);
+  });
+
+  /* Korean puts spaces between its words, and the index has no phrases for
+     CJK: each run is looked for wherever it falls. */
+  it('take a quoted CJK phrase a run at a time', () => {
+    expect(marked('회의 일정 안내', '"회의 일정"')).toBe('[회의] [일정] 안내');
+    expect(marked('東京 大阪 出張', '"東京 大阪"')).toBe('[東京] [大阪] 出張');
   });
 });
 

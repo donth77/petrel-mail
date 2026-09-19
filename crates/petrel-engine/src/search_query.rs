@@ -26,7 +26,9 @@ use std::fmt;
 /// by `OR` are one SQL predicate, so most queries are a single statement
 /// however they are bracketed. Only an `OR` with words on one side and a
 /// condition on the other has to be asked twice, and a query built to
-/// multiply those must not become a hundred statements.
+/// multiply those must not become a hundred statements. One that would pass
+/// this is not cut short: the store asks it whole, as one statement that
+/// cannot rank its results (`as_lookups` in `store/search.rs`).
 pub const MAX_ALTERNATIVES: usize = 8;
 /// How many clauses a whole query can hold. Each binds a few SQL variables.
 /// Past the limits the rest is left out, and the parse says so in
@@ -315,7 +317,10 @@ const KEYWORDS: [&str; 3] = ["AND", "OR", "NOT"];
 /// phrase looks like while it is still being typed.
 ///
 /// A bracket groups only where it could not be part of a word: opening at
-/// the start of one, closing at the end of one. `foo(bar)` is text.
+/// the start of one, closing at the end of one. `foo(bar` and `a)b` are
+/// text. A `)` that ends a word always closes, so `fn(x)` is the word `fn(x`
+/// and a closing bracket; the index drops punctuation, so it finds the same
+/// mail either way.
 fn lex(input: &str) -> Vec<Lexeme> {
     let mut out = Vec::new();
     let mut text = String::new();
@@ -349,7 +354,9 @@ fn lex(input: &str) -> Vec<Lexeme> {
                 }
             }
             '(' if !quoted && quote_at.is_none() && text.is_empty() => out.push(Lexeme::Open),
-            '(' if !quoted && quote_at.is_none() && text == "-" => {
+            // However many dashes, one exclusion: `--(` is `-(`, as `--draft`
+            // is `-draft`.
+            '(' if !quoted && quote_at.is_none() && text.bytes().all(|b| b == b'-') => {
                 text.clear();
                 out.push(Lexeme::Minus);
                 out.push(Lexeme::Open);
@@ -359,10 +366,13 @@ fn lex(input: &str) -> Vec<Lexeme> {
                 flush(&mut out, &mut text, &mut quote_at);
                 out.push(Lexeme::Open);
             }
+            // A control character is spacing (above), so it ends a word here
+            // as well: `(a OR b)` closes whether a space or a stray NUL
+            // follows it.
             ')' if !quoted
-                && chars
-                    .peek()
-                    .is_none_or(|next| *next == ')' || next.is_whitespace()) =>
+                && chars.peek().is_none_or(|next| {
+                    *next == ')' || next.is_whitespace() || next.is_control()
+                }) =>
             {
                 flush(&mut out, &mut text, &mut quote_at);
                 out.push(Lexeme::Close);
@@ -394,7 +404,10 @@ fn value_of(raw: &str, truncated: &mut bool) -> String {
     let raw = raw.trim();
     if raw.chars().count() > MAX_VALUE_CHARS {
         *truncated = true;
-        return raw.chars().take(MAX_VALUE_CHARS).collect();
+        // Trimmed again: the cut can land just after a space, and a value
+        // that ends in one would not read back as itself.
+        let cut: String = raw.chars().take(MAX_VALUE_CHARS).collect();
+        return cut.trim_end().to_string();
     }
     raw.to_string()
 }
@@ -459,7 +472,9 @@ fn read(piece: Piece, truncated: &mut bool) -> Read {
             ("to", _) => Some(Term::To(value.clone())),
             ("cc", _) => Some(Term::Cc(value.clone())),
             ("subject", _) => Some(Term::Subject(words())),
-            ("in", _) => Some(Term::In(value.to_lowercase())),
+            // Held to the limit again after lowering: a few letters lower to
+            // two (`İ`), so a value at the limit could leave here over it.
+            ("in", _) => Some(Term::In(value_of(&value.to_lowercase(), truncated))),
             ("tag", _) => Some(Term::Tag(value.clone())),
             ("filename", _) => Some(Term::Filename(value.clone())),
             ("has", "attachment" | "attachments" | "file") => Some(Term::HasAttachment),
@@ -558,9 +573,18 @@ impl Reader {
     }
 
     fn any(&mut self) -> Option<Expr> {
+        self.any_after(None)
+    }
+
+    /// Reads on from a group that has already been read: `before` is what a
+    /// bracket nobody opened has just closed, and it stands as the first
+    /// thing in whatever follows it. `a) OR b` is then `(a) OR b`, where
+    /// reading the two sides apart and joining them made it `a b`.
+    fn any_after(&mut self, before: Option<Expr>) -> Option<Expr> {
         let mut alternatives = Vec::new();
+        let mut before = before;
         loop {
-            alternatives.extend(self.all());
+            alternatives.extend(self.all_after(before.take()));
             match self.next {
                 Some(Token::Keyword(Keyword::Or)) => {
                     self.advance();
@@ -570,8 +594,8 @@ impl Reader {
         }
     }
 
-    fn all(&mut self) -> Option<Expr> {
-        let mut parts = Vec::new();
+    fn all_after(&mut self, before: Option<Expr>) -> Option<Expr> {
+        let mut parts: Vec<Expr> = before.into_iter().collect();
         loop {
             match self.next {
                 None | Some(Token::Close | Token::Keyword(Keyword::Or)) => return all_of(parts),
@@ -583,23 +607,35 @@ impl Reader {
         }
     }
 
+    /// A run of NOTs is counted rather than descended into. Two of them undo
+    /// each other, so only whether there was an odd number matters, and a
+    /// reader that called itself once per NOT went as deep as the field was
+    /// long: ten thousand of them pasted in overflowed the stack, which is an
+    /// abort and not an error anything can catch. Brackets are the only thing
+    /// left that recurses, and they stop at the depth limit.
     fn unary(&mut self) -> Option<Expr> {
-        match self.advance()? {
-            Token::Minus | Token::Keyword(Keyword::Not) => match self.next {
-                // Nothing to exclude yet.
-                None | Some(Token::Close | Token::Keyword(Keyword::Or | Keyword::And)) => None,
-                Some(_) => self.unary().map(negate),
-            },
-            Token::Open => {
-                let inner = self.any();
-                if matches!(self.next, Some(Token::Close)) {
-                    self.advance();
+        let mut excluded = false;
+        let found = loop {
+            match self.advance()? {
+                Token::Minus | Token::Keyword(Keyword::Not) => match self.next {
+                    // Nothing to exclude yet.
+                    None | Some(Token::Close | Token::Keyword(Keyword::Or | Keyword::And)) => {
+                        return None;
+                    }
+                    Some(_) => excluded = !excluded,
+                },
+                Token::Open => {
+                    let inner = self.any();
+                    if matches!(self.next, Some(Token::Close)) {
+                        self.advance();
+                    }
+                    break inner;
                 }
-                inner
+                Token::Clause(clause) => break Some(Expr::Clause(clause)),
+                Token::Close | Token::Keyword(_) => return None,
             }
-            Token::Clause(clause) => Some(Expr::Clause(clause)),
-            Token::Close | Token::Keyword(_) => None,
-        }
+        };
+        if excluded { found.map(negate) } else { found }
     }
 }
 
@@ -646,28 +682,32 @@ pub fn parse(input: &str) -> SearchQuery {
     let mut tokens = tokens.into_iter();
     let next = tokens.next();
     let mut reader = Reader { tokens, next };
-    let mut parts = Vec::new();
     loop {
-        parts.extend(reader.any());
-        // A bracket that closes nothing: what came before it is a group.
+        q.root = reader.any_after(q.root.take());
+        // A bracket that closes nothing: what came before it is a group, and
+        // the reading carries on from that group.
         if reader.advance().is_none() {
             break;
         }
     }
-    q.root = all_of(parts);
     if let Some(root) = &mut q.root {
         settle(root);
     }
     q
 }
 
-/// A value the way it has to be typed: in quotes when it holds a space.
+/// A value the way it has to be typed: in quotes when it holds a space, or
+/// a `)` where the field would read it as closing a group.
 fn typed(value: &str) -> String {
     // Quote marks are taken off on the way in, so none can be in a value
     // that was parsed. One built by hand loses them rather than unbalancing
     // the field.
     let value: String = value.chars().filter(|c| *c != '"').collect();
-    if value.chars().any(char::is_whitespace) {
+    // A `)` closes when it ends a word or stands before another, so a folder
+    // called `Archive (old)` or a tag `p(1)` written bare came back as
+    // `p(1` and a bracket that closed whatever group it was in.
+    let closes = value.ends_with(')') || value.contains("))");
+    if closes || value.chars().any(char::is_whitespace) {
         format!("\"{value}\"")
     } else {
         value
@@ -700,10 +740,14 @@ impl Clause {
 fn settle(expr: &mut Expr) {
     match expr {
         Expr::Clause(clause) => {
-            if !clause.writes_bare()
-                && let Term::Text(text) = &mut clause.term
-            {
-                text.exact = true;
+            let bare = clause.writes_bare();
+            match &mut clause.term {
+                Term::Text(text) if !bare => text.exact = true,
+                // The same for a subject that can only be written in quotes,
+                // which takes a value cut at the length limit just after a
+                // `)` to reach.
+                Term::Subject(text) if typed(&text.value).starts_with('"') => text.exact = true,
+                _ => {}
             }
         }
         Expr::Not(inner) => settle(inner),

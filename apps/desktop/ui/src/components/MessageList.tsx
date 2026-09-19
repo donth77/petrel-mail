@@ -230,7 +230,7 @@ const MessageRow = memo(function MessageRow({
               word is most often found, and in this density it is all there
               is, so the search's words are marked here too. */}
           <span className="crow-subject clip">
-            <Marked text={m.subject || t('no-subject')} />
+            {m.subject ? <Marked text={m.subject} /> : t('no-subject')}
           </span>
           {m.attachment_name && <Icon icon={Paperclip} size={11} className="ic-clip" />}
           {m.message_count > 1 && <span className="thread-count">{m.message_count}</span>}
@@ -295,7 +295,7 @@ const MessageRow = memo(function MessageRow({
             </span>
             <span className="row-subject clip">
               {m.starred && <Icon icon={Star} size={12} className="ic-star" />}
-              <Marked text={m.subject || t('no-subject')} />
+              {m.subject ? <Marked text={m.subject} /> : t('no-subject')}
             </span>
             <span className="row-snippet clip">
               {/* Why it matched, when it came from a search. The
