@@ -12,9 +12,11 @@ import {
   DEFAULT_SORT,
   SEARCH_SORT,
   effectiveSort,
+  knownViews,
   readSort,
   readSortByView,
   sortForView,
+  viewRenamed,
   withViewSort,
   writeSort,
   type Sort,
@@ -130,8 +132,10 @@ export function App() {
   const [query, setQuery] = useState('');
   // Best match or newest, for a search. Not a saved preference: it answers a
   // different question about one search — "find the thing" against "retrace the
-  // timeline" — and carrying last week's answer into today's search is wrong
-  // more often than it is right.
+  // Remembered, both of them. A search opens on Best match until somebody
+  // chooses otherwise, and then it keeps what they chose: an order somebody
+  // picked and the window forgot is a control that does not work.
+  //
   // Two, because a list and a search are asked different questions. A mailbox
   // opens newest-first, which is what a mailbox is for; a search opens on its
   // ranking, which is what searching is for. One shared state would have made
@@ -213,7 +217,46 @@ export function App() {
         : set('listSortByView', withViewSort(sortByView, view, sort)),
     [set, settings.sortScope, sortByView, view],
   );
-  const activeSort = effectiveSort(hasQuery ? searchSort : listSort, hasQuery);
+  // Reference data — tags, folders, accounts, identity — one hook, one
+  // effect. Called this early because two things above read it: the sort
+  // control, to tell a mailbox from a search, and the triage hook below, to
+  // show a tag on a row the moment it is applied.
+  const { tags, setTags, folders, setFolders, accounts, setAccounts, activeAccount, identity } =
+    useReferenceData(status?.seeding, accountEpoch);
+
+  // Made shared, the order everything takes is the one you were just
+  // looking at. Without this the first flip of the switch reordered the list
+  // under you, back to the default nobody had chosen.
+  const wasScope = useRef(settings.sortScope);
+  useEffect(() => {
+    if (wasScope.current !== 'everywhere' && settings.sortScope === 'everywhere') {
+      set('listSort', writeSort(listSort));
+    }
+    wasScope.current = settings.sortScope;
+  }, [settings.sortScope, listSort, set]);
+
+  // Folders and tags come and go, and the orders they were given used to
+  // stay for ever under names nothing answers to any more. Pruned once the
+  // real lists are in, and only when there is something to prune, so this
+  // cannot write in a loop.
+  useEffect(() => {
+    if (folders.length === 0 && tags.length === 0) return;
+    const known = (named: string) => {
+      if (named.startsWith('folder:')) return folders.some((f) => `folder:${f.id}` === named);
+      if (named.startsWith('tag:')) return tags.some((x) => `tag:${x.name}` === named);
+      return true;
+    };
+    const kept = knownViews(sortByView, known);
+    if (kept) set('listSortByView', kept);
+  }, [folders, tags, sortByView, set]);
+
+  // A field holding nothing but the token the app wrote for you is still the
+  // mailbox, not a search. Counted as one, the header read "Best match" the
+  // moment the box was clicked, and an order chosen there was written to the
+  // search's preference and thrown away when the field emptied on blur.
+  const asked =
+    hasQuery && query.trim() !== scopeFor(view, folderScopeName(view, folders))?.token;
+  const activeSort = effectiveSort(asked ? searchSort : listSort, asked);
 
   const listFetchers = useMemo(
     () => ({ threads: api.threads, search: api.search }),
@@ -298,11 +341,6 @@ export function App() {
   const [outgoing, setOutgoing] = useState<{ id: number; subject: string; left: number } | null>(null);
   const outgoingRef = useRef(outgoing);
   outgoingRef.current = outgoing;
-  // Reference data — tags, folders, accounts, identity — one hook, one
-  // effect. Called this early because the triage hook below reads tags to
-  // show one on a row the moment it is applied.
-  const { tags, setTags, folders, setFolders, accounts, setAccounts, activeAccount, identity } =
-    useReferenceData(status?.seeding, accountEpoch);
 
   // The number on the Dock icon: unread in the inbox, added up across
   // accounts. Not the current view's unread, which is what the rail and the
@@ -1970,6 +2008,9 @@ export function App() {
               // the list empties and no rail item is current. Follow the
               // rename instead — it is the same collection, newly titled.
               if (view === `tag:${was}`) setView(`tag:${name}`);
+              // The order that view was given is named after the tag too.
+              const moved = viewRenamed(sortByView, `tag:${was}`, `tag:${name}`);
+              if (moved) set('listSortByView', moved);
               setItems((prev) =>
                 prev.map((row) =>
                   row.tags.some((x) => x.name === was)
@@ -2109,8 +2150,17 @@ export function App() {
                     (active.closest('.list-head') !== null ||
                       active.closest('[role="menu"]') !== null);
                   if (stillInSearch) return;
+                  // Only what the field wrote for you. With the setting off
+                  // nothing was pre-applied, so the same token typed by hand
+                  // is a search somebody meant, and emptying it threw their
+                  // query away.
                   const leaf = folderScopeName(view, folders);
-                  if (query.trim() === scopeFor(view, leaf)?.token) setQuery('');
+                  if (
+                    settings.searchInMailbox === 'on' &&
+                    query.trim() === scopeFor(view, leaf)?.token
+                  ) {
+                    setQuery('');
+                  }
                   setSearching(false);
                 }, 150);
               }}
@@ -2203,8 +2253,8 @@ export function App() {
                 not a search is running — only its options differ. */}
             <SortMenu
               sort={activeSort}
-              onChange={hasQuery ? setSearchSort : setListSort}
-              searching={hasQuery}
+              onChange={asked ? setSearchSort : setListSort}
+              searching={asked}
             />
           </div>
         </div>

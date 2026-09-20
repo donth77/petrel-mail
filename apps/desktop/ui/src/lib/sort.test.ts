@@ -81,13 +81,16 @@ describe('a sort, remembered', () => {
   });
 
   it('falls back on anything it does not know', () => {
-    for (const said of ['', 'nonsense', 'colour:ascending', 'date', ':', 'date:sideways']) {
-      const back = readSort(said, DEFAULT_SORT);
-      expect(back.key === 'date' || said === 'date').toBe(true);
+    // The fallback is a key `readSort` cannot produce from these, so a stub
+    // that ignored its input could not pass this.
+    const fallback = { key: 'sender', ascending: true } as const;
+    for (const said of ['', 'nonsense', 'colour:ascending', ':', 'relevance ascending']) {
+      expect(readSort(said, fallback)).toEqual(fallback);
     }
-    expect(readSort('nonsense', SEARCH_SORT)).toEqual(SEARCH_SORT);
-    // A key it knows with a direction it does not is that key, descending.
-    expect(readSort('date:sideways', SEARCH_SORT)).toEqual({ key: 'date', ascending: false });
+    // A key it knows, with a direction it does not, is that key descending.
+    expect(readSort('date', fallback)).toEqual({ key: 'date', ascending: false });
+    expect(readSort('date:sideways', fallback)).toEqual({ key: 'date', ascending: false });
+    expect(readSort('subject:ascending', fallback)).toEqual({ key: 'subject', ascending: true });
   });
 });
 

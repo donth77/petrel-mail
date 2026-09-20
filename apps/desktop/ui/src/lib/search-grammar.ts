@@ -36,6 +36,9 @@ export type Lexeme = {
   phrase: boolean;
   /** Led by a `-` that is outside any quotes: what it says is excluded. */
   negated: boolean;
+  /** The operator the bracket it sits in was given, as in
+   *  `from:(sam OR dana)`, where both words are senders. */
+  shared: string | null;
   /** The chunks of the `NOT`s standing directly in front of a piece. An odd
    *  number of them excludes it, exactly as a `-` would, and they go wherever
    *  the piece goes: taken out without them, a `NOT` would be left to fall on
@@ -46,6 +49,17 @@ export type Lexeme = {
 const QUOTES = '"“”„';
 /** The words that are operators in capitals and words otherwise. */
 export const KEYWORDS = ['AND', 'OR', 'NOT'];
+/** The operators a bracket can be shared between, as the engine shares them
+ *  (`SHARED` in search_query.rs). Only the ones that take words. */
+const SHARED = ['from', 'to', 'cc', 'subject', 'in', 'tag', 'filename'];
+
+/** The operator a `(` is about to be given, if it is: `from:(`, `-tag:(`. */
+function sharedKey(says: string): string | null {
+  const key = says.replace(/^-+/, '');
+  if (!key.endsWith(':')) return null;
+  const name = key.slice(0, -1).toLowerCase();
+  return SHARED.includes(name) ? name : null;
+}
 /** Whitespace, and the control characters the engine reads as the same. */
 // eslint-disable-next-line no-control-regex
 const SPACING = /[\s\u0000-\u001f\u007f-\u009f]/;
@@ -68,10 +82,21 @@ export function read(query: string): {
   let quoted = false;
   let openedWith = '"';
   let depth = 0;
+  // The operator each open bracket was given, innermost last, and the one a
+  // `(` about to be opened will take.
+  const shared: (string | null)[] = [];
+  let sharing: string | null = null;
   const push = (kind: Lexeme['kind']) => {
     const before = depth;
-    if (kind === 'open') depth += 1;
-    if (kind === 'close') depth = Math.max(0, depth - 1);
+    if (kind === 'open') {
+      depth += 1;
+      shared.push(sharing);
+      sharing = null;
+    }
+    if (kind === 'close') {
+      depth = Math.max(0, depth - 1);
+      shared.pop();
+    }
     lexemes.push({
       kind,
       chunk: chunks.length,
@@ -81,6 +106,7 @@ export function read(query: string): {
       quoteAt: null,
       phrase: false,
       negated: false,
+      shared: null,
       nots: [],
     });
   };
@@ -96,6 +122,7 @@ export function read(query: string): {
         quoteAt,
         phrase: quoteAt === (negated ? 1 : 0),
         negated,
+        shared: shared[shared.length - 1] ?? null,
         nots: [],
       });
     }
@@ -122,16 +149,31 @@ export function read(query: string): {
         raw += ch;
         if (!says.endsWith(' ')) says += ' ';
       }
-    } else if (ch === '(' && bare && (/^-*$/.test(says) || KEYWORDS.includes(says))) {
-      // A bracket groups only where it could not be part of a word. However
-      // many dashes stand in front of it, they are one exclusion.
-      if (says !== '' && !KEYWORDS.includes(says)) {
+    } else if (
+      ch === '(' &&
+      bare &&
+      (/^-*$/.test(says) || KEYWORDS.includes(says) || sharedKey(says) !== null)
+    ) {
+      // A bracket groups only where it could not be part of a word: at the
+      // start of one, or after an operator's colon. However many dashes
+      // stand in front of it, they are one exclusion.
+      const key = sharedKey(says);
+      if (key !== null) {
+        if (says.startsWith('-')) push('minus');
+        sharing = key;
+        says = '';
+      } else if (says !== '' && !KEYWORDS.includes(says)) {
         says = '';
         push('minus');
       } else flushPiece();
       push('open');
       raw += ch;
-    } else if (ch === ')' && !quoted && (next === undefined || next === ')' || SPACING.test(next))) {
+    } else if (
+      ch === ')' &&
+      !quoted &&
+      depth > 0 &&
+      (next === undefined || next === ')' || SPACING.test(next))
+    ) {
       flushPiece();
       push('close');
       raw += ch;
@@ -215,7 +257,20 @@ export function reading(l: Lexeme): Reading {
   const negated = dashes > 0 && dashes < l.says.length;
   const text = negated ? l.says.slice(dashes) : l.says;
   const quoteAt = l.quoteAt === null ? null : l.quoteAt - (negated ? dashes : 0);
+  // The bracket's operator, where the piece has none of its own: in
+  // `from:(sam OR dana)` both words are senders.
   const colon = text.indexOf(':');
+  if (l.shared !== null && (colon < 0 || (quoteAt !== null && colon >= quoteAt))) {
+    const value = text.trim();
+    if (operates(l.shared, value)) {
+      return {
+        negated,
+        text,
+        key: l.shared,
+        value: l.shared === 'in' ? value.toLowerCase() : value,
+      };
+    }
+  }
   if (colon >= 0 && (quoteAt === null || colon < quoteAt)) {
     const key = text.slice(0, colon).toLowerCase();
     const value = text.slice(colon + 1).trim();

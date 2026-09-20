@@ -117,3 +117,22 @@ export function sortForView(by: SortByView, view: string, fallback: Sort): Sort 
 export function withViewSort(by: SortByView, view: string, sort: Sort): string {
   return JSON.stringify({ ...by, [view]: writeSort(sort) });
 }
+
+/** The same orders, under a view's new name. A tag's view is named after the
+ *  tag, so renaming it used to leave the order behind under a name nothing
+ *  answers to, and the list quietly went back to newest first. */
+export function viewRenamed(by: SortByView, was: string, now: string): string | null {
+  const said = by[was];
+  if (said === undefined) return null;
+  const rest = { ...by, [now]: said };
+  delete rest[was];
+  return JSON.stringify(rest);
+}
+
+/** The orders of views that still exist. Renaming and deleting are the only
+ *  ways in, and neither used to take its entry out again. */
+export function knownViews(by: SortByView, exists: (view: string) => boolean): string | null {
+  const kept = Object.fromEntries(Object.entries(by).filter(([view]) => exists(view)));
+  const gone = Object.keys(by).length - Object.keys(kept).length;
+  return gone > 0 ? JSON.stringify(kept) : null;
+}

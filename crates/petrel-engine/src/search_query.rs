@@ -319,10 +319,19 @@ enum Lexeme {
     Close,
     /// The `-` of `-(`: it excludes the group, and is never a word.
     Minus,
+    /// The `from:` of `from:(sam OR dana)`: the operator the group is given.
+    Shared(String),
     Piece(Piece),
 }
 
 const KEYWORDS: [&str; 3] = ["AND", "OR", "NOT"];
+
+/// The operator a `(` is about to be given, if it is: `from:(`, `-tag:(`.
+fn shared_key(text: &str) -> Option<String> {
+    let key = text.trim_start_matches('-').strip_suffix(':')?;
+    let key = key.to_ascii_lowercase();
+    SHARED.contains(&key.as_str()).then_some(key)
+}
 
 /// Splits on whitespace, but keeps `from:"Dana Wu"` and `"board pack"`
 /// together, and takes brackets off the ends of words.
@@ -333,10 +342,11 @@ const KEYWORDS: [&str; 3] = ["AND", "OR", "NOT"];
 /// phrase looks like while it is still being typed.
 ///
 /// A bracket groups only where it could not be part of a word: opening at
-/// the start of one, closing at the end of one. `foo(bar` and `a)b` are
-/// text. A `)` that ends a word always closes, so `fn(x)` is the word `fn(x`
-/// and a closing bracket; the index drops punctuation, so it finds the same
-/// mail either way.
+/// the start of one or after an operator's colon, closing at the end of one
+/// and only while a bracket is open. So `foo(bar` and `a)b` are text, and so
+/// are `fn(x)` and `:)`, which closed a group nobody opened until it was
+/// noticed that `alpha OR bravo happy :) done` quietly became
+/// `(alpha OR bravo happy :) done`.
 fn lex(input: &str) -> Vec<Lexeme> {
     let mut out = Vec::new();
     let mut text = String::new();
@@ -351,6 +361,8 @@ fn lex(input: &str) -> Vec<Lexeme> {
             }));
         }
     }
+    // What is open, so that a `)` only closes something that exists.
+    let mut depth = 0usize;
     let mut chars = input.chars().peekable();
     while let Some(ch) = chars.next() {
         match ch {
@@ -369,27 +381,48 @@ fn lex(input: &str) -> Vec<Lexeme> {
                     text.push(' ');
                 }
             }
-            '(' if !quoted && quote_at.is_none() && text.is_empty() => out.push(Lexeme::Open),
+            '(' if !quoted && quote_at.is_none() && text.is_empty() => {
+                depth += 1;
+                out.push(Lexeme::Open);
+            }
             // However many dashes, one exclusion: `--(` is `-(`, as `--draft`
             // is `-draft`.
             '(' if !quoted && quote_at.is_none() && text.bytes().all(|b| b == b'-') => {
                 text.clear();
+                depth += 1;
                 out.push(Lexeme::Minus);
+                out.push(Lexeme::Open);
+            }
+            // `from:(sam OR dana)`, which is how Gmail writes it. The group
+            // is read as usual and every word in it is given the operator,
+            // so this is `from:sam OR from:dana` and writes back as that.
+            '(' if !quoted && quote_at.is_none() && shared_key(&text).is_some() => {
+                let dashes = text.len() - text.trim_start_matches('-').len();
+                let key = shared_key(&text).expect("just tested");
+                text.clear();
+                depth += 1;
+                if dashes > 0 {
+                    out.push(Lexeme::Minus);
+                }
+                out.push(Lexeme::Shared(key));
                 out.push(Lexeme::Open);
             }
             // `NOT(a OR b)`, with no space, is what half of everyone types.
             '(' if !quoted && quote_at.is_none() && KEYWORDS.contains(&text.as_str()) => {
                 flush(&mut out, &mut text, &mut quote_at);
+                depth += 1;
                 out.push(Lexeme::Open);
             }
             // A control character is spacing (above), so it ends a word here
             // as well: `(a OR b)` closes whether a space or a stray NUL
             // follows it.
             ')' if !quoted
+                && depth > 0
                 && chars.peek().is_none_or(|next| {
                     *next == ')' || next.is_whitespace() || next.is_control()
                 }) =>
             {
+                depth -= 1;
                 flush(&mut out, &mut text, &mut quote_at);
                 out.push(Lexeme::Close);
             }
@@ -426,6 +459,63 @@ fn value_of(raw: &str, truncated: &mut bool) -> String {
         return cut.trim_end().to_string();
     }
     raw.to_string()
+}
+
+/// What an operator and its value mean, or `None` for an operator nobody
+/// knows and for a value one cannot take. Those search rather than erroring,
+/// and rather than silently dropping the term somebody typed.
+fn term_for(key: &str, value: &str, exact: bool, truncated: &mut bool) -> Option<Term> {
+    let words = || Text {
+        value: value.to_string(),
+        exact,
+    };
+    match (key, value.to_ascii_lowercase().as_str()) {
+        ("from", _) => Some(Term::From(value.to_string())),
+        ("to", _) => Some(Term::To(value.to_string())),
+        ("cc", _) => Some(Term::Cc(value.to_string())),
+        ("subject", _) => Some(Term::Subject(words())),
+        // Held to the limit again after lowering: a few letters lower to two
+        // (`İ`), so a value at the limit could leave here over it.
+        ("in", _) => Some(Term::In(value_of(&value.to_lowercase(), truncated))),
+        ("tag", _) => Some(Term::Tag(value.to_string())),
+        ("filename", _) => Some(Term::Filename(value.to_string())),
+        ("has", "attachment" | "attachments" | "file") => Some(Term::HasAttachment),
+        ("is", "unread") => Some(Term::Is(State::Unread)),
+        ("is", "read") => Some(Term::Is(State::Read)),
+        ("is", "starred" | "flagged") => Some(Term::Is(State::Starred)),
+        ("is", "snoozed") => Some(Term::Is(State::Snoozed)),
+        ("after", when) => Period::parse(when).map(Term::After),
+        ("before", when) => Period::parse(when).map(Term::Before),
+        ("date", when) => Period::parse(when).map(Term::On),
+        _ => None,
+    }
+}
+
+/// The operators a bracket can be shared between: `from:(sam OR dana)` is
+/// `from:sam OR from:dana`, which is how Gmail writes it and how people who
+/// have used Gmail write it here. Only the ones that take words: a bracketed
+/// list of dates or states is nothing anybody types.
+const SHARED: [&str; 7] = ["from", "to", "cc", "subject", "in", "tag", "filename"];
+
+/// That operator, given to every word inside the group it opened.
+fn applied(key: &str, expr: Expr) -> Expr {
+    match expr {
+        Expr::Clause(Clause {
+            negated,
+            term: Term::Text(text),
+        }) => {
+            let mut ignored = false;
+            let term =
+                term_for(key, &text.value, text.exact, &mut ignored).unwrap_or(Term::Text(text));
+            Expr::Clause(Clause { negated, term })
+        }
+        // Already an operator of its own: `from:(sam OR to:dana)` means what
+        // it says rather than `to:to:dana`.
+        Expr::Clause(clause) => Expr::Clause(clause),
+        Expr::Not(inner) => Expr::Not(Box::new(applied(key, *inner))),
+        Expr::All(parts) => Expr::All(parts.into_iter().map(|p| applied(key, p)).collect()),
+        Expr::Any(parts) => Expr::Any(parts.into_iter().map(|p| applied(key, p)).collect()),
+    }
 }
 
 fn read(piece: Piece, truncated: &mut bool) -> Read {
@@ -478,37 +568,10 @@ fn read(piece: Piece, truncated: &mut bool) -> Read {
         .filter(|(key, _)| quote_at.is_none_or(|at| key.len() < at))
         .map(|(key, value)| (key.to_ascii_lowercase(), value_of(value, truncated)))
         .filter(|(_, value)| !value.is_empty());
-    if let Some((key, value)) = operator {
-        let words = || Text {
-            value: value.clone(),
-            exact,
-        };
-        let term = match (key.as_str(), value.to_ascii_lowercase().as_str()) {
-            ("from", _) => Some(Term::From(value.clone())),
-            ("to", _) => Some(Term::To(value.clone())),
-            ("cc", _) => Some(Term::Cc(value.clone())),
-            ("subject", _) => Some(Term::Subject(words())),
-            // Held to the limit again after lowering: a few letters lower to
-            // two (`İ`), so a value at the limit could leave here over it.
-            ("in", _) => Some(Term::In(value_of(&value.to_lowercase(), truncated))),
-            ("tag", _) => Some(Term::Tag(value.clone())),
-            ("filename", _) => Some(Term::Filename(value.clone())),
-            ("has", "attachment" | "attachments" | "file") => Some(Term::HasAttachment),
-            ("is", "unread") => Some(Term::Is(State::Unread)),
-            ("is", "read") => Some(Term::Is(State::Read)),
-            ("is", "starred" | "flagged") => Some(Term::Is(State::Starred)),
-            ("is", "snoozed") => Some(Term::Is(State::Snoozed)),
-            ("after", when) => Period::parse(when).map(Term::After),
-            ("before", when) => Period::parse(when).map(Term::Before),
-            ("date", when) => Period::parse(when).map(Term::On),
-            // An operator we do not know, or a value it cannot take. It
-            // searches rather than erroring, and rather than silently
-            // dropping the term someone typed.
-            _ => None,
-        };
-        if let Some(term) = term {
-            return clause(term);
-        }
+    if let Some((key, value)) = operator
+        && let Some(term) = term_for(&key, &value, exact, truncated)
+    {
+        return clause(term);
     }
 
     let value = value_of(&text, truncated);
@@ -522,6 +585,8 @@ enum Token {
     Open,
     Close,
     Minus,
+    /// The operator the next bracket is given.
+    Shared(String),
     Keyword(Keyword),
     Clause(Clause),
 }
@@ -576,6 +641,8 @@ fn any_of(parts: Vec<Expr>) -> Option<Expr> {
 struct Group {
     /// A NOT or a `-` stood in front of the bracket.
     excluded: bool,
+    /// The operator the bracket was given, as in `from:(sam OR dana)`.
+    shared: Option<String>,
     alternatives: Vec<Expr>,
     parts: Vec<Expr>,
 }
@@ -590,6 +657,10 @@ impl Group {
     fn close(mut self) -> Option<Expr> {
         self.or();
         let inner = any_of(self.alternatives);
+        let inner = match &self.shared {
+            Some(key) => inner.map(|expr| applied(key, expr)),
+            None => inner,
+        };
         if self.excluded {
             inner.map(negate)
         } else {
@@ -618,6 +689,7 @@ impl Group {
 fn read_tokens(tokens: Vec<Token>) -> Option<Expr> {
     let mut open = vec![Group::default()];
     let mut excluding = false;
+    let mut sharing: Option<String> = None;
     for token in tokens {
         // Only a word or a bracket can be excluded. A NOT in front of
         // anything else has nothing to exclude yet.
@@ -635,8 +707,13 @@ fn read_tokens(tokens: Vec<Token>) -> Option<Expr> {
                     .parts
                     .push(if excluded { negate(clause) } else { clause });
             }
+            Token::Shared(key) => {
+                sharing = Some(key);
+                excluding = excluded;
+            }
             Token::Open => open.push(Group {
                 excluded,
+                shared: sharing.take(),
                 ..Group::default()
             }),
             Token::Close => {
@@ -670,6 +747,7 @@ pub fn parse(input: &str) -> SearchQuery {
             Lexeme::Open => Token::Open,
             Lexeme::Close => Token::Close,
             Lexeme::Minus => Token::Minus,
+            Lexeme::Shared(key) => Token::Shared(key),
             Lexeme::Piece(piece) => match read(piece, &mut q.truncated) {
                 Read::Nothing => continue,
                 Read::Keyword(keyword) => Token::Keyword(keyword),
@@ -700,11 +778,11 @@ fn typed(value: &str) -> String {
     // that was parsed. One built by hand loses them rather than unbalancing
     // the field.
     let value: String = value.chars().filter(|c| *c != '"').collect();
-    // A `)` closes when it ends a word or stands before another, so a folder
-    // called `Archive (old)` or a tag `p(1)` written bare came back as
-    // `p(1` and a bracket that closed whatever group it was in.
-    let closes = value.ends_with(')') || value.contains("))");
-    if closes || value.chars().any(char::is_whitespace) {
+    // Brackets for the same reason a space is quoted: a folder called
+    // `Archive (old)` or a tag `p(1)` written bare closes whatever group it
+    // was written inside.
+    let brackets = value.contains('(') || value.contains(')');
+    if brackets || value.chars().any(char::is_whitespace) {
         format!("\"{value}\"")
     } else {
         value
@@ -724,8 +802,14 @@ impl Clause {
             (Some(Lexeme::Piece(piece)), true) => Some(read(piece, &mut false)),
             _ => None,
         };
+        // A bracket wears quotes wherever it is. On its own `annex)` reads
+        // back as itself, because a `)` closes nothing when nothing is open
+        // — but written inside a group, as `-(annex) OR b)`, that same `)`
+        // closes the group early. Quoted, it means one thing everywhere.
         !text.exact
-            && !bare.chars().any(|c| c == '"' || c.is_whitespace())
+            && !bare
+                .chars()
+                .any(|c| c == '"' || c == '(' || c == ')' || c.is_whitespace())
             && matches!(read_back, Some(Read::Clause(clause)) if clause == *self)
     }
 }

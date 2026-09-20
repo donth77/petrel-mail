@@ -8,8 +8,9 @@ import { t } from '../../lib/strings';
  *
  * Its own pane because none of it is quite Appearance, where it started.
  * Three of the four are about how the list looks, but the fourth is about
- * what order the mail is in, which is a fact about your mail rather than
- * about the window — and a pane called Appearance answering "why is Sent
+ * the order the mail comes in: not the order itself, which is chosen in the
+ * list's own menu, but whether each mailbox keeps its own. That is a fact
+ * about your mail rather than about the window — and a pane called Appearance answering "why is Sent
  * ordered by name" is a pane whose name is wrong. Mail, Outlook and
  * Thunderbird all keep this group together and call it viewing or display.
  */

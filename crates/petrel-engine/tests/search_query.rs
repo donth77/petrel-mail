@@ -764,17 +764,15 @@ fn half_typed_boolean_is_what_it_says_so_far() {
     assert_eq!(parse("invoice NOT").root, parse("invoice").root);
     assert_eq!(parse("invoice -(").root, parse("invoice").root);
     assert_eq!(parse("AND OR NOT").root, None);
-    // A bracket that closes nothing closes one taken to open at the start.
-    assert_eq!(parse("a OR b) c").root, parse("(a OR b) c").root);
-    assert_eq!(parse(") annex").root, parse("annex").root);
-    // And what follows it carries on from that group: an OR after it is
-    // still an OR. A word that ends in a bracket is the usual way to meet
-    // one, and it must not turn the rest of the query into AND.
-    assert_eq!(parse("a) OR b").root, parse("a OR b").root);
-    assert_eq!(
-        parse("a OR b) OR c) d").root,
-        parse("((a OR b) OR c) d").root
-    );
+    // A bracket that closes nothing is not a bracket. It used to close one
+    // taken to have opened at the start, which rewrote the query around it:
+    // `alpha OR bravo happy :) done` quietly became
+    // `(alpha OR bravo happy :) done` and stopped finding alpha's mail.
+    // A bracket in a word wears quotes when it is written back, because the
+    // same `)` inside a group would close it.
+    assert_eq!(clauses("a) b"), [yes(phrase("a)")), yes(word("b"))]);
+    assert_eq!(clauses(") annex"), [yes(phrase(")")), yes(word("annex"))]);
+    assert_eq!(alternatives("alpha OR bravo happy :) done").len(), 2);
     assert_eq!(alternatives("fn(x) OR draft memo").len(), 2);
     // A control character is spacing, so a bracket closes before one.
     assert_eq!(parse("(a OR b)\u{0}c").root, parse("(a OR b) c").root);
@@ -802,8 +800,9 @@ fn a_value_cut_at_the_limit_still_reads_back() {
 
 #[test]
 fn a_bracket_inside_a_word_is_part_of_the_word() {
-    assert_eq!(clauses("foo(bar)x"), [yes(word("foo(bar)x"))]);
-    assert_eq!(clauses("fn(x)"), [yes(word("fn(x"))], "the last one closes");
+    assert_eq!(clauses("foo(bar)x"), [yes(phrase("foo(bar)x"))]);
+    assert_eq!(clauses("fn(x)"), [yes(phrase("fn(x)"))], "nothing was open");
+    assert_eq!(clauses("smile :)"), [yes(word("smile")), yes(phrase(":)"))]);
     // In quotes a bracket is only ever text.
     assert_eq!(clauses(r#""(annex)""#), [yes(phrase("(annex)"))]);
     assert_eq!(
@@ -815,6 +814,55 @@ fn a_bracket_inside_a_word_is_part_of_the_word() {
         parse("ready for review (#142)").root,
         parse("ready for review #142").root
     );
+}
+
+/// `from:(sam OR dana)` is how Gmail writes it, and how people who have used
+/// Gmail write it here. The bracket is read as usual and every word in it is
+/// given the operator, so it is `from:sam OR from:dana` and says so when it
+/// is written back.
+#[test]
+fn a_bracket_can_be_shared_between_one_operators_values() {
+    assert_eq!(
+        parse("from:(sam OR dana)").root,
+        parse("from:sam OR from:dana").root
+    );
+    assert_eq!(parse("from:(sam)").root, parse("from:sam").root);
+    assert_eq!(
+        parse("subject:(a OR b)").root,
+        parse("subject:a OR subject:b").root
+    );
+    // A space inside the bracket is still AND, as everywhere else.
+    assert_eq!(
+        parse("subject:(board pack)").root,
+        parse("subject:board subject:pack").root
+    );
+    // Excluded as a whole, and excluded one at a time.
+    assert_eq!(
+        parse("-from:(sam OR dana)").root,
+        parse("-(from:sam OR from:dana)").root
+    );
+    assert_eq!(
+        parse("from:(-sam dana)").root,
+        parse("-from:sam from:dana").root
+    );
+    // An operator of its own inside it keeps it: not `to:to:dana`.
+    assert_eq!(
+        parse("from:(sam OR to:dana)").root,
+        parse("from:sam OR to:dana").root
+    );
+    // It reads back as what it means, and that reads back as itself.
+    assert_eq!(
+        parse("tag:(a OR b) invoice").to_string(),
+        "(tag:a OR tag:b) invoice"
+    );
+    // Half-typed, and never an error.
+    assert_eq!(parse("from:(sam").root, parse("from:sam").root);
+    assert!(parse("from:(").is_empty());
+    assert!(parse("from:()").is_empty());
+    // Only the operators that take words. A date or a state is nothing
+    // anybody brackets, so those stay the text they always were.
+    assert_eq!(clauses("is:(unread)"), [yes(phrase("is:(unread)"))]);
+    assert_eq!(clauses("after:(2026)"), [yes(phrase("after:(2026)"))]);
 }
 
 #[test]

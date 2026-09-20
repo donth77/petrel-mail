@@ -20,3 +20,5 @@ apps/desktop/src-tauri/gen/
 # Tauri icon generator also emits mobile sets; this is a desktop app.
 apps/desktop/src-tauri/icons/android/
 apps/desktop/src-tauri/icons/ios/
+
+graphify-out/

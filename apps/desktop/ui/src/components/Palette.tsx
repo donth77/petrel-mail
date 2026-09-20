@@ -243,9 +243,15 @@ export function Palette({ open, onClose, subject, ctx, onOpen, onSearch }: Props
                     <span className="mono palette-when">{listTime(m.date_ms)}</span>
                   </ComboboxItem>
                 ))}
-                {/* The way out of a box that shows eight. The palette is for
-                    recognising the one you meant; when it is not here, this
-                    hands what you typed to the field that has all of it. */}
+              </div>
+            )}
+
+            {/* The way out of a box that shows eight, and the only way out
+                when it shows none: this hands what you typed to the field
+                that has all of it. Outside the group above, because "nothing
+                here matched" is exactly when it is wanted. */}
+            {query.trim().length > 0 && (
+              <div>
                 <ComboboxItem
                   className="cmd"
                   focusOnHover
@@ -265,7 +271,7 @@ export function Palette({ open, onClose, subject, ctx, onOpen, onSearch }: Props
               </div>
             )}
 
-            {matched.length === 0 && mail.length === 0 && (
+            {matched.length === 0 && mail.length === 0 && !query.trim() && (
               <div className="palette-none">{t('palette-empty', { query })}</div>
             )}
           </ComboboxList>

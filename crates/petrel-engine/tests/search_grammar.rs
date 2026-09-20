@@ -1023,6 +1023,39 @@ fn a_filter_finds_and_excludes_the_same_mail_with_or_without_words() {
     );
 }
 
+/// `from:(sam OR dana)` is how Gmail writes it, and it used to find the
+/// wrong mail here without a word of warning: `from:(sam` was read as a
+/// sender called `(sam`, which matched nobody, while `dana)` became a plain
+/// word, so the search quietly returned everything mentioning Dana.
+#[test]
+fn a_bracket_can_be_shared_between_one_operators_values() {
+    let m = mailbox();
+    assert_eq!(
+        found(&m.store, "from:(sam OR dana)"),
+        found(&m.store, "from:sam OR from:dana")
+    );
+    assert_eq!(
+        found(&m.store, "from:(sam OR dana)"),
+        ["Draft contract terms", "Q3 vendor contracts"]
+    );
+    assert_eq!(found(&m.store, "from:(sam)"), ["Q3 vendor contracts"]);
+    assert_eq!(
+        found(&m.store, "subject:(contract OR invoice)"),
+        found(&m.store, "subject:contract OR subject:invoice")
+    );
+    assert_eq!(
+        found(&m.store, "subject:(vendor contracts)"),
+        ["Q3 vendor contracts"]
+    );
+    // The bracket narrows what is beside it, as any bracket does.
+    assert_eq!(
+        found(&m.store, "from:(sam OR dana) draft"),
+        ["Draft contract terms"]
+    );
+    // And excluded, it takes both senders out.
+    assert_eq!(found(&m.store, "-from:(sam OR dana)").len(), EVERYTHING - 2);
+}
+
 /// `in:` escapes what was typed as well. The mailbox needs a folder the
 /// unescaped pattern would have matched, or this could never fail.
 #[test]

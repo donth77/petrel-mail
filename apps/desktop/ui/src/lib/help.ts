@@ -75,13 +75,18 @@ const OPERATOR_IDS: { title: StringId; side: Side; ops: OperatorIds[] }[] = [
       { op: 'annex pricing', means: 'search-op-annex-pricing' },
       { op: '"board pack"', means: 'search-op-board-pack' },
       // A placeholder, not a keyword: the row used to read `-draft`, which
-      // made "draft" look like a word the app knows rather than any word
-      // you put a minus in front of.
-      { op: '-word', means: 'search-op-draft', example: '-draft' },
+      // made "draft" look like a word the app knows rather than any word you
+      // put a minus in front of. No example either, because `-word` is the
+      // example: "mail without this word: -draft" read as though `-draft`
+      // were the answer rather than the same thing said twice.
+      { op: '-word', means: 'search-op-draft' },
       { op: 'OR', means: 'search-op-or', example: 'from:sam OR from:dana' },
       { op: 'AND', means: 'search-op-and' },
       { op: 'NOT', means: 'search-op-not' },
       { op: '( )', means: 'search-op-brackets', example: '(from:sam OR from:dana) invoice' },
+      // The Gmail form. People who have used Gmail type it, and it used to
+      // read as a sender called `(sam`.
+      { op: 'from:( )', means: 'search-op-shared', example: 'from:(sam OR dana)' },
     ],
   },
 ];

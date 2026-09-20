@@ -201,9 +201,13 @@
   line-height: 1.5;
 }
 
-/* The second query in the box, set apart from the first one's note. */
+/* The second query in the box, set apart from the first one's note by a
+   line: two queries and two notes ran together as one paragraph, and the
+   rule says plainly that a second example starts here. */
 .op-example-next {
   margin-block-start: 9px;
+  padding-block-start: 9px;
+  border-block-start: 1px solid var(--hair);
 }
 
 .op-example-note {

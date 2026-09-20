@@ -712,7 +712,7 @@ fn document(
             let dark_vars = format!(
                 "color-scheme: dark; --mv-bg: {}; --mv-ink: {}; --mv-ink2: {}; \
                  --mv-hair: {}; --mv-mark: #6B5410; --mv-mark-on: #F6C945; \
-                 --mv-mark-on-ink: #182730;",
+                 --mv-mark-ink: #E4EDEE; --mv-mark-on-ink: #182730;",
                 dark_neutral(accent, DARK_SURFACE),
                 dark_neutral(accent, DARK_INK),
                 dark_neutral(accent, DARK_INK2),
@@ -745,7 +745,8 @@ fn document(
              be much darker than the page. The match find is standing on is
              orange in light and bright yellow with dark ink in dark, so it is
              a different colour from the rest and not a slightly stronger one. */
-          --mv-mark: #ffe27a; --mv-mark-on: #ffb84d; --mv-mark-on-ink: inherit; }}
+          --mv-mark: #ffe27a; --mv-mark-on: #ffb84d;
+          --mv-mark-ink: #182730; --mv-mark-on-ink: #182730; }}
   {dark_css}
   :root {{ --petrel-size: 15px; }}
   body {{ margin: 0; padding: 14px 16px; background: var(--mv-bg); color: var(--mv-ink);
@@ -773,9 +774,14 @@ fn document(
   .petrel-plain {{ white-space: pre-wrap;
                   font: calc(var(--petrel-size) * 0.92)/1.6 ui-monospace, SFMono-Regular, monospace; }}
   .petrel-plain .q {{ color: var(--mv-ink2); }}
-  mark.petrel-find {{ background: var(--mv-mark); color: inherit; }}
+  /* Our ink on our highlight, never the sender's. `color: inherit` here let
+     a message's own stylesheet put white text on the light yellow mark, at
+     1.28:1: the one word the search was for became the least readable thing
+     on the page. The find rules come after the hit rule on purpose, so the
+     match somebody is standing on wins when both could apply. */
+  mark.petrel-hit {{ background: var(--mv-mark); color: var(--mv-mark-ink); }}
+  mark.petrel-find {{ background: var(--mv-mark); color: var(--mv-mark-ink); }}
   mark.petrel-find.on {{ background: var(--mv-mark-on); color: var(--mv-mark-on-ink); }}
-  mark.petrel-hit {{ background: var(--mv-mark); color: inherit; }}
 </style></head><body>{banner}<div id="petrel-box"><div id="petrel-fit">{body}</div></div><script nonce="{nonce}">{reporter}</script></body></html>"#
     )
 }
@@ -1473,6 +1479,46 @@ mod tests {
         assert!(!dark.contains("#0e7c86"), "{dark}");
         // A match is yellow because it is a match, not because of the accent.
         assert!(dark.contains("--mv-mark: #6B5410"), "{dark}");
+    }
+
+    /// The reading pane marks the words a search found, and the colours it
+    /// marks them in are ours, not the sender's: `color: inherit` let a
+    /// message's own stylesheet put white text on a yellow mark, at 1.28:1.
+    #[test]
+    fn a_search_hit_is_marked_in_colours_the_message_cannot_choose() {
+        for rule in [
+            "mark.petrel-hit { background: var(--mv-mark); color: var(--mv-mark-ink); }",
+            "mark.petrel-find { background: var(--mv-mark); color: var(--mv-mark-ink); }",
+            "mark.petrel-find.on { background: var(--mv-mark-on); color: var(--mv-mark-on-ink); }",
+        ] {
+            let light = document("<p>hello</p>", 0, "n0", FrameTheme::AlwaysLight, "0e7c86");
+            assert!(light.contains(rule), "missing `{rule}`");
+        }
+        // Every colour those rules name is set, in both themes.
+        let light = document("<p>hello</p>", 0, "n0", FrameTheme::AlwaysLight, "0e7c86");
+        let dark = document(
+            "<p>hello</p>",
+            0,
+            "n0",
+            FrameTheme::Adaptive {
+                stamp: Some("dark"),
+            },
+            "0e7c86",
+        );
+        for var in [
+            "--mv-mark",
+            "--mv-mark-on",
+            "--mv-mark-ink",
+            "--mv-mark-on-ink",
+        ] {
+            assert!(light.contains(&format!("{var}: #")), "{var} unset in light");
+            // Once in the light palette, and again in each of the two dark
+            // blocks the frame carries.
+            assert!(
+                dark.matches(&format!("{var}: #")).count() >= 2,
+                "{var} has to be set in the dark palette as well as the light one"
+            );
+        }
     }
 
     /// Same window, same rule: the bytes are somebody else's, the chrome

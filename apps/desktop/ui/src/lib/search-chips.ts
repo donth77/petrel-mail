@@ -290,9 +290,10 @@ export type Chip = { id: string; label: string; token: string; rewrite?: string 
  * The mailboxes a scope chip can name.
  *
  * `in:` resolves against folder roles and — since folders the user made
- * became searchable — against a folder's own name. Starred is a flag and
- * tags are a table of their own; neither gets a scope chip rather than
- * getting one that silently matches nothing.
+ * became searchable — against a folder's own name. Starred and Snoozed are
+ * flags, so their scope speaks `is:`, and a tag's speaks `tag:`; the one
+ * view with nothing to name is the Outbox, which is mail on its way out and
+ * has no word in the grammar.
  */
 const SCOPES: Record<string, StringId> = {
   inbox: 'mailbox-inbox',
@@ -332,7 +333,11 @@ export function scopeFor(
   // Starred and Snoozed are states, not places — their scope speaks `is:`.
   if (view === 'starred') return { token: 'is:starred', label: t('search-chip-starred') };
   if (view === 'snoozed') return { token: 'is:snoozed', label: t('search-chip-snoozed') };
+  // A quote mark in the name has no way through the grammar: quoting it
+  // would end the quote early and scope the search to something else. No
+  // chip is better than a chip that silently looks for the wrong thing.
   if (view.startsWith('folder:') && leaf) {
+    if (leaf.includes('"')) return null;
     const value = /\s/.test(leaf) ? `"${leaf}"` : leaf;
     return { token: `in:${value}`, label: t('search-chip-in', { where: leaf }) };
   }
@@ -341,7 +346,7 @@ export function scopeFor(
   // no scope chip to say otherwise.
   if (view.startsWith('tag:')) {
     const name = view.slice('tag:'.length);
-    if (!name) return null;
+    if (!name || name.includes('"')) return null;
     const value = /\s/.test(name) ? `"${name}"` : name;
     return { token: `tag:${value}`, label: t('search-chip-tagged', { where: name }) };
   }
@@ -386,6 +391,18 @@ export function chips(
       ? { token: quoted(appliedIn), label: t('search-chip-in', { where: appliedIn.slice('in:'.length) }) }
       : context;
   if (scope) list.push({ id: 'scope', label: scope.label, token: scope.token });
+  // A tag can narrow the list beside a mailbox — `tag:Urgent in:sent` — and
+  // then it needs a pill of its own. Without one it was filtering the list
+  // with nothing to say so and no way to click it off, which is the very
+  // thing the scope chip above exists to prevent.
+  const appliedTag = appliedValue(query, 'tag:');
+  if (appliedTag && appliedTag.toLowerCase() !== tokensOf(context?.token ?? '')[0]?.toLowerCase()) {
+    list.push({
+      id: 'tag',
+      label: t('search-chip-tagged', { where: appliedTag.slice('tag:'.length) }),
+      token: quoted(appliedTag),
+    });
+  }
   // The sender of whatever is open, because "more from this person" is the
   // search people actually run — and it is tedious to type.
   //
@@ -433,8 +450,11 @@ export function chips(
  *
  * As the first character lands, the open view's scope is written into the
  * field — `in:inbox`, `in:sent`, `in:Receipts` — so the top bar answers for
- * the context on screen, the way a person expects a search box above a list
- * to behave. Written into the field rather than applied behind it, so it
+ * Unused since the scope became a token the field writes on focus, and kept
+ * for its tests, which describe the rule the field still obeys.
+ *
+ * The query with the context on screen, the way a person expects a search box
+ * above a list to behave. Written into the field rather than applied behind it, so it
  * reads as part of the query, lights the leading chip, and can be deleted to
  * widen to everything; the command palette searches globally from the start.
  * Applied only as a search begins, never on each keystroke, so deleting the

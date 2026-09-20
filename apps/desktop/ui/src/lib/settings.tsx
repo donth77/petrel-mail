@@ -89,12 +89,12 @@ export const DEFAULTS = {
   /// `key:direction`. Two, because they are two questions: a mailbox cannot
   /// be ordered by relevance and a search usually should be.
   ///
-  /// `listSort` is the order a mailbox has until it is given one of its own;
-  /// `listSortByView` is those, one entry to a view. Mail, Outlook,
-  /// Thunderbird and the Finder all remember per folder, and the reason is
-  /// that folders differ: Sent is a list of people you wrote to and reads
-  /// well by name, while an inbox almost never does. *Use this order
-  /// everywhere* in the menu sets `listSort` and clears the rest.
+  /// `listSort` is the order everything takes until a mailbox is given one
+  /// of its own; `listSortByView` is those, one entry to a view, kept even
+  /// while the shared order is in force so that turning it off restores
+  /// them. Mail, Outlook, Thunderbird and the Finder all remember per
+  /// folder, and the reason is that folders differ: Sent is a list of people
+  /// you wrote to and reads well by name, while an inbox almost never does.
   listSort: 'date:descending',
   listSortByView: '{}',
   /// Whether a mailbox keeps the order you give it, or every list shares
