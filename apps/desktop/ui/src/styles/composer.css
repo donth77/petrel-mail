@@ -615,7 +615,7 @@ body.resizing {
 }
 
 .row[data-selected] .avatar {
-  background: var(--accent);
+  background: var(--accent-fill);
   color: #fff;
 }
 
@@ -682,7 +682,7 @@ body.resizing {
   padding: 8px 11px;
   border: 0;
   border-radius: 8px;
-  background: var(--accent);
+  background: var(--accent-fill);
   color: #fff;
   font: inherit;
   font-size: 13px;

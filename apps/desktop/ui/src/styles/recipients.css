@@ -180,7 +180,7 @@
   margin-block-start: 7px;
   border: 1.5px solid var(--ink3);
   border-radius: 4px;
-  color: var(--on-accent, #fff);
+  color: #fff;
   cursor: pointer;
 }
 
@@ -189,6 +189,6 @@
 }
 
 .row[data-selected] .row-check {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--accent-fill);
+  border-color: var(--accent-fill);
 }

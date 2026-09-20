@@ -25,10 +25,20 @@
   --hair: #d9e1e2;
   --hair2: #e8eeee;
 
-  /* accent — storm teal, overridable from Settings via --accent-user */
-  --accent: var(--accent-user, #0e7c86);
-  --accent-ink: color-mix(in oklab, var(--accent-user, #0e7c86) 82%, #000000);
-  --accent-wash: color-mix(in oklab, var(--accent-user, #0e7c86) 11%, #ffffff);
+  /* accent — storm teal, overridable from Settings via --accent-user.
+     --accent-base exists so the default is written once: every mix below
+     reads it, and a token that forgot the fallback used to be a token that
+     went transparent for anyone who had never opened Settings.
+     --accent-fill is the accent as a background with white on it — a button,
+     a chip, a ticked box. It is the plain accent in both themes, while
+     --accent is lightened in dark for lines and dots, which white cannot sit
+     on. Splitting them is the difference between 4.9:1 and 2.5:1 on a Reply
+     button. */
+  --accent-base: var(--accent-user, #0e7c86);
+  --accent: var(--accent-base);
+  --accent-fill: var(--accent-base);
+  --accent-ink: color-mix(in oklab, var(--accent-base) 82%, #000000);
+  --accent-wash: color-mix(in oklab, var(--accent-base) 11%, #ffffff);
 
   /* semantic, kept separate from the accent on purpose */
   --good: #2e7d5b;
@@ -71,59 +81,82 @@
    because no background is dark enough to buy that separation back: pure
    black under this surface still measures 3, so the lines have to do it.
 
-   The selected-row wash is still a mix with the accent, so a custom accent
-   tints it. It is mixed into a lighter base rather than given more accent,
-   which would have reached the same brightness as a much louder row.
+   The ground follows the accent, which is the second thing measured here.
+   These neutrals used to be fixed, and they are not neutral: in OKLCH the
+   dark backgrounds, lines and inks all sat at hue 218-231 with chroma 0.021
+   to 0.027, against 0.000 to 0.009 for the same tokens in light. So dark mode
+   carried three times as much colour as light mode and all of it was blue,
+   whichever accent was chosen — 151 degrees from the amber accent and 162
+   from the rose, near enough opposite to read as a clash.
+
+   Each one is now the accent mixed into a grey that has no colour of its own.
+   That matters: mixing in oklab against an achromatic base gives the result
+   the accent's hue exactly, and a chroma of simply the percentage times the
+   accent's own, so the percentages below are chosen to land on the chroma
+   each token already had. Lightness does not move, which is why the tint is
+   free: measured across all six accents, ink on surface stays 92-93, ink3 on
+   surface 59-60, the hairline 13.2-15.0. The default teal barely moves at
+   all — --bg was #0f1b21 and resolves to #0f1c1d.
+
+   The selected-row wash is a mix with the accent too, into a grey of the same
+   lightness as the blue-grey base it used to have. It stays a mix rather than
+   being given more accent, which would have reached the same brightness as a
+   much louder row.
+
+   Semantic colours do not follow the accent: a warning is amber because it is
+   a warning. They are lifted to Lc 70 on the surface here, from 53, 55 and
+   52 — with the inks fixed, they were the darkest text left in the theme.
 
    Both blocks below carry the same values and move together. The reading
-   pane's frame and the message source page keep their own copies of ink2 and
-   hair in message_view.rs, because those pages cannot see this stylesheet. */
+   pane's frame and the message source page build their own copy of this
+   palette in message_view.rs, because those pages cannot see this stylesheet;
+   the accent reaches them through the frame URL. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme='light']) {
-    --bg: #0f1b21;
-    --surface: #142329;
-    --raised: #17282f;
-    --ink: #e4edee;
-    --ink2: #b6cad0;
-    --ink3: #a5b8c0;
-    --hair: #3e5159;
-    --hair2: #304149;
-    --accent: color-mix(in oklab, var(--accent-user, #0e7c86) 62%, #ffffff);
-    --accent-ink: color-mix(in oklab, var(--accent-user, #0e7c86) 44%, #ffffff);
-    --accent-wash: color-mix(in oklab, var(--accent-user, #0e7c86) 26%, #27343a);
-    --good: #5fb98d;
-    --amber: #d2a45b;
+    --bg: color-mix(in oklab, var(--accent-base) 20%, #080808);
+    --surface: color-mix(in oklab, var(--accent-base) 22%, #0e0e0e);
+    --raised: color-mix(in oklab, var(--accent-base) 25%, #101010);
+    --ink: color-mix(in oklab, var(--accent-base) 10%, #fafafa);
+    --ink2: color-mix(in oklab, var(--accent-base) 22%, #e0e0e0);
+    --ink3: color-mix(in oklab, var(--accent-base) 23%, #cacaca);
+    --hair: color-mix(in oklab, var(--accent-base) 26%, #424242);
+    --hair2: color-mix(in oklab, var(--accent-base) 25%, #2f2f2f);
+    --accent: color-mix(in oklab, var(--accent-base) 62%, #ffffff);
+    --accent-ink: color-mix(in oklab, var(--accent-base) 28%, #ffffff);
+    --accent-wash: color-mix(in oklab, var(--accent-base) 26%, #323232);
+    --good: #7ed8aa;
+    --amber: #eebf75;
     --amber-bg: #2a2416;
     --amber-line: #594f36;
-    --danger: #e0938a;
+    --danger: #ffb3aa;
     --danger-bg: #2c1b18;
     --danger-line: #634742;
-    --kbd: #2c3f46;
+    --kbd: color-mix(in oklab, var(--accent-base) 26%, #2b2b2b);
     --hit: #3a3417;
     color-scheme: dark;
   }
 }
 
 :root[data-theme='dark'] {
-  --bg: #0f1b21;
-  --surface: #142329;
-  --raised: #17282f;
-  --ink: #e4edee;
-  --ink2: #b6cad0;
-  --ink3: #a5b8c0;
-  --hair: #3e5159;
-  --hair2: #304149;
-  --accent: color-mix(in oklab, var(--accent-user, #0e7c86) 62%, #ffffff);
-  --accent-ink: color-mix(in oklab, var(--accent-user, #0e7c86) 44%, #ffffff);
-  --accent-wash: color-mix(in oklab, var(--accent-user, #0e7c86) 26%, #27343a);
-  --good: #5fb98d;
-  --amber: #d2a45b;
+  --bg: color-mix(in oklab, var(--accent-base) 20%, #080808);
+  --surface: color-mix(in oklab, var(--accent-base) 22%, #0e0e0e);
+  --raised: color-mix(in oklab, var(--accent-base) 25%, #101010);
+  --ink: color-mix(in oklab, var(--accent-base) 10%, #fafafa);
+  --ink2: color-mix(in oklab, var(--accent-base) 22%, #e0e0e0);
+  --ink3: color-mix(in oklab, var(--accent-base) 23%, #cacaca);
+  --hair: color-mix(in oklab, var(--accent-base) 26%, #424242);
+  --hair2: color-mix(in oklab, var(--accent-base) 25%, #2f2f2f);
+  --accent: color-mix(in oklab, var(--accent-base) 62%, #ffffff);
+  --accent-ink: color-mix(in oklab, var(--accent-base) 28%, #ffffff);
+  --accent-wash: color-mix(in oklab, var(--accent-base) 26%, #323232);
+  --good: #7ed8aa;
+  --amber: #eebf75;
   --amber-bg: #2a2416;
   --amber-line: #594f36;
-  --danger: #e0938a;
+  --danger: #ffb3aa;
   --danger-bg: #2c1b18;
   --danger-line: #634742;
-  --kbd: #2c3f46;
+  --kbd: color-mix(in oklab, var(--accent-base) 26%, #2b2b2b);
   --hit: #3a3417;
   color-scheme: dark;
 }

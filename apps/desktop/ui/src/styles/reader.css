@@ -406,14 +406,17 @@
 }
 
 .reply.primary:hover {
-  background: var(--accent-strong, var(--accent));
-  border-color: var(--accent-strong, var(--accent));
+  background: var(--accent-fill);
+  border-color: var(--accent-fill);
   filter: brightness(0.94);
 }
 
+/* --accent-fill, not --accent: in dark the plain accent is lightened for
+   lines and dots, and white on it measured 2.5:1 — the least legible label
+   in the app was on its most-used button. */
 .reply.primary {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--accent-fill);
+  border-color: var(--accent-fill);
   color: #fff;
   font-weight: 600;
 }
