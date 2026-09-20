@@ -1,7 +1,6 @@
 import { Monitor, Moon, Sun, type LucideIcon } from 'lucide-react';
 import { resolveLocale, DEFAULTS, useSettings, type Settings } from '../../lib/settings';
 import { Icon } from '../Icon';
-import { Pill } from './Pill';
 import { availableLocales, t, type StringId } from '../../lib/strings';
 
 const ACCENTS = ['#0E7C86', '#3B6EA5', '#6B5CA5', '#9A6B1F', '#5E7C4A', '#A8544B'];
@@ -74,53 +73,12 @@ export function Appearance() {
         </div>
       </section>
 
-      <section className="field">
-        <div className="flabel">{t('appearance-list')}</div>
-        <div className="sub-controls">
-          <div>
-            <div className="sublabel">{t('appearance-density')}</div>
-            <Pill
-              value={settings.density}
-              onChange={(v) => set('density', v)}
-              options={[
-                { value: 'relaxed', label: t('density-relaxed') },
-                { value: 'compact', label: t('density-compact') },
-              ]}
-            />
-          </div>
-          <div>
-            <div className="sublabel">{t('appearance-reading-pane')}</div>
-            <Pill
-              value={settings.layout}
-              onChange={(v) => set('layout', v)}
-              options={[
-                { value: 'right', label: t('layout-right') },
-                { value: 'below', label: t('layout-below') },
-                { value: 'off', label: t('layout-off') },
-              ]}
-            />
-          </div>
-        </div>
-      </section>
-
       {/* The sidebar's numbers used to be one switch here, offering Unread,
           Everything or None for every row at once — and listing the mailboxes
           it did not apply to in its own help text. Each row answers for itself
           in the Sidebar pane now, so there is no global label left to
           contradict. The stored value is still read once, for anyone who had
           set it to something other than the default. */}
-
-      <section className="field">
-        <div className="flabel">{t('appearance-checkboxes')}</div>
-        <Pill
-          value={settings.checkboxes}
-          onChange={(v) => set('checkboxes', v)}
-          options={[
-            { value: 'off', label: t('checkboxes-off') },
-            { value: 'on', label: t('checkboxes-on') },
-          ]}
-        />
-      </section>
 
       <section className="field last">
         <div className="flabel">{t('appearance-text-size')}</div>

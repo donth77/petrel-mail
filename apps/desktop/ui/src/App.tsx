@@ -1,12 +1,33 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, type ActionKind, type Folder, type OutboxRow, type Status } from './lib/api';
-import { chips, folderScopeName, hasToken, scopeFor, toggleToken } from './lib/search-chips';
+import {
+  chips,
+  folderScopeName,
+  hasToken,
+  isSearch,
+  scopeFor,
+  toggleToken,
+} from './lib/search-chips';
+import { NO_TERMS, SearchTerms, sameTerms, termsOf, type Term } from './lib/search-highlight';
+import { MAX_CLAUSES, MAX_VALUE_CHARS, cutShort } from './lib/search-limits';
 import { arrangementFor, countFor, countModes, visibleMailboxes } from './lib/mailboxes';
 import { count as fmtCount, fileSize } from './lib/format';
 import { t, type StringId } from './lib/strings';
-import { Search } from 'lucide-react';
+import { Search, TriangleAlert } from 'lucide-react';
 import { SortMenu } from './components/SortMenu';
-import { DEFAULT_SORT, SEARCH_SORT, effectiveSort, type Sort } from './lib/sort';
+import {
+  DEFAULT_SORT,
+  SEARCH_SORT,
+  effectiveSort,
+  knownViews,
+  readSort,
+  readSortByView,
+  sortInScope,
+  sortWrite,
+  viewRenamed,
+  writeSort,
+  type Sort,
+} from './lib/sort';
 import { repaintTag } from './lib/tag-paint';
 import { mergeOrder } from './lib/reorder';
 import { Rail } from './components/Rail';
@@ -118,16 +139,17 @@ export function App() {
   const [query, setQuery] = useState('');
   // Best match or newest, for a search. Not a saved preference: it answers a
   // different question about one search — "find the thing" against "retrace the
-  // timeline" — and carrying last week's answer into today's search is wrong
-  // more often than it is right.
+  // Remembered, both of them. A search opens on Best match until somebody
+  // chooses otherwise, and then it keeps what they chose: an order somebody
+  // picked and the window forgot is a control that does not work.
+  //
   // Two, because a list and a search are asked different questions. A mailbox
   // opens newest-first, which is what a mailbox is for; a search opens on its
   // ranking, which is what searching is for. One shared state would have made
   // every search inherit whatever the mailbox was last sorted by — and the
   // best-match order, the only one a search can offer, would never be the one
   // you got by default.
-  const [listSort, setListSort] = useState<Sort>(DEFAULT_SORT);
-  const [searchSort, setSearchSort] = useState<Sort>(SEARCH_SORT);
+  const setSearchSort = useCallback((sort: Sort) => set('searchSort', writeSort(sort)), [set]);
   // Relevance exists only while a query does, so what is actually applied is
   // not always what is stored: leaving a mailbox on Best match after the box
   // empties would have it claim an order it cannot have.
@@ -136,7 +158,25 @@ export function App() {
   // search bar is open, which is a different thing: the bar can be focused
   // with nothing typed in it, and an empty box is a mailbox.
   const hasQuery = query.trim().length > 0;
-  const activeSort = effectiveSort(hasQuery ? searchSort : listSort, hasQuery);
+  // Whether the engine will search less than the field says (`cutShort`),
+  // and whether the index holds less than the mailbox: both are said under
+  // the list, where the results they qualify are.
+  const searchCut = useMemo(() => (hasQuery ? cutShort(query) : null), [hasQuery, query]);
+  const partlySearched = (status?.server_total ?? 0) > (status?.count ?? 0);
+  // The words to mark wherever a result is shown. Empty when there is no
+  // search and when highlighting is off, so the list, the reader and the
+  // message frames all ask one question and none of them asks the setting.
+  //
+  // The same list is handed back while the words in it have not changed.
+  // Every keystroke inside `from:…` made a new one that said the same thing,
+  // and each new one had every open message clear its marks, walk its whole
+  // text again and report its height.
+  const lastTerms = useRef<readonly Term[]>(NO_TERMS);
+  const searchTerms = useMemo(() => {
+    const next = settings.searchHighlight === 'on' ? termsOf(query) : NO_TERMS;
+    if (!sameTerms(next, lastTerms.current)) lastTerms.current = next;
+    return lastTerms.current;
+  }, [query, settings.searchHighlight]);
   // Whether the search field has the user's attention, which is when the
   // filters are worth showing.
   const [searching, setSearching] = useState(false);
@@ -153,6 +193,76 @@ export function App() {
 
   const [activeId, setActiveId] = useState<number | null>(null);
   const [view, setView] = useState('inbox');
+
+  // Remembered across launches, and written back the moment it changes: an
+  // order somebody chose and the window forgot is a setting that does not
+  // work. One for the mailbox and one for search, because a mailbox has no
+  // relevance to be ordered by and a search usually should be.
+  //
+  // Held by identity, not just by value: the list refetches when its order
+  // changes, and a fresh object each render is a change every render. Read
+  // straight through, the list spun on "Loading your mail" for ever.
+  const sortByView = useMemo(
+    () => readSortByView(settings.listSortByView),
+    [settings.listSortByView],
+  );
+  const listSort = useMemo(
+    () =>
+      sortInScope(settings.sortScope, sortByView, view, readSort(settings.listSort, DEFAULT_SORT)),
+    [sortByView, view, settings.listSort, settings.sortScope],
+  );
+  const searchSort = useMemo(
+    () => readSort(settings.searchSort, SEARCH_SORT),
+    [settings.searchSort],
+  );
+  // This mailbox, or all of them, as Settings says. Which setting that is and
+  // what goes in it is `sortWrite`'s to answer — the same rule `sortInScope`
+  // reads back above, so the two cannot drift apart here.
+  const setListSort = useCallback(
+    (sort: Sort) => {
+      const [setting, value] = sortWrite(settings.sortScope, sortByView, view, sort);
+      set(setting, value);
+    },
+    [set, settings.sortScope, sortByView, view],
+  );
+  // Reference data — tags, folders, accounts, identity — one hook, one
+  // effect. Called this early because two things above read it: the sort
+  // control, to tell a mailbox from a search, and the triage hook below, to
+  // show a tag on a row the moment it is applied.
+  const { tags, setTags, folders, setFolders, accounts, setAccounts, activeAccount, identity } =
+    useReferenceData(status?.seeding, accountEpoch);
+
+  // Made shared, the order everything takes is the one you were just
+  // looking at. Without this the first flip of the switch reordered the list
+  // under you, back to the default nobody had chosen.
+  const wasScope = useRef(settings.sortScope);
+  useEffect(() => {
+    if (wasScope.current !== 'everywhere' && settings.sortScope === 'everywhere') {
+      set('listSort', writeSort(listSort));
+    }
+    wasScope.current = settings.sortScope;
+  }, [settings.sortScope, listSort, set]);
+
+  // Folders and tags come and go, and the orders they were given used to
+  // stay for ever under names nothing answers to any more. Pruned once the
+  // real lists are in, and only when there is something to prune, so this
+  // cannot write in a loop.
+  useEffect(() => {
+    if (folders.length === 0 && tags.length === 0) return;
+    const known = (named: string) => {
+      if (named.startsWith('folder:')) return folders.some((f) => `folder:${f.id}` === named);
+      if (named.startsWith('tag:')) return tags.some((x) => `tag:${x.name}` === named);
+      return true;
+    };
+    const kept = knownViews(sortByView, known);
+    if (kept) set('listSortByView', kept);
+  }, [folders, tags, sortByView, set]);
+
+  // Whether this is a search or still the mailbox: a field holding nothing but
+  // the token the window wrote for you is the mailbox. The rule lives in
+  // `isSearch`, beside the code that writes that token.
+  const asked = isSearch(query, scopeFor(view, folderScopeName(view, folders))?.token);
+  const activeSort = effectiveSort(asked ? searchSort : listSort, asked);
 
   const listFetchers = useMemo(
     () => ({ threads: api.threads, search: api.search }),
@@ -237,11 +347,6 @@ export function App() {
   const [outgoing, setOutgoing] = useState<{ id: number; subject: string; left: number } | null>(null);
   const outgoingRef = useRef(outgoing);
   outgoingRef.current = outgoing;
-  // Reference data — tags, folders, accounts, identity — one hook, one
-  // effect. Called this early because the triage hook below reads tags to
-  // show one on a row the moment it is applied.
-  const { tags, setTags, folders, setFolders, accounts, setAccounts, activeAccount, identity } =
-    useReferenceData(status?.seeding, accountEpoch);
 
   // The number on the Dock icon: unread in the inbox, added up across
   // accounts. Not the current view's unread, which is what the rail and the
@@ -288,6 +393,24 @@ export function App() {
       clearTimeout(handle);
     };
   }, []);
+
+  // Seeding ending over an empty list is a reason to look again.
+  //
+  // A list refreshes when the message count moves, and the last step of
+  // seeding moves no count: it files mail that already exists into the inbox.
+  // A window that read the inbox a moment too early therefore said "Inbox is
+  // clear" over four thousand conversations, and went on saying it until the
+  // view was left and come back to. Only an empty list is replaced — one with
+  // rows in it is somebody's place in their mail, and the end of a first sync
+  // is no reason to take that away.
+  const wasSeeding = useRef(false);
+  useEffect(() => {
+    const seeding = status?.seeding ?? false;
+    if (wasSeeding.current && !seeding && items.length === 0) setAccountEpoch((n) => n + 1);
+    wasSeeding.current = seeding;
+    // Read at the moment seeding ends; `items` changing is not the trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status?.seeding]);
 
   // Highlight and selection follow a replaced window (view, query, sort,
   // account, or the first mail into an empty list). Paging and new mail at
@@ -1771,6 +1894,7 @@ export function App() {
   }
 
   return (
+    <SearchTerms.Provider value={searchTerms}>
     <div className="app-frame">
       <TitleBar
         synced={((): string => {
@@ -1890,6 +2014,9 @@ export function App() {
               // the list empties and no rail item is current. Follow the
               // rename instead — it is the same collection, newly titled.
               if (view === `tag:${was}`) setView(`tag:${name}`);
+              // The order that view was given is named after the tag too.
+              const moved = viewRenamed(sortByView, `tag:${was}`, `tag:${name}`);
+              if (moved) set('listSortByView', moved);
               setItems((prev) =>
                 prev.map((row) =>
                   row.tags.some((x) => x.name === was)
@@ -1993,7 +2120,7 @@ export function App() {
               // token is how a search goes global.
               onFocus={() => {
                 setSearching(true);
-                if (query.trim()) return;
+                if (query.trim() || settings.searchInMailbox !== 'on') return;
                 const leaf = folderScopeName(view, folders);
                 const scope = scopeFor(view, leaf);
                 if (scope) setQuery(`${scope.token} `);
@@ -2029,8 +2156,17 @@ export function App() {
                     (active.closest('.list-head') !== null ||
                       active.closest('[role="menu"]') !== null);
                   if (stillInSearch) return;
+                  // Only what the field wrote for you. With the setting off
+                  // nothing was pre-applied, so the same token typed by hand
+                  // is a search somebody meant, and emptying it threw their
+                  // query away.
                   const leaf = folderScopeName(view, folders);
-                  if (query.trim() === scopeFor(view, leaf)?.token) setQuery('');
+                  if (
+                    settings.searchInMailbox === 'on' &&
+                    query.trim() === scopeFor(view, leaf)?.token
+                  ) {
+                    setQuery('');
+                  }
                   setSearching(false);
                 }, 150);
               }}
@@ -2050,7 +2186,7 @@ export function App() {
               clicked, so a second click in the same place lands on whatever
               slid into it — visible, instantly reversible, and the price of
               a row that is never briefly wrong. */}
-          {(searching || query.trim()) && (
+          {(searching || query.trim()) && settings.searchChips === 'on' && (
             <div className="chip-row" role="group" aria-label={t('search-filters')}>
               {chips(
                 active?.from_display || active?.from_addr || null,
@@ -2064,7 +2200,8 @@ export function App() {
                     key={c.id}
                     type="button"
                     className={hasToken(query, c.token) ? 'filter-chip on' : 'filter-chip'}
-                    aria-pressed={hasToken(query, c.token)}
+                    // A suggestion rewrites the query once; it is not a switch.
+                    aria-pressed={c.rewrite === undefined ? hasToken(query, c.token) : undefined}
                     // The click must not take focus off the field. It fires
                     // after blur, and blur empties a field holding nothing but
                     // the pre-applied scope — so clicking Unread in Receipts
@@ -2074,7 +2211,7 @@ export function App() {
                     // caret in the field too, which is where it wants to be
                     // after narrowing.
                     onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => setQuery(toggleToken(query, c.token))}
+                    onClick={() => setQuery(c.rewrite ?? toggleToken(query, c.token))}
                   >
                     {c.label}
                   </button>
@@ -2122,11 +2259,28 @@ export function App() {
                 not a search is running — only its options differ. */}
             <SortMenu
               sort={activeSort}
-              onChange={hasQuery ? setSearchSort : setListSort}
-              searching={hasQuery}
+              onChange={asked ? setSearchSort : setListSort}
+              searching={asked}
             />
           </div>
         </div>
+
+        {/* Above the results, not under them. The line below the list says
+            how much of the mailbox was searched, which is ambient and can
+            wait to be looked for; this says part of what you typed was not
+            searched at all, which changes what you are reading right now.
+            Amber for the same reason: at the foot of the list in the quiet
+            grey of a caption, people simply did not see it. */}
+        {hasQuery && searchCut && (
+          <div className="list-notice" role="status">
+            <TriangleAlert size={13} strokeWidth={1.8} aria-hidden="true" />
+            <span>
+              {searchCut === 'terms'
+                ? t('search-cut-terms', { count: MAX_CLAUSES })
+                : t('search-cut-value', { count: MAX_VALUE_CHARS })}
+            </span>
+          </div>
+        )}
 
         {error ? (
           <div className="empty">
@@ -2177,17 +2331,22 @@ export function App() {
             Saying so keeps "no results" meaning no results.
 
             Shown only when the two numbers disagree: once everything is held,
-            a line explaining that everything was searched is noise. */}
-        {query.trim() &&
-          (status?.server_total ?? 0) > (status?.count ?? 0) && (
-            <div className="coverage">
+            a line explaining that everything was searched is noise.
+
+            The same goes for the query. Past thirty-two terms, or a term past
+            256 characters, the engine searches what it read and leaves the
+            rest, which looks exactly like the rest finding nothing. */}
+        {hasQuery && partlySearched && (
+          <div className="coverage">
+            <div>
               {t('search-coverage', {
                 searched: fmtCount(status?.count ?? 0),
                 total: fmtCount(status?.server_total ?? 0),
               })}
               {status?.seeding ? ` ${t('search-coverage-syncing')}` : ''}
             </div>
-          )}
+          </div>
+        )}
       </div>
 
       {/* Only where there are two panes side by side to divide. Stacked, the
@@ -2514,6 +2673,14 @@ export function App() {
             .catch((e) => setToast(t('popout-failed', { error: String(e) })));
         }}
         onClose={() => setPaletteOpen(false)}
+        // The query first, so that focusing the field later cannot decide it
+        // is empty and write the mailbox scope over it; the focus last,
+        // because the palette takes focus back as it closes.
+        onSearch={(q) => {
+          setQuery(q);
+          setSearching(true);
+          requestAnimationFrame(() => searchRef.current?.focus());
+        }}
         subject={active?.subject ?? null}
         ctx={{
           hasThread: !!active,
@@ -2784,5 +2951,6 @@ export function App() {
       </footer>
       </div>
     </div>
+    </SearchTerms.Provider>
   );
 }

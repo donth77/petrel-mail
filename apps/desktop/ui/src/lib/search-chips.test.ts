@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { chips, hasToken, scopedQuery, toggleToken, tokensOf } from './search-chips';
-
-describe('tokensOf', () => {
-  it('keeps a quoted value whole', () => {
-    expect(tokensOf('from:"Dana Wu" annex')).toEqual(['from:Dana Wu', 'annex']);
-  });
-});
+import {
+  asWords,
+  chips,
+  folderScopeName,
+  hasToken,
+  isSearch,
+  quoted,
+  scopeFor,
+  scopedQuery,
+  toggleToken,
+} from './search-chips';
+import { tokensOf } from './search-grammar';
 
 describe('toggleToken', () => {
   it('adds a token to what is already typed', () => {
@@ -98,11 +103,13 @@ describe('the scope chip', () => {
     expect(scope('trash')?.token).toBe('in:trash');
   });
 
-  it('speaks is: for the state views and stays silent only where it must', () => {
+  it('speaks is: for the state views and tag: for a tag', () => {
     expect(scope('starred')?.token).toBe('is:starred');
     expect(scope('snoozed')?.token).toBe('is:snoozed');
+    expect(scope('tag:Urgent')?.token).toBe('tag:Urgent');
+    // The outbox is the one view with nothing to scope to: it is mail on its
+    // way out, and the grammar has no word for that.
     expect(scope('outbox')).toBeUndefined();
-    expect(scope('tag:Urgent')).toBeUndefined();
   });
 
   it('does not double the starred chip when the scope already is it', () => {
@@ -236,5 +243,334 @@ describe('a filter that is applied always has its chip', () => {
   it('keeps the friendly name when the query scopes where you already are', () => {
     const scope = chips(null, 2026, 'inbox', null, 'in:inbox').find((c) => c.id === 'scope');
     expect(scope?.label).toBe('In Inbox');
+  });
+});
+
+/* The grammar has phrases, exclusion and OR. A chip click rebuilds the field,
+   and a rebuild that reads the pieces bare and guesses the quotes back would
+   change what the query means. Every piece goes back as it was typed. */
+describe('what was typed survives a chip', () => {
+  it('keeps a phrase a phrase', () => {
+    expect(toggleToken('"board pack" annex', 'is:unread')).toBe('"board pack" annex is:unread');
+    // One word in quotes is still in quotes: it is the word OR, not the operator.
+    expect(toggleToken('"OR" theatre', 'is:unread')).toBe('"OR" theatre is:unread');
+    // And words that spell an operator stay words.
+    expect(toggleToken('"from:sam"', 'is:unread')).toBe('"from:sam" is:unread');
+  });
+
+  it('keeps an exclusion outside its quotes', () => {
+    // Rebuilt from bare pieces this came back as "-board pack": a phrase that
+    // asks for exactly what it was excluding.
+    expect(toggleToken('contract -"board pack"', 'has:attachment')).toBe(
+      'contract -"board pack" has:attachment',
+    );
+    expect(toggleToken('-from:"Dana Wu" annex', 'is:unread')).toBe(
+      '-from:"Dana Wu" annex is:unread',
+    );
+  });
+
+  it('keeps curly quotes', () => {
+    expect(toggleToken('“board pack”', 'is:unread')).toBe(
+      '“board pack” is:unread',
+    );
+  });
+
+  /* The engine runs an open quote or bracket to the end of the field, so a
+     token written after one landed inside it: the chip never lit, and every
+     click added another copy. */
+  it('closes a quote or a bracket still being typed before writing after it', () => {
+    expect(toggleToken('annex "board pa', 'is:unread')).toBe('annex "board pa" is:unread');
+    expect(toggleToken('annex “board pa', 'is:unread')).toBe('annex “board pa” is:unread');
+    expect(toggleToken('(from:sam OR from:dana', 'is:unread')).toBe(
+      '(from:sam OR from:dana) is:unread',
+    );
+    expect(toggleToken('a OR "b c', 'is:unread')).toBe('(a OR "b c") is:unread');
+    for (const typing of ['annex "board pa', '(from:sam OR from:dana', '(']) {
+      const once = toggleToken(typing, 'is:unread');
+      expect(hasToken(once, 'is:unread')).toBe(true);
+      expect(hasToken(toggleToken(once, 'is:unread'), 'is:unread')).toBe(false);
+    }
+  });
+
+  /* An operator that takes one value is replaced on every side of an OR
+     that names one. Wrapped and added instead, it asked for mail in two
+     mailboxes at once. */
+  it('replaces a single value on each side of an OR', () => {
+    expect(toggleToken('in:inbox a OR in:inbox b', 'in:sent')).toBe('in:sent a OR in:sent b');
+    expect(hasToken('in:sent a OR in:sent b', 'in:sent')).toBe(true);
+    expect(toggleToken('in:sent a OR in:sent b', 'in:sent')).toBe('a OR b');
+    // Only when every side names one; otherwise the token narrows the whole.
+    expect(toggleToken('in:inbox a OR b', 'in:sent')).toBe('(in:inbox a OR b) in:sent');
+    // An excluded mailbox is not a value to replace.
+    expect(toggleToken('-in:spam a OR NOT in:spam b', 'in:sent')).toBe(
+      '(-in:spam a OR NOT in:spam b) in:sent',
+    );
+  });
+
+  /* Only brackets that hold the whole query come off with the chip. */
+  it('takes off only the brackets it put on', () => {
+    const once = toggleToken('(a) OR (b)', 'is:unread');
+    expect(once).toBe('((a) OR (b)) is:unread');
+    expect(toggleToken(once, 'is:unread')).toBe('(a) OR (b)');
+    expect(toggleToken('(a OR b) (c OR d) is:unread', 'is:unread')).toBe('(a OR b) (c OR d)');
+  });
+
+  /* A token that narrows one side of an OR narrows nothing, so the chip is
+     not lit for it and clicking adds one that narrows the whole query. */
+  it('adds a token that narrows all of an OR, beside one that narrows a side', () => {
+    expect(hasToken('(a) OR (b) is:unread', 'is:unread')).toBe(false);
+    expect(toggleToken('(a) OR (b) is:unread', 'is:unread')).toBe(
+      '((a) OR (b) is:unread) is:unread',
+    );
+  });
+
+  /* `NOT is:unread` asks for the opposite of the chip. Lit for it, the chip
+     took the token out and left the NOT to exclude whatever stood next. */
+  it('does not take a NOT for the filter it excludes', () => {
+    expect(hasToken('NOT is:unread from:sam', 'is:unread')).toBe(false);
+    expect(hasToken('NOT NOT is:unread from:sam', 'is:unread')).toBe(true);
+    expect(toggleToken('NOT is:unread from:sam', 'is:unread')).toBe('from:sam is:unread');
+    expect(toggleToken('NOT has:attachment invoice', 'has:attachment')).toBe(
+      'invoice has:attachment',
+    );
+    // Taken off, it takes its NOTs with it.
+    expect(toggleToken('NOT NOT is:unread from:sam', 'is:unread')).toBe('from:sam');
+    // An excluded mailbox is neither replaced nor the one being searched.
+    expect(toggleToken('NOT in:spam x', 'in:inbox')).toBe('NOT in:spam x in:inbox');
+    const scope = chips(null, 2026, 'inbox', null, 'NOT in:spam x').find((c) => c.id === 'scope');
+    expect(scope?.token).toBe('in:inbox');
+    // A NOT still waiting for its word does not get the chip's token.
+    expect(toggleToken('invoice NOT', 'is:unread')).toBe('invoice is:unread NOT');
+    // However many dashes, one exclusion.
+    expect(toggleToken('x --is:unread', 'is:unread')).toBe('x is:unread');
+  });
+
+  it('does not take a phrase for the operator it spells', () => {
+    expect(hasToken('"is:unread"', 'is:unread')).toBe(false);
+    expect(toggleToken('"is:unread"', 'is:unread')).toBe('"is:unread" is:unread');
+    const scope = chips(null, 2026, 'inbox', null, '"in:receipts and more"').find(
+      (c) => c.id === 'scope',
+    );
+    expect(scope?.token).toBe('in:inbox');
+  });
+
+  it('does not take an exclusion for the filter it excludes', () => {
+    expect(hasToken('-is:unread', 'is:unread')).toBe(false);
+    // Asking for unread replaces asking for not-unread; both at once is nothing.
+    expect(toggleToken('annex -is:unread', 'is:unread')).toBe('annex is:unread');
+    // An excluded mailbox is not the mailbox being searched.
+    const scope = chips(null, 2026, 'inbox', null, '-in:spam annex').find((c) => c.id === 'scope');
+    expect(scope?.token).toBe('in:inbox');
+  });
+});
+
+/* OR binds looser than everything else, so a filter written once after an OR
+   would hold for the last alternative only. The query goes into brackets. */
+describe('a chip narrows the whole query', () => {
+  it('brackets an OR before it writes itself in', () => {
+    expect(toggleToken('from:sam OR from:dana', 'is:unread')).toBe(
+      '(from:sam OR from:dana) is:unread',
+    );
+  });
+
+  it('comes off again and takes its brackets with it', () => {
+    expect(toggleToken('(from:sam OR from:dana) is:unread', 'is:unread')).toBe(
+      'from:sam OR from:dana',
+    );
+    // Brackets that were doing something stay.
+    expect(toggleToken('(from:sam OR from:dana) annex is:unread', 'is:unread')).toBe(
+      '(from:sam OR from:dana) annex',
+    );
+  });
+
+  it('is lit when it stands outside the brackets, or on every side of an OR', () => {
+    expect(hasToken('(from:sam OR from:dana) is:unread', 'is:unread')).toBe(true);
+    expect(hasToken('from:sam is:unread OR from:dana is:unread', 'is:unread')).toBe(true);
+    expect(hasToken('from:sam is:unread OR from:dana', 'is:unread')).toBe(false);
+    // Inside brackets it is one side of a choice, not a filter on the result.
+    expect(hasToken('(is:unread OR is:starred) annex', 'is:unread')).toBe(false);
+  });
+
+  it('comes off every side when that is where it was typed', () => {
+    expect(toggleToken('from:sam is:unread OR from:dana is:unread', 'is:unread')).toBe(
+      'from:sam OR from:dana',
+    );
+  });
+
+  it('leaves a lowercase or alone: it is a word', () => {
+    expect(toggleToken('now or never', 'is:unread')).toBe('now or never is:unread');
+  });
+
+  it('keeps an OR that is still waiting for its other side', () => {
+    expect(toggleToken('from:sam OR', 'is:unread')).toBe('from:sam is:unread OR');
+    expect(toggleToken('OR', 'is:unread')).toBe('is:unread');
+  });
+
+  it('reads the scope and the sender from outside the brackets only', () => {
+    const row = chips(null, 2026, 'inbox', null, '(in:receipts OR in:archive) annex');
+    expect(row.find((c) => c.id === 'scope')?.token).toBe('in:inbox');
+    expect(row.some((c) => c.id === 'from')).toBe(false);
+  });
+
+  it('puts back brackets, AND and NOT exactly as they were typed', () => {
+    expect(toggleToken('invoice AND NOT (draft OR wip)', 'has:attachment')).toBe(
+      'invoice AND NOT (draft OR wip) has:attachment',
+    );
+    expect(toggleToken('contract -(draft OR "work in progress")', 'is:unread')).toBe(
+      'contract -(draft OR "work in progress") is:unread',
+    );
+  });
+});
+
+/* AND, OR and NOT in capitals are operators, always: the engine does not
+   guess. What the field does is notice when the capitals do not stand out —
+   a pasted subject line — and offer the quoted reading in one click. */
+describe('a keyword that may have been meant as a word', () => {
+  const suggestion = (query: string) =>
+    chips(null, 2026, 'inbox', null, query).find((c) => c.rewrite !== undefined);
+
+  /* The phrase, not the keyword alone in quotes: somebody who pasted a subject
+     line is looking for that line, and `TERMS "AND" CONDITIONS` would find
+     any mail with the three words anywhere in it. */
+  it('is offered as the phrase it sits in when the words beside it are in capitals too', () => {
+    expect(asWords('TERMS AND CONDITIONS')).toEqual({
+      words: 'TERMS AND CONDITIONS',
+      rewrite: '"TERMS AND CONDITIONS"',
+    });
+    expect(asWords('DO NOT REPLY')?.rewrite).toBe('"DO NOT REPLY"');
+    expect(asWords('Please DO NOT reply')?.rewrite).toBe('"Please DO NOT reply"');
+    expect(asWords('IBM OR HP')?.rewrite).toBe('"IBM OR HP"');
+    expect(asWords('READ AND SIGN OR RETURN AND KEEP')?.rewrite).toBe(
+      '"READ AND SIGN OR RETURN AND KEEP"',
+    );
+  });
+
+  it('ends the phrase at an operator, a bracket, an exclusion or a quote', () => {
+    // The scope the field writes for itself stays a scope.
+    expect(asWords('in:inbox DO NOT REPLY')?.rewrite).toBe('in:inbox "DO NOT REPLY"');
+    expect(asWords('DO NOT REPLY is:unread')?.rewrite).toBe('"DO NOT REPLY" is:unread');
+    expect(asWords('from:sam TERMS AND CONDITIONS -draft')?.rewrite).toBe(
+      'from:sam "TERMS AND CONDITIONS" -draft',
+    );
+    expect(asWords('(TERMS AND CONDITIONS) invoice')?.rewrite).toBeUndefined();
+    expect(asWords('"signed" TERMS AND CONDITIONS')?.rewrite).toBe(
+      '"signed" "TERMS AND CONDITIONS"',
+    );
+  });
+
+  it('is left alone when it is the only thing in capitals', () => {
+    expect(asWords('invoice NOT draft')).toBeNull();
+    expect(asWords('annex pricing')).toBeNull();
+    expect(asWords('from:sam OR from:dana')).toBeNull();
+    expect(asWords('from:SAM OR from:DANA')).toBeNull();
+    expect(asWords('(from:sam OR from:dana) AND is:unread')).toBeNull();
+    expect(asWords('東京 OR 大阪')).toBeNull();
+    expect(asWords('2024 OR 2025')).toBeNull();
+    // Already in quotes: already a word.
+    expect(asWords('DO "NOT" REPLY')).toBeNull();
+    // A phrase has a word at each end. These have a keyword at one, and
+    // `"AND BAR"` is nothing anybody pasted.
+    expect(asWords('(FOO) AND BAR')).toBeNull();
+    expect(asWords('-FOO AND BAR')).toBeNull();
+    expect(asWords('FOO AND -BAR')).toBeNull();
+    expect(asWords('"TERMS" AND CONDITIONS')).toBeNull();
+    // `I` and `A` are capitals by spelling, not by shouting.
+    expect(asWords('A OR B')).toBeNull();
+    expect(asWords('I OR you')).toBeNull();
+    // The run keeps its words and leaves a keyword at its end where it was.
+    expect(asWords('DO NOT REPLY OR')?.rewrite).toBe('"DO NOT REPLY" OR');
+  });
+
+  it('is a chip at the end of the row, never lit, that swaps the query', () => {
+    const row = chips(null, 2026, 'inbox', null, 'in:inbox TERMS AND CONDITIONS');
+    const chip = row[row.length - 1];
+    expect(chip.id).toBe('as-words');
+    expect(chip.label).toBe('Search for “TERMS AND CONDITIONS”');
+    expect(chip.rewrite).toBe('in:inbox "TERMS AND CONDITIONS"');
+    expect(hasToken('in:inbox TERMS AND CONDITIONS', chip.token)).toBe(false);
+    // Taking it settles the matter: nothing left to suggest.
+    expect(suggestion(chip.rewrite!)).toBeUndefined();
+  });
+
+  it('still reads the OR as the operator until then', () => {
+    expect(toggleToken('DEAD OR ALIVE', 'is:unread')).toBe('(DEAD OR ALIVE) is:unread');
+  });
+});
+
+/* Standing in a tag is standing somewhere, the same as a folder. */
+describe('the scope of a tag', () => {
+  it('quotes a name with a space in it, and has none for a half-typed tag', () => {
+    expect(scopeFor('tag:Waiting on')?.token).toBe('tag:"Waiting on"');
+    expect(scopeFor('tag:')).toBeNull();
+    expect(scopeFor('nowhere')).toBeNull();
+  });
+
+  it('writes a scope the engine reads back as that tag', () => {
+    const token = scopeFor('tag:Waiting on')!.token;
+    expect(tokensOf(token)).toEqual(['tag:Waiting on']);
+    expect(hasToken(`${token} invoice`, token)).toBe(true);
+  });
+});
+
+/* A bracket is an operator's now — `in:(a OR b)` is two mailboxes — so a name
+   with one in it has to be quoted wherever it is written, exactly as a name
+   with a space in it is. Bare, `in:(old)` searches the folder `old`: a chip
+   labelled after one folder that filters by another. */
+describe('a folder or a tag with a bracket in its name', () => {
+  it('quotes it in the scope it writes', () => {
+    const folders = [{ id: 7, path: '(old)' }];
+    expect(scopeFor('folder:7', folderScopeName('folder:7', folders))?.token).toBe('in:"(old)"');
+    expect(scopeFor('tag:p(1)')?.token).toBe('tag:"p(1)"');
+    expect(scopeFor('tag:mixed (up) name')?.token).toBe('tag:"mixed (up) name"');
+  });
+
+  it('quotes it in every other token a chip writes', () => {
+    expect(quoted('in:(old)')).toBe('in:"(old)"');
+    expect(quoted('tag:p(1)')).toBe('tag:"p(1)"');
+    expect(quoted('from:Sam (work)')).toBe('from:"Sam (work)"');
+    // And leaves alone what needs nothing.
+    expect(quoted('in:sent')).toBe('in:sent');
+    expect(quoted('is:unread')).toBe('is:unread');
+  });
+
+  it('writes a scope the engine reads back as that folder', () => {
+    const token = scopeFor('folder:7', '(old)')!.token;
+    expect(tokensOf(token)).toEqual(['in:(old)']);
+    expect(hasToken(`${token} invoice`, token)).toBe(true);
+  });
+});
+
+/* The window writes `in:inbox` into the field for you, and the field then holds
+   a query nobody typed. Everything that asks "is this a search" has to give the
+   same answer — which order the list is in, which preference an order chosen
+   now belongs to, whether Best match is on offer at all — so the question is
+   asked in one place. */
+describe('whether the field holds a search or still holds the mailbox', () => {
+  const inbox = scopeFor('inbox')!.token;
+
+  it('says no to the token the window wrote by itself', () => {
+    expect(isSearch(inbox, inbox)).toBe(false);
+    expect(isSearch(`  ${inbox}  `, inbox)).toBe(false);
+  });
+
+  it('says yes as soon as a word is added to it', () => {
+    expect(isSearch(`${inbox} invoice`, inbox)).toBe(true);
+    // And to the token on its own once it is not the one being written: kept
+    // while walking to another mailbox, it is a filter somebody chose.
+    expect(isSearch(inbox, scopeFor('sent')!.token)).toBe(true);
+  });
+
+  it('says no to an empty field, whatever the view is scoped to', () => {
+    for (const said of ['', '   ', '\n']) {
+      expect(isSearch(said, inbox), JSON.stringify(said)).toBe(false);
+      expect(isSearch(said, null)).toBe(false);
+    }
+  });
+
+  it('says yes in a view the grammar cannot scope', () => {
+    // Snoozed has a token, the outbox has none, and anything typed in a view
+    // without one is a search from the first character.
+    expect(scopeFor('outbox')).toBeNull();
+    expect(isSearch('in:outbox', scopeFor('outbox')?.token)).toBe(true);
   });
 });

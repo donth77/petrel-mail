@@ -1,10 +1,37 @@
-//! Search: the grammar's conditions bound into SQL, FTS hits resolved to
-//! conversations, and the account wall on all of it.
+//! Search: hits resolved to conversations, with the account wall on all of
+//! it.
 //!
-//! Moved verbatim from mod.rs (Phase 1.5); the free helpers it leans on —
-//! match_expr, the CJK machinery, in_inbox — remain in mod.rs and arrive
-//! through `use super::*`.
+//! Three steps, one to a file, because the first two can be read and tested
+//! without a mailbox and this one cannot:
+//!
+//! - `plan` works out what the query asks for: how many statements it
+//!   becomes, which index each is asked of, which word is still being typed.
+//!   Pure, and unit-tested in place.
+//! - `sql` writes a statement out, with every value bound.
+//! - here: the statements are run, their hits rolled up into conversations,
+//!   and the rows fetched with the snippet that says why each matched.
+//!
+//! The free helpers this leans on — match_expr, the CJK machinery, in_inbox —
+//! live in mod.rs and arrive through `use super::*`, which is also how they
+//! reach the two files beside this one.
 use super::*;
+use crate::search_query::{Expr, MAX_ALTERNATIVES, State, Term, Text};
+
+mod plan;
+mod sql;
+
+use plan::*;
+use sql::*;
+
+/// A message a search found, before anyone has asked why.
+struct Hit {
+    id: i64,
+    /// Only a listing is ordered by date; a ranked hit leaves this at zero.
+    date_ms: i64,
+    /// Which alternative's words found it — what its snippet is made with.
+    /// `None` when it met conditions and no words were asked.
+    from: Option<usize>,
+}
 
 impl Store {
     /// Routed search: CJK queries use the per-character index, everything else
@@ -162,34 +189,26 @@ impl Store {
         // answers, small enough that a query matching most of a mailbox
         // does not read it all before filtering.
         let wide = limit.saturating_mul(3).clamp(50, 600);
+        let (hits, asked) = self.hits_meeting(&q, wide, account)?;
 
-        let mut order: Vec<i64> = Vec::new();
+        // A query matches a message and the list shows conversations. The
+        // first hit for a conversation is its best one — the list arrives
+        // ranked — so that is the hit the row's snippet comes from.
         let mut seen = std::collections::HashSet::new();
-        // The first hit for a conversation is its best one — the list arrives
-        // ranked — so that is the snippet the row shows.
-        let mut why: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
-        // Words rank; conditions filter. With no words there is nothing for
-        // BM25 to score, so `has:attachment` on its own is a listing in date
-        // order — which is the right answer to a question that named no terms.
-        if q.text.trim().is_empty() {
-            let hits = self.messages_meeting(&q, wide, account)?;
-            self.gather_threads(&hits, &mut seen, &mut order, &mut why)?;
-        } else {
-            // Ranked once, with the account and the conditions inside the
-            // same statement, so every hit is this account's and the ranking
-            // is walked exactly once. Filtering after the ranking was tried:
-            // it either took a fixed slice, which a common word in the other
-            // account could fill entirely, or walked the ranking a page at a
-            // time, which re-ranked every match per page and held the store
-            // for seconds on a two-letter query.
-            let hits = self.ranked_meeting(&q, wide, account)?;
-            self.gather_threads(&hits, &mut seen, &mut order, &mut why)?;
+        let mut kept: Vec<(i64, &Hit)> = Vec::new();
+        for hit in &hits {
+            let tid = self.thread_of(hit.id)?.unwrap_or(-hit.id);
+            if seen.insert(tid) {
+                kept.push((tid, hit));
+            }
         }
-        order.truncate(limit as usize);
-        if order.is_empty() {
+        kept.truncate(limit as usize);
+        if kept.is_empty() {
             return Ok(Vec::new());
         }
 
+        let order: Vec<i64> = kept.iter().map(|(tid, _)| *tid).collect();
+        let mut why = self.why_matched(&kept, &asked)?;
         let mut rows = self.threads_by_id(&order)?;
         // Restore rank order — SQL gave us the rows, not the ranking.
         let rank: std::collections::HashMap<i64, usize> =
@@ -201,153 +220,234 @@ impl Store {
         Ok(rows)
     }
 
-    /// Folds a page of ranked hits into the conversations they belong to,
-    /// keeping the order the ranking put them in and the snippet of each
-    /// conversation's best-matching message.
-    fn gather_threads(
-        &self,
-        hits: &[Listing],
-        seen: &mut std::collections::HashSet<i64>,
-        order: &mut Vec<i64>,
-        why: &mut std::collections::HashMap<i64, String>,
-    ) -> Result<()> {
-        for h in hits {
-            let tid = self.thread_of(h.id)?.unwrap_or(-h.id);
-            if seen.insert(tid) {
-                order.push(tid);
-                if !h.snippet.is_empty() {
-                    why.insert(tid, h.snippet.clone());
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// The SQL for a query's conditions, and the values they bind.
+    /// Every statement's hits, as one list, and the words each was asked
+    /// with.
     ///
-    /// Built rather than interpolated: `from:` and `in:` carry whatever was
-    /// typed, and a search box that reaches SQL is the oldest mistake there is.
-    fn conditions(
-        q: &crate::search_query::SearchQuery,
-        account: i64,
-    ) -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
-        let mut sql = String::new();
-        let mut args: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-
-        // The account on screen, always. Search used to run over the whole
-        // store, so standing in one account quietly answered with the other
-        // account's mail — the one wall the multi-account design promises
-        // never leaks (03 §4.1), broken precisely where it is least visible.
-        sql.push_str(" AND m.account_id = ?");
-        args.push(Box::new(account));
-
-        // Junk and deleted mail stay out unless they are what was asked for.
-        //
-        // Searching a mailbox is not an invitation to reopen what was already
-        // judged and discarded, and a result that quietly comes from Spam is
-        // worse than no result at all: it puts a message the filter rejected
-        // back in front of the reader looking exactly like ordinary mail. The
-        // grammar is the way in — `in:spam` and `in:trash` search them, and
-        // nothing else does.
-        if !matches!(q.in_role.as_deref(), Some("spam") | Some("trash")) {
-            sql.push_str(&format!(" AND {}", not_binned("m")));
-        }
-        if let Some(from) = &q.from {
-            sql.push_str(
-                " AND (lower(coalesce(m.from_addr,'')) LIKE ?
-                       OR lower(coalesce(m.from_display,'')) LIKE ?)",
-            );
-            let like = format!("%{}%", from.to_lowercase());
-            args.push(Box::new(like.clone()));
-            args.push(Box::new(like));
-        }
-        if q.has_attachment {
-            sql.push_str(" AND m.has_attachments = 1");
-        }
-        if q.unread {
-            sql.push_str(&format!(" AND m.flags & {} = 0", flags::SEEN));
-        }
-        if q.starred {
-            sql.push_str(&format!(" AND m.flags & {} != 0", flags::FLAGGED));
-        }
-        if q.snoozed {
-            sql.push_str(" AND coalesce(m.snoozed_until_ms, 0) > (strftime('%s','now') * 1000)");
-        }
-        if let Some(name) = &q.in_role {
-            // A role, or a folder the user made — by full path or by leaf, so
-            // `in:receipts` and `in:projects/petrel` both say what they mean.
-            // The parser lowercased the value; the comparisons follow suit.
-            // EXISTS rather than `m.id IN (…)`. The IN form was tried, on the
-            // theory that the correlated subquery made the planner walk the
-            // mailbox; measured on a real store of twenty-nine thousand it was
-            // slower at every width — 7.4ms against 1.3ms for one exact token,
-            // 92ms against 84ms for the broadest prefix — because it builds the
-            // whole mailbox's placement list whatever the match narrows to.
-            // Both plans open on the FTS match, so neither walks the mailbox.
-            sql.push_str(
-                " AND EXISTS (SELECT 1 FROM placements p JOIN folders f ON f.id = p.folder_id
-                              WHERE p.message_id = m.id
-                                AND (f.role = ?
-                                     OR lower(f.path) = ?
-                                     OR lower(f.path) LIKE '%/' || ?
-                                     OR lower(f.path) LIKE '%.' || ?))",
-            );
-            for _ in 0..4 {
-                args.push(Box::new(name.clone()));
-            }
-            // Snoozing takes a message out of the inbox until it comes back.
-            // That is what the Inbox view's predicate says and what its unread
-            // badge counts, and search used to disagree: `in:inbox is:unread`
-            // returned the snoozed ones too, so the list and the number beside
-            // the mailbox differed by exactly the mail somebody had put off.
-            //
-            // Only the inbox, because that is the only view snoozing hides
-            // from — and not when `is:snoozed` asked for them by name, since
-            // snoozing hides mail rather than burying it.
-            if name == "inbox" && !q.snoozed {
-                sql.push_str(
-                    " AND coalesce(m.snoozed_until_ms, 0) <= (strftime('%s','now') * 1000)",
-                );
-            }
-        }
-        if let Some(after) = q.after_ms {
-            sql.push_str(" AND m.date_ms >= ?");
-            args.push(Box::new(after));
-        }
-        (sql, args)
-    }
-
-    /// The best `limit` matches for the words that also meet the conditions,
-    /// in rank order, with their snippets.
+    /// A query is one statement unless an `OR` has words on one side and a
+    /// condition on the other (`bundles` says why). Each is asked in the
+    /// shape a query without `OR` has always had, so nearly every query
+    /// costs what it did, and the account and the conditions stay inside the
+    /// ranking where they were put on purpose.
     ///
-    /// The ranking and the filter are one statement: the join puts the
-    /// account and the conditions where the planner sees them, so a match
-    /// in the other account is never ranked, fetched or discarded. Snippets
-    /// come afterwards, one lookup per survivor. They are the expensive half
-    /// of a hit — a sorter has to build every row it orders, so a snippet in
-    /// the ranking query is computed for every match and then thrown away
-    /// for all but the first page.
-    fn ranked_meeting(
+    /// Then the lists are put together. What matched words comes first, best
+    /// match first, because that is the one order only a search can offer.
+    /// What merely met conditions follows, newest first, the way a listing
+    /// is: words rank, conditions filter, and with no words there is nothing
+    /// for BM25 to score.
+    fn hits_meeting(
         &self,
         q: &crate::search_query::SearchQuery,
         limit: u32,
         account: i64,
-    ) -> Result<Vec<Listing>> {
-        let cjk = q.text.chars().any(is_cjk);
-        let expr = if cjk {
-            cjk_match_expr(&q.text)
-        } else {
-            match_expr(&q.text, true)
+    ) -> Result<(Vec<Hit>, Vec<Asked>)> {
+        let mut asked: Vec<Asked> = Vec::new();
+        let mut ranked: Vec<(f64, Hit)> = Vec::new();
+        let mut dated: Vec<Hit> = Vec::new();
+        let Some(root) = &q.root else {
+            return Ok((Vec::new(), asked));
         };
-        let Some(expr) = expr else {
-            return Ok(Vec::new());
-        };
-        let (conds, mut args) = Self::conditions(q, account);
-        let sql = if cjk {
+        let node = without_nots(root, false);
+        let typing = typing_word(&node);
+        // Too wide to ask a statement at a time: asked whole, as lookups.
+        // Those hits are listed by date and carry no snippet, which is the
+        // price of being right about a query this size.
+        let statements = bundles(&node).unwrap_or_else(|| {
+            vec![Bundle {
+                conds: pruned(as_lookups(&node)).into_iter().collect(),
+                ..Bundle::default()
+            }]
+        });
+        for bundle in statements {
+            let Some(mut bound) = self.bind(&bundle, account, typing)? else {
+                continue;
+            };
+            match bound.asked.take() {
+                Some(words) => {
+                    let from = Some(asked.len());
+                    for (rank, id) in self.ranked_meeting(&words, bound, limit)? {
+                        ranked.push((
+                            rank,
+                            Hit {
+                                id,
+                                date_ms: 0,
+                                from,
+                            },
+                        ));
+                    }
+                    asked.push(words);
+                }
+                None => dated.extend(self.messages_meeting(bound, limit)?),
+            }
+        }
+        // bm25 is lower-is-better. Both sorts are stable, so one alternative
+        // alone keeps exactly the order its own statement gave it.
+        ranked.sort_by(|a, b| a.0.total_cmp(&b.0));
+        dated.sort_by_key(|hit| std::cmp::Reverse(hit.date_ms));
+        let mut seen = std::collections::HashSet::new();
+        let hits = ranked
+            .into_iter()
+            .map(|(_, hit)| hit)
+            .chain(dated)
+            .filter(|hit| seen.insert(hit.id))
+            .collect();
+        Ok((hits, asked))
+    }
+
+    /// Why each kept conversation matched: the text around the hit, marked.
+    ///
+    /// For the rows that will be shown and no others, and in one pass per
+    /// alternative. It used to be one lookup per hit, `MATCH ? AND rowid = ?`,
+    /// for every hit the ranking returned, on the theory that a match against
+    /// one row is a lookup and not a scan. It is not, when the last word is a
+    /// prefix the prefix indexes do not cover: FTS5 gathers every term that
+    /// begins with it, all over again, for each row asked about. Six hundred
+    /// lookups of a common word came to 300ms at twenty thousand messages and
+    /// 1.6s at a hundred thousand, against 16ms for the ranking itself — and
+    /// two thirds of those snippets were for hits the conversation rollup
+    /// then threw away.
+    ///
+    /// `+rowid` keeps the planner from turning the list back into a lookup
+    /// per id: the match is walked once, and the snippet is only computed
+    /// for the rows the list lets through.
+    fn why_matched(
+        &self,
+        kept: &[(i64, &Hit)],
+        asked: &[Asked],
+    ) -> Result<std::collections::HashMap<i64, String>> {
+        let mut why = std::collections::HashMap::new();
+        for (index, words) in asked.iter().enumerate() {
+            let of_these: Vec<(i64, i64)> = kept
+                .iter()
+                .filter(|(_, hit)| hit.from == Some(index))
+                .map(|(tid, hit)| (hit.id, *tid))
+                .collect();
+            if of_these.is_empty() {
+                continue;
+            }
+            if words.cjk {
+                // Snippets come from the original text, never from the
+                // space-separated index copy, and are marked in Rust.
+                let mut body = self
+                    .conn
+                    .prepare_cached("SELECT body_text FROM fts_content WHERE message_id = ?1")?;
+                for (id, tid) in of_these {
+                    // The index row is the one that can be missing, and then
+                    // the hit simply has no snippet rather than failing the
+                    // search.
+                    if let Some(text) = body
+                        .query_row(params![id], |r| r.get::<_, String>(0))
+                        .optional()?
+                    {
+                        why.insert(tid, cjk_snippet(&text, &words.marks));
+                    }
+                }
+                continue;
+            }
+            let thread_of: std::collections::HashMap<i64, i64> = of_these.iter().copied().collect();
+            let sql = format!(
+                "SELECT rowid, snippet(fts_messages, 1, char(57344), char(57345), '…', 12)
+                 FROM fts_messages
+                 WHERE fts_messages MATCH ? AND +rowid IN ({})",
+                vec!["?"; of_these.len()].join(",")
+            );
+            let mut values: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(words.expr.clone())];
+            values.extend(
+                of_these
+                    .iter()
+                    .map(|(id, _)| Box::new(*id) as Box<dyn rusqlite::ToSql>),
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(values), |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (id, snippet) = row?;
+                if let Some(tid) = thread_of.get(&id)
+                    && !snippet.is_empty()
+                {
+                    why.insert(*tid, snippet);
+                }
+            }
+        }
+        Ok(why)
+    }
+
+    /// Midnight at the start of a calendar day where the reader is, in
+    /// milliseconds. 07 §5.1: `date:2026-08-14` means that day in local time,
+    /// not in UTC.
+    ///
+    /// SQLite does the conversion because it is the one thing in the engine
+    /// that already knows the time zone; the engine has no calendar library
+    /// and this is no reason to add one. The answer is fetched before the
+    /// search statement is built rather than computed inside it: `utc` makes
+    /// strftime non-deterministic, so SQLite would work it out again for
+    /// every row, and a plain number lets the date index do its job.
+    fn local_midnight_ms(&self, day: crate::search_query::Day) -> Result<i64> {
+        let text = format!("{:04}-{:02}-{:02} 00:00:00", day.year, day.month, day.day);
+        let seconds: Option<i64> = self.conn.query_row(
+            "SELECT CAST(strftime('%s', ?1, 'utc') AS INTEGER)",
+            params![text],
+            |r| r.get(0),
+        )?;
+        Ok(seconds.map_or_else(|| day.utc_ms(), |s| s * 1000))
+    }
+
+    /// The calendar day an instant falls on where the reader is — the other
+    /// direction from the one `date:` needs, for whatever has to turn "today"
+    /// or "last month" into dates the grammar can hold.
+    pub fn local_day(&self, at_ms: i64) -> Result<crate::search_query::Day> {
+        let text: String = self.conn.query_row(
+            "SELECT strftime('%Y-%m-%d', ?1 / 1000, 'unixepoch', 'localtime')",
+            params![at_ms],
+            |r| r.get(0),
+        )?;
+        let mut parts = text.split('-').map(str::parse::<u16>);
+        match (parts.next(), parts.next(), parts.next()) {
+            (Some(Ok(year)), Some(Ok(month)), Some(Ok(day))) => Ok(crate::search_query::Day {
+                year,
+                month: month as u8,
+                day: day as u8,
+            }),
+            _ => Err(StoreError::Rejected(
+                "that instant is not a date SQLite can name".into(),
+            )),
+        }
+    }
+
+    /// The best `limit` matches for the words that also meet the conditions,
+    /// in rank order, each with its rank.
+    ///
+    /// The ranking and the filter are one statement: the join puts the
+    /// account and the conditions where the planner sees them, so a match
+    /// in the other account is never ranked, fetched or discarded. Filtering
+    /// after the ranking was tried: it either took a fixed slice, which a
+    /// common word in the other account could fill entirely, or walked the
+    /// ranking a page at a time, which re-ranked every match per page and
+    /// held the store for seconds on a two-letter query.
+    ///
+    /// CROSS JOIN is SQLite's way of fixing the order: the match is walked,
+    /// and each match looks its message up. Left to choose, the planner turns
+    /// the join round as soon as a condition can use an index — a date range
+    /// does — and asks the index about every message in the range instead,
+    /// one `MATCH ? AND rowid = ?` at a time. FTS5 prices that probe at almost
+    /// nothing. It is not: for a last word still being typed it gathers every
+    /// term that begins with it, per probe. `after:2020-09-14 before:2020-09-17
+    /// meeting` took 4.7s at twenty thousand messages that way, and 13ms this
+    /// way. Walking the match is never pathological, because its worst case
+    /// is the ranking a query with no conditions already pays for.
+    ///
+    /// Ids and nothing else. Snippets are the expensive half of a hit — a
+    /// sorter has to build every row it orders, so a snippet in the ranking
+    /// query is computed for every match and then thrown away for all but
+    /// the first page — and they are made afterwards, in `why_matched`, for
+    /// the rows that survive the rollup into conversations.
+    fn ranked_meeting(&self, words: &Asked, bound: Bound, limit: u32) -> Result<Vec<(f64, i64)>> {
+        let conds = bound.conditions;
+        let sql = if words.cjk {
             format!(
                 "SELECT f.rowid, bm25(fts_cjk, 4.0, 1.0) AS r
                  FROM fts_cjk f
-                 JOIN messages m ON m.id = f.rowid
+                 CROSS JOIN messages m ON m.id = f.rowid
                  WHERE fts_cjk MATCH ? AND m.deleted_at_ms IS NULL{conds}
                  ORDER BY r
                  LIMIT ?"
@@ -356,88 +456,30 @@ impl Store {
             format!(
                 "SELECT f.rowid, bm25(fts_messages, 4.0, 1.0, 2.0, 2.0) AS r
                  FROM fts_messages f
-                 JOIN messages m ON m.id = f.rowid
+                 CROSS JOIN messages m ON m.id = f.rowid
                  WHERE fts_messages MATCH ? AND m.deleted_at_ms IS NULL{conds}
                  ORDER BY r
                  LIMIT ?"
             )
         };
-        let mut all: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(expr.clone())];
-        all.append(&mut args);
+        let mut all: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(words.expr.clone())];
+        all.extend(bound.args);
         all.push(Box::new(limit));
-        let ids: Vec<i64> = {
-            let mut stmt = self.conn.prepare(&sql)?;
-            let rows = stmt.query_map(rusqlite::params_from_iter(all), |r| r.get::<_, i64>(0))?;
-            rows.collect::<std::result::Result<Vec<_>, _>>()?
-        };
-
-        let mut fields = self.conn.prepare_cached(
-            "SELECT coalesce(from_display,''), coalesce(from_addr,''),
-                    coalesce(subject,''), date_ms
-             FROM messages WHERE id = ?1",
-        )?;
-        // A match evaluated against one row by rowid is a lookup, not a scan.
-        let mut unicode_snippet = self.conn.prepare_cached(
-            "SELECT snippet(fts_messages, 1, char(57344), char(57345), '…', 12)
-             FROM fts_messages WHERE fts_messages MATCH ?1 AND rowid = ?2",
-        )?;
-        let mut cjk_body = self
-            .conn
-            .prepare_cached("SELECT body_text FROM fts_content WHERE message_id = ?1")?;
-        let mut out = Vec::with_capacity(ids.len());
-        for id in ids {
-            // The join has already proven the message row exists; the index
-            // row is the one that can be missing, and then the hit simply
-            // has no snippet rather than failing the search.
-            let Some(row) = fields
-                .query_row(params![id], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, i64>(3)?,
-                    ))
-                })
-                .optional()?
-            else {
-                continue;
-            };
-            let snippet = if cjk {
-                cjk_body
-                    .query_row(params![id], |r| r.get::<_, String>(0))
-                    .optional()?
-                    .map(|body| cjk_snippet(&body, &q.text))
-                    .unwrap_or_default()
-            } else {
-                unicode_snippet
-                    .query_row(params![expr, id], |r| r.get::<_, String>(0))
-                    .optional()?
-                    .unwrap_or_default()
-            };
-            out.push(Listing {
-                id,
-                from_display: row.0,
-                from_addr: row.1,
-                subject: row.2,
-                snippet,
-                date_ms: row.3,
-            });
-        }
-        Ok(out)
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(all), |r| {
+            Ok((r.get::<_, f64>(1)?, r.get::<_, i64>(0)?))
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
-    /// Every message meeting the conditions, newest first — the answer when a
-    /// query named conditions but no words.
-    fn messages_meeting(
-        &self,
-        q: &crate::search_query::SearchQuery,
-        limit: u32,
-        account: i64,
-    ) -> Result<Vec<Listing>> {
-        let (conds, mut args) = Self::conditions(q, account);
+    /// Every message meeting the conditions, newest first — the answer when
+    /// an alternative named conditions but no words. Nothing was searched
+    /// for, so there is nothing to mark, and these hits carry no snippet.
+    fn messages_meeting(&self, bound: Bound, limit: u32) -> Result<Vec<Hit>> {
+        let conds = bound.conditions;
+        let mut args = bound.args;
         let sql = format!(
-            "SELECT m.id, coalesce(m.from_display,''), coalesce(m.from_addr,''),
-                    coalesce(m.subject,''), m.date_ms
+            "SELECT m.id, m.date_ms
              FROM messages m
              WHERE m.deleted_at_ms IS NULL{conds}
              ORDER BY m.date_ms DESC LIMIT ?"
@@ -445,14 +487,10 @@ impl Store {
         args.push(Box::new(limit));
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(rusqlite::params_from_iter(args), |r| {
-            Ok(Listing {
+            Ok(Hit {
                 id: r.get(0)?,
-                from_display: r.get(1)?,
-                from_addr: r.get(2)?,
-                subject: r.get(3)?,
-                date_ms: r.get(4)?,
-                // Nothing was searched for, so there is nothing to mark.
-                snippet: String::new(),
+                date_ms: r.get(1)?,
+                from: None,
             })
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)

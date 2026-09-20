@@ -433,9 +433,13 @@
   flex-shrink: 0;
 }
 
+/* The full ink, whatever the text around it uses. A matched word in a snippet
+   took the snippet's grey, and grey on the highlight measured 4.3:1 in dark
+   and 4.7:1 in light: the one word the row is there to show was the hardest
+   to read. This is 6:1 and 12:1. */
 mark {
   background: var(--hit);
-  color: inherit;
+  color: var(--ink);
   border-radius: 2px;
 }
 

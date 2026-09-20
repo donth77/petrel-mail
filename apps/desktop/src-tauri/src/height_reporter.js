@@ -241,6 +241,10 @@
   function runFind(term) {
     releaseHold();
     clearFind();
+    // Find has the text to itself while it is in use. A search's marks split
+    // the text nodes it walks, so "vendor contracts" would not be found across
+    // a marked "vendor" — and they come back the moment find is put away.
+    if (term) clearSearch(); else markSearch();
     if (!term) { post(); return; }
     var needle = term.toLowerCase();
     // Text nodes only, and never inside a mark we just made — otherwise the
@@ -294,10 +298,151 @@
     }
   }
 
+  // The words of the search that found this message, marked where they are.
+  //
+  // Sent in for the same reason find is done in here: nothing outside can read
+  // this document. Words only come *in* — nothing about what they matched goes
+  // back out, not even a count. They are matched the way the index matched
+  // them: whole words, a phrase in order with anything that is not a letter
+  // or a digit between its words, the last word as the start of one. The app
+  // has the same few lines (`hitsIn` in search-highlight.tsx) for everything
+  // outside the frame, and the two have to agree.
+  var searchTerms = [];
+  var searchMarks = [];
+  var WORD = /[\p{L}\p{N}]/u;
+  var ACCENT = /\p{M}/u;
+
+  function accents(low, from) {
+    var to = from;
+    while (to < low.length && ACCENT.test(low.charAt(to))) to++;
+    return to;
+  }
+
+  function fold(s) {
+    var out = '';
+    for (var i = 0; i < s.length; i++) {
+      var c = s.charAt(i);
+      var f = c > '\x7f' ? c.normalize('NFD').replace(/[̀-ͯ]/g, '') : c;
+      f = f.toLowerCase();
+      out += f.length === 1 ? f : c;
+    }
+    return out;
+  }
+
+  function hitsIn(low) {
+    function word(at) { return at >= 0 && at < low.length && WORD.test(low.charAt(at)); }
+    var hits = [];
+    for (var n = 0; n < searchTerms.length; n++) {
+      var term = searchTerms[n];
+      var first = term.t[0];
+      for (var at = low.indexOf(first); at >= 0; at = low.indexOf(first, at + 1)) {
+        if (!term.c && word(at - 1)) continue;
+        var end = at + first.length;
+        var whole = true;
+        for (var k = 1; k < term.t.length; k++) {
+          var gap = end;
+          while (gap < low.length && !word(gap)) gap++;
+          if (gap === end || low.substr(gap, term.t[k].length) !== term.t[k]) { whole = false; break; }
+          end = gap + term.t[k].length;
+        }
+        if (!whole) continue;
+        if (!term.c) {
+          // An accent typed as its own character belongs to the letter before
+          // it: neither the end of the word nor outside the mark.
+          end = accents(low, end);
+          if (term.p) { while (word(end)) end = accents(low, end + 1); }
+          else if (word(end)) continue;
+        }
+        hits.push([at, end]);
+      }
+    }
+    hits.sort(function (a, b) { return a[0] - b[0] || b[1] - a[1]; });
+    var merged = [];
+    for (var h = 0; h < hits.length; h++) {
+      var before = merged[merged.length - 1];
+      if (before && hits[h][0] <= before[1]) before[1] = Math.max(before[1], hits[h][1]);
+      else merged.push(hits[h]);
+    }
+    return merged;
+  }
+
+  function clearSearch() {
+    for (var i = 0; i < searchMarks.length; i++) {
+      var m = searchMarks[i];
+      var parent = m.parentNode;
+      if (!parent) continue;
+      parent.replaceChild(document.createTextNode(m.textContent), m);
+      parent.normalize();
+    }
+    searchMarks = [];
+  }
+
+  function markSearch() {
+    clearSearch();
+    // Not while find is showing its own marks; runFind calls back when it ends.
+    if (!searchTerms.length || found.length) return;
+    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+      acceptNode: function (n) {
+        if (!n.nodeValue || !n.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+        var p = n.parentNode;
+        while (p && p !== document.body) {
+          var tag = p.nodeName;
+          if (tag === 'SCRIPT' || tag === 'STYLE') return NodeFilter.FILTER_REJECT;
+          p = p.parentNode;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    });
+    var targets = [];
+    var node;
+    while ((node = walker.nextNode())) targets.push(node);
+    for (var t = 0; t < targets.length; t++) {
+      var text = targets[t].nodeValue;
+      var hits = hitsIn(fold(text));
+      if (!hits.length) continue;
+      var frag = document.createDocumentFragment();
+      var at = 0;
+      for (var h = 0; h < hits.length; h++) {
+        if (hits[h][0] > at) frag.appendChild(document.createTextNode(text.slice(at, hits[h][0])));
+        var mark = document.createElement('mark');
+        mark.className = 'petrel-hit';
+        mark.textContent = text.slice(hits[h][0], hits[h][1]);
+        frag.appendChild(mark);
+        searchMarks.push(mark);
+        at = hits[h][1];
+      }
+      if (at < text.length) frag.appendChild(document.createTextNode(text.slice(at)));
+      targets[t].parentNode.replaceChild(frag, targets[t]);
+    }
+  }
+
+  // Bounded, and nothing but strings and booleans gets past: a term is a
+  // short list of short folded words.
+  function termsFrom(sent) {
+    var out = [];
+    if (!Array.isArray(sent)) return out;
+    for (var i = 0; i < sent.length && out.length < 32; i++) {
+      var s = sent[i] || {};
+      if (!Array.isArray(s.t) || !s.t.length || s.t.length > 32) continue;
+      var tokens = [];
+      for (var k = 0; k < s.t.length; k++) {
+        if (typeof s.t[k] === 'string' && s.t[k] && s.t[k].length <= 256) tokens.push(s.t[k]);
+      }
+      if (tokens.length === s.t.length) out.push({ t: tokens, p: s.p === true, c: s.c === true });
+    }
+    return out;
+  }
+
   addEventListener('message', function (e) {
     var d = e.data || {};
     if (typeof d.petrelFind === 'string') runFind(d.petrelFind);
     if (typeof d.petrelFindActive === 'number') setActive(d.petrelFindActive);
+    if (d.petrelSearch !== undefined) {
+      searchTerms = termsFrom(d.petrelSearch);
+      releaseHold();
+      markSearch();
+      post();
+    }
   });
 
   addEventListener('keydown', function (e) {

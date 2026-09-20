@@ -553,6 +553,19 @@ fn quote_token(w: &str) -> String {
 /// characters are adjacent — the precision a per-character index would otherwise
 /// lose. Latin words in the same query are quoted as ordinary tokens.
 fn cjk_match_expr(query: &str) -> Option<String> {
+    let parts = cjk_parts(query);
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" "))
+    }
+}
+
+/// The phrases `cjk_match_expr` is made of, one per CJK run or Latin word, for
+/// a caller that has to join them itself — the search grammar puts `AND`,
+/// `NOT` and a column filter around them, and FTS5 will not take an implicit
+/// AND beside a parenthesis.
+fn cjk_parts(query: &str) -> Vec<String> {
     let mut parts: Vec<String> = Vec::new();
     let mut run: Vec<char> = Vec::new();
     let mut word = String::new();
@@ -585,12 +598,7 @@ fn cjk_match_expr(query: &str) -> Option<String> {
     }
     flush_run(&mut run, &mut parts);
     flush_word(&mut word, &mut parts);
-
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join(" "))
-    }
+    parts
 }
 
 /// First contiguous CJK run in the query — what a snippet should highlight.
@@ -1163,6 +1171,14 @@ fn register_functions(conn: &Connection) -> Result<()> {
     conn.create_scalar_function("petrel_has_cjk", 1, flags, |ctx| {
         let s: Option<String> = ctx.get(0)?;
         Ok(s.is_some_and(|s| has_cjk(&s)))
+    })?;
+    // SQLite's own `lower` folds ASCII and nothing else, so `from:élodie`
+    // never matched "Élodie". Search reaches for this one only when the value
+    // typed is not ASCII: a callback per row costs several times what the
+    // built-in does, and an ASCII value can only ever match ASCII letters.
+    conn.create_scalar_function("petrel_lower", 1, flags, |ctx| {
+        let s: Option<String> = ctx.get(0)?;
+        Ok(s.map(|s| s.to_lowercase()))
     })?;
     Ok(())
 }

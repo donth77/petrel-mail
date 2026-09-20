@@ -62,6 +62,53 @@ export const DEFAULTS = {
   /// secretly a checkbox is a thing you have to be told.
   checkboxes: 'off' as 'off' | 'on',
 
+  /// Mark a search's words where they were found: in the list's subjects and
+  /// previews, and in the message once it is open.
+  ///
+  /// On by default, because a result that does not show why it is there reads
+  /// as a wrong result. Off for anyone who finds a page of yellow harder to
+  /// read than a page without it, which on a common word it can be.
+  searchHighlight: 'on' as 'on' | 'off',
+
+  /// Start a search in the mailbox you are looking at, by writing its scope
+  /// into the empty field: `in:inbox`, `in:receipts`.
+  ///
+  /// On, because a search begun in a folder is nearly always a search of that
+  /// folder, and the token is there to be deleted the moment it is not. Off
+  /// for anyone who searches everything and tires of deleting it.
+  searchInMailbox: 'on' as 'on' | 'off',
+
+  /// Show the filter buttons above the list while a search is being typed.
+  ///
+  /// On, because they are how the grammar is discovered: each one writes what
+  /// it means into the field, where it can be read and edited. Off for anyone
+  /// who knows the grammar and would rather have the row back.
+  searchChips: 'on' as 'on' | 'off',
+
+  /// How the list is ordered, and how search results are, remembered as
+  /// `key:direction`. Two, because they are two questions: a mailbox cannot
+  /// be ordered by relevance and a search usually should be.
+  ///
+  /// `listSort` is the order everything takes until a mailbox is given one
+  /// of its own; `listSortByView` is those, one entry to a view, kept even
+  /// while the shared order is in force so that turning it off restores
+  /// them. Mail, Outlook, Thunderbird and the Finder all remember per
+  /// folder, and the reason is that folders differ: Sent is a list of people
+  /// you wrote to and reads well by name, while an inbox almost never does.
+  listSort: 'date:descending',
+  listSortByView: '{}',
+  /// Whether a mailbox keeps the order you give it, or every list shares
+  /// one. Per mailbox by default, as Mail, Outlook, Thunderbird and the
+  /// Finder all do, because folders differ: Sent is a list of people you
+  /// wrote to and reads well by name, while an inbox almost never does.
+  ///
+  /// A setting rather than a *use this everywhere* item in the menu, which
+  /// was the first try: that applied one order once, and the next sort
+  /// anywhere wrote a mailbox's own again, so somebody who wanted one order
+  /// for everything had to keep saying so. A policy is said once.
+  sortScope: 'mailbox' as 'mailbox' | 'everywhere',
+  searchSort: 'relevance:descending',
+
   /// Seconds to hold a message before it goes. Nothing reaches the server while
   /// the countdown runs, which is what makes undo a cancel rather than a recall
   /// — the only kind that actually works.

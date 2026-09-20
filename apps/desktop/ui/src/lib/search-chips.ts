@@ -1,4 +1,5 @@
 import { folderDelimiter, folderLeaf } from './folders';
+import { KEYWORDS, isKeyword, read, tokensOf, type Lexeme } from './search-grammar';
 import { t, type StringId } from './strings';
 
 /**
@@ -19,10 +20,46 @@ import { t, type StringId } from './strings';
  *  returns as two words and the query quietly means something else. */
 export function quoted(token: string): string {
   const at = token.indexOf(':');
-  if (at === -1) return /\s/.test(token) ? `"${token}"` : token;
+  if (at === -1) return wraps(token) ? `"${token}"` : token;
   const value = token.slice(at + 1);
-  return /\s/.test(value) ? `${token.slice(0, at)}:"${value}"` : token;
+  return wraps(value) ? `${token.slice(0, at)}:"${value}"` : token;
 }
+
+/** Whether a value has to wear quotes to go into the field and come back out
+ *  as itself — the engine's rule, in `typed` in search_query.rs.
+ *
+ *  A space splits it. A bracket is worse than that: since an operator can be
+ *  given a bracket, `in:(old)` is now the folder `old`, so a folder honestly
+ *  called `(old)` written bare is a chip whose label and whose search name
+ *  two different places. */
+const wraps = (value: string) => /[\s()]/.test(value);
+
+/** What `OR` separates outside every bracket, each a run of lexemes. */
+function alternativesOf(lexemes: Lexeme[]): Lexeme[][] {
+  const groups: Lexeme[][] = [[]];
+  for (const l of lexemes) {
+    if (l.depth === 0 && isKeyword(l) && l.says === 'OR') groups.push([]);
+    else groups[groups.length - 1].push(l);
+  }
+  return groups;
+}
+
+/** Whether a lexeme is this operator, standing outside every bracket — as
+ *  opposed to a phrase that spells it, or one side of a bracketed choice.
+ *  Any number of leading dashes is one, as it is to the engine. */
+const is = (l: Lexeme, want: string) =>
+  l.kind === 'piece' &&
+  l.depth === 0 &&
+  !l.phrase &&
+  l.says.toLowerCase().replace(/^-+/, '-') === want;
+
+/** Whether `NOT` excludes it. `NOT is:unread` asks for the opposite of what
+ *  the chip means, and a chip that lit for it took the token out when clicked
+ *  and left the `NOT` to exclude whatever stood next. */
+const excluded = (l: Lexeme) => l.nots.length % 2 === 1;
+
+/** The operator, asked for rather than excluded. */
+const applies = (l: Lexeme, want: string) => is(l, want) && !excluded(l);
 
 /** Whether the query already carries this operator.
  *
@@ -30,74 +67,242 @@ export function quoted(token: string): string {
  *  `in:"Client contact"` matches the same token in the field. Comparing the
  *  raw strings meant a chip with a space in its value never lit, never
  *  sorted with the applied ones, and could not be clicked off — clicking it
- *  added a second copy. */
+ *  added a second copy.
+ *
+ *  `OR` binds looser than everything else, so a filter narrows the whole
+ *  result only when every alternative carries it. `from:sam is:unread OR
+ *  from:dana` is not an unread search, and the chip must not say it is. */
 export function hasToken(query: string, token: string): boolean {
   const want = tokensOf(token)[0]?.toLowerCase();
-  return want !== undefined && tokensOf(query).some((t) => t.toLowerCase() === want);
-}
-
-/** Splits a query the way the engine does, keeping `from:"Dana Wu"` whole. */
-export function tokensOf(query: string): string[] {
-  const out: string[] = [];
-  let current = '';
-  let quoted = false;
-  for (const ch of query) {
-    if (ch === '"') quoted = !quoted;
-    else if (/\s/.test(ch) && !quoted) {
-      if (current) out.push(current);
-      current = '';
-    } else current += ch;
-  }
-  if (current) out.push(current);
-  return out;
+  if (want === undefined) return false;
+  const { lexemes } = read(query);
+  const groups = alternativesOf(lexemes).filter(
+    (g) => g.length > 0,
+  );
+  return groups.length > 0 && groups.every((g) => g.some((l) => applies(l, want)));
 }
 
 /**
- * The operators the engine reads as a single value.
+ * The operators a chip sets rather than adds.
  *
- * `from:`, `in:` and `after:` each land in one field of the parsed query, so a
- * second token silently overwrites the first: two senders is a query that
- * matches nothing, and nobody means it. A chip for one of these replaces what
- * is there.
+ * Two `from:` values both have to hold, and so do two `in:`: sam-and-dana is
+ * nobody, and a message is rarely in two places. A chip for one of these
+ * means "this sender", "this mailbox", "this year", so it replaces what is
+ * there instead of narrowing to nothing.
  *
- * `is:` and `has:` are the other kind. Each sets an independent condition —
+ * `is:` and `has:` are the other kind. Each is an independent condition —
  * unread, starred, snoozed, has an attachment — and they narrow together.
  * Replacing one with another is how clicking Unread in the Snoozed view threw
  * the view away and searched the whole mailbox instead.
  */
 const SINGLE_VALUE = ['from:', 'in:', 'after:'];
 
-/** Adds the token, or takes it away if it is already there. */
-export function toggleToken(query: string, token: string): string {
-  const key = token.includes(':') ? `${token.split(':')[0].toLowerCase()}:` : null;
-  const tokens = tokensOf(query);
-  // Every path below rebuilds the query from its tokens, and `tokensOf` has
-  // taken the quotes off. They go back on, or toggling Unread while standing
-  // in `Client contact` rewrote the scope as two bare words.
-  const rebuild = (parts: string[]) => parts.map(quoted).join(' ').trim();
+/** The query with its outermost brackets off, when they hold all of it. */
+function unwrapped(query: string): string {
+  const { chunks, lexemes } = read(query);
+  const first = lexemes[0];
+  const last = lexemes[lexemes.length - 1];
+  const whole =
+    first?.kind === 'open' &&
+    last?.kind === 'close' &&
+    lexemes.slice(1, -1).every((l) => l.depth >= 1) &&
+    chunks[0].startsWith('(') &&
+    chunks[chunks.length - 1].endsWith(')');
+  if (!whole) return query;
+  const inner = [...chunks];
+  inner[0] = inner[0].slice(1);
+  inner[inner.length - 1] = inner[inner.length - 1].slice(0, -1);
+  return inner.filter(Boolean).join(' ');
+}
 
+/** Adds the token, or takes it away if it is already there.
+ *
+ *  A filter narrows the whole result. `OR` binds loosest, so a token written
+ *  after one would hold for the last alternative alone while the chip lit up
+ *  as though it held for all: the query goes into brackets first, and comes
+ *  out of them again when the chip comes off. */
+export function toggleToken(query: string, token: string): string {
   const want = tokensOf(token)[0]?.toLowerCase();
+  if (want === undefined) return query;
+  const key = want.includes(':') ? `${want.split(':')[0]}:` : null;
+  const { chunks, lexemes, unclosed } = read(query);
+  const groups = alternativesOf(lexemes).filter(
+    (g) => g.length > 0,
+  );
+  // A piece leaves with the NOTs in front of it, or they would fall on
+  // whatever stood next.
+  const without = (dropped: (l: Lexeme) => boolean) => {
+    const gone = new Set(lexemes.filter(dropped).flatMap((l) => [l.chunk, ...l.nots]));
+    return chunks.filter((_, i) => !gone.has(i));
+  };
+
   if (hasToken(query, token)) {
-    return rebuild(tokens.filter((t) => t.toLowerCase() !== want));
+    return unwrapped(without((l) => applies(l, want)).join(' '));
+  }
+  if (groups.length === 0) return token;
+  // A quote or a bracket still open is closed first. The engine runs both to
+  // the end of the field, so a token written after them landed inside: part
+  // of the phrase, where it never lit the chip and every click added another.
+  if (unclosed) chunks[chunks.length - 1] += unclosed;
+  if (groups.length > 1) {
+    // Every alternative already names a value for an operator that takes
+    // one: the new value goes where each of them was. Wrapped and added
+    // instead, `in:inbox a OR in:inbox b` became mail that is in the inbox
+    // and in Sent at once, which is none.
+    const held = (l: Lexeme) =>
+      Boolean(key && SINGLE_VALUE.includes(key)) &&
+      l.kind === 'piece' &&
+      l.depth === 0 &&
+      !l.phrase &&
+      !excluded(l) &&
+      l.says.length > key!.length &&
+      l.says.toLowerCase().startsWith(key!) &&
+      !/[()]/.test(chunks[l.chunk]);
+    if (groups.every((g) => g.some(held))) {
+      const first = new Set(groups.map((g) => g.find(held)!.chunk));
+      // A dropped one takes its NOTs with it, as `without` does, or they
+      // would be left to fall on whatever came after it.
+      const rest = new Set(lexemes.filter(held).flatMap((l) => [l.chunk, ...l.nots]));
+      return chunks
+        .map((chunk, i) => (first.has(i) ? token : rest.has(i) ? '' : chunk))
+        .filter(Boolean)
+        .join(' ');
+    }
+    return `(${chunks.join(' ')}) ${token}`;
   }
 
-  const kept =
-    key && SINGLE_VALUE.includes(key)
-      ? tokens.filter((t) => !t.toLowerCase().startsWith(key))
-      : tokens;
-  return rebuild([...kept, ...tokensOf(token)]);
+  // One alternative, or none yet. The opposite of what is being asked for
+  // cannot stay beside it, and neither can another value for an operator
+  // that takes one.
+  const kept = without(
+    (l) =>
+      is(l, `-${want}`) ||
+      (is(l, want) && excluded(l)) ||
+      Boolean(
+        key &&
+          SINGLE_VALUE.includes(key) &&
+          l.kind === 'piece' &&
+          l.depth === 0 &&
+          !l.phrase &&
+          !excluded(l) &&
+          l.says.toLowerCase().startsWith(key),
+      ),
+  );
+  // An `OR` or a `NOT` left dangling at the end is somebody mid-way through
+  // typing what comes after it; the token belongs before it, with what it
+  // narrows, and not as the thing a trailing `NOT` excludes.
+  let end = kept.length;
+  while (end > 0 && KEYWORDS.includes(kept[end - 1])) end -= 1;
+  return [...kept.slice(0, end), token, ...kept.slice(end)].join(' ');
+}
+
+/** The first `in:` or `from:` the query applies, as the bare token — not one
+ *  it excludes, not a phrase that happens to spell one, and not one side of
+ *  a bracketed choice. */
+function appliedValue(query: string, key: string): string | undefined {
+  return read(query).lexemes.find(
+    (l) =>
+      l.kind === 'piece' &&
+      l.depth === 0 &&
+      !l.phrase &&
+      !excluded(l) &&
+      l.says.length > key.length &&
+      l.says.toLowerCase().startsWith(key),
+  )?.says;
+}
+
+/**
+ * The query with a run of its words as one phrase, when it looks as though
+ * that is what was meant — or null when nothing suggests it.
+ *
+ * `AND`, `OR` and `NOT` in capitals are operators, always; the engine does
+ * not guess. But `TERMS AND CONDITIONS` and `DO NOT REPLY` are subject lines
+ * somebody pasted, and read as Boolean the second finds exactly the mail that
+ * lacks "reply". Nothing in the text can prove which was meant, so nothing is
+ * decided here either: the field offers the other reading as a chip, and the
+ * one person who knows takes it or does not.
+ *
+ * The sign it goes by is that the capitals do not stand out. In `invoice NOT
+ * draft` the keyword is the only thing shouting, which is how an operator is
+ * typed. Beside another word in capitals it is just one more of them.
+ *
+ * What is offered is the phrase, not the keyword alone in quotes. Somebody
+ * who pasted a subject line is looking for that line: `"TERMS AND
+ * CONDITIONS"`, those words in that order — which is also the more useful
+ * search, since `TERMS "AND" CONDITIONS` finds any mail with the three words
+ * anywhere in it. The phrase is the whole run of ordinary words the keyword
+ * sits in; operators and brackets end it, so `in:inbox` stays a scope.
+ */
+export function asWords(query: string): { words: string; rewrite: string } | null {
+  const { chunks, lexemes } = read(query);
+  // An ordinary word or a keyword, standing alone in its chunk: no operator,
+  // no quotes, no exclusion, no bracket attached.
+  const word = (l: Lexeme | undefined): l is Lexeme =>
+    l?.kind === 'piece' &&
+    l.plain &&
+    !l.says.includes(':') &&
+    !l.says.startsWith('-') &&
+    chunks[l.chunk] === l.says;
+  // Two letters or more: `I` and `A` are capitals by spelling, not by shouting.
+  const capitals = (l: Lexeme | undefined) =>
+    word(l) &&
+    !isKeyword(l) &&
+    [...l.says].length > 1 &&
+    l.says !== l.says.toLowerCase() &&
+    l.says === l.says.toUpperCase();
+  const doubtful = lexemes
+    .map((l, at) => at)
+    .filter(
+      (at) =>
+        isKeyword(lexemes[at]) &&
+        word(lexemes[at]) &&
+        (capitals(lexemes[at - 1]) || capitals(lexemes[at + 1])),
+    );
+  if (doubtful.length === 0) return null;
+
+  // Each doubtful keyword, widened to the run of words around it.
+  const phrases = new Map<number, number>();
+  for (const at of doubtful) {
+    let first = at;
+    let last = at;
+    while (word(lexemes[first - 1]) && lexemes[first - 1].depth === lexemes[at].depth) first -= 1;
+    while (word(lexemes[last + 1]) && lexemes[last + 1].depth === lexemes[at].depth) last += 1;
+    // A phrase has a word at each end. `(FOO) AND BAR` has none before its
+    // keyword, and `"AND BAR"` is nothing anybody pasted.
+    while (first < at && isKeyword(lexemes[first])) first += 1;
+    while (last > at && isKeyword(lexemes[last])) last -= 1;
+    if (first === at || last === at) continue;
+    phrases.set(lexemes[first].chunk, lexemes[last].chunk);
+  }
+  if (phrases.size === 0) return null;
+  const out: string[] = [];
+  let shown = '';
+  for (let i = 0; i < chunks.length; i += 1) {
+    const end = phrases.get(i);
+    if (end === undefined) out.push(chunks[i]);
+    else {
+      const phrase = chunks.slice(i, end + 1).join(' ');
+      shown ||= phrase;
+      out.push(`"${phrase}"`);
+      i = end;
+    }
+  }
+  return { words: shown, rewrite: out.join(' ') };
 }
 
 /** The chips on offer, in the order the mockup shows them. */
-export type Chip = { id: string; label: string; token: string };
+/** `rewrite` is for the one kind of chip that is not a filter: it swaps the
+ *  whole query for another reading of it rather than toggling a token. */
+export type Chip = { id: string; label: string; token: string; rewrite?: string };
 
 /**
  * The mailboxes a scope chip can name.
  *
  * `in:` resolves against folder roles and — since folders the user made
- * became searchable — against a folder's own name. Starred is a flag and
- * tags are a table of their own; neither gets a scope chip rather than
- * getting one that silently matches nothing.
+ * became searchable — against a folder's own name. Starred and Snoozed are
+ * flags, so their scope speaks `is:`, and a tag's speaks `tag:`; the one
+ * view with nothing to name is the Outbox, which is mail on its way out and
+ * has no word in the grammar.
  */
 const SCOPES: Record<string, StringId> = {
   inbox: 'mailbox-inbox',
@@ -137,11 +342,39 @@ export function scopeFor(
   // Starred and Snoozed are states, not places — their scope speaks `is:`.
   if (view === 'starred') return { token: 'is:starred', label: t('search-chip-starred') };
   if (view === 'snoozed') return { token: 'is:snoozed', label: t('search-chip-snoozed') };
+  // A quote mark in the name has no way through the grammar: quoting it
+  // would end the quote early and scope the search to something else. No
+  // chip is better than a chip that silently looks for the wrong thing.
   if (view.startsWith('folder:') && leaf) {
-    const value = /\s/.test(leaf) ? `"${leaf}"` : leaf;
+    if (leaf.includes('"')) return null;
+    const value = wraps(leaf) ? `"${leaf}"` : leaf;
     return { token: `in:${value}`, label: t('search-chip-in', { where: leaf }) };
   }
+  // A tag is where you are standing as much as a folder is. Without this, a
+  // search begun in Urgent quietly searched everything, and the chip row had
+  // no scope chip to say otherwise.
+  if (view.startsWith('tag:')) {
+    const name = view.slice('tag:'.length);
+    if (!name || name.includes('"')) return null;
+    const value = wraps(name) ? `"${name}"` : name;
+    return { token: `tag:${value}`, label: t('search-chip-tagged', { where: name }) };
+  }
   return null;
+}
+
+/**
+ * Whether what is in the field is a search, or is still the mailbox it was
+ * opened in.
+ *
+ * A field holding nothing but the token the window wrote for you — `in:inbox`,
+ * typed by nobody — is still the mailbox. Counted as a search, the sort control
+ * read "Best match" the moment the box was clicked, and an order chosen there
+ * was written to the search's preference and thrown away when the field emptied
+ * on blur.
+ */
+export function isSearch(query: string, scopeToken?: string | null): boolean {
+  const asked = query.trim();
+  return asked.length > 0 && asked !== scopeToken;
 }
 
 /**
@@ -173,7 +406,7 @@ export function chips(
   // the real scope narrowed the list with no pill at all. The applied filter
   // wins; the open mailbox is only the offer when nothing else is scoping.
   const context = scopeFor(view, leaf);
-  const appliedIn = tokensOf(query).find((t) => t.toLowerCase().startsWith('in:'));
+  const appliedIn = appliedValue(query, 'in:');
   const sameAsContext =
     appliedIn !== undefined &&
     tokensOf(context?.token ?? '')[0]?.toLowerCase() === appliedIn.toLowerCase();
@@ -182,6 +415,18 @@ export function chips(
       ? { token: quoted(appliedIn), label: t('search-chip-in', { where: appliedIn.slice('in:'.length) }) }
       : context;
   if (scope) list.push({ id: 'scope', label: scope.label, token: scope.token });
+  // A tag can narrow the list beside a mailbox — `tag:Urgent in:sent` — and
+  // then it needs a pill of its own. Without one it was filtering the list
+  // with nothing to say so and no way to click it off, which is the very
+  // thing the scope chip above exists to prevent.
+  const appliedTag = appliedValue(query, 'tag:');
+  if (appliedTag && appliedTag.toLowerCase() !== tokensOf(context?.token ?? '')[0]?.toLowerCase()) {
+    list.push({
+      id: 'tag',
+      label: t('search-chip-tagged', { where: appliedTag.slice('tag:'.length) }),
+      token: quoted(appliedTag),
+    });
+  }
   // The sender of whatever is open, because "more from this person" is the
   // search people actually run — and it is tedious to type.
   //
@@ -191,7 +436,7 @@ export function chips(
   // list: a filter with no way to see it and no way to switch it off. Opening
   // a different message did the same thing more quietly, by relabelling the
   // pill after somebody else.
-  const inQuery = tokensOf(query).find((t) => t.toLowerCase().startsWith('from:'));
+  const inQuery = appliedValue(query, 'from:');
   const who = inQuery ? inQuery.slice('from:'.length) : sender;
   if (who) {
     list.push({ id: 'from', label: t('search-chip-from', { who }), token: quoted(`from:${who}`) });
@@ -210,7 +455,18 @@ export function chips(
   // is the whole point: the row must not shuffle within a group as tokens
   // come and go.
   const applied = (c: Chip) => hasToken(query, c.token);
-  return [...list.filter(applied), ...list.filter((c) => !applied(c))];
+  const other = asWords(query);
+  const suggestion: Chip[] = other
+    ? [
+        {
+          id: 'as-words',
+          label: t('search-chip-as-words', { words: other.words }),
+          token: '',
+          rewrite: other.rewrite,
+        },
+      ]
+    : [];
+  return [...list.filter(applied), ...list.filter((c) => !applied(c)), ...suggestion];
 }
 
 /**
@@ -218,8 +474,11 @@ export function chips(
  *
  * As the first character lands, the open view's scope is written into the
  * field — `in:inbox`, `in:sent`, `in:Receipts` — so the top bar answers for
- * the context on screen, the way a person expects a search box above a list
- * to behave. Written into the field rather than applied behind it, so it
+ * Unused since the scope became a token the field writes on focus, and kept
+ * for its tests, which describe the rule the field still obeys.
+ *
+ * The query with the context on screen, the way a person expects a search box
+ * above a list to behave. Written into the field rather than applied behind it, so it
  * reads as part of the query, lights the leading chip, and can be deleted to
  * widen to everything; the command palette searches globally from the start.
  * Applied only as a search begins, never on each keystroke, so deleting the

@@ -387,3 +387,229 @@ fn bench_list_open() {
         "deep-scroll list budget exceeded: {deep:.2}ms >= 150ms"
     );
 }
+
+/// The grammar at scale — `search_threads`, which is what the app calls, and
+/// which the first bench above never reaches: it times the message-level
+/// lookup underneath.
+///
+/// It was written to ask whether exclusion, `OR`, dates and the operators
+/// that join other tables fit the same 200ms. The first run found that the
+/// path they were being added to did not: `meeting` alone took 1.6s at a
+/// hundred thousand messages, and `after:2020 meeting` — what the "This year"
+/// chip writes beside a word — took 1.6s at five thousand. Both are fixed in
+/// `store/search.rs`, where the comments say how, and both are why this bench
+/// asks two kinds of question.
+///
+/// **The budget, on the median.** "meeting" is in half of this mailbox, which
+/// no word is in a real one; it is the stress case, and ranking it is most of
+/// what these queries cost. The median is what is held to 200ms. P95 is
+/// printed and not asserted: over fifty runs it is the third-worst sample,
+/// and on a laptop ten minutes into a benchmark it moves by forty percent
+/// with the temperature while the median stays where it is.
+///
+/// **What a condition may cost, relative to the words alone.** This is the
+/// guard for the bug that was actually here. A condition that can use an
+/// index tempts the planner to turn the join round and probe the full-text
+/// index once per message, and that is not ten percent slower, it is three
+/// hundred times slower, at any mailbox size. So every query built on
+/// "meeting" has to cost about what "meeting" costs, which holds on a slow
+/// runner at ten thousand messages exactly as it does here.
+///
+/// `PETREL_BENCH_BASELINE=1` runs only the queries that meant the same thing
+/// to the first parser, so this file can be run against an older tree, and
+/// `PETREL_BENCH_ONLY=<label>,<label>` times only those rows.
+///
+/// `cargo test --release -p petrel-engine --test store_spike -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn bench_search_grammar() {
+    use std::time::Instant;
+
+    let n: usize = std::env::var("PETREL_BENCH_N")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100_000);
+    let baseline_only = std::env::var("PETREL_BENCH_BASELINE").is_ok();
+    let only = std::env::var("PETREL_BENCH_ONLY").ok();
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&dir.path().join("bench.db")).unwrap();
+    let account = store.ensure_test_account().unwrap();
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+    // Every real account has these, and every search has to look past them.
+    store.ensure_folder(account, "trash", "Trash").unwrap();
+    store.ensure_folder(account, "spam", "Junk").unwrap();
+
+    let mut generator = MailboxGen::new(42, n);
+    let mut uid = 1u32;
+    loop {
+        let batch: Vec<NewMessage> = generator
+            .by_ref()
+            .take(1000)
+            .map(|g| to_new(account, g))
+            .collect();
+        if batch.is_empty() {
+            break;
+        }
+        for id in store.insert_messages(&batch).unwrap() {
+            store.place_message_at(id, inbox, uid).unwrap();
+            uid += 1;
+        }
+    }
+    store.optimize_fts().unwrap();
+    println!("--- grammar bench: {n} messages ---");
+
+    let mut medians: std::collections::HashMap<&str, f64> = std::collections::HashMap::new();
+    let mut lat = |label: &'static str, q: &str| {
+        if only
+            .as_deref()
+            .is_some_and(|wanted| !wanted.split(',').any(|w| w == label))
+        {
+            return;
+        }
+        for _ in 0..3 {
+            store.search_threads(q, 200).unwrap();
+        }
+        let mut times: Vec<f64> = (0..50)
+            .map(|_| {
+                let t = Instant::now();
+                let rows = store.search_threads(q, 200).unwrap();
+                let ms = t.elapsed().as_secs_f64() * 1000.0;
+                std::hint::black_box(rows);
+                ms
+            })
+            .collect();
+        times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let (p50, p95) = (times[24], times[47]);
+        let count = store.search_threads(q, 200).unwrap().len();
+        println!("query {label:<20} {q:<44} p50 {p50:7.2}ms  p95 {p95:7.2}ms  ({count} rows)");
+        medians.insert(label, p50);
+    };
+
+    // What the first parser already understood, unchanged in meaning.
+    for (label, q) in [
+        ("common-term", "meeting"),
+        ("other-term", "budget"),
+        ("two-terms", "quarterly report"),
+        ("as-you-type-2", "pr"),
+        ("words+from", "from:avery meeting"),
+        ("words+in", "in:inbox meeting"),
+        ("from-alone", "from:avery"),
+        ("unread-alone", "is:unread"),
+        ("year-alone", "after:2020"),
+        // What the "This year" chip writes, beside a word.
+        ("year+words", "after:2020 meeting"),
+        ("nothing-meets-it", "has:attachment"),
+    ] {
+        lat(label, q);
+    }
+    if !baseline_only {
+        for (label, q) in [
+            ("phrase", "\"status update\""),
+            ("exclude", "meeting -report"),
+            ("exclude-alone", "-meeting"),
+            ("exclude-operator", "meeting -from:avery"),
+            ("or-words", "meeting OR budget"),
+            ("or-conditions", "from:avery OR from:blake"),
+            ("or-mixed", "from:avery OR quarterly report"),
+            // Brackets keep like with like, so these are one statement each
+            // and have to cost what their words cost.
+            ("grouped-senders", "(from:avery OR from:blake) meeting"),
+            ("grouped-words", "(meeting OR budget) from:avery"),
+            (
+                "both-grouped",
+                "(from:avery OR from:blake) (meeting OR budget)",
+            ),
+            ("excluded-group", "meeting -(report OR from:avery)"),
+            // A choice of a word or a condition is a statement per side. Two
+            // of them are four statements, the most that are asked one by
+            // one; each ranks its own words, so this is the dearest a query
+            // gets. Three would be eight, which measured 226ms at a hundred
+            // thousand messages, and four sixteen: those are asked whole, as
+            // lookups, and have to stay inside the budget too.
+            (
+                "two-choices",
+                "(meeting OR from:avery) (budget OR from:blake)",
+            ),
+            (
+                "three-choices",
+                "(meeting OR from:avery) (budget OR from:blake) (report OR from:casey)",
+            ),
+            (
+                "four-choices",
+                "(meeting OR from:avery) (budget OR from:blake) (report OR from:casey) (update OR from:drew)",
+            ),
+            ("subject", "subject:meeting"),
+            ("to", "to:casey meeting"),
+            ("to-alone", "to:casey"),
+            // The generator starts on 2020-09-13 and adds a minute a message,
+            // so these days exist at ten thousand messages as well as at a
+            // hundred thousand.
+            ("three-days", "after:2020-09-14 before:2020-09-17 meeting"),
+            ("one-day-alone", "date:2020-09-15"),
+            ("not-ascii", "from:élodie meeting"),
+            ("not-ascii-alone", "from:élodie"),
+            // Filters that match nobody read every message, which is what
+            // makes them the dearest conditions there are. OR is new, so
+            // they now add up: eight of these took 265ms at a hundred
+            // thousand messages while every row was folded before it was
+            // compared, and 103ms once LIKE was left to ignore case itself.
+            (
+                "rare-senders",
+                "from:zz0 OR from:zz1 OR from:zz2 OR from:zz3 OR from:zz4 OR from:zz5 OR from:zz6 OR from:zz7",
+            ),
+            ("to-nobody", "to:zz0"),
+            (
+                "wide-with-to",
+                "(meeting OR to:avery) (budget OR to:blake) (report OR to:casey)",
+            ),
+            ("tag-nobody", "tag:zz0"),
+            ("in-empty", "in:trash"),
+            ("in-inbox-unread", "in:inbox is:unread"),
+            ("to-nobody-two", "to:zz0 OR to:zz1"),
+            ("file-nobody", "filename:zz0"),
+        ] {
+            lat(label, q);
+        }
+    }
+
+    let budget = 200.0;
+    let worst = medians.values().copied().fold(0.0, f64::max);
+    println!("worst median: {worst:.2}ms vs {budget:.0}ms budget");
+    assert!(
+        worst < budget,
+        "search budget exceeded: {worst:.2}ms >= {budget}ms"
+    );
+
+    // Half as much again, and five milliseconds for the noise that is most of
+    // a small number. The bug this catches costs hundreds of times over.
+    let words = |labels: &[&str]| labels.iter().map(|l| medians.get(l)).sum::<Option<f64>>();
+    for (label, built_on) in [
+        ("words+from", &["common-term"][..]),
+        ("words+in", &["common-term"]),
+        ("year+words", &["common-term"]),
+        ("exclude", &["common-term"]),
+        ("exclude-operator", &["common-term"]),
+        ("subject", &["common-term"]),
+        ("to", &["common-term"]),
+        ("three-days", &["common-term"]),
+        ("not-ascii", &["common-term"]),
+        ("or-words", &["common-term", "other-term"]),
+        ("grouped-senders", &["common-term"]),
+        ("grouped-words", &["common-term", "other-term"]),
+        ("both-grouped", &["common-term", "other-term"]),
+        ("excluded-group", &["common-term"]),
+        // Two statements, and it has to cost what the two of them cost.
+        ("or-mixed", &["two-terms", "from-alone"]),
+        // Asked whole, as lookups: no dearer than the common word in them.
+        ("three-choices", &["common-term"]),
+        ("four-choices", &["common-term"]),
+    ] {
+        let (Some(cost), Some(alone)) = (medians.get(label), words(built_on)) else {
+            continue;
+        };
+        assert!(
+            *cost <= alone * 1.5 + 5.0,
+            "{label} costs {cost:.2}ms where its words alone cost {alone:.2}ms"
+        );
+    }
+}

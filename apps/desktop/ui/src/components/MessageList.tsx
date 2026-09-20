@@ -13,6 +13,8 @@ import { Archive, Check, Clock, Mail, MailOpen, Paperclip, Star } from 'lucide-r
 import type { ActionKind, Thread } from '../lib/api';
 import { Icon } from './Icon';
 import { initials, listTime, fullTime } from '../lib/format';
+import { Marked } from '../lib/search-highlight';
+import { useSettings } from '../lib/settings';
 import { t } from '../lib/strings';
 import { Tip } from './Tip';
 import { key } from '../lib/keys';
@@ -91,12 +93,17 @@ type MessageRowProps = {
  * content. */
 const MARK = /(\u{E000}[^\u{E001}]*\u{E001})/gu;
 
+/** The markers still have to come out when highlighting is switched off —
+ *  they are private-use codepoints, and left in they draw as little boxes. */
 function Snippet({ text }: { text: string }) {
+  const { settings } = useSettings();
+  const marking = settings.searchHighlight === 'on';
   return (
     <>
-      {text.split(MARK).map((p, i) =>
-        p.startsWith('\u{E000}') ? <mark key={i}>{p.slice(1, -1)}</mark> : p,
-      )}
+      {text.split(MARK).map((p, i) => {
+        if (!p.startsWith('\u{E000}')) return p;
+        return marking ? <mark key={i}>{p.slice(1, -1)}</mark> : p.slice(1, -1);
+      })}
     </>
   );
 }
@@ -219,7 +226,12 @@ const MessageRow = memo(function MessageRow({
               subject grows that span's line box and makes the row taller
               than the density it is named for. */}
           {m.starred && <Icon icon={Star} size={11} className="ic-star flat" />}
-          <span className="crow-subject clip">{m.subject || t('no-subject')}</span>
+          {/* The engine marks the body text it quotes. The subject is where a
+              word is most often found, and in this density it is all there
+              is, so the search's words are marked here too. */}
+          <span className="crow-subject clip">
+            {m.subject ? <Marked text={m.subject} /> : t('no-subject')}
+          </span>
           {m.attachment_name && <Icon icon={Paperclip} size={11} className="ic-clip" />}
           {m.message_count > 1 && <span className="thread-count">{m.message_count}</span>}
           <span className="crow-time">{listTime(m.date_ms)}</span>
@@ -283,7 +295,7 @@ const MessageRow = memo(function MessageRow({
             </span>
             <span className="row-subject clip">
               {m.starred && <Icon icon={Star} size={12} className="ic-star" />}
-              {m.subject || t('no-subject')}
+              {m.subject ? <Marked text={m.subject} /> : t('no-subject')}
             </span>
             <span className="row-snippet clip">
               {/* Why it matched, when it came from a search. The

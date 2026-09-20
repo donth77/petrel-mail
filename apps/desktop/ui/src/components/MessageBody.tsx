@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api';
 import {
   FRAME_HEIGHT_CAP,
@@ -7,6 +7,7 @@ import {
   nextFrameHeight,
 } from '../lib/frame-height';
 import { frameLook, frameUrl } from '../lib/frame-look';
+import { SearchTerms } from '../lib/search-highlight';
 import { useSettings } from '../lib/settings';
 import { t } from '../lib/strings';
 
@@ -85,6 +86,40 @@ export function MessageBody({ messageId, title }: { messageId: number; title: st
     };
   }, [messageId, reload, look]);
 
+  // The search's words, sent in to be marked. The frame is opaque-origin, so
+  // nothing out here can walk its text; it marks its own, the way it already
+  // does for find-in-message. Words only ever go *in* — what comes back is a
+  // height, exactly as before.
+  const terms = useContext(SearchTerms);
+  const termsRef = useRef(terms);
+  useEffect(() => {
+    termsRef.current = terms;
+  }, [terms]);
+  // `'*'` because there is nothing else to say. The frame is sandboxed
+  // without allow-same-origin, so its origin is opaque, and an opaque origin
+  // cannot be named as a target: any other value and the message is dropped.
+  // What stands in for it is that the frame can only ever hold the message.
+  // It never navigates: its script hands every link out instead of following
+  // it, forms are off (`form-action 'none'`), and the only script that runs
+  // in it is ours. So there is nobody else in there to hear this. The
+  // reading size and find go in the same way.
+  const sendTerms = useCallback(() => {
+    frameRef.current?.contentWindow?.postMessage(
+      { petrelSearch: termsRef.current.map((term) => ({ t: term.tokens, p: term.prefix, c: term.cjk })) },
+      '*',
+    );
+  }, []);
+  // Whether this load of the frame has been heard from. Its first word is the
+  // proof its script is running, and that is the moment the terms are sure to
+  // land; a timer is a guess, and a long message loses the guess.
+  const heardFrom = useRef(false);
+  useEffect(() => {
+    heardFrom.current = false;
+  }, [url]);
+  useEffect(() => {
+    sendTerms();
+  }, [terms, url, sendTerms]);
+
   useEffect(() => {
     function onMessage(e: MessageEvent) {
       // Only accept the shape we defined, and only from our own frame: the
@@ -92,6 +127,10 @@ export function MessageBody({ messageId, title }: { messageId: number; title: st
       if (e.source !== frameRef.current?.contentWindow) return;
       if (!isRecord(e.data)) return;
       const data = e.data;
+      if (!heardFrom.current) {
+        heardFrom.current = true;
+        sendTerms();
+      }
 
       // How much the sanitizer refused. Reported out rather than drawn inside
       // the frame: a banner in there could say what happened but never offer to
@@ -121,7 +160,7 @@ export function MessageBody({ messageId, title }: { messageId: number; title: st
     }
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, []);
+  }, [sendTerms]);
 
   // The reading-size preference, sent in rather than inherited.
   //

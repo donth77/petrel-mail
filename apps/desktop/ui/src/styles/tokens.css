@@ -50,7 +50,11 @@
   --danger-line: #e3cbc7;
 
   --kbd: #edf2f2;
-  --hit: #fbf0c9;
+  /* A matched word. Saturated rather than dark: yellow on white can never
+     have much luminance contrast, so what makes a highlighter findable at a
+     glance is how yellow it is. The old cream (#fbf0c9) sat 1.14:1 against
+     the page and read as a smudge; ink on this one is still 12:1. */
+  --hit: #ffe27a;
 
   /* type */
   --display: 'Bricolage Grotesque', 'Avenir Next', system-ui, sans-serif;
@@ -132,7 +136,7 @@
     --danger-bg: #2c1b18;
     --danger-line: #634742;
     --kbd: color-mix(in oklab, var(--accent-base) 26%, #2b2b2b);
-    --hit: #3a3417;
+    --hit: #6b5410;
     color-scheme: dark;
   }
 }
@@ -157,6 +161,6 @@
   --danger-bg: #2c1b18;
   --danger-line: #634742;
   --kbd: color-mix(in oklab, var(--accent-base) 26%, #2b2b2b);
-  --hit: #3a3417;
+  --hit: #6b5410;
   color-scheme: dark;
 }

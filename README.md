@@ -58,6 +58,7 @@ by default.
 
 **Organizing**
 - Search: `from:alice has:attachment before:2026-01-01`
+- Boolean search: `from:alice AND (has:attachment OR before:2026-01-01)`
 - Archive, move, star, delete. 
 - Tags sync as Gmail labels or IMAP keywords
 - Rules

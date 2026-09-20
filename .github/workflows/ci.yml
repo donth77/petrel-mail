@@ -69,6 +69,12 @@ jobs:
       # this second pass clippy never reads them.
       - run: cargo clippy -p petrel-providers --all-targets --features insecure-plaintext -- -D warnings
       - run: cargo test
+      # The runners are in UTC, where a local day and a UTC day are the same
+      # day, so the search date test above could not tell them apart. Asked
+      # again somewhere they differ, and by three quarters of an hour.
+      - name: Search dates are local days
+        if: runner.os != 'Windows'
+        run: TZ=Pacific/Chatham cargo test -p petrel-engine --test search_grammar a_date_is
       # The scripted IMAP servers in petrel-providers/tests live behind this
       # feature, so `cargo test` alone never compiled them and they went
       # stale for weeks without anyone noticing.
