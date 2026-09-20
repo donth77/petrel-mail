@@ -118,6 +118,37 @@ export function withViewSort(by: SortByView, view: string, sort: Sort): string {
   return JSON.stringify({ ...by, [view]: writeSort(sort) });
 }
 
+/** Whether each view keeps its own order, or every list shares one. */
+export type SortScope = 'mailbox' | 'everywhere';
+
+/** The order a list is in, given which of the two Settings says. */
+export function sortInScope(scope: SortScope, by: SortByView, view: string, shared: Sort): Sort {
+  return scope === 'everywhere' ? shared : sortForView(by, view, shared);
+}
+
+/**
+ * Where a chosen order is written: the one order the window keeps, or this
+ * view's own, as Settings says. Which setting to put it in, and what to put.
+ *
+ * Paired with `sortInScope`, which reads it back, and kept next to it: the two
+ * going out of step is silent — the list stays as it was and the choice is
+ * simply lost — so they are asserted together rather than left as two ternaries
+ * that have to agree.
+ *
+ * The orders views were given are kept either way, so turning the setting off
+ * and on again gives them back rather than losing them.
+ */
+export function sortWrite(
+  scope: SortScope,
+  by: SortByView,
+  view: string,
+  sort: Sort,
+): ['listSort' | 'listSortByView', string] {
+  return scope === 'everywhere'
+    ? ['listSort', writeSort(sort)]
+    : ['listSortByView', withViewSort(by, view, sort)];
+}
+
 /** The same orders, under a view's new name. A tag's view is named after the
  *  tag, so renaming it used to leave the order behind under a name nothing
  *  answers to, and the list quietly went back to newest first. */

@@ -7,12 +7,15 @@ import {
   readSort,
   readSortByView,
   sortForView,
+  sortInScope,
   sortKeys,
+  sortWrite,
   withViewSort,
   wireSort,
   writeSort,
   type Sort,
   type SortKey,
+  type SortScope,
 } from './sort';
 
 describe('what a list can be ordered by', () => {
@@ -117,5 +120,56 @@ describe('a mailbox remembering its own order', () => {
     for (const said of ['', 'null', '[]', 'not json', '{"inbox":5}', '{"inbox":{"key":"date"}}']) {
       expect(sortForView(readSortByView(said), 'inbox', DEFAULT_SORT)).toEqual(DEFAULT_SORT);
     }
+  });
+});
+
+/* Choosing an order writes one of two settings, and reading it back consults
+   one of two rules. The pair going out of step is silent — the list stays as it
+   was and the choice is simply lost — and both bugs of that shape found in
+   review were here, so the round trip is asserted rather than assumed. */
+describe('choosing an order, in either scope', () => {
+  const chosen: Sort = { key: 'sender', ascending: true };
+  type Saved = { listSort: string; listSortByView: string };
+  const fresh: Saved = { listSort: writeSort(DEFAULT_SORT), listSortByView: '{}' };
+
+  /** The settings after `chosen` is picked while looking at `view`. */
+  function picked(scope: SortScope, was: Saved, view: string): Saved {
+    const [setting, value] = sortWrite(scope, readSortByView(was.listSortByView), view, chosen);
+    return { ...was, [setting]: value };
+  }
+
+  /** What the list is ordered by afterwards, read the way the window reads it. */
+  function shown(scope: SortScope, saved: Saved, view: string): Sort {
+    const shared = readSort(saved.listSort, DEFAULT_SORT);
+    return sortInScope(scope, readSortByView(saved.listSortByView), view, shared);
+  }
+
+  it('gives back what was chosen, wherever it was stored', () => {
+    for (const scope of ['mailbox', 'everywhere'] as SortScope[]) {
+      expect(shown(scope, picked(scope, fresh, 'sent'), 'sent'), scope).toEqual(chosen);
+    }
+  });
+
+  it('leaves the other mailboxes alone when each keeps its own', () => {
+    const after = picked('mailbox', fresh, 'sent');
+    expect(shown('mailbox', after, 'inbox')).toEqual(DEFAULT_SORT);
+    // And the order everything shares was not the setting written.
+    expect(after.listSort).toBe(fresh.listSort);
+  });
+
+  it('carries every list with it when they share one', () => {
+    const after = picked('everywhere', fresh, 'sent');
+    for (const view of ['inbox', 'sent', 'tag:Urgent']) {
+      expect(shown('everywhere', after, view), view).toEqual(chosen);
+    }
+  });
+
+  it('keeps the orders mailboxes were given while they are not being used', () => {
+    // Off and on again gives them back: the entries stay, and `sortInScope`
+    // simply stops consulting them.
+    const own = picked('mailbox', fresh, 'sent');
+    const shared = picked('everywhere', own, 'inbox');
+    expect(shared.listSortByView).toBe(own.listSortByView);
+    expect(shown('mailbox', shared, 'sent')).toEqual(chosen);
   });
 });

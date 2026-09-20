@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, type ActionKind, type Folder, type OutboxRow, type Status } from './lib/api';
-import { chips, folderScopeName, hasToken, scopeFor, toggleToken } from './lib/search-chips';
+import {
+  chips,
+  folderScopeName,
+  hasToken,
+  isSearch,
+  scopeFor,
+  toggleToken,
+} from './lib/search-chips';
 import { NO_TERMS, SearchTerms, sameTerms, termsOf, type Term } from './lib/search-highlight';
 import { MAX_CLAUSES, MAX_VALUE_CHARS, cutShort } from './lib/search-limits';
 import { arrangementFor, countFor, countModes, visibleMailboxes } from './lib/mailboxes';
@@ -15,9 +22,9 @@ import {
   knownViews,
   readSort,
   readSortByView,
-  sortForView,
+  sortInScope,
+  sortWrite,
   viewRenamed,
-  withViewSort,
   writeSort,
   type Sort,
 } from './lib/sort';
@@ -199,22 +206,23 @@ export function App() {
     () => readSortByView(settings.listSortByView),
     [settings.listSortByView],
   );
-  const listSort = useMemo(() => {
-    const shared = readSort(settings.listSort, DEFAULT_SORT);
-    return settings.sortScope === 'everywhere' ? shared : sortForView(sortByView, view, shared);
-  }, [sortByView, view, settings.listSort, settings.sortScope]);
+  const listSort = useMemo(
+    () =>
+      sortInScope(settings.sortScope, sortByView, view, readSort(settings.listSort, DEFAULT_SORT)),
+    [sortByView, view, settings.listSort, settings.sortScope],
+  );
   const searchSort = useMemo(
     () => readSort(settings.searchSort, SEARCH_SORT),
     [settings.searchSort],
   );
-  // This mailbox, or all of them, as Settings says. The orders mailboxes
-  // were given are kept either way, so turning it off and on again restores
-  // them rather than losing them.
+  // This mailbox, or all of them, as Settings says. Which setting that is and
+  // what goes in it is `sortWrite`'s to answer — the same rule `sortInScope`
+  // reads back above, so the two cannot drift apart here.
   const setListSort = useCallback(
-    (sort: Sort) =>
-      settings.sortScope === 'everywhere'
-        ? set('listSort', writeSort(sort))
-        : set('listSortByView', withViewSort(sortByView, view, sort)),
+    (sort: Sort) => {
+      const [setting, value] = sortWrite(settings.sortScope, sortByView, view, sort);
+      set(setting, value);
+    },
     [set, settings.sortScope, sortByView, view],
   );
   // Reference data — tags, folders, accounts, identity — one hook, one
@@ -250,12 +258,10 @@ export function App() {
     if (kept) set('listSortByView', kept);
   }, [folders, tags, sortByView, set]);
 
-  // A field holding nothing but the token the app wrote for you is still the
-  // mailbox, not a search. Counted as one, the header read "Best match" the
-  // moment the box was clicked, and an order chosen there was written to the
-  // search's preference and thrown away when the field emptied on blur.
-  const asked =
-    hasQuery && query.trim() !== scopeFor(view, folderScopeName(view, folders))?.token;
+  // Whether this is a search or still the mailbox: a field holding nothing but
+  // the token the window wrote for you is the mailbox. The rule lives in
+  // `isSearch`, beside the code that writes that token.
+  const asked = isSearch(query, scopeFor(view, folderScopeName(view, folders))?.token);
   const activeSort = effectiveSort(asked ? searchSort : listSort, asked);
 
   const listFetchers = useMemo(
