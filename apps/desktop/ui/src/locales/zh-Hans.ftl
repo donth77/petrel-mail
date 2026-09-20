@@ -799,7 +799,6 @@ search-op-or = 任一项
 search-op-and = 两者都要，与空格相同
 search-op-not = 排除，与减号相同
 search-op-brackets = 将词语分组
-search-op-shared = 一个运算符，多个值
 outbox-in-seconds = { $count } 秒
 outbox-in-minutes = { $count } 分钟
 outbox-in-hours = { $count } 小时

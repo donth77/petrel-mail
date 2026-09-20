@@ -772,7 +772,6 @@ export const STRING_IDS = [
   'search-op-and',
   'search-op-not',
   'search-op-brackets',
-  'search-op-shared',
   'auth-pass',
   'auth-pass-tip',
   'auth-fail',

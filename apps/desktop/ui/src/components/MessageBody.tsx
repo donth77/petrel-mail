@@ -6,6 +6,7 @@ import {
   isRecord,
   nextFrameHeight,
 } from '../lib/frame-height';
+import { frameLook, frameUrl } from '../lib/frame-look';
 import { SearchTerms } from '../lib/search-highlight';
 import { useSettings } from '../lib/settings';
 import { t } from '../lib/strings';
@@ -53,6 +54,12 @@ export function MessageBody({ messageId, title }: { messageId: number; title: st
   }, []);
   const appDark =
     settings.theme === 'dark' || (settings.theme !== 'light' && systemDark);
+  // How the app looks, as one string. The effect below depends on this rather
+  // than on its ingredients, so anything added to it reaches an open message
+  // without a dependency list having to be remembered. Which messages may
+  // actually go dark is still the frame's own decision (sender-declared, or
+  // plain text); this only says what the app looks like today.
+  const look = frameLook({ dark: appDark, forceLight, accent: settings.accent });
 
   useEffect(() => {
     let live = true;
@@ -62,23 +69,12 @@ export function MessageBody({ messageId, title }: { messageId: number; title: st
     setHeight(INITIAL_FRAME_HEIGHT);
     api
       .messageUrl(messageId)
-      // The app's theme rides the URL so the frame is *born* the right color
-      // — anything pushed in after first paint is a white flash on every
-      // message open. Which messages may actually go dark is the frame's own
-      // decision (sender-declared, or plain text); this only says what the
-      // app looks like today.
+      // It rides the URL so the frame is *born* the right colour: anything
+      // pushed in after first paint is a flash of the wrong one on every
+      // message open.
       .then((u) => {
         if (!live) return;
-        // Resolved to light/dark here: the frame's transform has to decide
-        // *now*, and "system" is only answerable on this side of the wall.
-        const resolved = appDark ? 'dark' : 'light';
-        const force = forceLight ? '&force=light' : '';
-        // The accent rides along for the same reason: the frame builds the
-        // app's dark ground itself, and that ground follows the accent. The
-        // `#` would start a fragment, so it is left off and the frame puts it
-        // back — after checking that what arrived is six hex digits.
-        const accent = `&accent=${settings.accent.replace('#', '')}`;
-        setUrl(u ? `${u}${u.includes('?') ? '&' : '?'}theme=${resolved}${force}${accent}` : null);
+        setUrl(u ? frameUrl(u, look) : null);
       })
       .catch((e) => {
         if (!live) return;
@@ -88,7 +84,7 @@ export function MessageBody({ messageId, title }: { messageId: number; title: st
     return () => {
       live = false;
     };
-  }, [messageId, reload, settings.theme, forceLight, appDark]);
+  }, [messageId, reload, look]);
 
   // The search's words, sent in to be marked. The frame is opaque-origin, so
   // nothing out here can walk its text; it marks its own, the way it already

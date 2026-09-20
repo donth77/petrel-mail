@@ -843,7 +843,6 @@ search-op-or = l’un ou l’autre
 search-op-and = les deux, comme un espace
 search-op-not = sans, comme un moins
 search-op-brackets = regrouper des termes
-search-op-shared = un opérateur, plusieurs valeurs
 outbox-in-seconds = { $count } s
 outbox-in-minutes = { $count } min
 outbox-in-hours = { $count ->

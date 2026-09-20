@@ -84,9 +84,11 @@ const OPERATOR_IDS: { title: StringId; side: Side; ops: OperatorIds[] }[] = [
       { op: 'AND', means: 'search-op-and' },
       { op: 'NOT', means: 'search-op-not' },
       { op: '( )', means: 'search-op-brackets', example: '(from:sam OR from:dana) invoice' },
-      // The Gmail form. People who have used Gmail type it, and it used to
-      // read as a sender called `(sam`.
-      { op: 'from:( )', means: 'search-op-shared', example: 'from:(sam OR dana)' },
+      // No row for the Gmail form, `from:(sam OR dana)`. The engine takes it
+      // for every operator that holds a word or a state, so writing one of
+      // them in the table made a general rule look like a special case for
+      // senders, and a row per operator would be nine rows for a spelling.
+      // It still parses; it is simply not taught here.
     ],
   },
 ];

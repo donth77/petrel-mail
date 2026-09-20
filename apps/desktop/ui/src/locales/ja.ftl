@@ -799,7 +799,6 @@ search-op-or = どちらか一方
 search-op-and = 両方（スペースと同じ）
 search-op-not = 含まない。マイナスと同じ
 search-op-brackets = 語句をまとめる
-search-op-shared = 1つの演算子に複数の値
 outbox-in-seconds = { $count }秒
 outbox-in-minutes = { $count }分
 outbox-in-hours = { $count }時間

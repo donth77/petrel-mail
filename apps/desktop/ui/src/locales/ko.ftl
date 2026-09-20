@@ -837,7 +837,6 @@ search-op-or = 둘 중 하나
 search-op-and = 둘 다(공백과 같음)
 search-op-not = 제외, 마이너스와 같음
 search-op-brackets = 검색어 묶기
-search-op-shared = 연산자 하나에 값 여러 개
 outbox-in-seconds = { $count }초
 outbox-in-minutes = { $count }분
 outbox-in-hours = { $count }시간

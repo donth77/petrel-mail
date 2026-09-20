@@ -843,7 +843,6 @@ search-op-or = eines von beiden
 search-op-and = beides, wie ein Leerzeichen
 search-op-not = ohne, wie ein Minus
 search-op-brackets = Begriffe gruppieren
-search-op-shared = ein Operator, mehrere Werte
 outbox-in-seconds = { $count } s
 outbox-in-minutes = { $count } Min.
 outbox-in-hours = { $count ->

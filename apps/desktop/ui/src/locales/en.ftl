@@ -822,7 +822,6 @@ search-op-or = either one
 search-op-and = both, same as a space
 search-op-not = without, the same as a minus
 search-op-brackets = group terms
-search-op-shared = one operator, several values
 
 # Sender authentication. Silence is the default: most legitimate mail
 # carries no verdict, so nothing is shown unless DMARC actually decided.
