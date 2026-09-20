@@ -17,11 +17,13 @@ mod drafts;
 mod folders;
 mod listing;
 mod maintenance;
+mod saved_search;
 mod search;
 
 pub use maintenance::{ReindexProgress, WalCheckpoint};
+pub use saved_search::SavedSearch;
 
-pub const SCHEMA_VERSION: i64 = 26;
+pub const SCHEMA_VERSION: i64 = 27;
 /// How many of a message's References are kept. Threading only ever looks
 /// for the nearest ancestors, and an unbounded header is both a query
 /// SQLite refuses to run and a row count nobody reads.
@@ -62,6 +64,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     ),
     (25, include_str!("migrations/0025-ghost-repair.sql")),
     (26, include_str!("migrations/0026-submission-ports.sql")),
+    (27, include_str!("migrations/0027-saved-searches.sql")),
 ];
 
 const _: () = assert!(

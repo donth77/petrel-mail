@@ -389,6 +389,17 @@ impl Store {
         }
         repoint_queued_actions(&tx, account, &old_path, new_path)?;
         tx.commit()?;
+        // And the saved searches that name it — by leaf, by whole path, or as a
+        // descendant the rename carried with it. After the commit rather than
+        // inside it: the worst a failure here leaves is a query holding the old
+        // name, which is exactly where it stood before any of this existed.
+        self.rename_in_saved_searches(
+            account,
+            &crate::search_query::Renamed::Folder {
+                from: &old_path,
+                to: new_path,
+            },
+        )?;
         Ok(())
     }
 

@@ -220,6 +220,125 @@ impl Store {
         Ok(rows)
     }
 
+    /// How many conversations a query finds, with nothing ranked and nothing
+    /// fetched.
+    ///
+    /// What a saved search's badge asks (docs 22 §7). It cannot be
+    /// `search_threads(...).len()`: that walks a page of the ranking — six
+    /// hundred hits at the most — so a query matching a mailbox would answer
+    /// "600" for ever. This asks the same statements the search asks, through
+    /// the same planner, and counts conversations in SQL.
+    ///
+    /// Sharing the planner is the point. A badge that disagreed with the list
+    /// it sits beside would be worse than no badge, and two implementations of
+    /// "what does this query match" would disagree the first time either was
+    /// touched.
+    pub fn count_search(&self, query: &str, mode: CountMode) -> Result<i64> {
+        if matches!(mode, CountMode::Off) {
+            return Ok(0);
+        }
+        let q = crate::search_query::parse(query);
+        let Some(root) = &q.root else {
+            return Ok(0);
+        };
+        let Some(account) = self.active_account()? else {
+            return Ok(0);
+        };
+        let node = without_nots(root, false);
+        // The same as-you-type prefix the search would use. A saved query is
+        // not being typed, but the count has to answer for the list the user
+        // will see, and that list grows its last word.
+        let typing = typing_word(&node);
+        let statements = bundles(&node).unwrap_or_else(|| {
+            vec![Bundle {
+                conds: pruned(as_lookups(&node)).into_iter().collect(),
+                ..Bundle::default()
+            }]
+        });
+        let unread = match mode {
+            CountMode::Unread => format!(" AND m.flags & {} = 0", crate::store::flags::SEEN),
+            _ => String::new(),
+        };
+        // A message's conversation, or the message itself when it is in none —
+        // the rollup `search_threads` does one hit at a time, done in SQL
+        // because a badge counts every match and not a page of them.
+        const THREAD: &str = "coalesce(m.thread_id, -m.id)";
+
+        let mut bound_statements = Vec::new();
+        for bundle in statements {
+            let Some(bound) = self.bind(&bundle, account, typing)? else {
+                continue;
+            };
+            bound_statements.push(bound);
+        }
+        if bound_statements.is_empty() {
+            return Ok(0);
+        }
+        // One statement counts in SQLite and nothing crosses the boundary.
+        // Several have to be made distinct against each other — a conversation
+        // matching two alternatives is one conversation — so those come back as
+        // keys and are unioned here. `bundles` caps the statements at four.
+        if bound_statements.len() == 1 {
+            let mut bound = bound_statements.pop().expect("just checked");
+            let (from, matched) = match &bound.asked {
+                Some(words) if words.cjk => (
+                    "fts_cjk f CROSS JOIN messages m ON m.id = f.rowid",
+                    "fts_cjk MATCH ? AND ",
+                ),
+                Some(_) => (
+                    "fts_messages f CROSS JOIN messages m ON m.id = f.rowid",
+                    "fts_messages MATCH ? AND ",
+                ),
+                None => ("messages m", ""),
+            };
+            let conds = &bound.conditions;
+            let sql = format!(
+                "SELECT count(DISTINCT {THREAD}) FROM {from}
+                 WHERE {matched}m.deleted_at_ms IS NULL{conds}{unread}"
+            );
+            let mut all: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+            if let Some(words) = bound.asked.take() {
+                all.push(Box::new(words.expr));
+            }
+            all.extend(bound.args);
+            let n: i64 = self
+                .conn
+                .query_row(&sql, rusqlite::params_from_iter(all), |r| r.get(0))?;
+            return Ok(n);
+        }
+
+        let mut seen = std::collections::HashSet::new();
+        for mut bound in bound_statements {
+            let (from, matched) = match &bound.asked {
+                Some(words) if words.cjk => (
+                    "fts_cjk f CROSS JOIN messages m ON m.id = f.rowid",
+                    "fts_cjk MATCH ? AND ",
+                ),
+                Some(_) => (
+                    "fts_messages f CROSS JOIN messages m ON m.id = f.rowid",
+                    "fts_messages MATCH ? AND ",
+                ),
+                None => ("messages m", ""),
+            };
+            let conds = &bound.conditions;
+            let sql = format!(
+                "SELECT DISTINCT {THREAD} FROM {from}
+                 WHERE {matched}m.deleted_at_ms IS NULL{conds}{unread}"
+            );
+            let mut all: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+            if let Some(words) = bound.asked.take() {
+                all.push(Box::new(words.expr));
+            }
+            all.extend(bound.args);
+            let mut stmt = self.conn.prepare(&sql)?;
+            let keys = stmt.query_map(rusqlite::params_from_iter(all), |r| r.get::<_, i64>(0))?;
+            for key in keys {
+                seen.insert(key?);
+            }
+        }
+        Ok(seen.len() as i64)
+    }
+
     /// Every statement's hits, as one list, and the words each was asked
     /// with.
     ///

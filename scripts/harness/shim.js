@@ -408,6 +408,17 @@
     signature_on_reply: false,
   };
 
+  function savedSearches() {
+    try { return JSON.parse(localStorage.getItem('__petrel_saved_searches') || '[]'); } catch (e) { return []; }
+  }
+  function writeSavedSearches(all) {
+    try {
+      localStorage.setItem('__petrel_saved_searches', JSON.stringify(
+        all.map(function (x, i) { return { id: x.id, name: x.name, query: x.query, position: i }; }),
+      ));
+    } catch (e) {}
+  }
+
   var handlers = {
     status: function () {
       // Set localStorage.__petrel_seeding to model an active sync, which polls
@@ -610,6 +621,60 @@
     },
     set_active_account: function (a) {
       try { localStorage.setItem('__petrel_active_account', String(a.accountId)); } catch (e) {}
+      return null;
+    },
+    // Saved searches, kept in localStorage the way the settings are. Without
+    // these the harness could not see the rail's Searches section at all, and a
+    // section the harness cannot draw is a section nothing can test: reordering
+    // one is a pointer gesture, which is the kind of thing that only ever
+    // breaks in a real browser. Preset with __petrel_saved_searches.
+    //
+    // Free functions rather than methods: `invoke` looks a handler up and calls
+    // it bare (`h(args)`), so `this` inside one is not the handler table. A
+    // first version used `this.list_saved_searches()` and every write threw —
+    // which the app then reported as a refused reorder and rolled back, making
+    // a working drag look broken.
+    list_saved_searches: function () {
+      return savedSearches();
+    },
+    create_saved_search: function (a) {
+      var all = savedSearches();
+      var id = all.reduce(function (n, x) { return Math.max(n, x.id); }, 0) + 1;
+      all.push({ id: id, name: a.name, query: a.query, position: all.length });
+      writeSavedSearches(all);
+      return id;
+    },
+    update_saved_search: function (a) {
+      writeSavedSearches(savedSearches().map(function (x) {
+        if (x.id !== a.id) return x;
+        return { id: x.id, name: a.name == null ? x.name : a.name,
+                 query: a.query == null ? x.query : a.query, position: x.position };
+      }));
+      return null;
+    },
+    delete_saved_search: function (a) {
+      writeSavedSearches(savedSearches().filter(function (x) { return x.id !== a.id; }));
+      return null;
+    },
+    move_saved_search: function (a) {
+      var all = savedSearches();
+      var at = all.findIndex(function (x) { return x.id === a.id; });
+      var to = a.up ? at - 1 : at + 1;
+      if (at >= 0 && to >= 0 && to < all.length) {
+        var row = all[at];
+        all[at] = all[to];
+        all[to] = row;
+        writeSavedSearches(all);
+      }
+      return null;
+    },
+    reorder_saved_searches: function (a) {
+      var by = {};
+      savedSearches().forEach(function (x) { by[x.id] = x; });
+      var out = [];
+      (a.ids || []).forEach(function (id) { if (by[id]) { out.push(by[id]); delete by[id]; } });
+      Object.keys(by).forEach(function (k) { out.push(by[k]); });
+      writeSavedSearches(out);
       return null;
     },
     get_settings: function () {

@@ -8,7 +8,7 @@
 //! rows, and only those rows.
 
 use petrel_engine::actions::{ActionKind, PlacementPolicy};
-use petrel_engine::store::{ListView, NewMessage, Store, flags};
+use petrel_engine::store::{CountMode, ListView, NewMessage, Store, flags};
 
 fn store() -> (Store, i64) {
     let s = Store::open_in_memory().unwrap();
@@ -196,4 +196,31 @@ fn a_tag_list_stays_inside_the_active_account() {
         3,
         "the count and the page must agree"
     );
+}
+
+/// A saved search's badge counts every match, not a page of the ranking.
+///
+/// This is the whole reason `count_search` is not `search_threads(..).len()`:
+/// the search walks at most six hundred hits, so a query matching a mailbox
+/// would answer six hundred for ever, and a badge reading "600" beside a
+/// mailbox of two thousand is a number that is simply wrong. Eight hundred
+/// messages is past that page and cheap to build.
+#[test]
+fn a_count_is_not_capped_by_the_ranking_page() {
+    let (mut s, account) = store();
+    fill_inbox(&mut s, account, 800);
+
+    // Words, so the query goes down the ranked path where the cap lives.
+    assert_eq!(s.search_threads("body", 50).unwrap().len(), 50);
+    assert_eq!(s.count_search("body", CountMode::Total).unwrap(), 800);
+
+    // And down the conditions-only path, which pages the same way.
+    assert_eq!(s.count_search("is:unread", CountMode::Total).unwrap(), 800);
+
+    // Reading some moves the unread count and leaves the total alone.
+    for id in s.search_threads("body", 20).unwrap().iter().take(20) {
+        s.set_flags(id.id, flags::SEEN, 0).unwrap();
+    }
+    assert_eq!(s.count_search("body", CountMode::Total).unwrap(), 800);
+    assert_eq!(s.count_search("body", CountMode::Unread).unwrap(), 780);
 }

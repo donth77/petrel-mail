@@ -12,6 +12,7 @@ pub(crate) mod invitations;
 pub(crate) mod mail;
 pub(crate) mod outbox;
 pub(crate) mod remote;
+pub(crate) mod searches;
 pub(crate) mod settings;
 pub(crate) mod storage;
 pub(crate) mod triage;

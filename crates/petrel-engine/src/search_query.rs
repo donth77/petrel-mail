@@ -796,6 +796,110 @@ pub fn parse(input: &str) -> SearchQuery {
     q
 }
 
+/// Something a saved query can name that the user can rename.
+///
+/// A query holds names, not ids — that is what makes it a query and not a
+/// membership list — so renaming the thing it names leaves it looking for
+/// something that is no longer there. Rewriting the stored text is only safe
+/// because writing a parsed query out and reading it back is the identity
+/// (`reading_back_is_the_identity`): the query is parsed, one kind of term is
+/// changed, and the rest comes back spelled exactly as it went in.
+pub enum Renamed<'a> {
+    Tag {
+        from: &'a str,
+        to: &'a str,
+    },
+    /// By path. `in:` takes either the whole path or its last part, and a
+    /// stored query may hold either, so both are rewritten — and so is a
+    /// descendant's path, which a rename of its parent moves.
+    Folder {
+        from: &'a str,
+        to: &'a str,
+    },
+}
+
+/// A folder's last part, split the way `folders.rs` splits it: IMAP
+/// hierarchies are delimited by `/` or by `.` depending on the server.
+fn leaf_of(path: &str) -> &str {
+    path.rsplit(['/', '.']).next().unwrap_or(path)
+}
+
+/// What an `in:` value becomes, or `None` when it names another folder.
+fn folder_renamed(value: &str, from: &str, to: &str) -> Option<String> {
+    let low = value.to_lowercase();
+    if low == from.to_lowercase() {
+        return Some(to.to_string());
+    }
+    if low == leaf_of(from).to_lowercase() {
+        return Some(leaf_of(to).to_string());
+    }
+    // A descendant, named by its full path: the parent moved and took it.
+    for delim in ['/', '.'] {
+        let prefix = format!("{}{delim}", from.to_lowercase());
+        if let Some(rest) = low.strip_prefix(&prefix) {
+            return Some(format!("{to}{delim}{rest}"));
+        }
+    }
+    None
+}
+
+/// The query with every mention of the old name replaced, or `None` when it
+/// says nothing about it — and then nothing is written.
+pub fn renamed(query: &str, what: &Renamed) -> Option<String> {
+    let parsed = parse(query);
+    let mut root = parsed.root?;
+    if !rename_in(&mut root, what) {
+        return None;
+    }
+    Some(
+        SearchQuery {
+            root: Some(root),
+            truncated: parsed.truncated,
+        }
+        .to_string(),
+    )
+}
+
+/// Whether anything changed. Every branch is walked rather than stopping at
+/// the first hit: `tag:urgent OR tag:urgent` is two terms and both are the
+/// tag that moved.
+fn rename_in(expr: &mut Expr, what: &Renamed) -> bool {
+    match expr {
+        Expr::Clause(clause) => match (&mut clause.term, what) {
+            // Matched without case, because a query may say `tag:urgent` for a
+            // tag called `Urgent` — the store finds it either way, so the
+            // rewrite has to as well. Written with the new name's own capitals.
+            (Term::Tag(name), Renamed::Tag { from, to })
+                if name.to_lowercase() == from.to_lowercase() =>
+            {
+                *name = (*to).to_string();
+                true
+            }
+            (Term::In(name), Renamed::Folder { from, to }) => {
+                match folder_renamed(name, from, to) {
+                    // Held lowercased, as `term_for` holds it.
+                    Some(next) => {
+                        *name = next.to_lowercase();
+                        true
+                    }
+                    None => false,
+                }
+            }
+            _ => false,
+        },
+        Expr::Not(inner) => rename_in(inner, what),
+        Expr::All(parts) | Expr::Any(parts) => {
+            let mut any = false;
+            for part in parts {
+                if rename_in(part, what) {
+                    any = true;
+                }
+            }
+            any
+        }
+    }
+}
+
 /// A value the way it has to be typed: in quotes when it holds a space, or
 /// a `)` where the field would read it as closing a group.
 fn typed(value: &str) -> String {

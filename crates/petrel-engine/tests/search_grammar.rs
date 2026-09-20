@@ -9,7 +9,7 @@
 
 use petrel_engine::blob::BlobStore;
 use petrel_engine::search_query::Period;
-use petrel_engine::store::{NewMessage, Store, flags};
+use petrel_engine::store::{CountMode, NewMessage, Store, flags};
 
 struct Mailbox {
     store: Store,
@@ -1086,4 +1086,84 @@ fn a_mailbox_name_is_never_a_wildcard() {
     assert_eq!(found(&m.store, "in:inbox lunch"), ["Lunch"]);
     assert!(found(&m.store, "in:inbo_").is_empty());
     assert!(found(&m.store, "in:%").is_empty());
+}
+
+/* What a saved search's badge asks. */
+
+/// A badge counts what the list shows, or it is a number that lies.
+///
+/// The count takes a different path on purpose — one statement answered inside
+/// SQLite, rather than a page of the ranking rolled up to conversations — so
+/// the two are asserted against each other across every shape the grammar has.
+#[test]
+fn counting_a_query_agrees_with_listing_it() {
+    let m = mailbox();
+    for query in [
+        "invoice",
+        "contract",
+        "from:sam",
+        "from:sato",
+        "is:unread",
+        "has:attachment",
+        "subject:annex",
+        "-draft",
+        "contract -from:dana",
+        "from:sam OR from:dana",
+        "(from:sam OR from:dana) contract",
+        "from:(sam OR dana)",
+        "subject:(annex OR invoice)",
+        "is:(unread OR starred)",
+        "東京",
+        "annex OR 東京",
+        "nothing-here-at-all",
+        "in:inbox invoice",
+    ] {
+        let listed = found(&m.store, query).len() as i64;
+        assert_eq!(
+            m.store.count_search(query, CountMode::Total).unwrap(),
+            listed,
+            "{query:?}"
+        );
+    }
+}
+
+/// The unread count is the unread half of the same answer, and stays in step
+/// when a message is read.
+#[test]
+fn counting_unread_follows_what_has_been_read() {
+    let m = mailbox();
+    let total = m.store.count_search("contract", CountMode::Total).unwrap();
+    assert_eq!(
+        m.store.count_search("contract", CountMode::Unread).unwrap(),
+        total,
+        "nothing has been read yet"
+    );
+
+    let draft = m.store.search_threads("subject:draft", 5).unwrap()[0].id;
+    m.store.set_flags(draft, flags::SEEN, 0).unwrap();
+    assert_eq!(
+        m.store.count_search("contract", CountMode::Unread).unwrap(),
+        total - 1
+    );
+    assert_eq!(
+        m.store.count_search("contract", CountMode::Total).unwrap(),
+        total,
+        "reading one did not change how many there are"
+    );
+    // Off is a mode the sidebar has, and it asks for nothing rather than
+    // counting and throwing the number away.
+    assert_eq!(m.store.count_search("contract", CountMode::Off).unwrap(), 0);
+}
+
+/// An empty or half-typed query counts nothing rather than everything.
+#[test]
+fn counting_nothing_is_nothing() {
+    let m = mailbox();
+    for query in ["", "   ", "from:", "-", "AND", "\"\"", "()"] {
+        assert_eq!(
+            m.store.count_search(query, CountMode::Total).unwrap(),
+            0,
+            "{query:?}"
+        );
+    }
 }

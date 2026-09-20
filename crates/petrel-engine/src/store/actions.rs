@@ -1372,10 +1372,31 @@ impl Store {
                 "a tag called {name} already exists"
             )));
         }
+        // Read before the write, because the saved searches naming it need the
+        // name it is leaving behind.
+        let was: Option<(i64, String)> = self
+            .conn
+            .query_row(
+                "SELECT account_id, name FROM tags WHERE id = ?1",
+                params![tag_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
         self.conn.execute(
             "UPDATE tags SET name = ?2 WHERE id = ?1",
             params![tag_id, name],
         )?;
+        // A saved search names the tag rather than pointing at it, so the
+        // rename has to reach the queries too or they quietly stop finding it.
+        if let Some((account, was)) = was {
+            self.rename_in_saved_searches(
+                account,
+                &crate::search_query::Renamed::Tag {
+                    from: &was,
+                    to: name,
+                },
+            )?;
+        }
         Ok(())
     }
 

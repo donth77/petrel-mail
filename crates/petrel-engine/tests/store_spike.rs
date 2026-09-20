@@ -3,7 +3,7 @@
 //! insert/update/delete, is rebuildable, snippets work, CJK behavior is
 //! documented, and (in the ignored benchmark) latency/size numbers are real.
 
-use petrel_engine::store::{MARK_END, MARK_START, NewMessage, Store};
+use petrel_engine::store::{CountMode, MARK_END, MARK_START, NewMessage, Store};
 use petrel_testkit::MailboxGen;
 
 fn to_new(account_id: i64, g: petrel_testkit::GenMessage) -> NewMessage {
@@ -569,6 +569,44 @@ fn bench_search_grammar() {
             ("file-nobody", "filename:zz0"),
         ] {
             lat(label, q);
+        }
+    }
+
+    // What a saved search's badge costs (docs 22 §7). The same queries,
+    // counted rather than ranked: no bm25, no snippets, no page — one
+    // statement answered inside SQLite. The adaptive threshold is set from
+    // these numbers rather than from a guess about them.
+    if std::env::var("PETREL_BENCH_COUNTS").is_ok() {
+        println!("--- badge counts: {n} messages ---");
+        for (label, q) in [
+            ("unread-alone", "is:unread"),
+            ("from-alone", "from:avery"),
+            ("tag-nobody", "tag:zz0"),
+            ("words+from", "from:avery meeting"),
+            ("grouped-senders", "(from:avery OR from:blake) meeting"),
+            (
+                "two-choices",
+                "(meeting OR from:avery) (budget OR from:blake)",
+            ),
+        ] {
+            for _ in 0..3 {
+                store.count_search(q, CountMode::Total).unwrap();
+            }
+            let mut times: Vec<f64> = (0..20)
+                .map(|_| {
+                    let t = Instant::now();
+                    let found = store.count_search(q, CountMode::Total).unwrap();
+                    let ms = t.elapsed().as_secs_f64() * 1000.0;
+                    std::hint::black_box(found);
+                    ms
+                })
+                .collect();
+            times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let found = store.count_search(q, CountMode::Total).unwrap();
+            println!(
+                "count {label:<20} {q:<44} p50 {:7.2}ms  p95 {:7.2}ms  ({found} conversations)",
+                times[10], times[19]
+            );
         }
     }
 
