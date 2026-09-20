@@ -60,7 +60,7 @@ by default.
 - Search: `from:alice has:attachment before:2026-01-01`
 - Boolean search: `from:alice AND (has:attachment OR before:2026-01-01)`
 - Saved searches: name a search and it becomes a sidebar item
-- Sidebar sections you can order or switch off
+- Reorder/customize sidebar
 - Archive, move, star, delete. 
 - Tags sync as Gmail labels or IMAP keywords
 - Rules
