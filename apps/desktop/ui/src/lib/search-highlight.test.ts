@@ -61,6 +61,14 @@ describe('the words a query asks for', () => {
     expect(words('ann has:attachment')).toEqual(['ann*']);
   });
 
+  /* The word being typed is the last one the index keeps, as in the engine.
+     A dash or a bracket after it is the start of what comes next. */
+  it('keep the prefix on a word when punctuation follows it', () => {
+    expect(words('lun -')).toEqual(['lun*']);
+    expect(words('lun &')).toEqual(['lun*']);
+    expect(marked('Lunch on Friday', 'lun -')).toBe('[Lunch] on Friday');
+  });
+
   /* The engine completes a word of two letters or more and no shorter. */
   it('do not complete a single letter', () => {
     expect(words('vitamin c')).toEqual(['vitamin', 'c']);
@@ -76,6 +84,9 @@ describe('the words a query asks for', () => {
 
   it('read an unknown operator as the words it is', () => {
     expect(words('re:pricing')).toEqual(['re pricing*']);
+    // A colon inside the quotes makes no operator, wherever the quote opens.
+    expect(words('"from:sam"')).toEqual(['from sam']);
+    expect(words('fr"om:sam"')).toEqual(['from sam']);
   });
 
   /* A value the operator cannot take is searched for, in the engine, so it

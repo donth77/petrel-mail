@@ -520,10 +520,22 @@ fn bench_search_grammar() {
                 "(from:avery OR from:blake) (meeting OR budget)",
             ),
             ("excluded-group", "meeting -(report OR from:avery)"),
-            // Sixteen statements if it were multiplied out, so it is asked
-            // whole, as lookups. It has to stay inside the budget too.
+            // A choice of a word or a condition is a statement per side. Two
+            // of them are four statements, the most that are asked one by
+            // one; each ranks its own words, so this is the dearest a query
+            // gets. Three would be eight, which measured 226ms at a hundred
+            // thousand messages, and four sixteen: those are asked whole, as
+            // lookups, and have to stay inside the budget too.
             (
-                "too-wide",
+                "two-choices",
+                "(meeting OR from:avery) (budget OR from:blake)",
+            ),
+            (
+                "three-choices",
+                "(meeting OR from:avery) (budget OR from:blake) (report OR from:casey)",
+            ),
+            (
+                "four-choices",
                 "(meeting OR from:avery) (budget OR from:blake) (report OR from:casey) (update OR from:drew)",
             ),
             ("subject", "subject:meeting"),
@@ -536,6 +548,25 @@ fn bench_search_grammar() {
             ("one-day-alone", "date:2020-09-15"),
             ("not-ascii", "from:élodie meeting"),
             ("not-ascii-alone", "from:élodie"),
+            // Filters that match nobody read every message, which is what
+            // makes them the dearest conditions there are. OR is new, so
+            // they now add up: eight of these took 265ms at a hundred
+            // thousand messages while every row was folded before it was
+            // compared, and 103ms once LIKE was left to ignore case itself.
+            (
+                "rare-senders",
+                "from:zz0 OR from:zz1 OR from:zz2 OR from:zz3 OR from:zz4 OR from:zz5 OR from:zz6 OR from:zz7",
+            ),
+            ("to-nobody", "to:zz0"),
+            (
+                "wide-with-to",
+                "(meeting OR to:avery) (budget OR to:blake) (report OR to:casey)",
+            ),
+            ("tag-nobody", "tag:zz0"),
+            ("in-empty", "in:trash"),
+            ("in-inbox-unread", "in:inbox is:unread"),
+            ("to-nobody-two", "to:zz0 OR to:zz1"),
+            ("file-nobody", "filename:zz0"),
         ] {
             lat(label, q);
         }
@@ -567,6 +598,11 @@ fn bench_search_grammar() {
         ("grouped-words", &["common-term", "other-term"]),
         ("both-grouped", &["common-term", "other-term"]),
         ("excluded-group", &["common-term"]),
+        // Two statements, and it has to cost what the two of them cost.
+        ("or-mixed", &["two-terms", "from-alone"]),
+        // Asked whole, as lookups: no dearer than the common word in them.
+        ("three-choices", &["common-term"]),
+        ("four-choices", &["common-term"]),
     ] {
         let (Some(cost), Some(alone)) = (medians.get(label), words(built_on)) else {
             continue;

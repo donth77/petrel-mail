@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Mail, X } from 'lucide-react';
+import { Mail, Search, X } from 'lucide-react';
 import {
   Combobox, ComboboxItem, ComboboxList, ComboboxProvider, Dialog, DialogDismiss,
 } from '@ariakit/react';
@@ -9,6 +9,8 @@ import {
 } from '../lib/commands';
 import { api, type Thread } from '../lib/api';
 import { listTime } from '../lib/format';
+import { Marked, NO_TERMS, termsOf } from '../lib/search-highlight';
+import { useSettings } from '../lib/settings';
 import { Icon } from './Icon';
 import { clickAway } from '../lib/dialog';
 import { t } from '../lib/strings';
@@ -45,14 +47,18 @@ type Props = {
   ctx: CommandContext;
   /** Opening a conversation the palette found. */
   onOpen: (threadId: number) => void;
+  /** Hand this query to the search field, which has room for all of it. */
+  onSearch: (query: string) => void;
 };
 
 const VISIBLE_LIMIT = 8;
-/** Enough to recognise the one you meant, not so many that the commands vanish
- *  under a list of mail. Everything else is one Enter away in the full search. */
-const MAIL_LIMIT = 5;
+/** As many as the commands above them, which is what the list scrolls to
+ *  anyway. Five was fewer than anything else this box shows, and the rest of
+ *  what matched was nowhere: the row at the end of the group carries the
+ *  query into the search field, where all of it is. */
+const MAIL_LIMIT = 8;
 
-export function Palette({ open, onClose, subject, ctx, onOpen }: Props) {
+export function Palette({ open, onClose, subject, ctx, onOpen, onSearch }: Props) {
   const [query, setQuery] = useState('');
   const commands = useMemo(() => buildCommands(ctx), [ctx]);
 
@@ -99,6 +105,14 @@ export function Palette({ open, onClose, subject, ctx, onOpen }: Props) {
       clearTimeout(h);
     };
   }, [query, open]);
+
+  // The words this box asked for, marked in what it found. Its own query,
+  // not the search field's: the two are open at once and rarely the same.
+  const { settings } = useSettings();
+  const found = useMemo(
+    () => (settings.searchHighlight === 'on' ? termsOf(query.trim()) : NO_TERMS),
+    [query, settings.searchHighlight],
+  );
 
   const shown = matched.slice(0, VISIBLE_LIMIT);
   const overflow = matched.length - shown.length;
@@ -220,7 +234,7 @@ export function Palette({ open, onClose, subject, ctx, onOpen }: Props) {
                       <Icon icon={Mail} size={16} />
                     </span>
                     <span className="name clip">
-                      {m.subject || t('no-subject')}
+                      {m.subject ? <Marked text={m.subject} terms={found} /> : t('no-subject')}
                       <span className="alias">
                         {' · '}
                         {m.from_display || m.from_addr}
@@ -229,6 +243,25 @@ export function Palette({ open, onClose, subject, ctx, onOpen }: Props) {
                     <span className="mono palette-when">{listTime(m.date_ms)}</span>
                   </ComboboxItem>
                 ))}
+                {/* The way out of a box that shows eight. The palette is for
+                    recognising the one you meant; when it is not here, this
+                    hands what you typed to the field that has all of it. */}
+                <ComboboxItem
+                  className="cmd"
+                  focusOnHover
+                  setValueOnClick={false}
+                  onClick={() => {
+                    onSearch(query.trim());
+                    close();
+                  }}
+                >
+                  <span className="ico">
+                    <Icon icon={Search} size={16} />
+                  </span>
+                  <span className="name clip">
+                    {t('palette-search-all', { query: query.trim() })}
+                  </span>
+                </ComboboxItem>
               </div>
             )}
 

@@ -1,4 +1,5 @@
 import { folderDelimiter, folderLeaf } from './folders';
+import { KEYWORDS, isKeyword, read, tokensOf, type Lexeme } from './search-grammar';
 import { t, type StringId } from './strings';
 
 /**
@@ -22,156 +23,6 @@ export function quoted(token: string): string {
   if (at === -1) return /\s/.test(token) ? `"${token}"` : token;
   const value = token.slice(at + 1);
   return /\s/.test(value) ? `${token.slice(0, at)}:"${value}"` : token;
-}
-
-/**
- * The field, read the way the engine reads it (`search_query.rs`) and kept
- * the way it was typed.
- *
- * Both halves matter. Chips compare against what a piece *says* — its text
- * with the quote marks off — so `in:"Client contact"` in the field lights the
- * chip that writes the same thing. Whatever goes back into the field goes
- * back as the chunk it came from, untouched: the grammar has phrases,
- * exclusion, brackets and `AND` `OR` `NOT`, and rebuilding a query from its
- * bare pieces would turn `"OR"` into the operator, `"from:sam"` into a
- * filter, and `-"board pack"` into the phrase `"-board pack"` — which asks
- * for exactly what it was excluding.
- */
-export type Lexeme = {
-  kind: 'open' | 'close' | 'minus' | 'piece';
-  /** Which whitespace-separated chunk of the field this came from. */
-  chunk: number;
-  /** How many brackets were open when it was read. */
-  depth: number;
-  /** A piece's text with its quote marks off and its spacing evened out. */
-  says: string;
-  /** No quote mark anywhere in it. */
-  plain: boolean;
-  /** Opened with a quote, so it is words to look for and never an operator,
-   *  whatever it spells. */
-  phrase: boolean;
-  /** Led by a `-` that is outside any quotes: what it says is excluded. */
-  negated: boolean;
-  /** The chunks of the `NOT`s standing directly in front of a piece. An odd
-   *  number of them excludes it, exactly as a `-` would, and they go wherever
-   *  the piece goes: taken out without them, a `NOT` would be left to fall on
-   *  whatever came next. */
-  nots: number[];
-};
-
-const QUOTES = '"“”„';
-const KEYWORDS = ['AND', 'OR', 'NOT'];
-/** Whitespace, and the control characters the engine reads as the same. */
-// eslint-disable-next-line no-control-regex
-const SPACING = /[\s\u0000-\u001f\u007f-\u009f]/;
-
-export const isKeyword = (l: Lexeme) =>
-  l.kind === 'piece' && l.plain && KEYWORDS.includes(l.says);
-
-export function read(query: string): {
-  chunks: string[];
-  lexemes: Lexeme[];
-  /** What it would take to close the quote and the brackets still open at
-   *  the end, which is what a query looks like while it is being typed. */
-  unclosed: string;
-} {
-  const chunks: string[] = [];
-  const lexemes: Lexeme[] = [];
-  let raw = '';
-  let says = '';
-  let quoteAt: number | null = null;
-  let quoted = false;
-  let openedWith = '"';
-  let depth = 0;
-  const push = (kind: Lexeme['kind']) => {
-    const before = depth;
-    if (kind === 'open') depth += 1;
-    if (kind === 'close') depth = Math.max(0, depth - 1);
-    lexemes.push({
-      kind,
-      chunk: chunks.length,
-      depth: before,
-      says: '',
-      plain: true,
-      phrase: false,
-      negated: false,
-      nots: [],
-    });
-  };
-  const flushPiece = () => {
-    if (says) {
-      const negated = says.length > 1 && says.startsWith('-') && quoteAt !== 0;
-      lexemes.push({
-        kind: 'piece',
-        chunk: chunks.length,
-        depth,
-        says,
-        plain: quoteAt === null,
-        phrase: quoteAt === (negated ? 1 : 0),
-        negated,
-        nots: [],
-      });
-    }
-    says = '';
-    quoteAt = null;
-  };
-  const flushChunk = () => {
-    flushPiece();
-    if (raw) chunks.push(raw);
-    raw = '';
-  };
-  const chars = [...query];
-  chars.forEach((ch, i) => {
-    const bare = !quoted && quoteAt === null;
-    const next = chars[i + 1];
-    if (QUOTES.includes(ch)) {
-      quoted = !quoted;
-      if (quoted) openedWith = ch;
-      quoteAt ??= says.length;
-      raw += ch;
-    } else if (SPACING.test(ch)) {
-      if (!quoted) flushChunk();
-      else {
-        raw += ch;
-        if (!says.endsWith(' ')) says += ' ';
-      }
-    } else if (ch === '(' && bare && (/^-*$/.test(says) || KEYWORDS.includes(says))) {
-      // A bracket groups only where it could not be part of a word. However
-      // many dashes stand in front of it, they are one exclusion.
-      if (says !== '' && !KEYWORDS.includes(says)) {
-        says = '';
-        push('minus');
-      } else flushPiece();
-      push('open');
-      raw += ch;
-    } else if (ch === ')' && !quoted && (next === undefined || next === ')' || SPACING.test(next))) {
-      flushPiece();
-      push('close');
-      raw += ch;
-    } else {
-      raw += ch;
-      says += ch;
-    }
-  });
-  flushChunk();
-
-  let run: number[] = [];
-  for (const l of lexemes) {
-    if (isKeyword(l) && l.says === 'NOT') run.push(l.chunk);
-    else {
-      if (l.kind === 'piece' && !isKeyword(l)) l.nots = run;
-      run = [];
-    }
-  }
-  const closer = openedWith === '“' || openedWith === '„' ? '”' : '"';
-  return { chunks, lexemes, unclosed: (quoted ? closer : '') + ')'.repeat(depth) };
-}
-
-/** Splits a query the way the engine does, keeping `from:"Dana Wu"` whole. */
-export function tokensOf(query: string): string[] {
-  return read(query)
-    .lexemes.filter((l) => l.kind === 'piece')
-    .map((l) => l.says);
 }
 
 /** What `OR` separates outside every bracket, each a run of lexemes. */
@@ -284,7 +135,32 @@ export function toggleToken(query: string, token: string): string {
   // the end of the field, so a token written after them landed inside: part
   // of the phrase, where it never lit the chip and every click added another.
   if (unclosed) chunks[chunks.length - 1] += unclosed;
-  if (groups.length > 1) return `(${chunks.join(' ')}) ${token}`;
+  if (groups.length > 1) {
+    // Every alternative already names a value for an operator that takes
+    // one: the new value goes where each of them was. Wrapped and added
+    // instead, `in:inbox a OR in:inbox b` became mail that is in the inbox
+    // and in Sent at once, which is none.
+    const held = (l: Lexeme) =>
+      Boolean(key && SINGLE_VALUE.includes(key)) &&
+      l.kind === 'piece' &&
+      l.depth === 0 &&
+      !l.phrase &&
+      !excluded(l) &&
+      l.says.length > key!.length &&
+      l.says.toLowerCase().startsWith(key!) &&
+      !/[()]/.test(chunks[l.chunk]);
+    if (groups.every((g) => g.some(held))) {
+      const first = new Set(groups.map((g) => g.find(held)!.chunk));
+      // A dropped one takes its NOTs with it, as `without` does, or they
+      // would be left to fall on whatever came after it.
+      const rest = new Set(lexemes.filter(held).flatMap((l) => [l.chunk, ...l.nots]));
+      return chunks
+        .map((chunk, i) => (first.has(i) ? token : rest.has(i) ? '' : chunk))
+        .filter(Boolean)
+        .join(' ');
+    }
+    return `(${chunks.join(' ')}) ${token}`;
+  }
 
   // One alternative, or none yet. The opposite of what is being asked for
   // cannot stay beside it, and neither can another value for an operator

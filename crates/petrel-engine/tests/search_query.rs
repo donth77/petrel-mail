@@ -11,8 +11,7 @@
 //! result.
 
 use petrel_engine::search_query::{
-    Clause, Expr, MAX_CLAUSES, MAX_DEPTH, MAX_VALUE_CHARS, Period, SearchQuery, State, Term, Text,
-    parse,
+    Clause, Expr, MAX_CLAUSES, MAX_VALUE_CHARS, Period, SearchQuery, State, Term, Text, parse,
 };
 
 fn word(value: &str) -> Term {
@@ -420,14 +419,22 @@ fn a_query_stays_bounded_and_says_when_it_was_cut() {
     assert_eq!(all(long.root.clone().unwrap()).len(), MAX_CLAUSES);
     assert!(long.truncated);
 
-    // Brackets nest so far and no further. Deeper ones are read as if they
-    // were not there, and ten thousand of them are no deeper than nine.
+    // Brackets have no limit of their own, and none is ever ignored: one
+    // that was is a different query. Ten thousand of them that group nothing
+    // change nothing.
     let nested = |depth: usize| format!("{}word{}", "(".repeat(depth), ")".repeat(depth));
-    assert!(!parse(&nested(MAX_DEPTH)).truncated);
-    assert!(parse(&nested(MAX_DEPTH + 1)).truncated);
-    assert_eq!(parse(&nested(MAX_DEPTH + 1)).root, parse("word").root);
+    assert!(!parse(&nested(40)).truncated);
+    assert_eq!(parse(&nested(40)).root, parse("word").root);
     let absurd = format!("{}a OR b", "(".repeat(10_000));
     assert_eq!(parse(&absurd).root, parse("a OR b").root);
+    // Ones that do group still do, however deep they sit.
+    let deep = |inner: &str| format!("{}{inner}{}", "(".repeat(20), ")".repeat(20));
+    assert_eq!(
+        parse(&deep("p (a OR b) c")).root,
+        parse("p (a OR b) c").root
+    );
+    assert_eq!(parse(&deep("x -(a OR b)")).root, parse("x -(a OR b)").root);
+    assert!(!parse(&deep("x -(a OR b)")).truncated);
 
     let endless = "x".repeat(MAX_VALUE_CHARS * 4);
     let held = parse(&format!("from:{endless}"));
@@ -454,10 +461,10 @@ fn a_query_stays_bounded_and_says_when_it_was_cut() {
     assert_eq!(name.chars().count(), MAX_VALUE_CHARS);
 }
 
-/// A run of NOTs is counted, not descended into. One call per NOT went as
-/// deep as the field was long, and ten thousand pasted in overflowed the
-/// stack, which aborts the process rather than failing a search. Read here on
-/// a stack far smaller than any the app runs on, so that coming back is the
+/// Nothing that reads the field calls itself. One call per NOT went as deep
+/// as the field was long, and ten thousand pasted in overflowed the stack,
+/// which aborts the process rather than failing a search. Read here on a
+/// stack far smaller than any the app runs on, so that coming back is the
 /// proof.
 #[test]
 fn a_long_run_of_nots_is_no_deeper_than_one() {
@@ -469,6 +476,9 @@ fn a_long_run_of_nots_is_no_deeper_than_one() {
             assert_eq!(parse(&run("NOT ", 100_001)).root, parse("-word").root);
             assert_eq!(parse(&run("-(", 100_000)).root, parse("word").root);
             assert_eq!(parse(&run("NOT( ", 100_001)).root, parse("-word").root);
+            // Brackets too: every one of them read, none of them a call.
+            let deep = format!("{}a OR b{} c", "(".repeat(100_000), ")".repeat(100_000));
+            assert_eq!(parse(&deep).root, parse("(a OR b) c").root);
         })
         .unwrap();
     reader.join().unwrap();

@@ -140,12 +140,20 @@ export function Help({ open, onClose }: { open: boolean; onClose: () => void }) 
                   ))}
                 </div>
               ))}
+              {/* Two examples, because the second half of the grammar cannot
+                  be shown by the first: one query that narrows by piling
+                  conditions up, and one that asks a question with a shape —
+                  either sender, this word, not that one. */}
               {i === opColumns.length - 1 && !q && (
                 <div className="op-example">
                   <div className="mono op-example-query">
                     from:sam has:attachment after:2026-06-01 annex
                   </div>
                   <div className="op-example-note">{t('help-together-note')}</div>
+                  <div className="mono op-example-query op-example-next">
+                    (from:sam OR from:dana) invoice NOT draft
+                  </div>
+                  <div className="op-example-note">{t('help-boolean-note')}</div>
                 </div>
               )}
             </div>

@@ -29,16 +29,31 @@ use std::fmt;
 /// multiply those must not become a hundred statements. One that would pass
 /// this is not cut short: the store asks it whole, as one statement that
 /// cannot rank its results (`as_lookups` in `store/search.rs`).
-pub const MAX_ALTERNATIVES: usize = 8;
-/// How many clauses a whole query can hold. Each binds a few SQL variables.
-/// Past the limits the rest is left out, and the parse says so in
+///
+/// Four, by measurement at a hundred thousand messages with a word that is
+/// in half of them. Each statement ranks its own words, so the cost is about
+/// the sum: one took 97ms, four 162ms, and eight 226ms, which is over the
+/// 200ms a search is allowed. The same eight asked whole took 32ms. Two
+/// bracketed choices of a word or a condition still rank; a third is where
+/// ranking stops paying for itself.
+pub const MAX_ALTERNATIVES: usize = 4;
+/// How many clauses a whole query can hold. Each binds a few SQL variables,
+/// and a condition that matches little reads every message: thirty-two
+/// senders joined by `OR` that match nobody took 295ms at a hundred thousand
+/// messages. Past the limits the rest is left out, and the parse says so in
 /// `truncated` rather than pretending it read everything.
+///
+/// The search field keeps a copy of this and of `MAX_VALUE_CHARS`
+/// (`search-limits.ts`), to tell the person typing when their query was cut.
+/// A test in the desktop crate holds the copy to these.
 pub const MAX_CLAUSES: usize = 32;
 /// How long one value can be. Nobody searches for a 300-character name, and
 /// SQLite refuses a LIKE pattern that runs to tens of thousands of bytes.
 pub const MAX_VALUE_CHARS: usize = 256;
-/// How deep brackets nest. Deeper ones are read as if they were not there.
-pub const MAX_DEPTH: usize = 8;
+// Brackets have no limit of their own. The clause limit is one: the tree is
+// kept tidy, so every level of it holds at least two things, and one with
+// thirty-two clauses in it cannot be much deeper than that however many
+// brackets were typed. Nothing that reads the field calls itself per bracket.
 
 /// A parsed query.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -49,10 +64,11 @@ pub struct SearchQuery {
     pub truncated: bool,
 }
 
-/// What a query is made of. The parser only ever builds the tidy form:
-/// an `All` never directly holds an `All`, nor an `Any` an `Any`, neither
-/// holds fewer than two things, and an excluded single term is a negated
-/// `Clause` rather than a `Not` around one.
+/// What a query is made of. The parser only ever builds the tidy form: an
+/// `All` never directly holds an `All`, nor an `Any` an `Any`, neither holds
+/// fewer than two things, a `Not` holds one of those groups rather than a
+/// single term, and an excluded single term is a negated `Clause`. So a tree
+/// cannot be deeper than the clauses in it, however the field was bracketed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
     Clause(Clause),
@@ -554,6 +570,34 @@ fn any_of(parts: Vec<Expr>) -> Option<Expr> {
     }
 }
 
+/// One bracket's worth of reading: the alternatives finished so far, and the
+/// parts of the one being read.
+#[derive(Default)]
+struct Group {
+    /// A NOT or a `-` stood in front of the bracket.
+    excluded: bool,
+    alternatives: Vec<Expr>,
+    parts: Vec<Expr>,
+}
+
+impl Group {
+    /// An `OR`: what has been read so far is one alternative, finished.
+    fn or(&mut self) {
+        let parts = std::mem::take(&mut self.parts);
+        self.alternatives.extend(all_of(parts));
+    }
+
+    fn close(mut self) -> Option<Expr> {
+        self.or();
+        let inner = any_of(self.alternatives);
+        if self.excluded {
+            inner.map(negate)
+        } else {
+            inner
+        }
+    }
+}
+
 /// Reads tokens in the order brackets, NOT, AND, OR.
 ///
 /// Nothing here can fail. An operator with nothing on one side of it —
@@ -561,107 +605,70 @@ fn any_of(parts: Vec<Expr>) -> Option<Expr> {
 /// ignored rather than searched for, or the results would flash empty between
 /// one keystroke and the next. A bracket never closed closes at the end, and
 /// one never opened closes a bracket that is taken to have opened at the
-/// start.
-struct Reader {
-    tokens: std::vec::IntoIter<Token>,
-    next: Option<Token>,
-}
-
-impl Reader {
-    fn advance(&mut self) -> Option<Token> {
-        std::mem::replace(&mut self.next, self.tokens.next())
-    }
-
-    fn any(&mut self) -> Option<Expr> {
-        self.any_after(None)
-    }
-
-    /// Reads on from a group that has already been read: `before` is what a
-    /// bracket nobody opened has just closed, and it stands as the first
-    /// thing in whatever follows it. `a) OR b` is then `(a) OR b`, where
-    /// reading the two sides apart and joining them made it `a b`.
-    fn any_after(&mut self, before: Option<Expr>) -> Option<Expr> {
-        let mut alternatives = Vec::new();
-        let mut before = before;
-        loop {
-            alternatives.extend(self.all_after(before.take()));
-            match self.next {
-                Some(Token::Keyword(Keyword::Or)) => {
-                    self.advance();
+/// start: what came before it is a group, and the reading carries on from
+/// that group, so `a) OR b` is `(a) OR b`.
+///
+/// Nothing here calls itself, either. The open brackets are a list, and a
+/// run of NOTs is a switch that two of them put back. A reader that went one
+/// call deeper for each went as deep as the field was long: ten thousand NOTs
+/// pasted in overflowed the stack, which is an abort and not an error anyone
+/// can catch. The cure for brackets used to be ignoring the ones past a
+/// depth, and an ignored bracket is a different query: `p (a OR b) c` nine
+/// deep was read as `p a OR b c`. Every bracket counts now, however deep.
+fn read_tokens(tokens: Vec<Token>) -> Option<Expr> {
+    let mut open = vec![Group::default()];
+    let mut excluding = false;
+    for token in tokens {
+        // Only a word or a bracket can be excluded. A NOT in front of
+        // anything else has nothing to exclude yet.
+        let excluded = std::mem::take(&mut excluding);
+        let innermost = open
+            .last_mut()
+            .expect("the outermost group is never closed");
+        match token {
+            Token::Minus | Token::Keyword(Keyword::Not) => excluding = !excluded,
+            Token::Keyword(Keyword::And) => {}
+            Token::Keyword(Keyword::Or) => innermost.or(),
+            Token::Clause(clause) => {
+                let clause = Expr::Clause(clause);
+                innermost
+                    .parts
+                    .push(if excluded { negate(clause) } else { clause });
+            }
+            Token::Open => open.push(Group {
+                excluded,
+                ..Group::default()
+            }),
+            Token::Close => {
+                let closed = open.pop().and_then(Group::close);
+                match open.last_mut() {
+                    Some(around) => around.parts.extend(closed),
+                    // Nobody opened it: what came before is the group.
+                    None => open.push(Group {
+                        parts: closed.into_iter().collect(),
+                        ..Group::default()
+                    }),
                 }
-                _ => return any_of(alternatives),
             }
         }
     }
-
-    fn all_after(&mut self, before: Option<Expr>) -> Option<Expr> {
-        let mut parts: Vec<Expr> = before.into_iter().collect();
-        loop {
-            match self.next {
-                None | Some(Token::Close | Token::Keyword(Keyword::Or)) => return all_of(parts),
-                Some(Token::Keyword(Keyword::And)) => {
-                    self.advance();
-                }
-                Some(_) => parts.extend(self.unary()),
-            }
-        }
+    let mut closed = None;
+    while let Some(mut group) = open.pop() {
+        group.parts.extend(closed);
+        closed = group.close();
     }
-
-    /// A run of NOTs is counted rather than descended into. Two of them undo
-    /// each other, so only whether there was an odd number matters, and a
-    /// reader that called itself once per NOT went as deep as the field was
-    /// long: ten thousand of them pasted in overflowed the stack, which is an
-    /// abort and not an error anything can catch. Brackets are the only thing
-    /// left that recurses, and they stop at the depth limit.
-    fn unary(&mut self) -> Option<Expr> {
-        let mut excluded = false;
-        let found = loop {
-            match self.advance()? {
-                Token::Minus | Token::Keyword(Keyword::Not) => match self.next {
-                    // Nothing to exclude yet.
-                    None | Some(Token::Close | Token::Keyword(Keyword::Or | Keyword::And)) => {
-                        return None;
-                    }
-                    Some(_) => excluded = !excluded,
-                },
-                Token::Open => {
-                    let inner = self.any();
-                    if matches!(self.next, Some(Token::Close)) {
-                        self.advance();
-                    }
-                    break inner;
-                }
-                Token::Clause(clause) => break Some(Expr::Clause(clause)),
-                Token::Close | Token::Keyword(_) => return None,
-            }
-        };
-        if excluded { found.map(negate) } else { found }
-    }
+    closed
 }
 
 /// Reads the field.
 pub fn parse(input: &str) -> SearchQuery {
     let mut q = SearchQuery::default();
-    let lexemes = lex(input);
-
     let mut tokens = Vec::new();
-    let (mut clauses, mut depth) = (0, 0);
-    for lexeme in lexemes {
+    let mut clauses = 0;
+    for lexeme in lex(input) {
         let token = match lexeme {
-            // Brackets past the depth limit are read as if they were not
-            // there, which also keeps the reader's recursion bounded.
-            Lexeme::Open if depth == MAX_DEPTH => {
-                q.truncated = true;
-                continue;
-            }
-            Lexeme::Open => {
-                depth += 1;
-                Token::Open
-            }
-            Lexeme::Close => {
-                depth = depth.saturating_sub(1);
-                Token::Close
-            }
+            Lexeme::Open => Token::Open,
+            Lexeme::Close => Token::Close,
             Lexeme::Minus => Token::Minus,
             Lexeme::Piece(piece) => match read(piece, &mut q.truncated) {
                 Read::Nothing => continue,
@@ -679,17 +686,7 @@ pub fn parse(input: &str) -> SearchQuery {
         tokens.push(token);
     }
 
-    let mut tokens = tokens.into_iter();
-    let next = tokens.next();
-    let mut reader = Reader { tokens, next };
-    loop {
-        q.root = reader.any_after(q.root.take());
-        // A bracket that closes nothing: what came before it is a group, and
-        // the reading carries on from that group.
-        if reader.advance().is_none() {
-            break;
-        }
-    }
+    q.root = read_tokens(tokens);
     if let Some(root) = &mut q.root {
         settle(root);
     }

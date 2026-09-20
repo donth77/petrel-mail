@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react';
-import { isKeyword, read } from './search-chips';
+import { isKeyword, read, reading } from './search-grammar';
 
 /**
  * Marking a search's words where they were found.
@@ -26,30 +26,10 @@ export type Term = {
   cjk: boolean;
 };
 
-const OPERATORS = [
-  'from', 'to', 'cc', 'subject', 'in', 'tag', 'filename', 'is', 'has', 'after', 'before', 'date',
-];
 const CJK = /[぀-ヿ㐀-䶿一-鿿豈-﫿가-힯]/;
 const WORD = /[\p{L}\p{N}]/u;
 /** An accent written as a character of its own, after the letter it sits on. */
 const ACCENT = /\p{M}/u;
-
-/** Whether the engine reads `key:value` as the operator. One it does not
- *  recognise, or a value it cannot take, is searched for as words
- *  (`search_query.rs`), so those are words to mark as well. */
-function operates(key: string, value: string): boolean {
-  if (!OPERATORS.includes(key) || !value) return false;
-  const low = value.toLowerCase();
-  if (key === 'is') return ['unread', 'read', 'starred', 'flagged', 'snoozed'].includes(low);
-  if (key === 'has') return ['attachment', 'attachments', 'file'].includes(low);
-  if (key === 'after' || key === 'before' || key === 'date') {
-    const parts = /^(\d{4})(?:[-/](\d{1,2})(?:[-/](\d{1,2}))?)?[-/]?$/.exec(value);
-    if (!parts) return false;
-    const [month, day] = [parts[2], parts[3]].map((n) => (n === undefined ? 1 : Number(n)));
-    return month >= 1 && month <= 12 && day >= 1 && day <= 31;
-  }
-  return true;
-}
 
 /** Lowercase and without its accents, one character for one character, so a
  *  position in the folded text is the same position in the original. FTS5
@@ -86,33 +66,33 @@ export function termsOf(query: string): Term[] {
     } else if (isKeyword(l)) {
       pending = l.says === 'NOT' ? !pending : false;
     } else {
-      const says = l.negated ? l.says.replace(/^-+/, '') : l.says;
-      const out = within !== (pending !== l.negated);
+      const r = reading(l);
+      const out = within !== (pending !== r.negated);
       pending = false;
       if (out) continue;
-      const colon = l.phrase ? -1 : says.indexOf(':');
-      const key = colon > 0 ? says.slice(0, colon).toLowerCase() : '';
-      const value = says.slice(colon + 1);
-      if (operates(key, value)) {
-        // As-you-type reaches into `subject:` too: `subject:invo` finds
-        // "Invoice", and the subject is the one place it has to be marked.
-        if (key === 'subject') terms.push({ text: value, typed: l.plain });
-      } else terms.push({ text: says, typed: l.plain });
+      // As-you-type reaches into `subject:` too: `subject:invo` finds
+      // "Invoice", and the subject is the one place it has to be marked.
+      if (r.key === null) terms.push({ text: r.text, typed: l.plain });
+      else if (r.key === 'subject') terms.push({ text: r.value, typed: l.plain });
     }
   }
-  const last = terms.length - 1;
-  return terms.flatMap(({ text, typed }, i): Term[] => {
+  const shaped = terms.map(({ text, typed }) => {
     const folded = fold(text);
     // CJK is matched a run at a time, each wherever it falls: the index has
     // no phrases for it, so `"회의 일정"` is both runs and not the two joined.
-    if (CJK.test(folded)) {
-      return folded
-        .split(/\s+/)
-        .filter(Boolean)
-        .map((run) => ({ tokens: [run], prefix: false, cjk: true }));
-    }
-    const tokens = folded.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+    const cjk = CJK.test(folded);
+    const tokens = cjk
+      ? folded.split(/\s+/).filter(Boolean)
+      : folded.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+    return { typed, cjk, tokens };
+  });
+  // The word still being typed is the last one the index keeps, as in the
+  // engine: in `lun -` the dash is the start of an exclusion, and `lun` is
+  // still a prefix there.
+  const last = shaped.map((term) => term.tokens.length > 0).lastIndexOf(true);
+  return shaped.flatMap(({ typed, cjk, tokens }, i): Term[] => {
     if (tokens.length === 0) return [];
+    if (cjk) return tokens.map((run) => ({ tokens: [run], prefix: false, cjk: true }));
     // The engine only completes a word of two letters or more. `vitamin c`
     // means the letter, not every word that starts with one.
     const growing = typed && i === last && [...tokens[tokens.length - 1]].length > 1;
@@ -192,13 +172,19 @@ export function sameTerms(a: readonly Term[], b: readonly Term[]): boolean {
   );
 }
 
+/** No search, or highlighting switched off. One list, so it is never news
+ *  to anything watching it. */
+export const NO_TERMS: readonly Term[] = [];
+
 /** The terms of the search on screen — empty when there is none, and when
  *  highlighting is switched off, so nothing downstream has to ask twice. */
-export const SearchTerms = createContext<readonly Term[]>([]);
+export const SearchTerms = createContext<readonly Term[]>(NO_TERMS);
 
-/** Text with the search's words marked. */
-export function Marked({ text }: { text: string }) {
-  const hits = hitsIn(text, useContext(SearchTerms));
+/** Text with the search's words marked: the search on screen, or the one
+ *  given, for a window that has a query of its own (the palette). */
+export function Marked({ text, terms }: { text: string; terms?: readonly Term[] }) {
+  const onScreen = useContext(SearchTerms);
+  const hits = hitsIn(text, terms ?? onScreen);
   if (hits.length === 0) return <>{text}</>;
   const out: React.ReactNode[] = [];
   let at = 0;

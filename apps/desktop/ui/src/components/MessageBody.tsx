@@ -94,6 +94,14 @@ export function MessageBody({ messageId, title }: { messageId: number; title: st
   useEffect(() => {
     termsRef.current = terms;
   }, [terms]);
+  // `'*'` because there is nothing else to say. The frame is sandboxed
+  // without allow-same-origin, so its origin is opaque, and an opaque origin
+  // cannot be named as a target: any other value and the message is dropped.
+  // What stands in for it is that the frame can only ever hold the message.
+  // It never navigates: its script hands every link out instead of following
+  // it, forms are off (`form-action 'none'`), and the only script that runs
+  // in it is ours. So there is nobody else in there to hear this. The
+  // reading size and find go in the same way.
   const sendTerms = useCallback(() => {
     frameRef.current?.contentWindow?.postMessage(
       { petrelSearch: termsRef.current.map((term) => ({ t: term.tokens, p: term.prefix, c: term.cjk })) },

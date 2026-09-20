@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, type ActionKind, type Folder, type OutboxRow, type Status } from './lib/api';
 import { chips, folderScopeName, hasToken, scopeFor, toggleToken } from './lib/search-chips';
-import { SearchTerms, sameTerms, termsOf, type Term } from './lib/search-highlight';
+import { NO_TERMS, SearchTerms, sameTerms, termsOf, type Term } from './lib/search-highlight';
+import { MAX_CLAUSES, MAX_VALUE_CHARS, cutShort } from './lib/search-limits';
 import { arrangementFor, countFor, countModes, visibleMailboxes } from './lib/mailboxes';
 import { count as fmtCount, fileSize } from './lib/format';
 import { t, type StringId } from './lib/strings';
-import { Search } from 'lucide-react';
+import { Search, TriangleAlert } from 'lucide-react';
 import { SortMenu } from './components/SortMenu';
 import { DEFAULT_SORT, SEARCH_SORT, effectiveSort, type Sort } from './lib/sort';
 import { repaintTag } from './lib/tag-paint';
@@ -95,9 +96,6 @@ function statusNeedsRender(prev: Status | null, next: Status): boolean {
  *  translated. An unrecognised key says nothing rather than showing a code —
  *  a newer engine talking to an older window must not put `sent-copy-failed`
  *  on screen. */
-/** No search, or highlighting switched off: one list, so it is never news. */
-const NO_TERMS: readonly Term[] = [];
-
 const ALERT_TEXT: Record<string, StringId> = {
   'sent-copy-failed': 'alert-sent-copy-failed',
 };
@@ -140,6 +138,11 @@ export function App() {
   // search bar is open, which is a different thing: the bar can be focused
   // with nothing typed in it, and an empty box is a mailbox.
   const hasQuery = query.trim().length > 0;
+  // Whether the engine will search less than the field says (`cutShort`),
+  // and whether the index holds less than the mailbox: both are said under
+  // the list, where the results they qualify are.
+  const searchCut = useMemo(() => (hasQuery ? cutShort(query) : null), [hasQuery, query]);
+  const partlySearched = (status?.server_total ?? 0) > (status?.count ?? 0);
   // The words to mark wherever a result is shown. Empty when there is no
   // search and when highlighting is off, so the list, the reader and the
   // message frames all ask one question and none of them asks the setting.
@@ -2166,6 +2169,23 @@ export function App() {
           </div>
         </div>
 
+        {/* Above the results, not under them. The line below the list says
+            how much of the mailbox was searched, which is ambient and can
+            wait to be looked for; this says part of what you typed was not
+            searched at all, which changes what you are reading right now.
+            Amber for the same reason: at the foot of the list in the quiet
+            grey of a caption, people simply did not see it. */}
+        {hasQuery && searchCut && (
+          <div className="list-notice" role="status">
+            <TriangleAlert size={13} strokeWidth={1.8} aria-hidden="true" />
+            <span>
+              {searchCut === 'terms'
+                ? t('search-cut-terms', { count: MAX_CLAUSES })
+                : t('search-cut-value', { count: MAX_VALUE_CHARS })}
+            </span>
+          </div>
+        )}
+
         {error ? (
           <div className="empty">
             <h2 style={{ color: 'var(--danger)' }}>{t('list-load-failed')}</h2>
@@ -2215,17 +2235,22 @@ export function App() {
             Saying so keeps "no results" meaning no results.
 
             Shown only when the two numbers disagree: once everything is held,
-            a line explaining that everything was searched is noise. */}
-        {query.trim() &&
-          (status?.server_total ?? 0) > (status?.count ?? 0) && (
-            <div className="coverage">
+            a line explaining that everything was searched is noise.
+
+            The same goes for the query. Past thirty-two terms, or a term past
+            256 characters, the engine searches what it read and leaves the
+            rest, which looks exactly like the rest finding nothing. */}
+        {hasQuery && partlySearched && (
+          <div className="coverage">
+            <div>
               {t('search-coverage', {
                 searched: fmtCount(status?.count ?? 0),
                 total: fmtCount(status?.server_total ?? 0),
               })}
               {status?.seeding ? ` ${t('search-coverage-syncing')}` : ''}
             </div>
-          )}
+          </div>
+        )}
       </div>
 
       {/* Only where there are two panes side by side to divide. Stacked, the
@@ -2552,6 +2577,14 @@ export function App() {
             .catch((e) => setToast(t('popout-failed', { error: String(e) })));
         }}
         onClose={() => setPaletteOpen(false)}
+        // The query first, so that focusing the field later cannot decide it
+        // is empty and write the mailbox scope over it; the focus last,
+        // because the palette takes focus back as it closes.
+        onSearch={(q) => {
+          setQuery(q);
+          setSearching(true);
+          requestAnimationFrame(() => searchRef.current?.focus());
+        }}
         subject={active?.subject ?? null}
         ctx={{
           hasThread: !!active,

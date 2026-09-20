@@ -74,7 +74,10 @@ const OPERATOR_IDS: { title: StringId; side: Side; ops: OperatorIds[] }[] = [
     ops: [
       { op: 'annex pricing', means: 'search-op-annex-pricing' },
       { op: '"board pack"', means: 'search-op-board-pack' },
-      { op: '-draft', means: 'search-op-draft' },
+      // A placeholder, not a keyword: the row used to read `-draft`, which
+      // made "draft" look like a word the app knows rather than any word
+      // you put a minus in front of.
+      { op: '-word', means: 'search-op-draft', example: '-draft' },
       { op: 'OR', means: 'search-op-or', example: 'from:sam OR from:dana' },
       { op: 'AND', means: 'search-op-and' },
       { op: 'NOT', means: 'search-op-not' },

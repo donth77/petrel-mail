@@ -36,6 +36,23 @@
 
 /* What the search actually covered, under the results. Quiet, and only there
    when the numbers disagree — a line saying everything was searched is noise. */
+/* A caution above the results: part of the query was not searched.
+   Amber rather than the caption grey below, and above the rows rather than
+   under them, because it is about what you are reading now and the quiet
+   version at the foot of the list went unread. */
+.list-notice {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 14px;
+  border-block-end: 1px solid var(--amber-line);
+  background: var(--amber-bg);
+  color: var(--amber);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .coverage {
   flex-shrink: 0;
   padding: 8px 14px 10px;

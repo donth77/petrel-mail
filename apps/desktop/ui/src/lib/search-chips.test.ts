@@ -1,11 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { asWords, chips, hasToken, scopedQuery, toggleToken, tokensOf } from './search-chips';
-
-describe('tokensOf', () => {
-  it('keeps a quoted value whole', () => {
-    expect(tokensOf('from:"Dana Wu" annex')).toEqual(['from:Dana Wu', 'annex']);
-  });
-});
+import { asWords, chips, hasToken, scopedQuery, toggleToken } from './search-chips';
 
 describe('toggleToken', () => {
   it('adds a token to what is already typed', () => {
@@ -283,6 +277,38 @@ describe('what was typed survives a chip', () => {
       expect(hasToken(once, 'is:unread')).toBe(true);
       expect(hasToken(toggleToken(once, 'is:unread'), 'is:unread')).toBe(false);
     }
+  });
+
+  /* An operator that takes one value is replaced on every side of an OR
+     that names one. Wrapped and added instead, it asked for mail in two
+     mailboxes at once. */
+  it('replaces a single value on each side of an OR', () => {
+    expect(toggleToken('in:inbox a OR in:inbox b', 'in:sent')).toBe('in:sent a OR in:sent b');
+    expect(hasToken('in:sent a OR in:sent b', 'in:sent')).toBe(true);
+    expect(toggleToken('in:sent a OR in:sent b', 'in:sent')).toBe('a OR b');
+    // Only when every side names one; otherwise the token narrows the whole.
+    expect(toggleToken('in:inbox a OR b', 'in:sent')).toBe('(in:inbox a OR b) in:sent');
+    // An excluded mailbox is not a value to replace.
+    expect(toggleToken('-in:spam a OR NOT in:spam b', 'in:sent')).toBe(
+      '(-in:spam a OR NOT in:spam b) in:sent',
+    );
+  });
+
+  /* Only brackets that hold the whole query come off with the chip. */
+  it('takes off only the brackets it put on', () => {
+    const once = toggleToken('(a) OR (b)', 'is:unread');
+    expect(once).toBe('((a) OR (b)) is:unread');
+    expect(toggleToken(once, 'is:unread')).toBe('(a) OR (b)');
+    expect(toggleToken('(a OR b) (c OR d) is:unread', 'is:unread')).toBe('(a OR b) (c OR d)');
+  });
+
+  /* A token that narrows one side of an OR narrows nothing, so the chip is
+     not lit for it and clicking adds one that narrows the whole query. */
+  it('adds a token that narrows all of an OR, beside one that narrows a side', () => {
+    expect(hasToken('(a) OR (b) is:unread', 'is:unread')).toBe(false);
+    expect(toggleToken('(a) OR (b) is:unread', 'is:unread')).toBe(
+      '((a) OR (b) is:unread) is:unread',
+    );
   });
 
   /* `NOT is:unread` asks for the opposite of the chip. Lit for it, the chip

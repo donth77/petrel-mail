@@ -195,6 +195,26 @@ fn a_name_is_matched_whatever_its_case_in_any_alphabet() {
     }
 }
 
+/// An ASCII name is not folded before it is compared: LIKE already ignores
+/// the case of ASCII letters, and folding every row's name first was most
+/// of what a sender filter cost. This holds the case-blindness in place, in
+/// case anything ever turns LIKE case-sensitive.
+#[test]
+fn an_ascii_name_is_matched_whatever_its_case() {
+    let m = mailbox();
+    for typed in ["from:SAM", "from:Ortiz", "from:SAM@EXAMPLE.COM"] {
+        assert_eq!(found(&m.store, typed), ["Q3 vendor contracts"], "{typed}");
+    }
+    assert_eq!(found(&m.store, "to:DANA"), ["Q3 vendor contracts"]);
+    assert_eq!(found(&m.store, "to:\"dana WU\""), ["Q3 vendor contracts"]);
+    assert_eq!(found(&m.store, "cc:LEGAL"), ["Q3 vendor contracts"]);
+    assert_eq!(found(&m.store, "-from:SAM").len(), EVERYTHING - 1);
+    assert_eq!(
+        found(&m.store, "from:SAM OR from:DANA"),
+        ["Draft contract terms", "Q3 vendor contracts"]
+    );
+}
+
 /* What. */
 
 #[test]
@@ -720,7 +740,7 @@ fn a_keyword_in_quotes_is_the_word() {
 
 /// An `OR` with a word on one side and a condition on the other is asked a
 /// statement per side, and several of them multiply. Past the limit the
-/// first eight statements were kept and the rest left out, so a query whose
+/// first few statements were kept and the rest left out, so a query whose
 /// only match took the second side of its first choice found nothing, and
 /// nothing said so. It is asked whole now, as lookups.
 #[test]
@@ -805,6 +825,26 @@ fn a_latin_word_is_excluded_from_a_cjk_search() {
         found(&m.store, "東京 -crates"),
         ["Annex for 東京", "東京の会議"]
     );
+
+    // Wanted beside a CJK word, a Latin one is asked of its own index too:
+    // an address is found, a phrase is a phrase, and a word still being
+    // typed is still a prefix.
+    assert_eq!(
+        found(&m.store, "東京 sato"),
+        ["Annex for 東京", "東京の会議"]
+    );
+    assert_eq!(found(&m.store, "東京 sam"), ["Crates for 東京"]);
+    assert!(found(&m.store, r#"東京 "board pack""#).is_empty());
+    assert_eq!(
+        found(&m.store, r#"東京 "pack the crates""#),
+        ["Crates for 東京"]
+    );
+    assert_eq!(found(&m.store, "東京 ann"), ["Annex for 東京"]);
+    assert_eq!(
+        found(&m.store, "(東京 annex) OR lunch"),
+        ["Annex for 東京", "Lunch"]
+    );
+    assert_eq!(found(&m.store, "東京 -annex -crates"), ["東京の会議"]);
 }
 
 /// A choice keeps the sides that did not name the bin out of it. Not when
@@ -916,6 +956,71 @@ fn punctuation_is_no_side_of_a_choice() {
     );
     // Among things that all have to hold it is still simply skipped.
     assert_eq!(found(&m.store, "from:sam OR (from:dana -[)").len(), 2);
+}
+
+/// Punctuation is not a word, wherever its characters happen to live in
+/// Unicode. `・` sits among the Japanese characters but is no more a word
+/// than `[` is, and taking it for one sent `・ annex` to the per-character
+/// index, where the only real word was thrown away and the search with it.
+#[test]
+fn cjk_punctuation_is_skipped_like_any_other() {
+    let m = mailbox();
+    let annex = found(&m.store, "annex");
+    assert_eq!(annex, ["Annex for 東京", "Q3 vendor contracts"]);
+    for typed in ["・ annex", "annex ・", "゠ annex", "annex ゛"] {
+        assert_eq!(found(&m.store, typed), annex, "{typed}");
+    }
+    // The Latin side of the same rule, unchanged.
+    assert_eq!(found(&m.store, "[ annex"), annex);
+    // On its own it is not a word, so it finds nothing rather than everything.
+    for alone in ["・", "゠", "["] {
+        assert!(found(&m.store, alone).is_empty(), "{alone}");
+    }
+    // Beside a real CJK word it changes nothing either.
+    assert_eq!(found(&m.store, "・ 東京"), found(&m.store, "東京"));
+}
+
+/// A filter with no words beside it is asked of its whole table in one pass,
+/// rather than of each message in turn, because every message is being read
+/// anyway: a recipient nobody wrote to went from 135ms to 25ms at a hundred
+/// thousand messages. Excluding is where that would go wrong quietly — one
+/// missing row in the answer and `NOT IN` is false for everybody — so both
+/// directions are held here, with and without a word beside them.
+#[test]
+fn a_filter_finds_and_excludes_the_same_mail_with_or_without_words() {
+    let m = mailbox();
+    let urgent = m.store.ensure_tag(m.account, "Urgent", None).unwrap();
+    let draft = m.store.search_threads("subject:draft", 5).unwrap()[0].id;
+    m.store.tag_message(draft, urgent).unwrap();
+
+    for (finds, excludes, whole) in [
+        ("to:dana", "-to:dana", "Q3 vendor contracts"),
+        ("cc:legal", "-cc:legal", "Q3 vendor contracts"),
+        ("filename:.pdf", "-filename:.pdf", "Q3 vendor contracts"),
+        ("tag:urgent", "-tag:urgent", "Draft contract terms"),
+    ] {
+        assert_eq!(found(&m.store, finds), [whole], "{finds}");
+        let rest = found(&m.store, excludes);
+        assert_eq!(rest.len(), EVERYTHING - 1, "{excludes}");
+        assert!(!rest.contains(&whole.to_string()), "{excludes}");
+    }
+    // Beside a word the same filter is asked the other way round, and the
+    // two have to agree.
+    assert_eq!(
+        found(&m.store, "contracts to:dana"),
+        ["Q3 vendor contracts"]
+    );
+    assert_eq!(found(&m.store, "contract -to:dana").len(), 2);
+    assert_eq!(
+        found(&m.store, "draft tag:urgent"),
+        ["Draft contract terms"]
+    );
+    assert_eq!(found(&m.store, "contract -tag:urgent").len(), 2);
+    // Either side of an OR, where one side has words and the other does not.
+    assert_eq!(
+        found(&m.store, "to:dana OR (contract from:dana)"),
+        ["Draft contract terms", "Q3 vendor contracts"]
+    );
 }
 
 /// `in:` escapes what was typed as well. The mailbox needs a folder the
