@@ -309,7 +309,7 @@ pub fn view_message_source(
     state: State<Arc<AppState>>,
 ) -> Result<(), String> {
     use tauri::{WebviewUrl, WebviewWindowBuilder};
-    let (token, theme) = {
+    let (token, theme, accent) = {
         let store = state.store_read_open()?;
         store
             .blob_hash_for(message_id)
@@ -319,21 +319,36 @@ pub fn view_message_source(
         // page cannot disagree, and so a window opened from anywhere gets it.
         // "system" is left off: the page then resolves it the way the app's
         // own tokens do, through prefers-color-scheme.
-        let theme = store
-            .settings()
-            .ok()
+        let settings = store.settings().ok();
+        let theme = settings
+            .as_ref()
             .and_then(|s| s.get("theme").cloned())
             .filter(|t| t == "dark" || t == "light");
-        (state.tokens.issue(message_id), theme)
+        // The window builds the app's dark ground itself, and that ground
+        // follows the accent. Stored with a leading `#`, which would start a
+        // fragment, so it is dropped here and the page checks what arrives.
+        let accent = settings
+            .as_ref()
+            .and_then(|s| s.get("accent").cloned())
+            .map(|a| a.trim_start_matches('#').to_string())
+            .filter(|a| a.len() == 6 && a.bytes().all(|b| b.is_ascii_hexdigit()));
+        (state.tokens.issue(message_id), theme, accent)
     };
     let label = format!("source-{message_id}");
     if let Some(existing) = app.get_webview_window(&label) {
         let _ = existing.set_focus();
         return Ok(());
     }
-    let query = match &theme {
-        Some(t) => format!("?theme={t}"),
-        None => String::new(),
+    let query = {
+        let parts: Vec<String> = theme
+            .iter()
+            .map(|t| format!("theme={t}"))
+            .chain(accent.iter().map(|a| format!("accent={a}")))
+            .collect();
+        match parts.is_empty() {
+            true => String::new(),
+            false => format!("?{}", parts.join("&")),
+        }
     };
     let url: tauri::Url = format!("{}/source/{token}{query}", message_origin())
         .parse()

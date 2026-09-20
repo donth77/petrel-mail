@@ -28,8 +28,8 @@
   max-inline-size: 280px;
   padding: 5px 10px;
   border-radius: 6px;
-  background: var(--accent);
-  color: var(--on-accent, #fff);
+  background: var(--accent-fill);
+  color: #fff;
   font-size: 12px;
   font-weight: 600;
   white-space: nowrap;

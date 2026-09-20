@@ -106,6 +106,43 @@ fn push_readable(out: &mut String, text: &str) {
     }
 }
 
+/// Storm teal, the same default `tokens.css` carries.
+const ACCENT_DEFAULT: &str = "0e7c86";
+
+/// The app's dark neutrals: a share of the accent, mixed into a grey that has
+/// no colour of its own.
+///
+/// Mixing in oklab against an achromatic base gives the result the accent's
+/// hue exactly, and a chroma of simply the share times the accent's own — so
+/// the ground follows the accent without any of these lightnesses moving.
+/// The shares and the greys are `tokens.css`'s and have to change with it: a
+/// reading pane that does not match the window around it is worse than one
+/// that was never tinted.
+const DARK_BG: (u8, &str) = (20, "#080808");
+const DARK_SURFACE: (u8, &str) = (22, "#0e0e0e");
+const DARK_INK: (u8, &str) = (10, "#fafafa");
+const DARK_INK2: (u8, &str) = (22, "#e0e0e0");
+const DARK_HAIR: (u8, &str) = (26, "#424242");
+
+fn dark_neutral(accent: &str, (share, grey): (u8, &str)) -> String {
+    format!("color-mix(in oklab, #{accent} {share}%, {grey})")
+}
+
+/// The accent the app is wearing, as it rides the URL.
+///
+/// Six hex digits or nothing. Anything else is somebody else's idea rather
+/// than a colour, and it is about to be interpolated into a stylesheet — the
+/// query on these URLs is ours, but that is a thing to enforce rather than to
+/// assume.
+fn accent_from_query(query: Option<&str>) -> &str {
+    query
+        .unwrap_or("")
+        .split('&')
+        .find_map(|kv| kv.strip_prefix("accent="))
+        .filter(|v| v.len() == 6 && v.bytes().all(|b| b.is_ascii_hexdigit()))
+        .unwrap_or(ACCENT_DEFAULT)
+}
+
 /// The page the source view window loads.
 ///
 /// Our chrome around the bytes, not a message document: the source is rendered
@@ -126,7 +163,11 @@ fn push_readable(out: &mut String, text: &str) {
 /// choice stamps the root and must win in both directions; "system" stamps
 /// nothing and resolves through `prefers-color-scheme`, exactly as the app's
 /// own tokens do. A window that ignored it was light while the app was dark.
-pub fn source_document(raw: &[u8], theme: Option<&str>, nonce: &str) -> String {
+///
+/// `accent` is the Appearance accent, six hex digits without the `#`. The
+/// dark neutrals are built from it for the same reason: a window that ignored
+/// it was blue while the app was amber.
+pub fn source_document(raw: &[u8], theme: Option<&str>, accent: &str, nonce: &str) -> String {
     let (text, truncated) = readable_source(raw);
     let escaped = text
         .replace('&', "&amp;")
@@ -150,6 +191,14 @@ pub fn source_document(raw: &[u8], theme: Option<&str>, nonce: &str) -> String {
         Some("light") => " data-theme=\"light\"",
         _ => "",
     };
+    let dark = format!(
+        "--bg: {}; --surface: {}; --ink: {}; --ink2: {}; --hair: {}; color-scheme: dark;",
+        dark_neutral(accent, DARK_BG),
+        dark_neutral(accent, DARK_SURFACE),
+        dark_neutral(accent, DARK_INK),
+        dark_neutral(accent, DARK_INK2),
+        dark_neutral(accent, DARK_HAIR),
+    );
     format!(
         r#"<!doctype html><html{stamp}><head><meta charset="utf-8">
 <title data-t="title">Message source</title>
@@ -160,17 +209,9 @@ pub fn source_document(raw: &[u8], theme: Option<&str>, nonce: &str) -> String {
     color-scheme: light;
   }}
   @media (prefers-color-scheme: dark) {{
-    :root:not([data-theme='light']) {{
-      --bg: #0f1b21; --surface: #142329; --ink: #e4edee; --ink2: #b6cad0;
-      --hair: #3e5159;
-      color-scheme: dark;
-    }}
+    :root:not([data-theme='light']) {{ {dark} }}
   }}
-  :root[data-theme='dark'] {{
-    --bg: #0f1b21; --surface: #142329; --ink: #e4edee; --ink2: #b6cad0;
-    --hair: #3e5159;
-    color-scheme: dark;
-  }}
+  :root[data-theme='dark'] {{ {dark} }}
   body {{
     margin: 0;
     padding: 16px;
@@ -503,7 +544,9 @@ fn print_document(
   header {{ border-bottom: 1px solid #d9e1e2; padding-bottom: 10px; margin-bottom: 14px; }}
   h1 {{ font-size: 17px; margin: 0 0 8px; }}
   .line {{ font-size: 12px; color: #54666e; }}
-  .line span {{ display: inline-block; min-width: 44px; color: #7c8f96; }}
+  /* The app's tertiary ink, which was measured and moved to #62757c; this
+     copy kept the old value and printed the header labels at 3.2:1. */
+  .line span {{ display: inline-block; min-width: 44px; color: #62757c; }}
   img {{ max-width: 100%; }}
   img:not([height]) {{ height: auto; }}
   blockquote {{ margin: 8px 0; padding-left: 12px; border-left: 2px solid #d9e1e2; color: #54666e; }}
@@ -643,7 +686,13 @@ impl FrameTheme {
     }
 }
 
-fn document(body: &str, blocked_remote: usize, nonce: &str, theme: FrameTheme) -> String {
+fn document(
+    body: &str,
+    blocked_remote: usize,
+    nonce: &str,
+    theme: FrameTheme,
+    accent: &str,
+) -> String {
     // The count goes out to the app rather than into a banner here. A notice
     // drawn inside the frame can only ever be a notice: the frame has no script
     // of its own, no IPC and no same-origin access, so "Show images" drawn here
@@ -654,18 +703,25 @@ fn document(body: &str, blocked_remote: usize, nonce: &str, theme: FrameTheme) -
     // The light palette is the only definition on bare :root, so an
     // AlwaysLight frame is simply one with no dark blocks — same variables,
     // one meaning. The dark values are the reading pane's own (surface, ink,
-    // hairline from the app's dark tokens), not an inversion of the light.
+    // hairline from the app's dark tokens), not an inversion of the light,
+    // and they follow the accent the way the app's do. The highlight does
+    // not: a match is yellow because it is a match.
     let dark_css = match theme {
         FrameTheme::AlwaysLight => String::new(),
         FrameTheme::Adaptive { .. } => {
-            const DARK_VARS: &str = "color-scheme: dark; \
-             --mv-bg: #142329; --mv-ink: #E4EDEE; --mv-ink2: #B6CAD0; \
-             --mv-hair: #3E5159; --mv-mark: #6B5410; --mv-mark-on: #F6C945; \
-             --mv-mark-on-ink: #182730;";
+            let dark_vars = format!(
+                "color-scheme: dark; --mv-bg: {}; --mv-ink: {}; --mv-ink2: {}; \
+                 --mv-hair: {}; --mv-mark: #6B5410; --mv-mark-on: #F6C945; \
+                 --mv-mark-on-ink: #182730;",
+                dark_neutral(accent, DARK_SURFACE),
+                dark_neutral(accent, DARK_INK),
+                dark_neutral(accent, DARK_INK2),
+                dark_neutral(accent, DARK_HAIR),
+            );
             format!(
                 "@media (prefers-color-scheme: dark) {{ \
-                   :root:not([data-theme='light']) {{ {DARK_VARS} }} }} \
-                 :root[data-theme='dark'] {{ {DARK_VARS} }}"
+                   :root:not([data-theme='light']) {{ {dark_vars} }} }} \
+                 :root[data-theme='dark'] {{ {dark_vars} }}"
             )
         }
     };
@@ -808,6 +864,7 @@ pub fn handle(
         // does. Without it this window was light while the app was dark.
         let query = request.uri().query().unwrap_or("");
         let theme = query.split('&').find_map(|kv| kv.strip_prefix("theme="));
+        let accent = accent_from_query(Some(query));
         // One nonce for the header and the page: they have to agree or the
         // script the header admits is not the script the page carries.
         let source_nonce = new_token();
@@ -828,7 +885,7 @@ pub fn handle(
             )
             .header("X-Content-Type-Options", "nosniff")
             .header("Referrer-Policy", "no-referrer")
-            .body(source_document(&raw, theme, &source_nonce).into_bytes())
+            .body(source_document(&raw, theme, accent, &source_nonce).into_bytes())
             .expect("source response");
     }
 
@@ -998,18 +1055,30 @@ pub fn handle(
         .header("Content-Security-Policy", csp)
         .header("X-Content-Type-Options", "nosniff")
         .header("Referrer-Policy", "no-referrer")
-        .body(document(&body, report.blocked_remote, &nonce, theme).into_bytes())
+        .body(
+            document(
+                &body,
+                report.blocked_remote,
+                &nonce,
+                theme,
+                accent_from_query(query),
+            )
+            .into_bytes(),
+        )
         .expect("message response")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{FrameTheme, SOURCE_VIEW_CAP, document, img_src, print_document, source_document};
+    use super::{
+        ACCENT_DEFAULT, FrameTheme, SOURCE_VIEW_CAP, accent_from_query, document, img_src,
+        print_document, source_document,
+    };
 
     /// The source page with no explicit theme, which is what most of these are
     /// about. The theme is exercised on its own below.
     fn source_document_t(raw: &[u8]) -> String {
-        source_document(raw, None, "test-nonce")
+        source_document(raw, None, ACCENT_DEFAULT, "test-nonce")
     }
 
     /// Every word on these pages is replaceable from the .ftl files.
@@ -1020,7 +1089,7 @@ mod tests {
     /// script can put the app's own language over it.
     #[test]
     fn both_pages_can_be_spoken_in_another_language() {
-        let source = source_document(b"Subject: x\r\n\r\nbody\r\n", None, "n");
+        let source = source_document(b"Subject: x\r\n\r\nbody\r\n", None, ACCENT_DEFAULT, "n");
         assert!(
             source.contains(r#"<title data-t="title">"#),
             "the title is fixed"
@@ -1115,7 +1184,7 @@ mod tests {
     fn source_caps_a_huge_message_and_says_so() {
         let mut raw = b"Subject: big\r\n\r\n".to_vec();
         raw.resize(SOURCE_VIEW_CAP + 5000, b'A');
-        let doc = source_document(&raw, None, "n");
+        let doc = source_document(&raw, None, ACCENT_DEFAULT, "n");
         assert!(
             doc.contains("Showing the first"),
             "no truncation note in the page"
@@ -1141,9 +1210,15 @@ mod tests {
     #[test]
     fn source_page_follows_the_appearance_setting() {
         let raw = b"Subject: x\r\n\r\nbody\r\n";
-        assert!(source_document(raw, Some("dark"), "n").contains(r#"<html data-theme="dark">"#));
-        assert!(source_document(raw, Some("light"), "n").contains(r#"<html data-theme="light">"#));
-        let system = source_document(raw, None, "n");
+        assert!(
+            source_document(raw, Some("dark"), ACCENT_DEFAULT, "n")
+                .contains(r#"<html data-theme="dark">"#)
+        );
+        assert!(
+            source_document(raw, Some("light"), ACCENT_DEFAULT, "n")
+                .contains(r#"<html data-theme="light">"#)
+        );
+        let system = source_document(raw, None, ACCENT_DEFAULT, "n");
         assert!(
             system.contains("<html>"),
             "system must stamp nothing: {system:.80}"
@@ -1160,7 +1235,7 @@ mod tests {
         // A message that tries to smuggle a tag past the escaping, wearing a
         // nonce it could only have guessed.
         let raw = b"Subject: x\r\n\r\n<script nonce=\"n\">alert(1)</script>\r\n";
-        let doc = source_document(raw, None, "n");
+        let doc = source_document(raw, None, ACCENT_DEFAULT, "n");
         assert_eq!(
             doc.matches("<script").count(),
             1,
@@ -1176,7 +1251,7 @@ mod tests {
     /// The button copies what is drawn, which is the diagnostic view.
     #[test]
     fn source_page_offers_a_copy_button() {
-        let doc = source_document(b"Subject: x\r\n\r\nbody\r\n", None, "n");
+        let doc = source_document(b"Subject: x\r\n\r\nbody\r\n", None, ACCENT_DEFAULT, "n");
         assert!(doc.contains(r#"id="copy""#), "no copy button");
         assert!(doc.contains("clipboard"), "the button copies nothing");
         assert!(doc.contains(r#"id="src""#), "nothing for it to copy");
@@ -1261,7 +1336,7 @@ mod tests {
     /// by that leftover, which showed as a blank band under the text.
     #[test]
     fn the_frame_reports_the_fitted_box_not_the_unscaled_document() {
-        let doc = document("<p>hi</p>", 0, "n", FrameTheme::AlwaysLight);
+        let doc = document("<p>hi</p>", 0, "n", FrameTheme::AlwaysLight, ACCENT_DEFAULT);
         assert!(doc.contains("getBoundingClientRect().bottom"), "{doc}");
         assert!(doc.contains("paddingBottom"), "{doc}");
         // scrollHeight remains only as the path when the box is missing,
@@ -1278,7 +1353,7 @@ mod tests {
     /// Wheel and scroll stay native: the frame forwards keys, nothing else.
     #[test]
     fn the_frame_leaves_the_wheel_to_the_browser() {
-        let doc = document("<p>hi</p>", 0, "n", FrameTheme::AlwaysLight);
+        let doc = document("<p>hi</p>", 0, "n", FrameTheme::AlwaysLight, ACCENT_DEFAULT);
         assert!(!doc.contains("wheel"), "{doc}");
         assert!(doc.contains("petrelKey"), "{doc}");
     }
@@ -1333,7 +1408,7 @@ mod tests {
 
     #[test]
     fn styled_mail_without_a_declaration_keeps_its_light_canvas() {
-        let doc = document("<p>hi</p>", 0, "n", FrameTheme::AlwaysLight);
+        let doc = document("<p>hi</p>", 0, "n", FrameTheme::AlwaysLight, ACCENT_DEFAULT);
         assert!(!doc.contains("prefers-color-scheme"), "{doc}");
         assert!(!doc.contains("data-theme"), "{doc}");
         // The light values are the only definition, so the frame cannot
@@ -1345,7 +1420,13 @@ mod tests {
     fn an_adaptive_frame_carries_both_palettes_and_the_stamp_wins() {
         // System: both palettes present, nothing stamped — the media query
         // decides, exactly as the app's own tokens do.
-        let system = document("<p>hi</p>", 0, "n", FrameTheme::Adaptive { stamp: None });
+        let system = document(
+            "<p>hi</p>",
+            0,
+            "n",
+            FrameTheme::Adaptive { stamp: None },
+            ACCENT_DEFAULT,
+        );
         assert!(system.contains("prefers-color-scheme: dark"), "{system}");
         assert!(system.contains(":root[data-theme='dark']"), "{system}");
         assert!(!system.contains("<html data-theme"), "{system}");
@@ -1359,10 +1440,75 @@ mod tests {
             FrameTheme::Adaptive {
                 stamp: Some("dark"),
             },
+            ACCENT_DEFAULT,
         );
         assert!(dark.contains(r#"<html data-theme="dark">"#), "{dark}");
         assert!(dark.contains(":root:not([data-theme='light'])"), "{dark}");
-        assert!(dark.contains("--mv-bg: #142329"), "{dark}");
+        assert!(
+            dark.contains("--mv-bg: color-mix(in oklab, #0e7c86 22%, #0e0e0e)"),
+            "{dark}"
+        );
+    }
+
+    /// The frame sits inside the app, so its ground has to be the app's — and
+    /// the app's ground follows the accent. A frame that ignored it was a
+    /// blue rectangle in the middle of an amber window.
+    #[test]
+    fn the_frame_wears_the_accent_the_app_is_wearing() {
+        let dark = document(
+            "<p>hi</p>",
+            0,
+            "n",
+            FrameTheme::Adaptive {
+                stamp: Some("dark"),
+            },
+            "9a6b1f",
+        );
+        for var in ["--mv-bg", "--mv-ink", "--mv-ink2", "--mv-hair"] {
+            assert!(
+                dark.contains(&format!("{var}: color-mix(in oklab, #9a6b1f")),
+                "{var} missing the accent: {dark}"
+            );
+        }
+        assert!(!dark.contains("#0e7c86"), "{dark}");
+        // A match is yellow because it is a match, not because of the accent.
+        assert!(dark.contains("--mv-mark: #6B5410"), "{dark}");
+    }
+
+    /// Same window, same rule: the bytes are somebody else's, the chrome
+    /// around them is ours.
+    #[test]
+    fn the_source_window_wears_the_accent_too() {
+        let doc = source_document(b"Subject: x\r\n\r\nbody\r\n", Some("dark"), "a8544b", "n");
+        assert!(
+            doc.contains("--surface: color-mix(in oklab, #a8544b 22%, #0e0e0e)"),
+            "{doc}"
+        );
+        assert!(!doc.contains("#0e7c86"), "{doc}");
+    }
+
+    /// The query on these URLs is ours, but it is still a query, and its
+    /// value is interpolated straight into a stylesheet. Six hex digits or
+    /// the default — never the caller's text.
+    #[test]
+    fn the_accent_query_is_read_defensively() {
+        assert_eq!(accent_from_query(Some("accent=9a6b1f")), "9a6b1f");
+        assert_eq!(
+            accent_from_query(Some("theme=dark&accent=A8544B")),
+            "A8544B"
+        );
+        for q in [
+            Some("accent=red"),
+            Some("accent=#9a6b1f"),
+            Some("accent=9a6b1f9a"),
+            Some("accent=9a6b1"),
+            Some("accent="),
+            Some("accent=0e7c86;}body{display:none}"),
+            Some("theme=dark"),
+            None,
+        ] {
+            assert_eq!(accent_from_query(q), ACCENT_DEFAULT, "{q:?}");
+        }
     }
 
     #[test]

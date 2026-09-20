@@ -73,7 +73,12 @@ export function MessageBody({ messageId, title }: { messageId: number; title: st
         // *now*, and "system" is only answerable on this side of the wall.
         const resolved = appDark ? 'dark' : 'light';
         const force = forceLight ? '&force=light' : '';
-        setUrl(u ? `${u}${u.includes('?') ? '&' : '?'}theme=${resolved}${force}` : null);
+        // The accent rides along for the same reason: the frame builds the
+        // app's dark ground itself, and that ground follows the accent. The
+        // `#` would start a fragment, so it is left off and the frame puts it
+        // back — after checking that what arrived is six hex digits.
+        const accent = `&accent=${settings.accent.replace('#', '')}`;
+        setUrl(u ? `${u}${u.includes('?') ? '&' : '?'}theme=${resolved}${force}${accent}` : null);
       })
       .catch((e) => {
         if (!live) return;
