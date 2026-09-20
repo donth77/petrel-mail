@@ -1,5 +1,5 @@
 import { Menu, MenuButton, MenuItem, MenuProvider, MenuSeparator } from '@ariakit/react';
-import { ArrowDown, ArrowUp, Check } from 'lucide-react';
+import { ArrowDown, ArrowUp, Check, ChevronDown } from 'lucide-react';
 import { Icon } from './Icon';
 import { t } from '../lib/strings';
 import { KEY_LABEL, directionLabels, sortKeys, type Sort, type SortKey } from '../lib/sort';
@@ -39,6 +39,10 @@ export function SortMenu({
         {sort.key !== 'relevance' && (
           <Icon icon={sort.ascending ? ArrowUp : ArrowDown} size={12} />
         )}
+        {/* Always, even where there is no direction to show. Without it
+            "Best match" is a phrase in a header, and a phrase in a header is
+            not something anybody tries to click. */}
+        <Icon icon={ChevronDown} size={12} className="sort-btn-open" />
       </MenuButton>
       <Menu portal gutter={6} className="menu" aria-label={t('sort-by')}>
         {sortKeys(searching).map((key: SortKey) => (

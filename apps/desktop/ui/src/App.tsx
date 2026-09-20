@@ -8,7 +8,17 @@ import { count as fmtCount, fileSize } from './lib/format';
 import { t, type StringId } from './lib/strings';
 import { Search, TriangleAlert } from 'lucide-react';
 import { SortMenu } from './components/SortMenu';
-import { DEFAULT_SORT, SEARCH_SORT, effectiveSort, type Sort } from './lib/sort';
+import {
+  DEFAULT_SORT,
+  SEARCH_SORT,
+  effectiveSort,
+  readSort,
+  readSortByView,
+  sortForView,
+  withViewSort,
+  writeSort,
+  type Sort,
+} from './lib/sort';
 import { repaintTag } from './lib/tag-paint';
 import { mergeOrder } from './lib/reorder';
 import { Rail } from './components/Rail';
@@ -128,8 +138,7 @@ export function App() {
   // every search inherit whatever the mailbox was last sorted by — and the
   // best-match order, the only one a search can offer, would never be the one
   // you got by default.
-  const [listSort, setListSort] = useState<Sort>(DEFAULT_SORT);
-  const [searchSort, setSearchSort] = useState<Sort>(SEARCH_SORT);
+  const setSearchSort = useCallback((sort: Sort) => set('searchSort', writeSort(sort)), [set]);
   // Relevance exists only while a query does, so what is actually applied is
   // not always what is stored: leaving a mailbox on Best match after the box
   // empties would have it claim an order it cannot have.
@@ -157,7 +166,6 @@ export function App() {
     if (!sameTerms(next, lastTerms.current)) lastTerms.current = next;
     return lastTerms.current;
   }, [query, settings.searchHighlight]);
-  const activeSort = effectiveSort(hasQuery ? searchSort : listSort, hasQuery);
   // Whether the search field has the user's attention, which is when the
   // filters are worth showing.
   const [searching, setSearching] = useState(false);
@@ -174,6 +182,38 @@ export function App() {
 
   const [activeId, setActiveId] = useState<number | null>(null);
   const [view, setView] = useState('inbox');
+
+  // Remembered across launches, and written back the moment it changes: an
+  // order somebody chose and the window forgot is a setting that does not
+  // work. One for the mailbox and one for search, because a mailbox has no
+  // relevance to be ordered by and a search usually should be.
+  //
+  // Held by identity, not just by value: the list refetches when its order
+  // changes, and a fresh object each render is a change every render. Read
+  // straight through, the list spun on "Loading your mail" for ever.
+  const sortByView = useMemo(
+    () => readSortByView(settings.listSortByView),
+    [settings.listSortByView],
+  );
+  const listSort = useMemo(() => {
+    const shared = readSort(settings.listSort, DEFAULT_SORT);
+    return settings.sortScope === 'everywhere' ? shared : sortForView(sortByView, view, shared);
+  }, [sortByView, view, settings.listSort, settings.sortScope]);
+  const searchSort = useMemo(
+    () => readSort(settings.searchSort, SEARCH_SORT),
+    [settings.searchSort],
+  );
+  // This mailbox, or all of them, as Settings says. The orders mailboxes
+  // were given are kept either way, so turning it off and on again restores
+  // them rather than losing them.
+  const setListSort = useCallback(
+    (sort: Sort) =>
+      settings.sortScope === 'everywhere'
+        ? set('listSort', writeSort(sort))
+        : set('listSortByView', withViewSort(sortByView, view, sort)),
+    [set, settings.sortScope, sortByView, view],
+  );
+  const activeSort = effectiveSort(hasQuery ? searchSort : listSort, hasQuery);
 
   const listFetchers = useMemo(
     () => ({ threads: api.threads, search: api.search }),
@@ -2033,7 +2073,7 @@ export function App() {
               // token is how a search goes global.
               onFocus={() => {
                 setSearching(true);
-                if (query.trim()) return;
+                if (query.trim() || settings.searchInMailbox !== 'on') return;
                 const leaf = folderScopeName(view, folders);
                 const scope = scopeFor(view, leaf);
                 if (scope) setQuery(`${scope.token} `);
@@ -2090,7 +2130,7 @@ export function App() {
               clicked, so a second click in the same place lands on whatever
               slid into it — visible, instantly reversible, and the price of
               a row that is never briefly wrong. */}
-          {(searching || query.trim()) && (
+          {(searching || query.trim()) && settings.searchChips === 'on' && (
             <div className="chip-row" role="group" aria-label={t('search-filters')}>
               {chips(
                 active?.from_display || active?.from_addr || null,

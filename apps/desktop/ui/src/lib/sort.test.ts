@@ -1,11 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_SORT,
+  SEARCH_SORT,
   directionLabels,
   effectiveSort,
+  readSort,
+  readSortByView,
+  sortForView,
   sortKeys,
+  withViewSort,
   wireSort,
+  writeSort,
   type Sort,
+  type SortKey,
 } from './sort';
 
 describe('what a list can be ordered by', () => {
@@ -60,5 +67,52 @@ describe('what the engine is told', () => {
       key: 'subject',
       ascending: true,
     });
+  });
+});
+
+describe('a sort, remembered', () => {
+  it('reads back as itself', () => {
+    for (const key of ['relevance', 'date', 'sender', 'subject'] as SortKey[]) {
+      for (const ascending of [true, false]) {
+        const sort = { key, ascending };
+        expect(readSort(writeSort(sort), DEFAULT_SORT)).toEqual(sort);
+      }
+    }
+  });
+
+  it('falls back on anything it does not know', () => {
+    for (const said of ['', 'nonsense', 'colour:ascending', 'date', ':', 'date:sideways']) {
+      const back = readSort(said, DEFAULT_SORT);
+      expect(back.key === 'date' || said === 'date').toBe(true);
+    }
+    expect(readSort('nonsense', SEARCH_SORT)).toEqual(SEARCH_SORT);
+    // A key it knows with a direction it does not is that key, descending.
+    expect(readSort('date:sideways', SEARCH_SORT)).toEqual({ key: 'date', ascending: false });
+  });
+});
+
+describe('a mailbox remembering its own order', () => {
+  const byView = { inbox: 'sender:ascending', 'tag:Urgent': 'subject:descending' };
+
+  it('gives a view its own order, and the rest the one the window keeps', () => {
+    expect(sortForView(byView, 'inbox', DEFAULT_SORT)).toEqual({ key: 'sender', ascending: true });
+    expect(sortForView(byView, 'tag:Urgent', DEFAULT_SORT)).toEqual({
+      key: 'subject',
+      ascending: false,
+    });
+    expect(sortForView(byView, 'sent', DEFAULT_SORT)).toEqual(DEFAULT_SORT);
+    expect(sortForView({}, 'inbox', SEARCH_SORT)).toEqual(SEARCH_SORT);
+  });
+
+  it('changes one view and leaves the others alone', () => {
+    const after = readSortByView(withViewSort(byView, 'sent', { key: 'date', ascending: true }));
+    expect(after.sent).toBe('date:ascending');
+    expect(after.inbox).toBe('sender:ascending');
+  });
+
+  it('survives a setting that says something else entirely', () => {
+    for (const said of ['', 'null', '[]', 'not json', '{"inbox":5}', '{"inbox":{"key":"date"}}']) {
+      expect(sortForView(readSortByView(said), 'inbox', DEFAULT_SORT)).toEqual(DEFAULT_SORT);
+    }
   });
 });

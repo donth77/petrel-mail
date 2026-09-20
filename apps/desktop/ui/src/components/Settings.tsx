@@ -1,10 +1,12 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Dialog, DialogDismiss } from '@ariakit/react';
 import { Filter,
-  Bell, Database, Mail, PencilLine, Shield, SunMoon, User, X,
+  Bell, Database, Mail, PencilLine, Rows3, Search as SearchIcon, Shield, SunMoon, User, X,
   type LucideIcon, RefreshCw , PanelLeft} from 'lucide-react';
 import { Accounts } from './settings/Accounts';
+import { Search } from './settings/Search';
 import { Appearance } from './settings/Appearance';
+import { Lists } from './settings/Lists';
 import { Sidebar } from './settings/Sidebar';
 import { Rules } from './settings/Rules';
 import { Composing } from './settings/Composing';
@@ -19,7 +21,7 @@ import { t, type StringId } from '../lib/strings';
 
 type PaneId =
   | 'accounts' | 'identities' | 'composing' | 'notifications'
-  | 'appearance' | 'sidebar' | 'privacy' | 'storage' | 'rules' | 'updates';
+  | 'appearance' | 'lists' | 'search' | 'sidebar' | 'privacy' | 'storage' | 'rules' | 'updates';
 
 const PANES: { id: PaneId; label: StringId; icon: LucideIcon }[] = [
   { id: 'accounts', label: 'settings-accounts', icon: Mail },
@@ -27,6 +29,8 @@ const PANES: { id: PaneId; label: StringId; icon: LucideIcon }[] = [
   { id: 'composing', label: 'settings-composing', icon: PencilLine },
   { id: 'notifications', label: 'settings-notifications', icon: Bell },
   { id: 'appearance', label: 'settings-appearance', icon: SunMoon },
+  { id: 'lists', label: 'settings-lists', icon: Rows3 },
+  { id: 'search', label: 'settings-search', icon: SearchIcon },
   { id: 'sidebar', label: 'settings-sidebar', icon: PanelLeft },
   { id: 'rules', label: 'settings-rules', icon: Filter },
   { id: 'privacy', label: 'settings-privacy', icon: Shield },
@@ -75,6 +79,8 @@ export function Settings({
     composing: <Composing />,
     notifications: <Notifications />,
     appearance: <Appearance />,
+    lists: <Lists />,
+    search: <Search />,
     sidebar: <Sidebar />,
     rules: <Rules onMessage={onMessage} />,
     privacy: <Privacy />,

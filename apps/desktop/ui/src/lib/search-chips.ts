@@ -336,6 +336,15 @@ export function scopeFor(
     const value = /\s/.test(leaf) ? `"${leaf}"` : leaf;
     return { token: `in:${value}`, label: t('search-chip-in', { where: leaf }) };
   }
+  // A tag is where you are standing as much as a folder is. Without this, a
+  // search begun in Urgent quietly searched everything, and the chip row had
+  // no scope chip to say otherwise.
+  if (view.startsWith('tag:')) {
+    const name = view.slice('tag:'.length);
+    if (!name) return null;
+    const value = /\s/.test(name) ? `"${name}"` : name;
+    return { token: `tag:${value}`, label: t('search-chip-tagged', { where: name }) };
+  }
   return null;
 }
 

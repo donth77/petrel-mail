@@ -341,6 +341,17 @@
   white-space: nowrap;
 }
 
+/* Quieter than the direction arrow beside it: the arrow is the answer to
+   "which way round", and this only says the label is a door. */
+.sort-btn-open {
+  opacity: 0.65;
+}
+
+.sort-btn:hover .sort-btn-open,
+.sort-btn[aria-expanded='true'] .sort-btn-open {
+  opacity: 1;
+}
+
 /* The tick's column, held whether or not a tick is in it, so the labels do
    not shift sideways as the chosen row moves down the menu. */
 .menu-tick {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { asWords, chips, hasToken, scopedQuery, toggleToken } from './search-chips';
+import { asWords, chips, hasToken, scopeFor, scopedQuery, toggleToken } from './search-chips';
+import { tokensOf } from './search-grammar';
 
 describe('toggleToken', () => {
   it('adds a token to what is already typed', () => {
@@ -92,11 +93,13 @@ describe('the scope chip', () => {
     expect(scope('trash')?.token).toBe('in:trash');
   });
 
-  it('speaks is: for the state views and stays silent only where it must', () => {
+  it('speaks is: for the state views and tag: for a tag', () => {
     expect(scope('starred')?.token).toBe('is:starred');
     expect(scope('snoozed')?.token).toBe('is:snoozed');
+    expect(scope('tag:Urgent')?.token).toBe('tag:Urgent');
+    // The outbox is the one view with nothing to scope to: it is mail on its
+    // way out, and the grammar has no word for that.
     expect(scope('outbox')).toBeUndefined();
-    expect(scope('tag:Urgent')).toBeUndefined();
   });
 
   it('does not double the starred chip when the scope already is it', () => {
@@ -481,5 +484,20 @@ describe('a keyword that may have been meant as a word', () => {
 
   it('still reads the OR as the operator until then', () => {
     expect(toggleToken('DEAD OR ALIVE', 'is:unread')).toBe('(DEAD OR ALIVE) is:unread');
+  });
+});
+
+/* Standing in a tag is standing somewhere, the same as a folder. */
+describe('the scope of a tag', () => {
+  it('quotes a name with a space in it, and has none for a half-typed tag', () => {
+    expect(scopeFor('tag:Waiting on')?.token).toBe('tag:"Waiting on"');
+    expect(scopeFor('tag:')).toBeNull();
+    expect(scopeFor('nowhere')).toBeNull();
+  });
+
+  it('writes a scope the engine reads back as that tag', () => {
+    const token = scopeFor('tag:Waiting on')!.token;
+    expect(tokensOf(token)).toEqual(['tag:Waiting on']);
+    expect(hasToken(`${token} invoice`, token)).toBe(true);
   });
 });
