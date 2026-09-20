@@ -264,6 +264,10 @@ export type StorageReport = {
 
 export type AccountStorage = { account_id: number; messages: number; blob_bytes: number };
 
+/** A question, pinned under a name. The query is what goes back into the
+ *  search field, character for character (docs 22). */
+export type SavedSearch = { id: number; name: string; query: string; position: number };
+
 export type Folder = { id: number; role: string; path: string };
 
 export type UnsubInfo = { one_click: boolean; url: string | null; mailto: string | null };
@@ -620,6 +624,12 @@ const mock = {
   viewMessageSource: async () => {},
   emlFilename: async () => 'message.eml',
   saveMessageEml: async () => {},
+  listSavedSearches: async () => [],
+  createSavedSearch: async () => 1,
+  updateSavedSearch: async () => {},
+  deleteSavedSearch: async () => {},
+  moveSavedSearch: async () => {},
+  reorderSavedSearches: async () => {},
   listRules: async () => [],
   viewCount: async () => 40,
   saveRule: async () => 1,
@@ -960,6 +970,14 @@ const real = {
   createFolder: (path: string) => invoke<number>('create_folder', { path }),
   /** The view's true conversation count — the list itself is a page. */
   viewCount: (view: string) => invoke<number>('view_count', { view }),
+  listSavedSearches: () => invoke<SavedSearch[]>('list_saved_searches'),
+  createSavedSearch: (name: string, query: string) =>
+    invoke<number>('create_saved_search', { name, query }),
+  updateSavedSearch: (id: number, name: string | null, query: string | null) =>
+    invoke<void>('update_saved_search', { id, name, query }),
+  deleteSavedSearch: (id: number) => invoke<void>('delete_saved_search', { id }),
+  moveSavedSearch: (id: number, up: boolean) => invoke<void>('move_saved_search', { id, up }),
+  reorderSavedSearches: (ids: number[]) => invoke<void>('reorder_saved_searches', { ids }),
   listRules: () => invoke<Rule[]>('list_rules'),
   saveRule: (
     ruleId: number | null,

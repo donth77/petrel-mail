@@ -62,6 +62,69 @@
   font-family: var(--mono);
   font-size: 10.5px;
   color: var(--ink3);
+  /* "0 found" broke across two lines beside a long saved-search name, taking
+     the header from 23px to 39px. */
+  white-space: nowrap;
+}
+
+/* Bookmarking the search, and the name once it is bookmarked.
+   
+   Neither claims the free space. The row already has one element that does —
+   the sort control — and two auto margins in a flex row share the space out
+   between them rather than one winning, which is the trap the count's comment
+   above records. Adding a third put the bookmark in the middle of the pane.
+   `.view-end` wraps the pair so the auto margin belongs to the wrapper alone
+   and the bookmark sits where it was asked to: immediately left of the order. */
+.view-end {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-inline-start: auto;
+}
+
+/* The control inside the wrapper must not push against it. */
+.view-end .sort-btn {
+  margin-inline-start: 0;
+}
+
+/* One rule, not two: this was declared twice — a leftover from when the saved
+   name was a second element beside it — and the later block quietly won, so
+   editing the first one changed nothing. */
+.view-save {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  /* 5px of padding, so the button is 24px tall rather than 17: it was the
+     smallest control in the header, and the sort control beside it is 23px. */
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  font-size: 11px;
+  color: var(--ink3);
+  cursor: pointer;
+}
+
+/* The same hover a row takes, since no token for it exists. */
+.view-save:hover {
+  background: var(--bg);
+  color: var(--ink);
+}
+
+/* A saved search's title renames it, so it is a button — but it must read as
+   the heading it replaced, not as a control sitting where a heading was. */
+.view-name-rename {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.view-name-rename:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .chip {
@@ -441,6 +504,15 @@ mark {
   background: var(--hit);
   color: var(--ink);
   border-radius: 2px;
+  /* Underlined, because the wash alone cannot say "this matched": it measures
+     1.28:1 against the surface in light and 2.23:1 in dark, under the 3:1 a
+     graphical object needs to be perceivable, and nothing else about a mark
+     differed — same weight, same size, no border. The text on it is fine
+     (12:1 light, 6:1 dark); it is the *boundary* that was invisible. An
+     underline is also the one cue that survives any colour blindness. */
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
 }
 
 /* A tag's colour on a row chip: a swatch beside readable ink, matching the

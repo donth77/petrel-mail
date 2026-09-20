@@ -32,6 +32,10 @@ export function AppDialogs({
   discarding,
   setDiscarding,
   deletingTag,
+  deletingSearch,
+  setDeletingSearch,
+  setQuery,
+  refreshSearches,
   setDeletingTag,
   movingFolder,
   setMovingFolder,
@@ -64,6 +68,10 @@ export function AppDialogs({
   discarding: OutboxRow | null;
   setDiscarding: Dispatch<SetStateAction<OutboxRow | null>>;
   deletingTag: { id: number; name: string } | null;
+  deletingSearch: { id: number; name: string } | null;
+  setDeletingSearch: (search: { id: number; name: string } | null) => void;
+  setQuery: (query: string) => void;
+  refreshSearches: () => Promise<void>;
   setDeletingTag: Dispatch<SetStateAction<{ id: number; name: string } | null>>;
   movingFolder: Folder | null;
   setMovingFolder: Dispatch<SetStateAction<Folder | null>>;
@@ -135,6 +143,36 @@ export function AppDialogs({
           void api
             .deleteDraft(row.id)
             .catch((e) => setToast(t('triage-failed', { error: String(e) })));
+        }}
+      />
+
+      {/* A saved search holds no mail, so this asks about a question and not
+          about messages. It still asks: the query took thought to write and
+          nothing brings it back. */}
+      <Confirm
+        open={deletingSearch !== null}
+        title={t('search-delete-confirm', { name: deletingSearch?.name ?? '' })}
+        detail={t('search-delete-body')}
+        confirmLabel={t('search-delete')}
+        onClose={() => setDeletingSearch(null)}
+        onConfirm={() => {
+          const search = deletingSearch;
+          setDeletingSearch(null);
+          if (!search) return;
+          // Leaving its view would strand the field holding a query whose row
+          // has gone: the list would go on showing results for a search that
+          // no longer exists, with nothing in the rail marked and the Save
+          // button offering to save it back. The field is cleared with the
+          // view.
+          if (view === `search:${search.id}`) {
+            setView('inbox');
+            setQuery('');
+          }
+          void api
+            .deleteSavedSearch(search.id)
+            .then(refreshSearches)
+            .then(() => setToast(t('saved-search-deleted', { name: search.name })))
+            .catch((e) => setToast(t('saved-search-failed', { error: String(e) })));
         }}
       />
 

@@ -30,7 +30,11 @@
 .filter-chip.on {
   border-color: var(--accent);
   background: color-mix(in oklab, var(--accent) 12%, transparent);
-  color: var(--accent);
+  /* --accent-ink, not --accent: the label sits on a 12% wash of its own colour,
+     where the plain accent measured 4.20:1 for the default teal and 4.01:1 for
+     amber — under the 4.5:1 that 11.5px text needs. The ink variant is ~6:1 and
+     is what the composer already uses for accent-coloured text. */
+  color: var(--accent-ink);
   font-weight: 550;
 }
 
@@ -40,6 +44,18 @@
    Amber rather than the caption grey below, and above the rows rather than
    under them, because it is about what you are reading now and the quiet
    version at the foot of the list went unread. */
+/* Hidden rather than absent, so the live region exists before it has anything
+   to say — `[hidden]` collapses it to nothing either way. */
+.list-notice[hidden] {
+  display: none;
+}
+
+/* The triangle keeps its size when the words wrap. In German at a narrow window
+   it was squashed to 11.8×13 — a warning sign 9% out of shape. */
+.list-notice svg {
+  flex-shrink: 0;
+}
+
 .list-notice {
   flex-shrink: 0;
   display: flex;

@@ -1,7 +1,7 @@
 import type React from 'react';
 import { useState } from 'react';
 import { Menu, MenuButton, MenuItem, MenuProvider, MenuSeparator } from '@ariakit/react';
-import { MoreHorizontal, SquarePen, TagIcon } from 'lucide-react';
+import { ChevronDown, ChevronUp, MoreHorizontal, SquarePen, TagIcon } from 'lucide-react';
 import { Icon } from './Icon';
 import { t } from '../lib/strings';
 
@@ -35,12 +35,18 @@ export const TAG_COLOURS = [
 export function TagMenu({
   name,
   colour,
+  first,
+  last,
+  onReorder,
   onRename,
   onColour,
   onDelete,
 }: {
   name: string;
   colour: string;
+  first: boolean;
+  last: boolean;
+  onReorder: (up: boolean) => void;
   onRename: () => void;
   onColour: (colour: string) => void;
   onDelete: () => void;
@@ -58,7 +64,29 @@ export function TagMenu({
       >
         <Icon icon={MoreHorizontal} size={14} />
       </MenuButton>
-      <Menu portal gutter={6} className="menu" aria-label={t('tag-edit', { name })}>
+      <Menu portal gutter={6} className="menu" aria-label={t('tag-edit', { name })}
+        // On the menu rather than on each item: a portalled menu still bubbles
+        // through the React tree, so choosing anything in here ran the row's own
+        // click and selected the row you were only renaming. One handler covers
+        // every item, including the ones added later.
+        onClick={(e: React.MouseEvent) => e.stopPropagation()}
+      >
+        {/* Reordering from the keyboard: dragging is quicker but a rail that can
+            only be arranged with a pointer is a rail some people cannot arrange.
+            The same pair the saved searches carry. */}
+        {!first && (
+          <MenuItem className="menu-item" onClick={() => onReorder(true)}>
+            <Icon icon={ChevronUp} size={13} />
+            <span>{t('move-up')}</span>
+          </MenuItem>
+        )}
+        {!last && (
+          <MenuItem className="menu-item" onClick={() => onReorder(false)}>
+            <Icon icon={ChevronDown} size={13} />
+            <span>{t('move-down')}</span>
+          </MenuItem>
+        )}
+        {(!first || !last) && <MenuSeparator className="menu-sep" />}
         <MenuItem className="menu-item" onClick={onRename}>
           <Icon icon={SquarePen} size={14} />
           <span className="menu-label">{t('tag-rename')}</span>

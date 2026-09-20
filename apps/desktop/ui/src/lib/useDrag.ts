@@ -11,7 +11,8 @@ import { DRAG_THRESHOLD, acceptsDrop, draggableFrom, draggedIds } from './dnd';
 export type Payload =
   | { kind: 'folder'; folderId: number; label: string }
   | { kind: 'threads'; ids: number[] }
-  | { kind: 'tag'; tagId: number; name: string };
+  | { kind: 'tag'; tagId: number; name: string }
+  | { kind: 'search'; searchId: number; name: string };
 
 /** Where the pointer is and what it is carrying, while a drag is happening. */
 export type Dragging = {
@@ -45,16 +46,21 @@ export type InsertPoint = {
  *  meaning what it has always meant. */
 const EDGE_BAND = 0.25;
 
-/** The gap a pointer is in, if it is near the edge of a reorderable row. */
-function insertionAt(el: Element | null, y: number): InsertPoint | null {
+/** The gap a pointer is in, if it is near the edge of a reorderable row.
+ *
+ *  `band` is how much of the row counts as an edge. A folder's middle means
+ *  "put it inside this one", so its bands have to leave that middle alone; a
+ *  flat list has no inside, so the whole row can mean "before" or "after" and
+ *  a band of half makes the gap between two rows something a hand can hit. */
+function insertionAt(el: Element | null, y: number, band = EDGE_BAND): InsertPoint | null {
   const row = el?.closest<HTMLElement>('[data-reorder]');
   const key = row?.dataset.reorder;
   if (!row || key === undefined) return null;
   const r = row.getBoundingClientRect();
   if (r.height <= 0) return null;
   const where = (y - r.top) / r.height;
-  if (where < EDGE_BAND) return { key, edge: 'before' };
-  if (where > 1 - EDGE_BAND) return { key, edge: 'after' };
+  if (where < band) return { key, edge: 'before' };
+  if (where > 1 - band) return { key, edge: 'after' };
   return null;
 }
 
@@ -115,6 +121,14 @@ export function useDrag(
         const path = host?.dataset.folderDrop;
         return { over: path !== undefined ? `fdrop:${path}` : null, overRow: null, insert: null };
       }
+      if (payload.kind === 'search') {
+        // Carried only to be reordered: a flat list with nothing to nest inside
+        // and nothing to apply a search to. Half the row each way, so two rows
+        // have a gap between them that can actually be hit — without this
+        // branch a search fell through to the conversation case below, which
+        // computes no insertion point at all and drew no line.
+        return { over: null, overRow: null, insert: insertionAt(el, y, 0.5) };
+      }
       if (payload.kind === 'tag') {
         // Tags are a flat list, so a tag over the tag list is always a
         // reorder — there is nothing to nest inside. Over a conversation it
@@ -174,7 +188,11 @@ export function useDrag(
       // An insertion point beats everything else: the pointer was in the gap
       // between two rows, which is the one place the gesture means "reorder"
       // rather than "file this inside that".
-      if (hit.insert && (held.payload.kind === 'folder' || held.payload.kind === 'tag')) {
+      // Everything but a conversation can be reordered, so the kinds are named
+      // by what cannot: listing the three that can meant the newest one was
+      // left out, and a saved search drew its insertion line and then landed
+      // back where it started.
+      if (hit.insert && held.payload.kind !== 'threads') {
         onReorder(held.payload, hit.insert);
       } else if (held.payload.kind === 'tag') {
         if (hit.overRow !== null) onTagRow(held.payload.tagId, hit.overRow);
@@ -182,9 +200,11 @@ export function useDrag(
         if (hit.over?.startsWith('fdrop:')) {
           onFolderDrop(held.payload.folderId, hit.over.slice('fdrop:'.length));
         }
-      } else if (hit.over) {
+      } else if (held.payload.kind === 'threads' && hit.over) {
         onDrop(hit.over, held.payload.ids);
       }
+      // A saved search needs no branch of its own: it is carried only to be
+      // reordered, which the gap above is the only place that means.
     }
 
     // Escape abandons the drag without dropping. A gesture you have committed
@@ -254,6 +274,28 @@ export function useDrag(
     };
   }, []);
 
+  /**
+   * Attach to a saved search in the rail: begins carrying it up or down its own
+   * section.
+   *
+   * Reordering only. A saved search has nothing to drop onto — it is a question
+   * rather than a place, so there is no filing a message into one, and
+   * `dropMeaning` gives its rows no meaning as a target.
+   */
+  const startSearch = useCallback((e: React.PointerEvent, searchId: number, name: string) => {
+    if (e.button !== 0) return;
+    // The row's own menu is a control, not a handle — the same guard the tag
+    // row needs for the same reason.
+    const control = (e.target as HTMLElement).closest('button, [role="button"]');
+    if (control && control !== e.currentTarget) return;
+    pending.current = {
+      payload: { kind: 'search', searchId, name },
+      label: name,
+      x: e.clientX,
+      y: e.clientY,
+    };
+  }, []);
+
   /** Attach to a folder row: begins carrying the folder toward a new parent. */
   const startFolder = useCallback((e: React.PointerEvent, folderId: number, label: string) => {
     if (e.button !== 0) return;
@@ -267,5 +309,5 @@ export function useDrag(
     };
   }, []);
 
-  return { drag, start, startTag, startFolder };
+  return { drag, start, startTag, startSearch, startFolder };
 }

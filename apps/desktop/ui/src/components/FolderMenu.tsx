@@ -2,6 +2,8 @@ import type React from 'react';
 import { useState } from 'react';
 import { Menu, MenuButton, MenuItem, MenuProvider, MenuSeparator } from '@ariakit/react';
 import {
+  ChevronDown,
+  ChevronUp,
   FolderInput,
   FolderPlus,
   FolderX,
@@ -24,6 +26,9 @@ import { t } from '../lib/strings';
  */
 export function FolderMenu({
   path,
+  first,
+  last,
+  onReorder,
   onRename,
   onNewChild,
   onEmpty,
@@ -35,6 +40,13 @@ export function FolderMenu({
   path: string;
   /** Absent on rows that are not renameable — the Archive root is the
    *  archive mailbox wearing its tree, not a folder anyone named. */
+  /** Reordering a step at a time. Named apart from `onMove`, which is this
+   *  menu's *other* move — to a different parent. Hidden at the ends rather
+   *  than inert: the menu is rebuilt on every opening, so an absent item
+   *  strands no focus. */
+  first: boolean;
+  last: boolean;
+  onReorder: (up: boolean) => void;
   onRename?: () => void;
   /** Opens the naming field prefilled with this folder's path — a subfolder
    *  is a name with a parent already decided. */
@@ -68,7 +80,29 @@ export function FolderMenu({
       >
         <Icon icon={MoreHorizontal} size={14} />
       </MenuButton>
-      <Menu portal gutter={6} className="menu" aria-label={t('folder-edit', { name: path })}>
+      <Menu portal gutter={6} className="menu" aria-label={t('folder-edit', { name: path })}
+        // On the menu rather than on each item: a portalled menu still bubbles
+        // through the React tree, so choosing anything in here ran the row's own
+        // click and selected the row you were only renaming. One handler covers
+        // every item, including the ones added later.
+        onClick={(e: React.MouseEvent) => e.stopPropagation()}
+      >
+        {/* Reordering from the keyboard: dragging is quicker but a rail that can
+            only be arranged with a pointer is a rail some people cannot arrange.
+            The same pair the saved searches carry. */}
+        {!first && (
+          <MenuItem className="menu-item" onClick={() => onReorder(true)}>
+            <Icon icon={ChevronUp} size={13} />
+            <span>{t('move-up')}</span>
+          </MenuItem>
+        )}
+        {!last && (
+          <MenuItem className="menu-item" onClick={() => onReorder(false)}>
+            <Icon icon={ChevronDown} size={13} />
+            <span>{t('move-down')}</span>
+          </MenuItem>
+        )}
+        {(!first || !last) && <MenuSeparator className="menu-sep" />}
         {onRename && (
           <MenuItem className="menu-item" onClick={onRename}>
             <Icon icon={SquarePen} size={14} />

@@ -1,4 +1,5 @@
-import { ChevronDown, ChevronUp } from 'lucide-react';
+import { ChevronDown, ChevronUp, FolderClosed, Inbox, Search, Tag } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { useSettings } from '../../lib/settings';
 import {
   ESSENTIAL,
@@ -11,6 +12,17 @@ import {
   type MailboxKey,
 } from '../../lib/mailboxes';
 import { Icon } from '../Icon';
+import {
+  ESSENTIAL as SECTION_ESSENTIAL,
+  SECTION_LABEL,
+  isHidden,
+  movedSection,
+  readSections,
+  toggledSection,
+  writeSections,
+  type SectionKey,
+  type Sections,
+} from '../../lib/rail-sections';
 import { Pill } from './Pill';
 import { t, type StringId } from '../../lib/strings';
 
@@ -35,11 +47,26 @@ const MODES: { value: CountMode; label: StringId }[] = [
  * place is not something the app can know about somebody who has never
  * snoozed anything.
  */
+/** The glyph each section wears in the rail. Reading this pane means matching
+ *  it against the sidebar beside it, and a name on its own makes that a
+ *  translation exercise. */
+const SECTION_GLYPH: Record<SectionKey, LucideIcon> = {
+  mailboxes: Inbox,
+  folders: FolderClosed,
+  tags: Tag,
+  searches: Search,
+};
+
 export function Sidebar() {
   const { settings, set } = useSettings();
   const arrangement = arrangementFor(settings.railMailboxes, settings.badges);
 
   const save = (next: Arrangement) => set('railMailboxes', serialiseArrangement(next));
+
+  // The sections themselves, above the rows inside one of them: this pane reads
+  // outside in, the way the rail does.
+  const sections = readSections(settings.railSections);
+  const saveSections = (next: Sections) => set('railSections', writeSections(next));
 
   const move = (key: MailboxKey, by: -1 | 1) => {
     const order = [...arrangement.order];
@@ -101,18 +128,18 @@ export function Sidebar() {
                   <button
                     type="button"
                     className="move-btn"
-                    disabled={i === 0}
+                    aria-disabled={i === 0}
                     aria-label={t('sidebar-move-up', { name: t(MAILBOX_LOOK[key].label) })}
-                    onClick={() => move(key, -1)}
+                    onClick={() => i > 0 && move(key, -1)}
                   >
                     <Icon icon={ChevronUp} size={14} />
                   </button>
                   <button
                     type="button"
                     className="move-btn"
-                    disabled={i === arrangement.order.length - 1}
+                    aria-disabled={i === arrangement.order.length - 1}
                     aria-label={t('sidebar-move-down', { name: t(MAILBOX_LOOK[key].label) })}
-                    onClick={() => move(key, 1)}
+                    onClick={() => i < arrangement.order.length - 1 && move(key, 1)}
                   >
                     <Icon icon={ChevronDown} size={14} />
                   </button>
@@ -143,6 +170,59 @@ export function Sidebar() {
                   options={MODES.map((m) => ({ value: m.value, label: t(m.label) }))}
                 />
 
+              </li>
+            );
+          })}
+        </ul>
+      </section>
+
+      <section className="field">
+        <div className="flabel">{t('sidebar-sections')}</div>
+        <ul className="mailbox-rows" role="list">
+          {sections.order.map((key, i) => {
+            const off = isHidden(sections, key);
+            const essential = key === SECTION_ESSENTIAL;
+            return (
+              <li className="mailbox-row" role="listitem" key={key}>
+                <div className="mailbox-move">
+                  <button
+                    type="button"
+                    className="move-btn"
+                    aria-disabled={i === 0}
+                    aria-label={t('sidebar-move-up', { name: t(SECTION_LABEL[key]) })}
+                    onClick={() => i > 0 && saveSections(movedSection(sections, key, true))}
+                  >
+                    <Icon icon={ChevronUp} size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    className="move-btn"
+                    aria-disabled={i === sections.order.length - 1}
+                    aria-label={t('sidebar-move-down', { name: t(SECTION_LABEL[key]) })}
+                    onClick={() =>
+                      i < sections.order.length - 1 && saveSections(movedSection(sections, key, false))
+                    }
+                  >
+                    <Icon icon={ChevronDown} size={14} />
+                  </button>
+                </div>
+
+                <label className="mailbox-show">
+                  <input
+                    type="checkbox"
+                    checked={essential || !off}
+                    // Mailboxes holds the Inbox: a rail with no way to reach
+                    // your mail is not a rail. Disabled and checked rather than
+                    // absent, so the list still reads as the sidebar does.
+                    disabled={essential}
+                    onChange={() => saveSections(toggledSection(sections, key))}
+                  />
+                  {/* The same glyph the rail's own rows wear. */}
+                  <Icon icon={SECTION_GLYPH[key]} size={14} />
+                  <span className={off ? 'mailbox-name off' : 'mailbox-name'}>
+                    {t(SECTION_LABEL[key])}
+                  </span>
+                </label>
               </li>
             );
           })}

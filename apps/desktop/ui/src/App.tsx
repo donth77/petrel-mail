@@ -10,10 +10,12 @@ import {
 } from './lib/search-chips';
 import { NO_TERMS, SearchTerms, sameTerms, termsOf, type Term } from './lib/search-highlight';
 import { MAX_CLAUSES, MAX_VALUE_CHARS, cutShort } from './lib/search-limits';
+import { canSave, savedState, suggestName } from './lib/saved-search';
+import { readSections, sectionOf, visibleSections } from './lib/rail-sections';
 import { arrangementFor, countFor, countModes, visibleMailboxes } from './lib/mailboxes';
 import { count as fmtCount, fileSize } from './lib/format';
 import { t, type StringId } from './lib/strings';
-import { Search, TriangleAlert } from 'lucide-react';
+import { Bookmark, Search, SquarePen, TriangleAlert } from 'lucide-react';
 import { SortMenu } from './components/SortMenu';
 import {
   DEFAULT_SORT,
@@ -37,6 +39,7 @@ import { useTriage, type UndoOffer } from './lib/useTriage';
 import { TitleBar } from './components/TitleBar';
 import { Palette } from './components/Palette';
 import { Picker, type PickerOption } from './components/Picker';
+import { NameDialog } from './components/NameDialog';
 import { Compose, addresses, type Draft } from './components/Compose';
 import { firstUnsendable } from './lib/recipients';
 import { snoozeOptions } from './lib/snooze';
@@ -187,6 +190,13 @@ export function App() {
     () => arrangementFor(settings.railMailboxes, settings.badges),
     [settings.railMailboxes, settings.badges],
   );
+  // Which groups the rail draws, and in what order. Derived, like the
+  // arrangement above: the setting is the source and a copy in state would be a
+  // second thing to keep in step.
+  const sectionOrder = useMemo(
+    () => visibleSections(readSections(settings.railSections)),
+    [settings.railSections],
+  );
   // Find-in-conversation. Held here because ⌘F is a global key and the bar has
   // to survive the reading pane re-rendering under it.
   const [finding, setFinding] = useState(false);
@@ -229,8 +239,18 @@ export function App() {
   // effect. Called this early because two things above read it: the sort
   // control, to tell a mailbox from a search, and the triage hook below, to
   // show a tag on a row the moment it is applied.
-  const { tags, setTags, folders, setFolders, accounts, setAccounts, activeAccount, identity } =
-    useReferenceData(status?.seeding, accountEpoch);
+  const {
+    tags,
+    setTags,
+    folders,
+    setFolders,
+    searches,
+    setSearches,
+    accounts,
+    setAccounts,
+    activeAccount,
+    identity,
+  } = useReferenceData(status?.seeding, accountEpoch);
 
   // Made shared, the order everything takes is the one you were just
   // looking at. Without this the first flip of the switch reordered the list
@@ -263,6 +283,152 @@ export function App() {
   // `isSearch`, beside the code that writes that token.
   const asked = isSearch(query, scopeFor(view, folderScopeName(view, folders))?.token);
   const activeSort = effectiveSort(asked ? searchSort : listSort, asked);
+  // Where the field stands in relation to the saved searches: not one, one
+  // unchanged, or one that has been edited. Drives the bookmark in the header
+  // and the palette's entry, so the two cannot say different things.
+  const pinnedState = useMemo(() => savedState(view, query, searches), [view, query, searches]);
+  const [naming, setNaming] = useState(false);
+  // Renaming the open saved search from the header, where its name is. Sending
+  // focus to the sidebar row would be the same edit in a different place, two
+  // panes from the thing being named.
+  // Renaming anything the rail holds, in one dialog. An input in the header was
+  // eleven pixels of metadata strip with a name squeezed into it, and an input
+  // in place of a rail row moves that row out from under the pointer that just
+  // opened its menu. A dialog asks somewhere a name fits.
+  const [renamingWhat, setRenamingWhat] = useState<{
+    kind: 'search' | 'tag' | 'folder';
+    id: number;
+    name: string;
+  } | null>(null);
+  const refreshSearches = useCallback(
+    async (): Promise<void> => {
+      try {
+        setSearches(await api.listSavedSearches());
+      } catch (e) {
+        // Reported, not swallowed: an empty Searches section and a failed call
+        // look identical in the rail.
+        api.log(`list_saved_searches failed: ${e}`);
+      }
+    },
+    [setSearches],
+  );
+  /** Saves what is in the field under a name, and goes to it: the rail's new
+   *  row is the confirmation, and the list does not move because the query is
+   *  the one already running. */
+  const saveSearch = useCallback(
+    async (name: string) => {
+      try {
+        const id = await api.createSavedSearch(name, query);
+        await refreshSearches();
+        setView(`search:${id}`);
+        // Said aloud, like the delete beside it: nothing else on screen
+        // changes enough to be noticed without sight.
+        setToast(t('saved-search-saved', { name }));
+        // The Save button unmounts the moment the search is saved, so the
+        // dialog had nothing to hand focus back to and dropped it on the body.
+        // The field is where the query is and where the next keystroke belongs.
+        searchRef.current?.focus();
+      } catch (e) {
+        setToast(t('saved-search-failed', { error: String(e) }));
+      }
+    },
+    // locale: the failure message comes from t().
+    [query, refreshSearches, locale],
+  );
+  /** Renames one, from wherever it was asked for. */
+  const renameSearch = useCallback(
+    (id: number, name: string) => {
+      void api
+        .updateSavedSearch(id, name, null)
+        .then(refreshSearches)
+        .then(() => setToast(t('saved-search-renamed', { name })))
+        .catch((e) => setToast(t('saved-search-failed', { error: String(e) })));
+    },
+    // locale: the failure message comes from t().
+    [refreshSearches, locale],
+  );
+  /** The saved search waiting on a yes. Destructive and undoable only by
+   *  retyping the query, so it is confirmed like a tag or a folder — the rail's
+   *  menu is easy to open by accident. */
+  const [deletingSearch, setDeletingSearch] = useState<{ id: number; name: string } | null>(null);
+
+  // Whether what is in the field can be saved. There is no counterpart for
+  // updating one: editing a saved search's text is running a different search,
+  // and a header offering to overwrite the search just opened is the wrong
+  // offer.
+  const savable = useMemo(() => canSave(asked, pinnedState), [asked, pinnedState]);
+  // Which rail row is the one you are looking at. A running search is not the
+  // mailbox it was started from, so nothing is marked — the rail used to keep
+  // Inbox lit over results gathered from everywhere. A saved search is the
+  // exception: its own row is exactly what the list is.
+  const currentRow = pinnedState.kind === 'saved' ? view : asked ? '' : view;
+
+  // Hiding a section in Settings can take away the row you are standing on:
+  // the list would stay, no rail item would be current, and there would be no
+  // way back to it. Walk to the inbox instead, which no setting can hide.
+  useEffect(() => {
+    if (sectionOrder.includes(sectionOf(view))) return;
+    void goToView('inbox');
+    // goToView is rebuilt every render and this must run on the setting, not on
+    // that: listing it would walk to the inbox on every keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sectionOrder, view]);
+
+  /** Renaming a tag, wherever it was asked for: the rail's row menu, or the
+   *  rename dialog. One implementation, because the rail's copy had learned
+   *  things the dialog would otherwise have to learn again. */
+  const renameTagTo = useCallback(
+    (id: number, name: string) => {
+          // The rows carry the tag's *name*, not its id, so a rename that only
+          // refreshed the rail left every chip in the list showing the old one
+          // until something else reloaded them.
+          const was = tags.find((x) => x.id === id)?.name;
+          return api
+            .renameTag(id, name)
+            .then(() => api.tags().then(setTags))
+            // The engine rewrites saved queries naming this tag, so the rail's
+            // rows hold stale text until they are read back.
+            .then(refreshSearches)
+            .then(() => {
+              if (!was || was === name) return;
+              // A view is named after its tag, so renaming the tag you are
+              // standing in leaves you looking at a name nothing answers to:
+              // the list empties and no rail item is current. Follow the
+              // rename instead — it is the same collection, newly titled.
+              if (view === `tag:${was}`) setView(`tag:${name}`);
+              // The order that view was given is named after the tag too.
+              const moved = viewRenamed(sortByView, `tag:${was}`, `tag:${name}`);
+              if (moved) set('listSortByView', moved);
+              setItems((prev) =>
+                prev.map((row) =>
+                  row.tags.some((x) => x.name === was)
+                    ? {
+                        ...row,
+                        tags: row.tags.map((x) => (x.name === was ? { ...x, name } : x)),
+                      }
+                    : row,
+                ),
+              );
+            })
+            .catch((e) => setToast(t('tag-rename-failed', { error: String(e) })));
+    },
+    // locale: the failure message comes from t().
+    [tags, view, sortByView, set, refreshSearches, locale],
+  );
+
+  /** The same for a folder, whose new name is a whole path. */
+  const renameFolderTo = useCallback(
+    (folderId: number, newPath: string) =>
+      api
+        .renameFolder(folderId, newPath)
+        // Saved queries name a folder by its leaf or its path; the engine has
+        // just rewritten them.
+        .then(() => refreshSearches())
+        .then(() => api.folders().then(setFolders))
+        .catch((e) => setToast(t('folder-failed', { error: String(e) }))),
+    // locale: as above.
+    [refreshSearches, setFolders, locale],
+  );
 
   const listFetchers = useMemo(
     () => ({ threads: api.threads, search: api.search }),
@@ -569,7 +735,13 @@ export function App() {
         setDraft(null);
       }
     }
-    setQuery('');
+    // A saved search is a view whose query is the whole point, so the field
+    // shows it — visible and editable — rather than being cleared on the way
+    // in. Every other view arrives with an empty box.
+    const pinned = v.startsWith('search:')
+      ? searches.find((x) => `search:${x.id}` === v)
+      : undefined;
+    setQuery(pinned?.query ?? '');
     setView(v);
     // Sweep folders are not on the inbox wake path. Ask for the one
     // just opened so the list is not last sweep's, without putting
@@ -698,6 +870,11 @@ export function App() {
     },
     // Only where there is a reading pane to fill. With the layout off there is
     // no pane, and with nothing open there would be nothing to look at.
+    // ⌘⇧S. Silent when there is nothing to save — a shortcut that opens a
+    // naming dialog over a mailbox would be asking you to name nothing.
+    saveSearch: () => {
+      if (savable) setNaming(true);
+    },
     findInMessage: () => {
       // Only where there is something to find in. With no reading pane, or
       // nothing open, ⌘F would put up a bar that could never match anything.
@@ -845,7 +1022,11 @@ export function App() {
               const f = folders.find((x) => `folder:${x.id}` === view);
               return f ? f.path.split(/[/.]/).pop() || f.path : t('rail-folders');
             })()
-          : t(`mailbox-${view}` as StringId),
+          : // A saved search's view is titled from `pinnedState`, not here: only
+            // that knows whether the text is still the saved one's. Left to this
+            // memo the header read `mailbox-search:1`, the string id it failed
+            // to find.
+            t(`mailbox-${view}` as StringId),
     // locale: the labels come from t(), which a re-render alone does not
     // refresh inside a memo.
     [view, folders, locale],
@@ -1279,7 +1460,7 @@ export function App() {
   // whole application with that file.
   useDropGuard();
 
-  const { drag, start: startDrag, startTag, startFolder } = useDrag(
+  const { drag, start: startDrag, startTag, startSearch, startFolder } = useDrag(
     view,
     dropOnRail,
     // A tag dropped onto a conversation. The same call the picker makes, so a
@@ -1382,29 +1563,61 @@ export function App() {
     (payload, at) => {
       // Conversations are never reordered, so a threads payload has no
       // business here and the narrowing says so rather than assuming.
-      if (payload.kind !== 'folder' && payload.kind !== 'tag') return;
-      const moving = payload.kind === 'folder' ? payload.folderId : payload.tagId;
+      if (payload.kind === 'threads') return;
+      const kind = payload.kind;
+      const moving =
+        kind === 'folder'
+          ? payload.folderId
+          : kind === 'tag'
+            ? payload.tagId
+            : payload.searchId;
+      // Read from the rows, because the rendered order is the one on screen —
+      // a folder tree draws depth-first and its array does not.
+      //
+      // Keyed by kind as well as by id. Folders, tags and searches are separate
+      // tables, so id 3 exists in all three: with bare numbers a tag row could
+      // be taken for the search of the same id, and the list spliced against a
+      // position no saved search was at.
       const rows = [...document.querySelectorAll<HTMLElement>('.rail [data-reorder]')];
-      const ids = rows.map((r) => Number(r.dataset.reorder)).filter(Number.isFinite);
+      const mine = rows
+        .map((r) => r.dataset.reorder ?? '')
+        .filter((key) => key.startsWith(`${kind}:`))
+        .map((key) => Number(key.slice(kind.length + 1)))
+        .filter(Number.isFinite);
 
-      // Folders and tags share the attribute but are separate lists, and one
-      // must never be renumbered by a drag in the other.
-      const everything = payload.kind === 'folder' ? folders.map((f) => f.id) : tags.map((x) => x.id);
+      // Three lists share the attribute and none may be renumbered by a drag
+      // in another.
+      const everything =
+        kind === 'folder'
+          ? folders.map((f) => f.id)
+          : kind === 'tag'
+            ? tags.map((x) => x.id)
+            : searches.map((x) => x.id);
       const known = new Set(everything);
-      const list = ids.filter((id) => known.has(id));
+      const list = mine.filter((id) => known.has(id));
       const from = list.indexOf(moving);
       if (from < 0) return;
 
       const next = list.slice();
       next.splice(from, 1);
-      // Found again after the removal: taking it out shifts everything below.
-      const target = next.indexOf(Number(at.key));
-      if (target < 0) return;
+      // The line was drawn against a row of this kind, so the key names one.
+      const target = next.indexOf(Number(at.key.slice(kind.length + 1)));
+      if (!at.key.startsWith(`${kind}:`) || target < 0) return;
       next.splice(at.edge === 'before' ? target : target + 1, 0, moving);
       if (next.join() === list.join()) return;
       const order = mergeOrder(everything, next);
 
-      if (payload.kind === 'folder') {
+      if (payload.kind === 'search') {
+        const byId = new Map(searches.map((x) => [x.id, x]));
+        const wasOrder = searches;
+        setSearches(order.map((id) => byId.get(id)!).filter(Boolean));
+        void api.reorderSavedSearches(order).catch((e) => {
+          // Put it back: an optimistic order the engine refused is a rail that
+          // looks right and is wrong.
+          setSearches(wasOrder);
+          setToast(t('saved-search-failed', { error: String(e) }));
+        });
+      } else if (payload.kind === 'folder') {
         const byId = new Map(folders.map((f) => [f.id, f]));
         const wasOrder = folders;
         setFolders(order.map((id) => byId.get(id)!).filter(Boolean));
@@ -1935,7 +2148,10 @@ export function App() {
         counts={counts}
         outboxNeedsAttention={counts['outbox:attention'] ?? 0}
         mailboxOrder={visibleMailboxes(arrangement)}
+        sectionOrder={sectionOrder}
+        searches={searches}
         view={view}
+        current={currentRow}
         folders={folders}
         onCreateFolder={(name) =>
           api
@@ -1944,12 +2160,7 @@ export function App() {
             .then(() => setToast(t('folder-created', { name })))
             .catch((e) => setToast(t('folder-failed', { error: String(e) })))
         }
-        onRenameFolder={(folderId, newPath) =>
-          api
-            .renameFolder(folderId, newPath)
-            .then(() => api.folders().then(setFolders))
-            .catch((e) => setToast(t('folder-failed', { error: String(e) })))
-        }
+
         onDeleteFolder={setDeletingFolder}
         onMoveFolder={setMovingFolder}
         // Marking is not destructive and its inverse is the item beside it, so
@@ -1999,37 +2210,6 @@ export function App() {
             .then(() => api.tags().then(setTags))
             .catch((e) => setToast(t('tag-create-failed', { error: String(e) })))
         }
-        onRenameTag={(id, name) => {
-          // The rows carry the tag's *name*, not its id, so a rename that only
-          // refreshed the rail left every chip in the list showing the old one
-          // until something else reloaded them.
-          const was = tags.find((x) => x.id === id)?.name;
-          return api
-            .renameTag(id, name)
-            .then(() => api.tags().then(setTags))
-            .then(() => {
-              if (!was || was === name) return;
-              // A view is named after its tag, so renaming the tag you are
-              // standing in leaves you looking at a name nothing answers to:
-              // the list empties and no rail item is current. Follow the
-              // rename instead — it is the same collection, newly titled.
-              if (view === `tag:${was}`) setView(`tag:${name}`);
-              // The order that view was given is named after the tag too.
-              const moved = viewRenamed(sortByView, `tag:${was}`, `tag:${name}`);
-              if (moved) set('listSortByView', moved);
-              setItems((prev) =>
-                prev.map((row) =>
-                  row.tags.some((x) => x.name === was)
-                    ? {
-                        ...row,
-                        tags: row.tags.map((x) => (x.name === was ? { ...x, name } : x)),
-                      }
-                    : row,
-                ),
-              );
-            })
-            .catch((e) => setToast(t('tag-rename-failed', { error: String(e) })));
-        }}
         onColourTag={(id, colour) => {
           // Painted at once. A colour is a glance-level thing; waiting a round
           // trip to see it is the whole cost of the gesture.
@@ -2056,6 +2236,51 @@ export function App() {
         }}
         onDeleteTag={(tag) => setDeletingTag(tag)}
         onDragTag={startTag}
+        onDragSearch={startSearch}
+        onAskRename={setRenamingWhat}
+        onDeleteSearch={setDeletingSearch}
+        onReorderRow={(kind, id, up) => {
+          // A step at a time, which is what a menu can say — the drag path sends
+          // the whole order. Tags and folders are renumbered by swapping this row
+          // with its neighbour, exactly as a drag onto that neighbour's edge
+          // would; a saved search has an engine call that swaps for us.
+          if (kind !== 'search') {
+            const rows = kind === 'tag' ? tags : folders;
+            const list = rows.map((x) => x.id);
+            const from = list.indexOf(id);
+            const to = up ? from - 1 : from + 1;
+            if (from < 0 || to < 0 || to >= list.length) return;
+            const order = list.slice();
+            [order[from], order[to]] = [order[to], order[from]];
+            const byId = new Map(rows.map((x) => [x.id, x]));
+            const settled = order.map((x) => byId.get(x)!).filter(Boolean);
+            if (kind === 'tag') {
+              const was = tags;
+              setTags(settled as typeof tags);
+              void api.reorderTags(order).catch((e) => {
+                setTags(was);
+                setToast(t('tag-rename-failed', { error: String(e) }));
+              });
+            } else {
+              const was = folders;
+              setFolders(settled as typeof folders);
+              void api.reorderFolders(order).catch((e) => {
+                setFolders(was);
+                setToast(t('folder-failed', { error: String(e) }));
+              });
+            }
+            return;
+          }
+          void api
+            .moveSavedSearch(id, up)
+            .then(refreshSearches)
+            // The rows carry no position, so without this nothing tells you
+            // whether the move happened.
+            .then(() =>
+              setToast(up ? t('saved-search-moved-up') : t('saved-search-moved-down')),
+            )
+            .catch((e) => setToast(t('saved-search-failed', { error: String(e) })));
+        }}
         tags={tags}
         railRef={railRef}
         collapsed={settings.railCollapsed === 'on'}
@@ -2091,11 +2316,41 @@ export function App() {
         // land on a conversation, so lighting up every mailbox would be
         // offering somewhere it cannot go.
         dragActive={drag?.payload.kind === 'threads'}
+        anyDrag={drag !== null}
         onView={(v) => {
           if (v === 'help') setHelpOpen(true);
           else if (v === 'settings') setSettingsOpen('appearance');
           else void goToView(v);
         }}
+      />
+
+      <NameDialog
+        open={renamingWhat !== null}
+        title={t('rename-title', { name: renamingWhat?.name ?? '' })}
+        placeholder={renamingWhat?.name ?? ''}
+        icon={SquarePen}
+        suggested={renamingWhat?.name}
+        confirmLabel={t('search-rename')}
+        onClose={() => setRenamingWhat(null)}
+        onSubmit={(name) => {
+          const what = renamingWhat;
+          setRenamingWhat(null);
+          if (!what || name === what.name) return;
+          if (what.kind === 'search') renameSearch(what.id, name);
+          else if (what.kind === 'tag') void renameTagTo(what.id, name);
+          else void renameFolderTo(what.id, name);
+        }}
+      />
+
+      <NameDialog
+        open={naming}
+        title={t('cmd-save-search')}
+        placeholder={t('saved-search-placeholder')}
+        icon={Bookmark}
+        confirmLabel={t('search-save')}
+        suggested={suggestName(query)}
+        onClose={() => setNaming(false)}
+        onSubmit={(name) => void saveSearch(name)}
       />
 
       <div className="list-pane" ref={listRef}>
@@ -2225,13 +2480,44 @@ export function App() {
               same dot. It earns a place again the day a view can hold mail from
               more than one account. */}
           <div className="view-row">
-            <span className="view-name">{viewName}</span>
+            {pinnedState.kind === 'saved' ? (
+              // A saved search is titled with its name, and the title renames
+              // it. Only while the text is still that search's: edited, this is
+              // a different search and the old name would be a lie.
+              <button
+                type="button"
+                className="view-name view-name-rename"
+                title={t('search-rename')}
+                onClick={() =>
+                  setRenamingWhat({
+                    kind: 'search',
+                    id: pinnedState.search.id,
+                    name: pinnedState.search.name,
+                  })
+                }
+              >
+                {pinnedState.search.name}
+              </button>
+            ) : asked ? (
+              // Nothing. A search is not the mailbox it was started from — the
+              // header went on saying "Inbox" over results gathered from
+              // everywhere — and it needs no heading of its own either: the
+              // count beside it already says what this list is.
+              null
+            ) : (
+              <span className="view-name">{viewName}</span>
+            )}
             {/* Searching is a different question from browsing, so the header
                 answers a different one: how many were found, and in what
                 order — not how many are unread. */}
             {query.trim() ? (
               <>
-                <span className="view-count">
+                {/* Announced, because a search that finds nothing and a search
+                    that finds two hundred look identical to a screen reader
+                    otherwise: the list's own name never changes. Polite, so it
+                    waits its turn and coalesces while somebody is still
+                    typing. */}
+                <span className="view-count" role="status" aria-live="polite">
                   {t('search-found', { count: fmtCount(items.length) })}
                 </span>
               </>
@@ -2253,15 +2539,32 @@ export function App() {
                       : t('list-unread', { count: fmtCount(unread) })}
               </span>
             )}
-            {/* Last in the row and pushed to its end, so the mailbox's name
-                and its count read as one phrase and the control that changes
-                the order sits apart from them. The same control whether or
-                not a search is running — only its options differ. */}
-            <SortMenu
-              sort={activeSort}
-              onChange={asked ? setSearchSort : setListSort}
-              searching={asked}
-            />
+            {/* Bookmarking the search sits with the things that describe the
+                result set rather than in the chip row, which is a setting and
+                would take this with it when switched off. Filled once the
+                query is saved and unchanged, so the row says which of the
+                three states you are in without a word. */}
+            {/* Bookmarking the search travels with the control that orders
+                it, at the end of the row: one wrapper, one auto margin. */}
+            <div className="view-end">
+              {savable && (
+                <button
+                  type="button"
+                  className="view-save"
+                  onClick={() => setNaming(true)}
+                  title={t('cmd-save-search')}
+                  aria-label={t('cmd-save-search')}
+                >
+                  <Bookmark size={13} strokeWidth={1.8} aria-hidden="true" />
+                  <span>{t('search-save')}</span>
+                </button>
+              )}
+                            <SortMenu
+                sort={activeSort}
+                onChange={asked ? setSearchSort : setListSort}
+                searching={asked}
+              />
+            </div>
           </div>
         </div>
 
@@ -2271,16 +2574,22 @@ export function App() {
             searched at all, which changes what you are reading right now.
             Amber for the same reason: at the foot of the list in the quiet
             grey of a caption, people simply did not see it. */}
-        {hasQuery && searchCut && (
-          <div className="list-notice" role="status">
-            <TriangleAlert size={13} strokeWidth={1.8} aria-hidden="true" />
-            <span>
-              {searchCut === 'terms'
-                ? t('search-cut-terms', { count: MAX_CLAUSES })
-                : t('search-cut-value', { count: MAX_VALUE_CHARS })}
-            </span>
-          </div>
-        )}
+        {/* Mounted whether or not there is anything to say, because a polite
+            region that appears along with its text is not reliably announced —
+            WebKit least of all, and WebKit is what ships. The row collapses to
+            nothing when empty. */}
+        <div className="list-notice" role="status" aria-live="polite" hidden={!searchCut}>
+          {hasQuery && searchCut && (
+            <>
+              <TriangleAlert size={13} strokeWidth={1.8} aria-hidden="true" />
+              <span>
+                {searchCut === 'terms'
+                  ? t('search-cut-terms', { count: MAX_CLAUSES })
+                  : t('search-cut-value', { count: MAX_VALUE_CHARS })}
+              </span>
+            </>
+          )}
+        </div>
 
         {error ? (
           <div className="empty">
@@ -2328,14 +2637,9 @@ export function App() {
         {/* What was actually searched. During a backfill the index genuinely
             does not hold everything, and a client that quietly returns three
             results out of a possible ten teaches you not to trust its search.
-            Saying so keeps "no results" meaning no results.
 
             Shown only when the two numbers disagree: once everything is held,
-            a line explaining that everything was searched is noise.
-
-            The same goes for the query. Past thirty-two terms, or a term past
-            256 characters, the engine searches what it read and leaves the
-            rest, which looks exactly like the rest finding nothing. */}
+            a line explaining that everything was searched is noise. */}
         {hasQuery && partlySearched && (
           <div className="coverage">
             <div>
@@ -2694,6 +2998,7 @@ export function App() {
           onReply: () => {
             if (active) void startReply(active.id, settings.replyDefault === 'reply-all');
           },
+          saveSearch: savable ? () => setNaming(true) : null,
           onPauseNotifications: () => {
             set('notifyPausedUntil', String(Date.now() + 60 * 60 * 1000));
             setToast(t('notify-paused-toast'));
@@ -2838,6 +3143,10 @@ export function App() {
       <AppDialogs
         discarding={discarding}
         setDiscarding={setDiscarding}
+        deletingSearch={deletingSearch}
+        setQuery={setQuery}
+        setDeletingSearch={setDeletingSearch}
+        refreshSearches={refreshSearches}
         deletingTag={deletingTag}
         setDeletingTag={setDeletingTag}
         movingFolder={movingFolder}

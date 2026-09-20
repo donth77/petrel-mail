@@ -48,6 +48,9 @@ export const DEFAULTS = {
   /// overrode that row. Empty until somebody changes something, which is when
   /// `badges` above stops being consulted.
   railMailboxes: '',
+  /// Which rail sections are drawn, and in what order. Empty is the shipped
+  /// arrangement; see `rail-sections.ts`.
+  railSections: '',
   /** Days a message may sit in the Trash before Petrel deletes it, on the
    *  server and here. '0' is off, and is the default: deleting mail on a
    *  timer is a promise to opt into rather than a default to discover. */

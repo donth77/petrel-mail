@@ -1,5 +1,12 @@
 import { useEffect, useState } from 'react';
-import { api, type Account, type Folder, type Identity, type Tag } from './api';
+import {
+  api,
+  type Account,
+  type Folder,
+  type Identity,
+  type SavedSearch,
+  type Tag,
+} from './api';
 
 /**
  * The account's reference data — tags, folders, accounts, identity — and the
@@ -13,6 +20,7 @@ import { api, type Account, type Folder, type Identity, type Tag } from './api';
 export function useReferenceData(seeding: boolean | undefined, accountEpoch: number) {
   const [tags, setTags] = useState<Tag[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
+  const [searches, setSearches] = useState<SavedSearch[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [identity, setIdentity] = useState<Identity | null>(null);
   // The account the window is showing.
@@ -29,6 +37,10 @@ export function useReferenceData(seeding: boolean | undefined, accountEpoch: num
       .then((t) => live && setTags(t))
       .catch((e) => api.log(`list_tags failed: ${e}`));
     api.folders().then((f) => live && setFolders(f)).catch((e) => api.log(`folders failed: ${e}`));
+    api
+      .listSavedSearches()
+      .then((x) => live && setSearches(x))
+      .catch((e) => api.log(`list_saved_searches failed: ${e}`));
     api.identity().then((i) => live && setIdentity(i)).catch((e) => api.log(`identity failed: ${e}`));
     api.accounts().then((a) => live && setAccounts(a)).catch(() => {});
     return () => {
@@ -49,5 +61,16 @@ export function useReferenceData(seeding: boolean | undefined, accountEpoch: num
     // may have appeared and a re-read is worth doing.
   }, [seeding, accountEpoch]);
 
-  return { tags, setTags, folders, setFolders, accounts, setAccounts, activeAccount, identity };
+  return {
+    tags,
+    setTags,
+    folders,
+    setFolders,
+    searches,
+    setSearches,
+    accounts,
+    setAccounts,
+    activeAccount,
+    identity,
+  };
 }

@@ -163,7 +163,10 @@
   cursor: pointer;
 }
 
-.rail-item:hover {
+/* A row is not being pointed at while something is being dragged over it: the
+   insertion line says where the drop lands, and a hover highlight underneath it
+   said the drop landed on the row instead. */
+.rail-item:not([data-dragging]):hover {
   background: var(--hair2);
 }
 
@@ -394,6 +397,10 @@
   margin: 0;
   border: 0;
   overflow: hidden;
+  /* With the line-height, because a zeroed label still generates a line box: a
+     Japanese name made its collapsed row 30px where latin rows are 25 — a jag
+     in a column that is otherwise even. */
+  line-height: 0;
 }
 
 /* ------------------------------------------------- collapsed rail flyout */

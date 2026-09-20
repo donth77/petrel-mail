@@ -1,6 +1,6 @@
 import type { LucideIcon } from 'lucide-react';
 import {
-  Archive, BellOff, Clock, Inbox, PencilLine, Reply, Search, Settings,
+  Archive, BellOff, Bookmark, Clock, Inbox, PencilLine, Reply, Search, Settings,
   Star, Tag, Trash2, CircleHelp, Send, FolderInput,
 } from 'lucide-react';
 import type { ActionKind } from './api';
@@ -40,6 +40,10 @@ export type CommandContext = {
   onCompose: () => void;
   onReply: () => void;
   onPauseNotifications: () => void;
+  /** Saving what is in the field as a new search, when it is not one already.
+   *  Null while the field holds the mailbox, or holds a saved search unchanged —
+   *  there is nothing to save in either. */
+  saveSearch: (() => void) | null;
 };
 
 export function buildCommands(ctx: CommandContext): Command[] {
@@ -71,10 +75,25 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'settings', scope: 'app', label: 'rail-settings', icon: Settings, run: () => ctx.onView('settings') },
   ];
 
+  // Saving the search in the field, when there is one. Absent otherwise, for
+  // the same reason the conversation actions are: a command that cannot run is
+  // a command that teaches people the palette is unreliable.
+  const search: Command[] = [];
+  if (ctx.saveSearch) {
+    search.push({
+      id: 'save-search',
+      scope: 'app',
+      label: 'cmd-save-search',
+      icon: Bookmark,
+      keys: ['⌘⇧S'],
+      run: ctx.saveSearch,
+    });
+  }
+
   // Conversation actions are meaningless with nothing selected, so they are
   // absent rather than present-and-inert: an unrunnable command in a palette
   // teaches people the palette is unreliable.
-  return [...(ctx.hasThread ? conversation : []), ...goto, ...app];
+  return [...(ctx.hasThread ? conversation : []), ...goto, ...search, ...app];
 }
 
 /**

@@ -238,7 +238,21 @@ export function useThreadWindow(args: {
     // the next window too, even when that one loaded.
     setError(null);
 
-    const debounceMs = query.trim() ? 100 : 0;
+    // 150ms while a query is present, 0 for a mailbox switch — that one is a
+    // click and has nothing to wait for.
+    //
+    // A debounce only helps when it is longer than the gaps between keystrokes:
+    // at a steady cadence, a gap wider than the delay fires a search on every
+    // key, and a gap narrower than it fires one at the end. At 100ms only a fast
+    // typist got that; ordinary typing sits at 150–200ms between keys, and a
+    // query carrying punctuation — `from:sam` — is slower still, so most queries
+    // were searched once per character. The 50ms this adds to settling is paid
+    // once; at a hundred thousand messages a bracketed boolean query costs 93ms
+    // each time it runs, which is what was being spent per keystroke and thrown
+    // away — the fetch is generation-guarded, so those results were discarded,
+    // not shown. Past about 200ms the field stops feeling live, which is the
+    // other wall.
+    const debounceMs = query.trim() ? 150 : 0;
     const handle = window.setTimeout(() => {
       runReplaceLoad(fetchersRef.current, query, view, sort)
         .then(({ items: rows, hasMore: more }) => {

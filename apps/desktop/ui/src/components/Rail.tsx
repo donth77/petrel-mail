@@ -2,9 +2,12 @@ import type React from 'react';
 import { useEffect, useRef, useState } from 'react';
 import {
   ChevronDown, ChevronRight, FolderClosed,
-  CircleHelp, PanelLeftClose, PanelLeftOpen, PenSquare, Plus, Settings, FolderPlus, TagPlus } from 'lucide-react';
-import type { Account, Folder } from '../lib/api';
+  CircleHelp, PanelLeftClose, PanelLeftOpen, PenSquare, Plus, Search, Settings, FolderPlus, TagPlus } from 'lucide-react';
+import { Fragment } from 'react';
+import type { Account, Folder, SavedSearch } from '../lib/api';
+import type { SectionKey } from '../lib/rail-sections';
 import { Icon } from './Icon';
+import { SearchMenu } from './SearchMenu';
 import { t } from '../lib/strings';
 import { TagMenu } from './TagMenu';
 import { FolderMenu } from './FolderMenu';
@@ -63,6 +66,10 @@ type Props = {
   dropOver: string | null;
   /** Where a reorder would land, so the row can draw the line. */
   insertAt: InsertPoint | null;
+  /** Whether anything at all is being carried. `dragActive` is narrower — it
+   *  means conversations, which is what a drop target lights up for, and the
+   *  local `dragging` below adds folders to that. */
+  anyDrag: boolean;
   /** Outbox messages waiting on a decision. Any at all turns the row amber:
       a message that needs a person must not go unnoticed, and this is where
       you find out — the sidebar, not a dialog. */
@@ -70,6 +77,8 @@ type Props = {
   /** Which mailboxes to draw, in order. From the sidebar arrangement, so a row
    *  somebody hid is simply absent rather than drawn and ignored. */
   mailboxOrder: string[];
+  /** Which groups to draw, in order (`rail-sections.ts`). */
+  sectionOrder: SectionKey[];
   /** Whether a drag is in flight, so destinations can say they will take it
       before the pointer reaches them rather than only once it arrives. */
   dragActive: boolean;
@@ -80,7 +89,14 @@ type Props = {
    *  the engine omits empty ones rather than sending zeroes. */
   counts: Record<string, number>;
   view: string;
+  /** The row to mark as the one you are looking at, which is not always the
+   *  view: a search is not the mailbox it was started from, so while one is
+   *  running nothing is current — unless the search *is* a saved one, and then
+   *  its own row is. `view` still decides what a drop means. */
+  current: string;
   tags: Tag[];
+  /** Questions pinned under a name. Empty until the first one is saved. */
+  searches: SavedSearch[];
   /** Every folder; the rail lists the ones the user made (no role). */
   folders: Folder[];
   onView: (v: string) => void;
@@ -90,7 +106,6 @@ type Props = {
   /** Path of the folder mid-drag, so valid destinations can say so — and so
    *  the folder itself and its descendants can decline to light up. */
   folderDragPath: string | null;
-  onRenameFolder: (folderId: number, newPath: string) => Promise<void>;
   onDeleteFolder: (folder: Folder) => void;
   /** Opens the move-destination picker for this folder. */
   onMoveFolder: (folder: Folder) => void;
@@ -103,11 +118,18 @@ type Props = {
   /** Make a tag that is attached to nothing yet. Returns once it exists, so the
    *  rail can put the input away only after the work succeeded. */
   onCreateTag: (name: string) => Promise<void>;
-  onRenameTag: (tagId: number, name: string) => Promise<void>;
   onColourTag: (tagId: number, colour: string) => void;
   onDeleteTag: (tag: { id: number; name: string }) => void;
   /** Begins carrying this tag towards a conversation. */
   onDragTag: (e: React.PointerEvent, tagId: number, name: string) => void;
+  onDragSearch: (e: React.PointerEvent, searchId: number, name: string) => void;
+  /** Asks for the rename dialog rather than editing in place: one dialog for
+   *  every name the rail holds. */
+  onAskRename: (what: { kind: 'search' | 'tag' | 'folder'; id: number; name: string }) => void;
+  onDeleteSearch: (search: { id: number; name: string }) => void;
+  /** A row a step up or down its own list. The rail knows which row was asked;
+   *  how the order is saved differs per kind and is App's business. */
+  onReorderRow: (kind: 'search' | 'tag' | 'folder', id: number, up: boolean) => void;
   railRef?: React.Ref<HTMLElement>;
 };
 
@@ -118,24 +140,28 @@ export function Rail({
   unread,
   counts,
   view,
+  current,
   tags,
+  searches,
   folders,
   collapsed,
   onView,
   onCreateFolder,
   onDragFolder,
   folderDragPath,
-  onRenameFolder,
   onDeleteFolder,
   onMoveFolder,
   onEmptyTrash,
   onMarkFolderRead,
   onTrashFolderContents,
   onCreateTag,
-  onRenameTag,
   onColourTag,
   onDeleteTag,
   onDragTag,
+  onDragSearch,
+  onAskRename,
+  onDeleteSearch,
+  onReorderRow,
   onToggleCollapsed,
   onCompose,
   onResize,
@@ -144,9 +170,11 @@ export function Rail({
   onAddAccount,
   dropOver,
   insertAt,
+  anyDrag,
   dragActive,
   outboxNeedsAttention,
   mailboxOrder,
+  sectionOrder,
   railRef,
 }: Props) {
 
@@ -162,13 +190,11 @@ export function Rail({
   /** Rows folded shut by hand (true) or opened by hand (false). A path that is
    *  absent takes the default, which is folded — see FOLDED_AT_LAUNCH. */
   const [folded, setFolded] = useState<Record<string, boolean>>({});
-  const [renamingFolder, setRenamingFolder] = useState<number | null>(null);
   // Which naming dialog is up — the collapsed rail's way of asking for a
   // name without forcing itself open.
   const [namingDialog, setNamingDialog] = useState<'folder' | 'tag' | null>(null);
   // The tag being renamed, edited in place on its own row rather than in a
   // dialog: it is one short string, and the row is where you are looking.
-  const [renaming, setRenaming] = useState<number | null>(null);
   /** Where the archive tree roots, for the mailbox row's folder-drop. */
   const archiveRolePath = nestableRolePath(folders, 'archive');
   /** The folder a mailbox row stands for, where one exists. A row's verbs act
@@ -268,7 +294,15 @@ export function Rail({
     dragging && !(folderDragPath !== null && dragOrigin === card);
 
   /** `owner` is the flyout a row is being drawn inside, absent in the rail. */
-  const renderNode = (n: FNode, depth: number, owner?: string): React.ReactNode => {
+  const renderNode = (
+    n: FNode,
+    depth: number,
+    owner?: string,
+    // Where this folder sits among its own siblings. A folder's order is only
+    // ever relative to those, so first/last cannot be read off the flat list.
+    at = 0,
+    of = 1,
+  ): React.ReactNode => {
     // Inside a flyout a row is an ordinary expanded row: the card is portalled
     // out of the rail, so none of the [data-collapsed] rules reach it, and it
     // has the width for a label and an indent. `dense` is therefore "drawn as
@@ -303,36 +337,11 @@ export function Rail({
     const indent = dense ? undefined : ({ paddingLeft: 10 + depth * 14 } as const);
     const f = n.folder;
     const inner = f ? (
-      renamingFolder === f.id ? (
-        <input
-          key={`rename-folder-${f.id}`}
-          className="rail-new-tag"
-          defaultValue={f.path}
-          aria-label={t('folder-rename')}
-          autoComplete="off"
-          autoFocus
-          onFocus={(e) => e.currentTarget.select()}
-          onBlur={(e) => {
-            const next = e.currentTarget.value.trim();
-            setRenamingFolder(null);
-            if (next && next !== f.path) void onRenameFolder(f.id, next);
-          }}
-          onKeyDown={(e) => {
-            e.stopPropagation();
-            if (e.key === 'Escape') {
-              e.currentTarget.value = f.path;
-              setRenamingFolder(null);
-              return;
-            }
-            if (e.key === 'Enter') e.currentTarget.blur();
-          }}
-        />
-      ) : (
-        <button
+      <button
           type="button"
           className="rail-item"
           style={indent}
-          aria-current={view === `folder:${f.id}` ? 'page' : undefined}
+          aria-current={current === `folder:${f.id}` ? 'page' : undefined}
           onClick={() => onView(`folder:${f.id}`)}
           onPointerDown={(e) => {
             setDragOrigin(owner ?? null);
@@ -340,11 +349,11 @@ export function Rail({
           }}
           {...dropTarget(`folder:${f.id}`, view, dropOver)}
           data-folder-drop={f.path}
-          data-reorder={f.id}
+          data-reorder={`folder:${f.id}`}
           // Which edge to draw the line against. CSS puts it there; keeping
           // the decision in one attribute means the line cannot appear on
           // two rows at once.
-          data-insert={insertAt?.key === String(f.id) ? insertAt.edge : undefined}
+          data-insert={insertAt?.key === `folder:${f.id}` ? insertAt.edge : undefined}
           // One merged answer, written after the spread: dropTarget only
           // knows mail drags, and its undefined used to land last and wipe
           // the folder-drag highlight off every folder row.
@@ -367,7 +376,10 @@ export function Rail({
           {!collapsed && (
             <FolderMenu
               path={f.path}
-              onRename={() => setRenamingFolder(f.id)}
+              first={at === 0}
+              last={at === of - 1}
+              onReorder={(up) => onReorderRow('folder', f.id, up)}
+              onRename={() => onAskRename({ kind: 'folder', id: f.id, name: f.path })}
               onNewChild={() => {
                 setFolderPrefill(`${f.path}/`);
                 setNamingFolder(true);
@@ -382,7 +394,6 @@ export function Rail({
             <span className="count">{counts[`folder:${f.id}`]}</span>
           )}
         </button>
-      )
     ) : (
       <button
         type="button"
@@ -407,7 +418,7 @@ export function Rail({
           suppressed={cardSuppressed(card)}
           anchor={inner}
         >
-          {n.children.map((c) => renderNode(c, 0, card))}
+          {n.children.map((c, i) => renderNode(c, 0, card, i, n.children.length))}
         </RailFlyout>
       ) : f ? (
         <Tip key={f.id} label={f.path} placement="right" when={dense}>
@@ -419,52 +430,20 @@ export function Rail({
     return (
       <div key={n.path}>
         {row}
-        {open && n.children.map((c) => renderNode(c, depth + 1, owner))}
+        {open && n.children.map((c, i) => renderNode(c, depth + 1, owner, i, n.children.length))}
       </div>
     );
   };
 
-  return (
-    <nav
-      className="rail"
-      ref={railRef}
-      aria-label={t('rail-mailboxes')}
-      data-collapsed={collapsed || undefined}
-    >
-      {/* One account is active at a time (Q27): the header names it rather than
-          leaving "which account am I in" to be inferred. */}
-      <AccountMenu
-        accounts={accounts}
-        current={account}
-        // The same number the footer shows for the view on screen. This once
-        // preferred the account's stored inbox count, and the two disagreed —
-        // a header saying 7 over a pane saying 0 reads as broken, whichever
-        // is technically defensible. One view, one number, everywhere it
-        // appears; the per-account rows in the menu keep their own counts.
-        unread={unread}
-        accountColor={accountColor}
-        onSwitch={onSwitchAccount}
-        onSettings={onSettings}
-        onAdd={onAddAccount}
-      />
-
-      {/* Writing is the one thing in this rail that is not somewhere to go, so
-          it gets the one filled button. C does the same for anyone who has
-          learned it — the cap is on the button so they can. */}
-      <Tip label={t('cmd-compose')} placement="right" when={collapsed} keys={['C']}>
-        <button type="button" className="compose-new" onClick={onCompose}>
-          <Icon icon={PenSquare} size={15} />
-          <span className="rail-text">{t('cmd-compose')}</span>
-          <span className="kbd on-accent rail-text">C</span>
-        </button>
-      </Tip>
-
-      {/* Everything you navigate to scrolls; the things you reach for do not.
-          With a few dozen folders the account switcher, Compose, Help and
-          Settings used to scroll off with them, so the way out of a long
-          mailbox list was to scroll back up it. */}
-      <div className="rail-scroll">
-      <div className="rail-label">{t('rail-mailboxes')}</div>
+  const mailboxesSection = (
+    <>
+      {/* Headings, not decoration. These were plain divs, so a screen reader
+          met four unexplained buttons where a sighted reader sees a labelled
+          group — and heading navigation, which is how people move around a
+          sidebar, had nothing to move between. */}
+      <div className="rail-label" role="heading" aria-level={2}>
+        {t('rail-mailboxes')}
+      </div>
       {mailboxOrder
         .map((key) => MAILBOXES.find((m) => m.key === key))
         .filter((m): m is (typeof MAILBOXES)[number] => m !== undefined)
@@ -474,7 +453,7 @@ export function Rail({
           <button
             type="button"
             className="rail-item"
-            aria-current={view === m.key ? 'page' : undefined}
+            aria-current={current === m.key ? 'page' : undefined}
             data-attention={m.key === 'outbox' && outboxNeedsAttention > 0 ? true : undefined}
             onClick={() => onView(m.key)}
             {...dropTarget(m.key, view, dropOver)}
@@ -560,6 +539,11 @@ export function Rail({
                 return (
                   <FolderMenu
                     path={own.path}
+                    // A mailbox wearing a tree, not a folder in a list: there is
+                    // nothing to reorder it among.
+                    first
+                    last
+                    onReorder={() => {}}
                     onNewChild={
                       m.key === 'archive' && archivePath
                         ? () => {
@@ -581,7 +565,15 @@ export function Rail({
                 beside. Always offered, not only when the bin holds folders —
                 a menu that appears and disappears is one nobody learns. */}
             {m.key === 'trash' && !collapsed && onEmptyTrash && (
-              <FolderMenu path={trashPath ?? 'Trash'} onEmpty={onEmptyTrash} />
+              // The bin is a mailbox, not a folder among folders: nothing to
+              // reorder it against.
+              <FolderMenu
+                path={trashPath ?? 'Trash'}
+                first
+                last
+                onReorder={() => {}}
+                onEmpty={onEmptyTrash}
+              />
             )}
             {!collapsed && counts[m.key] > 0 && (
               <span className="count">{counts[m.key]}</span>
@@ -599,7 +591,7 @@ export function Rail({
               suppressed={cardSuppressed(`mailbox:${m.key}`)}
               anchor={anchor}
             >
-              {subtree.map((c) => renderNode(c, 0, `mailbox:${m.key}`))}
+              {subtree.map((c, i) => renderNode(c, 0, `mailbox:${m.key}`, i, subtree.length))}
             </RailFlyout>
           ) : (
             <Tip key={m.key} label={t(m.id)} placement="right" when={collapsed}>
@@ -610,7 +602,7 @@ export function Rail({
           return (
             <div key={m.key}>
               {row}
-              {!collapsed && archiveOpen && archiveTree.map((c) => renderNode(c, 1))}
+              {!collapsed && archiveOpen && archiveTree.map((c, i) => renderNode(c, 1, undefined, i, archiveTree.length))}
             </div>
           );
         }
@@ -618,14 +610,17 @@ export function Rail({
           return (
             <div key={m.key}>
               {row}
-              {!collapsed && trashOpen && trashTree.map((c) => renderNode(c, 1))}
+              {!collapsed && trashOpen && trashTree.map((c, i) => renderNode(c, 1, undefined, i, trashTree.length))}
             </div>
           );
         }
         return row;
         })}
+    </>
+  );
 
-
+  const foldersSection = (
+    <>
       {/* Folders the user made, between the fixed mailboxes and the tags —
           places before labels. The header shows even with none yet, because
           the + is how the first one gets made. */}
@@ -635,7 +630,9 @@ export function Rail({
         data-drop-over={dropOver === 'fdrop:' || undefined}
         data-drop-ok={folderDragPath !== null || undefined}
       >
-        <span>{t('rail-folders')}</span>
+        <span role="heading" aria-level={2}>
+          {t('rail-folders')}
+        </span>
         <Tip label={t('folder-new')} placement="right">
           <button
             type="button"
@@ -680,7 +677,7 @@ export function Rail({
           }}
         />
       )}
-      {tree.map((n) => renderNode(n, 0))}
+      {tree.map((n, i) => renderNode(n, 0, undefined, i, tree.length))}
       {/* The header shows even with no tags yet, because the + is how the first
           one gets made — a section that only appears once you already have one
           is a feature you cannot find.
@@ -689,8 +686,15 @@ export function Rail({
           the Mailboxes heading is. Removing it took its 37px with it and every
           tag below jumped up, while the mailboxes — whose heading only fades —
           held still. Two headings, two behaviours, one of them visibly wrong. */}
+    </>
+  );
+
+  const tagsSection = (
+    <>
       <div className="rail-label rail-label-row">
-            <span>{t('rail-tags')}</span>
+            <span role="heading" aria-level={2}>
+              {t('rail-tags')}
+            </span>
             <Tip label={t('tag-new')} placement="right">
               <button
                 type="button"
@@ -741,44 +745,20 @@ export function Rail({
             />
           )}
 
-      {tags.map((tag) => (
+      {tags.map((tag, at) => (
             <Tip key={tag.name} label={tag.name} placement="right" when={collapsed}>
-            {renaming === tag.id ? (
-              <input
-                key={`rename-${tag.id}`}
-                className="rail-new-tag"
-                defaultValue={tag.name}
-                aria-label={t('tag-rename')}
-                autoComplete="off"
-                autoFocus
-                onFocus={(e) => e.currentTarget.select()}
-                onBlur={(e) => {
-                  const next = e.currentTarget.value.trim();
-                  setRenaming(null);
-                  if (next && next !== tag.name) void onRenameTag(tag.id, next);
-                }}
-                onKeyDown={(e) => {
-                  e.stopPropagation();
-                  if (e.key === 'Escape') {
-                    // Abandoned, so blur must not then commit it.
-                    e.currentTarget.value = tag.name;
-                    setRenaming(null);
-                    return;
-                  }
-                  if (e.key === 'Enter') e.currentTarget.blur();
-                }}
-              />
-            ) : (
             <button
               type="button"
               className="rail-item"
-              aria-current={view === `tag:${tag.name}` ? 'page' : undefined}
+              // As on a saved search: the row's own menu button is inside it.
+              aria-label={tag.name}
+              aria-current={current === `tag:${tag.name}` ? 'page' : undefined}
                   onClick={() => onView(`tag:${tag.name}`)}
               onPointerDown={(e) => onDragTag(e, tag.id, tag.name)}
               {...dropTarget(`tag:${tag.name}`, view, dropOver)}
               data-drop-ok={dragActive && acceptsDrop(`tag:${tag.name}`, view) ? true : undefined}
-              data-reorder={tag.id}
-              data-insert={insertAt?.key === String(tag.id) ? insertAt.edge : undefined}
+              data-reorder={`tag:${tag.id}`}
+              data-insert={insertAt?.key === `tag:${tag.id}` ? insertAt.edge : undefined}
             >
               <span
                 className="tag-swatch"
@@ -791,7 +771,10 @@ export function Rail({
                 <TagMenu
                   name={tag.name}
                   colour={tag.colour}
-                  onRename={() => setRenaming(tag.id)}
+                  first={at === 0}
+                  last={at === tags.length - 1}
+                  onReorder={(up) => onReorderRow('tag', tag.id, up)}
+                  onRename={() => onAskRename({ kind: 'tag', id: tag.id, name: tag.name })}
                   onColour={(c) => onColourTag(tag.id, c)}
                   onDelete={() => onDeleteTag({ id: tag.id, name: tag.name })}
                 />
@@ -800,10 +783,141 @@ export function Rail({
                 <span className="count">{tag.thread_count}</span>
               )}
             </button>
-            )}
             </Tip>
       ))}
+    </>
+  );
 
+  const searchesSection = (
+    <>
+      {/* Questions, last by default: the places and labels that hold mail come
+          first, and a section nobody has filled yet should not push them down.
+          The order is a setting, so this is a default rather than a fact.
+
+          Hidden entirely until the first one is saved. The tags header above
+          takes the opposite line and says why, but its reasoning is about the
+          `+` it carries: there, the header is the only way to make the first
+          tag. A search is saved from the middle pane, from results already on
+          screen, so an empty section here would be a heading with nothing to
+          offer — and no `+` belongs in it for the same reason. */}
+      {searches.length > 0 && (
+        <>
+          <div className="rail-label" role="heading" aria-level={2}>
+            {t('rail-searches')}
+          </div>
+          {searches.map((s, at) => (
+              // Wrapped only while collapsed, which is the whole trick the tag
+              // rows use. Ariakit's anchor takes the props of what it wraps, so
+              // around this row in an *open* rail it took the drag handler and
+              // the row stopped dragging; `when={collapsed}` returns the child
+              // untouched, so an open rail is a plain button. Collapsed, the row
+              // is all there is to hover — the label inside it is zeroed to no
+              // width and no line box, which is why a tooltip on the label
+              // never appeared.
+              <Tip key={s.id} label={s.name} placement="right" when={collapsed}>
+                <button
+                  type="button"
+                  className="rail-item"
+                  // Named explicitly, because the ⋯ menu button sits inside this
+                  // one and name-from-contents swallowed its label: every saved
+                  // search announced itself as "Waiting on More for Waiting on".
+                  aria-label={s.name}
+                  // The native tooltip, for the one case Tip cannot cover: a
+                  // name too long for the rail is clipped with no way to read
+                  // it, and Tip cannot wrap this row — Ariakit's anchor takes
+                  // the row's own props, which cost the drag handler once and a
+                  // phantom tab stop once. `title` is the exception the rest of
+                  // the app avoids, earned by truncation.
+                  title={s.name}
+                  aria-current={current === `search:${s.id}` ? 'page' : undefined}
+                  onClick={() => onView(`search:${s.id}`)}
+                  onPointerDown={(e) => onDragSearch(e, s.id, s.name)}
+                  data-reorder={`search:${s.id}`}
+                  data-insert={insertAt?.key === `search:${s.id}` ? insertAt.edge : undefined}
+                  data-dragging={anyDrag || undefined}
+                >
+                  {/* The magnifier, not a bookmark: the Star two rows above is
+                      already the rail's "mark this" glyph, and in a collapsed
+                      rail there are no headings to tell the two apart. */}
+                  <Icon icon={Search} />
+                  {/* Plain. A Tip here would add `tabIndex={0}` to a roleless
+                      span inside the row — four dead tab stops, the name read
+                      twice — and collapsed it has no size to hover anyway. */}
+                  <span className="rail-text">{s.name}</span>
+                  {!collapsed && (
+                    <SearchMenu
+                      name={s.name}
+                      first={at === 0}
+                      last={at === searches.length - 1}
+                      onReorder={(up) => onReorderRow('search', s.id, up)}
+                      onRename={() => onAskRename({ kind: 'search', id: s.id, name: s.name })}
+                      onDelete={() => onDeleteSearch({ id: s.id, name: s.name })}
+                    />
+                  )}
+                </button>
+              </Tip>
+          ))}
+        </>
+      )}
+    </>
+  );
+
+  /** Each section as one fragment, so the order is the only thing that varies. */
+  const sections: Record<SectionKey, React.ReactNode> = {
+    mailboxes: mailboxesSection,
+    folders: foldersSection,
+    tags: tagsSection,
+    searches: searchesSection,
+  };
+
+  return (
+    <nav
+      className="rail"
+      ref={railRef}
+      aria-label={t('rail-mailboxes')}
+      data-collapsed={collapsed || undefined}
+    >
+      {/* One account is active at a time (Q27): the header names it rather than
+          leaving "which account am I in" to be inferred. */}
+      <AccountMenu
+        accounts={accounts}
+        current={account}
+        // The same number the footer shows for the view on screen. This once
+        // preferred the account's stored inbox count, and the two disagreed —
+        // a header saying 7 over a pane saying 0 reads as broken, whichever
+        // is technically defensible. One view, one number, everywhere it
+        // appears; the per-account rows in the menu keep their own counts.
+        unread={unread}
+        accountColor={accountColor}
+        onSwitch={onSwitchAccount}
+        onSettings={onSettings}
+        onAdd={onAddAccount}
+      />
+
+      {/* Writing is the one thing in this rail that is not somewhere to go, so
+          it gets the one filled button. C does the same for anyone who has
+          learned it — the cap is on the button so they can. */}
+      <Tip label={t('cmd-compose')} placement="right" when={collapsed} keys={['C']}>
+        <button type="button" className="compose-new" onClick={onCompose}>
+          <Icon icon={PenSquare} size={15} />
+          <span className="rail-text">{t('cmd-compose')}</span>
+          <span className="kbd on-accent rail-text">C</span>
+        </button>
+      </Tip>
+
+      {/* Everything you navigate to scrolls; the things you reach for do not.
+          With a few dozen folders the account switcher, Compose, Help and
+          Settings used to scroll off with them, so the way out of a long
+          mailbox list was to scroll back up it. */}
+      <div className="rail-scroll">
+      {/* The sections, in the order Settings holds and only the ones it shows.
+          Drawn from a list rather than written out in sequence: the rail used
+          to hold its own order, which made "put folders first" a code change.
+          Each is a fragment built above, so what is inside one is unchanged by
+          where it sits. */}
+      {sectionOrder.map((key) => (
+        <Fragment key={key}>{sections[key]}</Fragment>
+      ))}
       </div>
 
       {/* One row at the foot of the rail: the two things you go *to* on the
@@ -874,6 +988,7 @@ export function Rail({
         title={t('folder-new')}
         placeholder={t('folder-new-placeholder')}
         icon={FolderPlus}
+        confirmLabel={t('create')}
         onClose={() => setNamingDialog(null)}
         onSubmit={(name) => void onCreateFolder(name)}
       />
@@ -882,6 +997,7 @@ export function Rail({
         title={t('tag-new')}
         placeholder={t('tag-new-placeholder')}
         icon={TagPlus}
+        confirmLabel={t('create')}
         onClose={() => setNamingDialog(null)}
         onSubmit={(name) => void onCreateTag(name)}
       />

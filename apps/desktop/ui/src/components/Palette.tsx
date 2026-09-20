@@ -287,6 +287,13 @@ export function Palette({ open, onClose, subject, ctx, onOpen, onSearch }: Props
             <span>
               <span className="kbd">↵</span> {t('palette-run')}
             </span>
+            {/* Only while the field holds something to save: the footer is a
+                list of what the keys in front of you do, not a reference. */}
+            {ctx.saveSearch && query.trim() !== '' && (
+              <span>
+                <span className="kbd">⌘⇧S</span> {t('palette-save-search')}
+              </span>
+            )}
             <span>
               <span className="kbd">?</span> {t('palette-all-shortcuts')}
             </span>
