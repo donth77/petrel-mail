@@ -405,6 +405,23 @@ fn read_and_unread_are_each_askable() {
     assert_eq!(found(&m.store, "-is:unread"), ["Lunch"]);
     assert_eq!(found(&m.store, "invoice -is:read"), ["Invoice 2214"]);
     assert!(found(&m.store, "is:read is:unread").is_empty());
+    // A bracket shared between two states, which is the one way of asking for
+    // either of them: `is:read is:unread` is nothing, as it should be.
+    m.store.set_flags(lunch, flags::FLAGGED, 0).unwrap();
+    assert_eq!(
+        found(&m.store, "is:(read OR starred)"),
+        found(&m.store, "is:read OR is:starred")
+    );
+    assert_eq!(found(&m.store, "is:(read OR starred)"), ["Lunch"]);
+    assert_eq!(
+        found(&m.store, "is:(unread OR starred)").len(),
+        EVERYTHING,
+        "every message is one or the other"
+    );
+    assert_eq!(
+        found(&m.store, "invoice -is:(read OR starred)"),
+        ["Invoice 2214"]
+    );
 }
 
 /// Junk stays out unless it was asked for, and asking on one side of an `OR`

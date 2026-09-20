@@ -493,28 +493,50 @@ fn term_for(key: &str, value: &str, exact: bool, truncated: &mut bool) -> Option
 
 /// The operators a bracket can be shared between: `from:(sam OR dana)` is
 /// `from:sam OR from:dana`, which is how Gmail writes it and how people who
-/// have used Gmail write it here. Only the ones that take words: a bracketed
-/// list of dates or states is nothing anybody types.
-const SHARED: [&str; 7] = ["from", "to", "cc", "subject", "in", "tag", "filename"];
+/// have used Gmail write it here.
+///
+/// Every operator that takes a word or a state. The three dates are left out:
+/// each of `after:` and `before:` narrows from one end, so a bracketed list of
+/// them is either one date doing all the work or a contradiction, and `date:`
+/// wants `OR` between whole days about as often as never. A bracket after one
+/// of those stays an ordinary group, which is what it was before.
+const SHARED: [&str; 9] = [
+    "from", "to", "cc", "subject", "in", "tag", "filename", "is", "has",
+];
 
 /// That operator, given to every word inside the group it opened.
-fn applied(key: &str, expr: Expr) -> Expr {
+///
+/// The truncation flag comes through because `term_for` can still cut a value
+/// here: `in:` lowercases before holding it to the limit, and a few letters
+/// lower to two. Ignored, `in:(İ…)` said nothing was cut while the same value
+/// written `in:İ…` said it was, and the field's own notice disagreed with the
+/// engine about the query it had just run.
+fn applied(key: &str, expr: Expr, truncated: &mut bool) -> Expr {
     match expr {
         Expr::Clause(Clause {
             negated,
             term: Term::Text(text),
         }) => {
-            let mut ignored = false;
             let term =
-                term_for(key, &text.value, text.exact, &mut ignored).unwrap_or(Term::Text(text));
+                term_for(key, &text.value, text.exact, truncated).unwrap_or(Term::Text(text));
             Expr::Clause(Clause { negated, term })
         }
         // Already an operator of its own: `from:(sam OR to:dana)` means what
         // it says rather than `to:to:dana`.
         Expr::Clause(clause) => Expr::Clause(clause),
-        Expr::Not(inner) => Expr::Not(Box::new(applied(key, *inner))),
-        Expr::All(parts) => Expr::All(parts.into_iter().map(|p| applied(key, p)).collect()),
-        Expr::Any(parts) => Expr::Any(parts.into_iter().map(|p| applied(key, p)).collect()),
+        Expr::Not(inner) => Expr::Not(Box::new(applied(key, *inner, truncated))),
+        Expr::All(parts) => Expr::All(
+            parts
+                .into_iter()
+                .map(|p| applied(key, p, truncated))
+                .collect(),
+        ),
+        Expr::Any(parts) => Expr::Any(
+            parts
+                .into_iter()
+                .map(|p| applied(key, p, truncated))
+                .collect(),
+        ),
     }
 }
 
@@ -654,11 +676,11 @@ impl Group {
         self.alternatives.extend(all_of(parts));
     }
 
-    fn close(mut self) -> Option<Expr> {
+    fn close(mut self, truncated: &mut bool) -> Option<Expr> {
         self.or();
         let inner = any_of(self.alternatives);
         let inner = match &self.shared {
-            Some(key) => inner.map(|expr| applied(key, expr)),
+            Some(key) => inner.map(|expr| applied(key, expr, truncated)),
             None => inner,
         };
         if self.excluded {
@@ -674,10 +696,14 @@ impl Group {
 /// Nothing here can fail. An operator with nothing on one side of it —
 /// first, last, or doubled — is what the field holds mid-typing, so it is
 /// ignored rather than searched for, or the results would flash empty between
-/// one keystroke and the next. A bracket never closed closes at the end, and
-/// one never opened closes a bracket that is taken to have opened at the
-/// start: what came before it is a group, and the reading carries on from
-/// that group, so `a) OR b` is `(a) OR b`.
+/// one keystroke and the next. A bracket never closed closes at the end.
+///
+/// A bracket never opened is not a bracket: `lex` calls a `)` a close only
+/// while one is open, so `a) OR b` is two words and the first of them ends in
+/// a `)`. The reader used to treat a stray one as closing a group taken to have
+/// opened at the start, which regrouped everything before it — a smiley in
+/// `alpha OR bravo happy :) done` turned the whole beginning into one
+/// alternative — so the rule now lives in the lexer, where depth is known.
 ///
 /// Nothing here calls itself, either. The open brackets are a list, and a
 /// run of NOTs is a switch that two of them put back. A reader that went one
@@ -686,7 +712,7 @@ impl Group {
 /// can catch. The cure for brackets used to be ignoring the ones past a
 /// depth, and an ignored bracket is a different query: `p (a OR b) c` nine
 /// deep was read as `p a OR b c`. Every bracket counts now, however deep.
-fn read_tokens(tokens: Vec<Token>) -> Option<Expr> {
+fn read_tokens(tokens: Vec<Token>, truncated: &mut bool) -> Option<Expr> {
     let mut open = vec![Group::default()];
     let mut excluding = false;
     let mut sharing: Option<String> = None;
@@ -717,22 +743,21 @@ fn read_tokens(tokens: Vec<Token>) -> Option<Expr> {
                 ..Group::default()
             }),
             Token::Close => {
-                let closed = open.pop().and_then(Group::close);
-                match open.last_mut() {
-                    Some(around) => around.parts.extend(closed),
-                    // Nobody opened it: what came before is the group.
-                    None => open.push(Group {
-                        parts: closed.into_iter().collect(),
-                        ..Group::default()
-                    }),
-                }
+                let closed = open.pop().and_then(|group| group.close(truncated));
+                // There is always a group left to put it in: a close reaches
+                // here only from inside a bracket, so they can never outnumber
+                // the opens and the outermost one is never the one popped.
+                open.last_mut()
+                    .expect("the outermost group is never closed")
+                    .parts
+                    .extend(closed);
             }
         }
     }
     let mut closed = None;
     while let Some(mut group) = open.pop() {
         group.parts.extend(closed);
-        closed = group.close();
+        closed = group.close(truncated);
     }
     closed
 }
@@ -764,7 +789,7 @@ pub fn parse(input: &str) -> SearchQuery {
         tokens.push(token);
     }
 
-    q.root = read_tokens(tokens);
+    q.root = read_tokens(tokens, &mut q.truncated);
     if let Some(root) = &mut q.root {
         settle(root);
     }
@@ -806,6 +831,12 @@ impl Clause {
         // back as itself, because a `)` closes nothing when nothing is open
         // — but written inside a group, as `-(annex) OR b)`, that same `)`
         // closes the group early. Quoted, it means one thing everywhere.
+        //
+        // It costs as-you-type completion for such a word: quoted is a phrase,
+        // and `typing_word` (store/search/plan.rs) puts its `*` only on a word,
+        // so `fn(` stops growing the prefix at the bracket. A word with a
+        // bracket in it is rare in mail; a bracket that means two things
+        // depending on where it stands is a query that reads as another one.
         !text.exact
             && !bare
                 .chars()

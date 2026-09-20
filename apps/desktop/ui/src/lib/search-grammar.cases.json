@@ -1,5 +1,5 @@
 {
-  "note": "What the engine makes of a query, and what the field has to predict. Read by search-grammar.test.ts on this side and by apps/desktop/src-tauri/tests/search_field.rs on the engine's, so that neither can drift without the other noticing. `reads` is one entry per term the engine keeps, in the order it reads them, written as `[-]key:value` with `text` for words the index searches. `cut` is what the field says under the results when a query is too long. Canonical forms only: each side's own tests cover the spellings the engine accepts for the same thing.",
+  "note": "What the engine makes of a query, and what the field has to predict. Read by search-grammar.test.ts on this side and by apps/desktop/src-tauri/tests/search_field.rs on the engine's, so that neither can drift without the other noticing. `reads` is one entry per term the engine keeps, in the order it reads them, written as `[-]key:value` with `text` for words the index searches. `cut` is what the field says under the results when a query is too long. Canonical forms only: each side's own tests cover the spellings the engine accepts for the same thing. One thing this cannot express: a `-` or a NOT in front of a whole bracket, because a term reads the same here whether the group around it was excluded or not. Each side tests that itself.",
   "cases": [
     { "query": "annex", "reads": ["text:annex"], "cut": null },
     { "query": "annex pricing", "reads": ["text:annex", "text:pricing"], "cut": null },
@@ -34,7 +34,18 @@
     { "query": "from:(sam OR to:dana)", "reads": ["from:sam", "to:dana"], "cut": null },
     { "query": "from:(-sam dana)", "reads": ["-from:sam", "from:dana"], "cut": null },
     { "query": "in:(Receipts)", "reads": ["in:receipts"], "cut": null },
-    { "query": "is:(unread)", "reads": ["text:is:(unread)"], "cut": null },
+    { "query": "is:(unread)", "reads": ["is:unread"], "cut": null },
+    { "query": "is:(unread OR starred)", "reads": ["is:unread", "is:starred"], "cut": null },
+    { "query": "is:(whatever)", "reads": ["text:whatever"], "cut": null },
+    { "query": "has:(attachment)", "reads": ["has:attachment"], "cut": null },
+    { "query": "after:(2026)", "reads": ["text:after:(2026)"], "cut": null },
+    { "query": "from:(re:pricing)", "reads": ["from:re:pricing"], "cut": null },
+    { "query": "from:(a OR (b OR c))", "reads": ["from:a", "from:b", "from:c"], "cut": null },
+    { "query": "from:(a (b) c)", "reads": ["from:a", "from:b", "from:c"], "cut": null },
+    { "query": "in:(a is:(bogus))", "reads": ["in:a", "in:bogus"], "cut": null },
+    { "query": "from:(\"Dana Wu\" OR dana)", "reads": ["from:Dana Wu", "from:dana"], "cut": null },
+    { "query": "from:(東京)", "reads": ["from:東京"], "cut": null },
+    { "query": "from:()", "reads": [], "cut": null },
     { "query": "smile :)", "reads": ["text:smile", "text::)"], "cut": null },
     { "query": "fn(x)", "reads": ["text:fn(x)"], "cut": null },
     { "query": "a) b", "reads": ["text:a)", "text:b"], "cut": null },
@@ -48,7 +59,7 @@
     { "query": "in:İSTANBUL", "reads": ["in:i̇stanbul"], "cut": null }
   ],
   "long": {
-    "note": "Built rather than written out: `value` is the character repeated `times`, put after `prefix`.",
+    "note": "Built rather than written out: `value` is the character repeated `times`, put after `prefix` and before `suffix`.",
     "cases": [
       { "prefix": "", "value": "x", "times": 256, "cut": null },
       { "prefix": "", "value": "x", "times": 257, "cut": "value" },
@@ -56,7 +67,9 @@
       { "prefix": "from:", "value": "x", "times": 257, "cut": "value" },
       { "prefix": "re:", "value": "x", "times": 254, "cut": "value" },
       { "prefix": "in:", "value": "İ", "times": 128, "cut": null },
-      { "prefix": "in:", "value": "İ", "times": 129, "cut": "value" }
+      { "prefix": "in:", "value": "İ", "times": 129, "cut": "value" },
+      { "prefix": "in:(", "suffix": ")", "value": "İ", "times": 128, "cut": null },
+      { "prefix": "in:(", "suffix": ")", "value": "İ", "times": 129, "cut": "value" }
     ]
   },
   "many": {

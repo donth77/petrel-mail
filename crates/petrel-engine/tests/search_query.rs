@@ -641,6 +641,17 @@ fn reading_back_is_the_identity() {
         r#"filename:"a))b""#,
         r#"subject:"f(x)""#,
         "tag:p(1)x",
+        // A bracket an operator was given. What comes out of one of these is a
+        // term nobody typed — `applied` makes it — so the identity matters
+        // here more than anywhere, not less.
+        "from:(",
+        "-from:(",
+        "--from:(",
+        "in:(",
+        "subject:(",
+        "tag:(",
+        "is:(",
+        "NOT from:(",
         "東京",
         "-会議",
         "subject:契約",
@@ -859,10 +870,41 @@ fn a_bracket_can_be_shared_between_one_operators_values() {
     assert_eq!(parse("from:(sam").root, parse("from:sam").root);
     assert!(parse("from:(").is_empty());
     assert!(parse("from:()").is_empty());
-    // Only the operators that take words. A date or a state is nothing
-    // anybody brackets, so those stay the text they always were.
-    assert_eq!(clauses("is:(unread)"), [yes(phrase("is:(unread)"))]);
+    // States share a bracket too: either of two is a thing to ask for, and
+    // the Help screen teaches the form without naming operators it leaves out.
+    assert_eq!(
+        parse("is:(unread OR starred)").root,
+        parse("is:unread OR is:starred").root
+    );
+    assert_eq!(parse("has:(attachment)").root, parse("has:attachment").root);
+    // A state the engine does not know is words again, exactly as it is
+    // outside a bracket.
+    assert_eq!(clauses("is:(whatever)"), [yes(word("whatever"))]);
+    // Dates are the exception: each of after and before narrows from one end,
+    // so a bracketed list of them is one date doing the work or a
+    // contradiction. The bracket stays an ordinary group.
     assert_eq!(clauses("after:(2026)"), [yes(phrase("after:(2026)"))]);
+    // A value with a colon in it is a value: the group's operator goes to
+    // every leaf the engine read as words, and `re:pricing` is one of those.
+    assert_eq!(
+        parse("from:(re:pricing)").root,
+        parse("from:\"re:pricing\"").root
+    );
+    // The operator reaches a leaf however many plain brackets stand in the
+    // way, because the group is given it and the whole group is given it.
+    assert_eq!(
+        parse("from:(a OR (b OR c))").root,
+        parse("from:a OR from:b OR from:c").root
+    );
+    assert_eq!(
+        parse("from:(a (b) c)").root,
+        parse("from:a from:b from:c").root
+    );
+    // A value cut short inside a bracket says so, the same as one outside it:
+    // `in:` holds its value to the limit again after lowering.
+    let long = "İ".repeat(MAX_VALUE_CHARS - 1);
+    assert!(parse(&format!("in:{long}")).truncated);
+    assert!(parse(&format!("in:({long})")).truncated);
 }
 
 #[test]

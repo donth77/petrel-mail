@@ -36,9 +36,12 @@ export type Lexeme = {
   phrase: boolean;
   /** Led by a `-` that is outside any quotes: what it says is excluded. */
   negated: boolean;
-  /** The operator the bracket it sits in was given, as in
-   *  `from:(sam OR dana)`, where both words are senders. */
-  shared: string | null;
+  /** The operators the brackets it sits inside were given, innermost last, as
+   *  in `from:(sam OR dana)` where both words are senders. A list because the
+   *  engine gives a group's operator to every leaf below it however deep, so a
+   *  leaf inside `in:(a from:(b))` can be offered `from` and then `in`
+   *  (`applied` in search_query.rs). Plain brackets add nothing to it. */
+  shared: string[];
   /** The chunks of the `NOT`s standing directly in front of a piece. An odd
    *  number of them excludes it, exactly as a `-` would, and they go wherever
    *  the piece goes: taken out without them, a `NOT` would be left to fall on
@@ -50,8 +53,8 @@ const QUOTES = '"“”„';
 /** The words that are operators in capitals and words otherwise. */
 export const KEYWORDS = ['AND', 'OR', 'NOT'];
 /** The operators a bracket can be shared between, as the engine shares them
- *  (`SHARED` in search_query.rs). Only the ones that take words. */
-const SHARED = ['from', 'to', 'cc', 'subject', 'in', 'tag', 'filename'];
+ *  (`SHARED` in search_query.rs). Everything but the three dates. */
+const SHARED = ['from', 'to', 'cc', 'subject', 'in', 'tag', 'filename', 'is', 'has'];
 
 /** The operator a `(` is about to be given, if it is: `from:(`, `-tag:(`. */
 function sharedKey(says: string): string | null {
@@ -106,7 +109,7 @@ export function read(query: string): {
       quoteAt: null,
       phrase: false,
       negated: false,
-      shared: null,
+      shared: [],
       nots: [],
     });
   };
@@ -122,7 +125,12 @@ export function read(query: string): {
         quoteAt,
         phrase: quoteAt === (negated ? 1 : 0),
         negated,
-        shared: shared[shared.length - 1] ?? null,
+        // Every bracket above it that was given an operator, innermost last.
+        // Taking the innermost bracket alone left a plain `(` inside a shared
+        // one hiding the operator from everything below it, so the field read
+        // `from:(a OR (b OR c))` as two ordinary words and the engine read it
+        // as three senders.
+        shared: shared.filter((key): key is string => key !== null),
         nots: [],
       });
     }
@@ -257,28 +265,30 @@ export function reading(l: Lexeme): Reading {
   const negated = dashes > 0 && dashes < l.says.length;
   const text = negated ? l.says.slice(dashes) : l.says;
   const quoteAt = l.quoteAt === null ? null : l.quoteAt - (negated ? dashes : 0);
-  // The bracket's operator, where the piece has none of its own: in
-  // `from:(sam OR dana)` both words are senders.
+  // A mailbox is held lowercased, as the engine holds it: the roles are
+  // lowercase and the store asks for them by name.
+  const found = (key: string, value: string): Reading => ({
+    negated,
+    text,
+    key,
+    value: key === 'in' ? value.toLowerCase() : value,
+  });
+  // The piece's own operator first, exactly as the engine reads the piece
+  // before any bracket is closed around it.
   const colon = text.indexOf(':');
-  if (l.shared !== null && (colon < 0 || (quoteAt !== null && colon >= quoteAt))) {
-    const value = text.trim();
-    if (operates(l.shared, value)) {
-      return {
-        negated,
-        text,
-        key: l.shared,
-        value: l.shared === 'in' ? value.toLowerCase() : value,
-      };
-    }
-  }
   if (colon >= 0 && (quoteAt === null || colon < quoteAt)) {
     const key = text.slice(0, colon).toLowerCase();
     const value = text.slice(colon + 1).trim();
-    // A mailbox is held lowercased, as the engine holds it: the roles are
-    // lowercase and the store asks for them by name.
-    if (operates(key, value)) {
-      return { negated, text, key, value: key === 'in' ? value.toLowerCase() : value };
-    }
+    if (operates(key, value)) return found(key, value);
   }
-  return { negated, text, key: null, value: text.trim() };
+  // Failing that, the brackets' operators, innermost first: `applied` gives a
+  // group's operator to every leaf the engine read as *words*, colon or no
+  // colon, so `from:(re:pricing)` is a sender called `re:pricing` and not two
+  // words to look for in the body. An inner bracket that cannot take the value
+  // hands it on outwards, which is the order the groups close in.
+  const value = text.trim();
+  for (let i = l.shared.length - 1; i >= 0; i -= 1) {
+    if (operates(l.shared[i], value)) return found(l.shared[i], value);
+  }
+  return { negated, text, key: null, value };
 }

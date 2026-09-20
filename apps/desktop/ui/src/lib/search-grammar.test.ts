@@ -59,7 +59,9 @@ describe('tokensOf', () => {
 describe('what the engine will make of a query', () => {
   const shared = JSON.parse(cases) as {
     cases: { query: string; reads: string[]; cut: string | null }[];
-    long: { cases: { prefix: string; value: string; times: number; cut: string | null }[] };
+    long: {
+      cases: { prefix: string; suffix?: string; value: string; times: number; cut: string | null }[];
+    };
     many: { cases: { words: number; cut: string | null }[] }; 
   };
 
@@ -77,8 +79,10 @@ describe('what the engine will make of a query', () => {
   });
 
   it('agrees about a term that is too long', () => {
-    for (const { prefix, value, times, cut } of shared.long.cases) {
-      expect(cutShort(prefix + value.repeat(times))).toBe(cut);
+    for (const { prefix, suffix = '', value, times, cut } of shared.long.cases) {
+      expect(cutShort(prefix + value.repeat(times) + suffix), `${prefix}${value}×${times}`).toBe(
+        cut,
+      );
     }
   });
 

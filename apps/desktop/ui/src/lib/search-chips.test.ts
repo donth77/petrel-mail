@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { asWords, chips, hasToken, scopeFor, scopedQuery, toggleToken } from './search-chips';
+import {
+  asWords,
+  chips,
+  folderScopeName,
+  hasToken,
+  isSearch,
+  quoted,
+  scopeFor,
+  scopedQuery,
+  toggleToken,
+} from './search-chips';
 import { tokensOf } from './search-grammar';
 
 describe('toggleToken', () => {
@@ -499,5 +509,68 @@ describe('the scope of a tag', () => {
     const token = scopeFor('tag:Waiting on')!.token;
     expect(tokensOf(token)).toEqual(['tag:Waiting on']);
     expect(hasToken(`${token} invoice`, token)).toBe(true);
+  });
+});
+
+/* A bracket is an operator's now — `in:(a OR b)` is two mailboxes — so a name
+   with one in it has to be quoted wherever it is written, exactly as a name
+   with a space in it is. Bare, `in:(old)` searches the folder `old`: a chip
+   labelled after one folder that filters by another. */
+describe('a folder or a tag with a bracket in its name', () => {
+  it('quotes it in the scope it writes', () => {
+    const folders = [{ id: 7, path: '(old)' }];
+    expect(scopeFor('folder:7', folderScopeName('folder:7', folders))?.token).toBe('in:"(old)"');
+    expect(scopeFor('tag:p(1)')?.token).toBe('tag:"p(1)"');
+    expect(scopeFor('tag:mixed (up) name')?.token).toBe('tag:"mixed (up) name"');
+  });
+
+  it('quotes it in every other token a chip writes', () => {
+    expect(quoted('in:(old)')).toBe('in:"(old)"');
+    expect(quoted('tag:p(1)')).toBe('tag:"p(1)"');
+    expect(quoted('from:Sam (work)')).toBe('from:"Sam (work)"');
+    // And leaves alone what needs nothing.
+    expect(quoted('in:sent')).toBe('in:sent');
+    expect(quoted('is:unread')).toBe('is:unread');
+  });
+
+  it('writes a scope the engine reads back as that folder', () => {
+    const token = scopeFor('folder:7', '(old)')!.token;
+    expect(tokensOf(token)).toEqual(['in:(old)']);
+    expect(hasToken(`${token} invoice`, token)).toBe(true);
+  });
+});
+
+/* The window writes `in:inbox` into the field for you, and the field then holds
+   a query nobody typed. Everything that asks "is this a search" has to give the
+   same answer — which order the list is in, which preference an order chosen
+   now belongs to, whether Best match is on offer at all — so the question is
+   asked in one place. */
+describe('whether the field holds a search or still holds the mailbox', () => {
+  const inbox = scopeFor('inbox')!.token;
+
+  it('says no to the token the window wrote by itself', () => {
+    expect(isSearch(inbox, inbox)).toBe(false);
+    expect(isSearch(`  ${inbox}  `, inbox)).toBe(false);
+  });
+
+  it('says yes as soon as a word is added to it', () => {
+    expect(isSearch(`${inbox} invoice`, inbox)).toBe(true);
+    // And to the token on its own once it is not the one being written: kept
+    // while walking to another mailbox, it is a filter somebody chose.
+    expect(isSearch(inbox, scopeFor('sent')!.token)).toBe(true);
+  });
+
+  it('says no to an empty field, whatever the view is scoped to', () => {
+    for (const said of ['', '   ', '\n']) {
+      expect(isSearch(said, inbox), JSON.stringify(said)).toBe(false);
+      expect(isSearch(said, null)).toBe(false);
+    }
+  });
+
+  it('says yes in a view the grammar cannot scope', () => {
+    // Snoozed has a token, the outbox has none, and anything typed in a view
+    // without one is a search from the first character.
+    expect(scopeFor('outbox')).toBeNull();
+    expect(isSearch('in:outbox', scopeFor('outbox')?.token)).toBe(true);
   });
 });

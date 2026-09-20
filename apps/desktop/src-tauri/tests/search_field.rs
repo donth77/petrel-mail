@@ -58,6 +58,9 @@ mod field_cases {
     #[derive(Deserialize)]
     struct LongCase {
         prefix: String,
+        /// What closes the bracket the prefix opened, where it opens one.
+        #[serde(default)]
+        suffix: String,
         value: String,
         times: usize,
         cut: Option<String>,
@@ -136,14 +139,20 @@ mod field_cases {
     #[test]
     fn the_engine_cuts_the_queries_the_field_says_it_will() {
         for case in cases().long.cases {
-            let query = format!("{}{}", case.prefix, case.value.repeat(case.times));
+            let query = format!(
+                "{}{}{}",
+                case.prefix,
+                case.value.repeat(case.times),
+                case.suffix
+            );
             assert_eq!(
                 parse(&query).truncated,
                 case.cut.is_some(),
-                "{}{} × {}",
+                "{}{} × {}{}",
                 case.prefix,
                 case.value,
-                case.times
+                case.times,
+                case.suffix
             );
         }
         for case in cases().many.cases {

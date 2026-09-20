@@ -20,10 +20,19 @@ import { t, type StringId } from './strings';
  *  returns as two words and the query quietly means something else. */
 export function quoted(token: string): string {
   const at = token.indexOf(':');
-  if (at === -1) return /\s/.test(token) ? `"${token}"` : token;
+  if (at === -1) return wraps(token) ? `"${token}"` : token;
   const value = token.slice(at + 1);
-  return /\s/.test(value) ? `${token.slice(0, at)}:"${value}"` : token;
+  return wraps(value) ? `${token.slice(0, at)}:"${value}"` : token;
 }
+
+/** Whether a value has to wear quotes to go into the field and come back out
+ *  as itself — the engine's rule, in `typed` in search_query.rs.
+ *
+ *  A space splits it. A bracket is worse than that: since an operator can be
+ *  given a bracket, `in:(old)` is now the folder `old`, so a folder honestly
+ *  called `(old)` written bare is a chip whose label and whose search name
+ *  two different places. */
+const wraps = (value: string) => /[\s()]/.test(value);
 
 /** What `OR` separates outside every bracket, each a run of lexemes. */
 function alternativesOf(lexemes: Lexeme[]): Lexeme[][] {
@@ -338,7 +347,7 @@ export function scopeFor(
   // chip is better than a chip that silently looks for the wrong thing.
   if (view.startsWith('folder:') && leaf) {
     if (leaf.includes('"')) return null;
-    const value = /\s/.test(leaf) ? `"${leaf}"` : leaf;
+    const value = wraps(leaf) ? `"${leaf}"` : leaf;
     return { token: `in:${value}`, label: t('search-chip-in', { where: leaf }) };
   }
   // A tag is where you are standing as much as a folder is. Without this, a
@@ -347,10 +356,25 @@ export function scopeFor(
   if (view.startsWith('tag:')) {
     const name = view.slice('tag:'.length);
     if (!name || name.includes('"')) return null;
-    const value = /\s/.test(name) ? `"${name}"` : name;
+    const value = wraps(name) ? `"${name}"` : name;
     return { token: `tag:${value}`, label: t('search-chip-tagged', { where: name }) };
   }
   return null;
+}
+
+/**
+ * Whether what is in the field is a search, or is still the mailbox it was
+ * opened in.
+ *
+ * A field holding nothing but the token the window wrote for you — `in:inbox`,
+ * typed by nobody — is still the mailbox. Counted as a search, the sort control
+ * read "Best match" the moment the box was clicked, and an order chosen there
+ * was written to the search's preference and thrown away when the field emptied
+ * on blur.
+ */
+export function isSearch(query: string, scopeToken?: string | null): boolean {
+  const asked = query.trim();
+  return asked.length > 0 && asked !== scopeToken;
 }
 
 /**
