@@ -49,6 +49,11 @@ export function SortMenu({
           <MenuItem
             key={key}
             className="menu-item"
+            // menuitemradio, not menuitem: `aria-checked` is not valid on a
+            // plain menu item and was dropped from the accessibility tree
+            // entirely, so which order was in force was visible information
+            // only — the tick beside it is aria-hidden.
+            role="menuitemradio"
             aria-checked={key === sort.key}
             onClick={() => onChange({ ...sort, key })}
           >
@@ -66,6 +71,7 @@ export function SortMenu({
             <MenuSeparator className="menu-sep" />
             <MenuItem
               className="menu-item"
+              role="menuitemradio"
               aria-checked={!sort.ascending}
               onClick={() => onChange({ ...sort, ascending: false })}
             >
@@ -76,6 +82,7 @@ export function SortMenu({
             </MenuItem>
             <MenuItem
               className="menu-item"
+              role="menuitemradio"
               aria-checked={sort.ascending}
               onClick={() => onChange({ ...sort, ascending: true })}
             >

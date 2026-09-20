@@ -376,8 +376,11 @@
 
 /* A hidden mailbox still reads, so the list matches the sidebar it describes
    rather than becoming a list of names you have to decode. */
+/* 0.62, not 0.55: at 0.55 a hidden row's name measured 3.61:1 in light, under
+   the 4.5:1 that 13px body text needs. The checkbox beside it says the same
+   thing, so this only has to read as quieter — not as unreadable. */
 .mailbox-name.off {
-  opacity: 0.55;
+  opacity: 0.62;
 }
 
 .mailbox-move {
@@ -403,12 +406,22 @@
 
 /* The same wash the rail's own rows and its ⋮ use on hover, so a button here
    feels like a button there. */
-.move-btn:hover:not(:disabled) {
+/* Inert at the ends rather than disabled. A focused element that becomes
+   disabled loses focus — pressing "Move up" until a row reached the top dumped
+   focus on the body, in the middle of a modal, on the one path that has no
+   pointer to recover with. `aria-disabled` says the same thing to an assistive
+   technology and keeps the focus where the user put it. */
+.move-btn[aria-disabled='true'] {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.move-btn:hover:not([aria-disabled='true']) {
   background: var(--hair2);
   color: var(--ink);
 }
 
-.move-btn:active:not(:disabled) {
+.move-btn:active:not([aria-disabled='true']) {
   background: var(--hair);
 }
 

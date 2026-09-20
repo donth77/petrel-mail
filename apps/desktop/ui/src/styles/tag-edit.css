@@ -11,8 +11,11 @@
 .tag-edit {
   display: grid;
   place-items: center;
-  inline-size: 20px;
-  block-size: 20px;
+  /* 24px, the minimum target size. At 20 the row's own box contains the 24px
+     circle the spacing exception is measured with, so the exception could not
+     apply — and Delete and Move have no other button-sized route. */
+  inline-size: 24px;
+  block-size: 24px;
   /* Zeroed, not inherited. A button carries the browser's own 1px 6px, which
      leaves an 8px content box for a 14px icon: `place-items: center` then
      centres the icon in a box narrower than itself and the dots sit 3px right

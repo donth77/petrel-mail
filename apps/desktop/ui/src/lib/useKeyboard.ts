@@ -25,6 +25,8 @@ export type KeyActions = {
   popOut: () => void;
   toggleReaderFull: () => void;
   findInMessage: () => void;
+  /** Saves the search in the field, when there is one to save. */
+  saveSearch: () => void;
   undo: () => void;
 };
 
@@ -52,6 +54,27 @@ function isTyping(target: EventTarget | null): boolean {
     el.tagName === 'TEXTAREA' ||
     el.tagName === 'SELECT' ||
     el.isContentEditable
+  );
+}
+
+/** True when the focused thing already answers to Enter on its own.
+ *
+ *  Enter is how a button is pressed. This handler claimed it for "open the
+ *  selected conversation" and cancelled the keydown, which cancelled the click
+ *  the browser was about to synthesise — so every button in the window did
+ *  nothing on Enter and worked only on Space, while Enter silently opened
+ *  whatever the list had selected. `isTyping` guarded text fields and nothing
+ *  guarded controls.
+ *
+ *  Menu items are included for completeness; Ariakit's own handler takes those
+ *  first, because a menu makes `modalOpen()` true. */
+function activatable(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  return (
+    el?.closest?.(
+      'button, a[href], summary, [role="button"], [role="link"], [role="menuitem"],' +
+        ' [role="menuitemradio"], [role="menuitemcheckbox"], [role="checkbox"], [role="tab"]',
+    ) != null
   );
 }
 
@@ -93,6 +116,11 @@ export function useKeyboard(actions: KeyActions) {
           // Free because modified keys stopped falling through to the
           // single-key commands; before that this forwarded the message.
           if (k === 'f') return e.preventDefault(), a.findInMessage();
+          // ⌘⇧S saves the search in the field. Modified, because it has to work
+          // *while typing in the field* — an unmodified key never can — and S
+          // for save, shifted so it cannot be mistaken for the ⌘S that most
+          // apps spend on a document.
+          if (k === 's' && e.shiftKey) return e.preventDefault(), a.saveSearch();
         }
         // Anything else held with ⌘ or ctrl belongs to the system, and this
         // return is the whole of what makes that true.
@@ -232,6 +260,9 @@ export function useKeyboard(actions: KeyActions) {
           chord.current = { key: 'g', at: Date.now() };
           return;
         case 'Enter':
+          // The list's own Enter, only when the focus is not on something that
+          // has an Enter of its own.
+          if (activatable(e.target)) return;
           e.preventDefault();
           return a.openConversation();
         case 'u':

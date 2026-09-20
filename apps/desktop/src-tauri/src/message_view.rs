@@ -779,9 +779,22 @@ fn document(
      1.28:1: the one word the search was for became the least readable thing
      on the page. The find rules come after the hit rule on purpose, so the
      match somebody is standing on wins when both could apply. */
-  mark.petrel-hit {{ background: var(--mv-mark); color: var(--mv-mark-ink); }}
-  mark.petrel-find {{ background: var(--mv-mark); color: var(--mv-mark-ink); }}
-  mark.petrel-find.on {{ background: var(--mv-mark-on); color: var(--mv-mark-on-ink); }}
+  /* Underlined as well as washed, and the current find is underlined twice as
+     thick. Styling only — nothing here changes what is sanitised or what the
+     protocol serves — but it is the difference between two real defects and
+     none: the wash measures 1.28:1 against the page in light, so on its own it
+     cannot say "this matched", and light mode told the current match from the
+     rest by hue alone (#ffe27a against #ffb84d, 1.34:1), which a red-green
+     colour blindness collapses into one colour. The dark theme was already
+     4.61:1 between the two; now both themes carry a cue that is not colour. */
+  mark.petrel-hit {{ background: var(--mv-mark); color: var(--mv-mark-ink);
+                     text-decoration: underline; text-decoration-thickness: 1px;
+                     text-underline-offset: 2px; }}
+  mark.petrel-find {{ background: var(--mv-mark); color: var(--mv-mark-ink);
+                      text-decoration: underline; text-decoration-thickness: 1px;
+                      text-underline-offset: 2px; }}
+  mark.petrel-find.on {{ background: var(--mv-mark-on); color: var(--mv-mark-on-ink);
+                         text-decoration-thickness: 3px; }}
 </style></head><body>{banner}<div id="petrel-box"><div id="petrel-fit">{body}</div></div><script nonce="{nonce}">{reporter}</script></body></html>"#
     )
 }
@@ -1484,15 +1497,24 @@ mod tests {
     /// The reading pane marks the words a search found, and the colours it
     /// marks them in are ours, not the sender's: `color: inherit` let a
     /// message's own stylesheet put white text on a yellow mark, at 1.28:1.
+    ///
+    /// Each mark also carries an underline, because the wash is 1.28:1 against
+    /// the page in light and cannot say "this matched" by itself, and the
+    /// current find is underlined thicker rather than only being a different
+    /// yellow — two hues 1.34:1 apart are one hue to a colour-blind reader.
     #[test]
     fn a_search_hit_is_marked_in_colours_the_message_cannot_choose() {
-        for rule in [
-            "mark.petrel-hit { background: var(--mv-mark); color: var(--mv-mark-ink); }",
-            "mark.petrel-find { background: var(--mv-mark); color: var(--mv-mark-ink); }",
-            "mark.petrel-find.on { background: var(--mv-mark-on); color: var(--mv-mark-on-ink); }",
+        let light = document("<p>hello</p>", 0, "n0", FrameTheme::AlwaysLight, "0e7c86");
+        for piece in [
+            "mark.petrel-hit { background: var(--mv-mark); color: var(--mv-mark-ink);",
+            "mark.petrel-find { background: var(--mv-mark); color: var(--mv-mark-ink);",
+            "mark.petrel-find.on { background: var(--mv-mark-on); color: var(--mv-mark-on-ink);",
+            // The cue that is not colour, on every mark and doubled on the one
+            // being stood on.
+            "text-decoration: underline",
+            "text-decoration-thickness: 3px",
         ] {
-            let light = document("<p>hello</p>", 0, "n0", FrameTheme::AlwaysLight, "0e7c86");
-            assert!(light.contains(rule), "missing `{rule}`");
+            assert!(light.contains(piece), "missing `{piece}`");
         }
         // Every colour those rules name is set, in both themes.
         let light = document("<p>hello</p>", 0, "n0", FrameTheme::AlwaysLight, "0e7c86");

@@ -26,6 +26,7 @@ export function Search() {
         <div className="flabel">{t('search-in-mailbox')}</div>
         <p className="fhelp">{t('search-in-mailbox-help')}</p>
         <Pill
+          label={t('search-in-mailbox')}
           value={settings.searchInMailbox}
           onChange={(v) => set('searchInMailbox', v)}
           options={[
@@ -38,6 +39,7 @@ export function Search() {
       <section className="field">
         <div className="flabel">{t('search-chips')}</div>
         <Pill
+          label={t('search-chips')}
           value={settings.searchChips}
           onChange={(v) => set('searchChips', v)}
           options={[
@@ -50,6 +52,7 @@ export function Search() {
       <section className="field last">
         <div className="flabel">{t('appearance-search-highlight')}</div>
         <Pill
+          label={t('appearance-search-highlight')}
           value={settings.searchHighlight}
           onChange={(v) => set('searchHighlight', v)}
           options={[

@@ -118,6 +118,34 @@
   color: var(--ink3);
 }
 
+/* The name dialog's own footer: a verb and a way out.
+   
+   Distinct from .picker-foot, which is a caption rather than a row of buttons —
+   this dialog asks a question and so it needs a way to answer it. Until this
+   existed the only way to finish was Return, which nothing on screen said. */
+.name-dialog-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 12px;
+  border-block-start: 1px solid var(--hair);
+}
+
+.name-dialog-foot .reply {
+  padding: 5px 11px;
+  font-size: 12.5px;
+}
+
+/* Nothing to save yet. Not `opacity`, which faded the white label on the accent
+   fill to 1.47:1 — unreadable, in the state the dialog opens in and the one that
+   has to explain why nothing happens. A quiet fill with real ink instead. */
+.name-dialog-foot .reply:disabled {
+  border-color: var(--hair);
+  background: var(--hair2);
+  color: var(--ink3);
+  cursor: default;
+}
+
 .picker-foot {
   padding: 9px 14px;
   border-block-start: 1px solid var(--hair2);

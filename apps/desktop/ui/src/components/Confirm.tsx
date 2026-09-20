@@ -48,7 +48,10 @@ export function Confirm({ open, title, detail, confirmLabel, onConfirm, onClose 
       backdrop={<div className="palette-scrim" onClick={onClose} />}
       aria-label={title}
     >
-      <div className="confirm" role="alertdialog">
+      {/* The name goes on this node, not only on the Ariakit dialog around it:
+          an assistive technology treats the innermost dialog role as the dialog,
+          and that one was announced with no name at all. */}
+      <div className="confirm" role="alertdialog" aria-label={title}>
         <div className="confirm-title">{title}</div>
         {detail && <p className="confirm-detail">{detail}</p>}
         <div className="confirm-foot">

@@ -42,7 +42,9 @@
 
   /* semantic, kept separate from the accent on purpose */
   --good: #2e7d5b;
-  --amber: #98691d;
+  /* 4.80:1 on --amber-bg. The previous #98691d measured 4.27:1, which is under
+     the 4.5:1 that the cut-short notice's 12px text needs. */
+  --amber: #8f6118;
   --amber-bg: #f8f1e2;
   --amber-line: #e7d6b4;
   --danger: #a8544b;
