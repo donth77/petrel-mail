@@ -24,6 +24,9 @@ dev-plaintext-imap = ["petrel-providers/insecure-plaintext"]
 tauri-build = { version = "2.6", features = [] }
 
 [dependencies]
+# Decoding `mailto:` links (docs 23). Already in the tree through `url`, so this
+# adds nothing `cargo deny` has not vetted.
+percent-encoding = "2.3"
 # Just the timer, for the sync poll. Tauri already runs on tokio; this only
 # makes the dependency explicit rather than borrowed from its internals.
 tokio = { version = "1", features = ["time"] }
@@ -32,6 +35,9 @@ tauri = { version = "2.11", features = [] }
 # means the OS decides whether they appear — the in-app toast is the fallback
 # that always works.
 tauri-plugin-notification = "2"
+# One Petrel at a time (docs 23 §3). Without it, a `mailto:` clicked while
+# Petrel is open starts a second process against the same SQLite store.
+tauri-plugin-single-instance = "2"
 # A save panel for the mbox export. The OS owns the file picker; asking it is
 # the only way the export lands where the user actually wants it.
 tauri-plugin-dialog = "2"

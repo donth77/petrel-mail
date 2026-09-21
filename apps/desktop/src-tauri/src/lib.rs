@@ -24,6 +24,7 @@ mod commands;
 mod config;
 mod demo;
 mod diag;
+mod mailto;
 // Public so the render path can be tested directly. The privacy guarantees
 // live in this module, and they are worth asserting on rather than trusting.
 pub mod message_view;
@@ -653,6 +654,21 @@ pub fn run() {
     }
 
     tauri::Builder::default()
+        // First, before anything else can open: the plugin has to decide
+        // whether this process is the one that runs, and a plugin registered
+        // after it could already have touched the store. A second launch — a
+        // `mailto:` clicked while Petrel is open, or a double-click on the icon
+        // — hands its arguments to the running window and exits, rather than
+        // opening the same SQLite store a second time (docs 23 §3).
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            // Bring the one window forward. The arguments are the deep-link
+            // receiver's to read (docs 23 §5, step 3); focusing is enough here.
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
