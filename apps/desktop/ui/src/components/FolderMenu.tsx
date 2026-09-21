@@ -48,8 +48,8 @@ export function FolderMenu({
   last: boolean;
   onReorder: (up: boolean) => void;
   onRename?: () => void;
-  /** Opens the naming field prefilled with this folder's path — a subfolder
-   *  is a name with a parent already decided. */
+  /** Opens the naming dialog with this folder shown as the parent — a
+   *  subfolder is a name with a parent already decided. */
   /** Absent on a folder that takes no children — the bin. */
   onNewChild?: () => void;
   /** The bin's own verb, and the only irreversible one in the app. */

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { Dialog, DialogDismiss } from '@ariakit/react';
 import { X } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
@@ -6,12 +6,12 @@ import { Icon } from './Icon';
 import { t } from '../lib/strings';
 
 /**
- * A one-field dialog for naming something new.
+ * A one-field dialog for naming something: a new folder or tag, a saved
+ * search, or a new name for any of the three.
  *
- * The rail's inline inputs remain the expanded path — naming in place, where
- * the thing will appear, is the better gesture when there is room for it.
- * This exists for the collapsed rail, where there is no row to type into and
- * pressing + should not force the rail open just to ask for a name.
+ * The rail's own + buttons open it too, expanded or collapsed. Naming in place
+ * looked like the better gesture until the row turned up somewhere other than
+ * where the field had been.
  */
 export function NameDialog({
   open,
@@ -19,6 +19,7 @@ export function NameDialog({
   placeholder,
   icon,
   suggested,
+  prefix,
   confirmLabel,
   onClose,
   onSubmit,
@@ -30,6 +31,9 @@ export function NameDialog({
   /** A name offered rather than imposed: selected, so typing replaces it and
    *  Enter accepts it. Saving a search prefills from the query. */
   suggested?: string;
+  /** Written before the field and not part of what is typed: the parent a new
+   *  subfolder goes inside. `onSubmit` still receives only the typed name. */
+  prefix?: string;
   /** The verb on the button. Enter has always worked; a dialog with no visible
    *  way to say yes looks like a dialog that cannot be finished. */
   confirmLabel: string;
@@ -37,13 +41,14 @@ export function NameDialog({
   onSubmit: (name: string) => void;
 }) {
   const field = useRef<HTMLInputElement>(null);
+  const prefixId = useId();
   // Held so the button knows whether there is anything to save. Enter reads the
   // field directly, as it always did.
   //
-  // Synced rather than only initialised: this dialog stays mounted while it is
-  // closed, so the initial value was whatever the suggestion was when the
-  // window started — empty — and the Save button sat disabled over a field with
-  // a name already in it.
+  // Synced rather than only initialised: this component stays mounted while
+  // the dialog is closed, so the initial value was whatever the suggestion was
+  // when the window started — empty — and the Save button sat disabled over a
+  // field with a name already in it.
   const [name, setName] = useState(suggested ?? '');
   useEffect(() => {
     if (open) setName(suggested ?? '');
@@ -58,17 +63,25 @@ export function NameDialog({
     <Dialog
       open={open}
       onClose={onClose}
+      // Unmounted when shut, so every opening starts with a fresh field. Kept
+      // mounted, the field held the last name typed into it: the second new
+      // folder opened already reading "Receipts", with Create greyed out
+      // beside it.
+      unmountOnHide
       backdrop={<div className="palette-scrim" onClick={onClose} />}
       className="picker name-dialog"
       aria-label={title}
     >
       <div className="picker-head">
         <Icon icon={icon} size={14} />
+        {prefix && (
+          <span className="name-dialog-prefix" id={prefixId} title={prefix}>
+            {prefix}
+          </span>
+        )}
         <input
-          // Keyed on the suggestion so a second opening starts from the new
-          // one rather than from whatever the last one left behind.
-          key={suggested ?? ''}
           ref={field}
+          aria-describedby={prefix ? prefixId : undefined}
           className="picker-input"
           autoFocus
           autoComplete="off"
@@ -79,7 +92,7 @@ export function NameDialog({
           aria-label={title}
           onKeyDown={(e) => {
             // Stopped so the app's single-key shortcuts stay quiet while a
-            // name is being typed — the same rule the inline inputs follow.
+            // name is being typed: typing "e" should not archive.
             e.stopPropagation();
             if (e.key === 'Escape') {
               onClose();

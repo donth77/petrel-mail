@@ -1,6 +1,6 @@
-/* ------------------------------------------------------- new tag, in place */
+/* ------------------------------------------------- the + on a section head */
 
-/* The TAGS header becomes a row so the + can sit at its end. Same padding as
+/* A section header becomes a row so the + can sit at its end. Same padding as
    the plain label, so the two kinds of section heading line up. */
 .rail-label-row {
   display: flex;
@@ -31,20 +31,4 @@
   opacity: 1;
   background: var(--hair2);
   color: var(--ink);
-}
-
-.rail-new-tag {
-  inline-size: calc(100% - 18px);
-  margin: 2px 9px 4px;
-  padding: 5px 8px;
-  border: 1px solid var(--accent);
-  border-radius: 7px;
-  background: var(--surface);
-  color: var(--ink);
-  font: inherit;
-  font-size: 13px;
-}
-
-.rail-new-tag::placeholder {
-  color: var(--ink3);
 }

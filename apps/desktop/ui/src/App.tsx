@@ -2158,19 +2158,22 @@ export function App() {
         onCreateFolder={(name) =>
           api
             .createFolder(name)
-            .then((id) =>
-              api
-                .folders()
-                .then(setFolders)
-                // "Created" once the server has it, not the moment it exists
-                // here: it used to say so for a folder the server never got.
-                .then(() => api.pushFolder(id))
-                .then(
-                  () => setToast(t('folder-created', { name })),
-                  (e) => setToast(t('folder-server-pending', { name, error: String(e) })),
-                ),
-            )
-            .catch((e) => setToast(t('folder-failed', { error: String(e) })))
+            .then(async (id) => {
+              setFolders(await api.folders());
+              // "Created" once the server has it, not the moment it exists
+              // here: it used to say so for a folder the server never got.
+              // Not waited on: the rail can show the row while the server is
+              // still being asked.
+              void api.pushFolder(id).then(
+                () => setToast(t('folder-created', { name })),
+                (e) => setToast(t('folder-server-pending', { name, error: String(e) })),
+              );
+              return id;
+            })
+            .catch((e) => {
+              setToast(t('folder-failed', { error: String(e) }));
+              return undefined;
+            })
         }
 
         onDeleteFolder={setDeletingFolder}
@@ -2219,8 +2222,14 @@ export function App() {
             // Re-read rather than push the new one in: the engine assigns the
             // colour, and a rail row invented here would be the wrong one until
             // the next refresh.
-            .then(() => api.tags().then(setTags))
-            .catch((e) => setToast(t('tag-create-failed', { error: String(e) })))
+            .then(async (id) => {
+              setTags(await api.tags());
+              return id;
+            })
+            .catch((e) => {
+              setToast(t('tag-create-failed', { error: String(e) }));
+              return undefined;
+            })
         }
         onColourTag={(id, colour) => {
           // Painted at once. A colour is a glance-level thing; waiting a round

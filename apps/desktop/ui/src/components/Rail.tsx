@@ -1,5 +1,5 @@
 import type React from 'react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ChevronDown, ChevronRight, FolderClosed,
   CircleHelp, PanelLeftClose, PanelLeftOpen, PenSquare, Plus, Search, Settings, FolderPlus, TagPlus } from 'lucide-react';
@@ -14,7 +14,15 @@ import { FolderMenu } from './FolderMenu';
 import { NameDialog } from './NameDialog';
 import { acceptsDrop } from '../lib/dnd';
 import type { InsertPoint } from '../lib/useDrag';
-import { buildFolderTree, nestableRolePaths, type FolderNode, nestableRolePath, underAnchor } from '../lib/folders';
+import {
+  buildFolderTree,
+  folderAncestors,
+  folderDelimiter,
+  nestableRolePaths,
+  type FolderNode,
+  nestableRolePath,
+  underAnchor,
+} from '../lib/folders';
 import { MAILBOX_KEYS, MAILBOX_LOOK } from '../lib/mailboxes';
 import { rowCount } from '../lib/rail-counts';
 import { AccountMenu } from './AccountMenu';
@@ -101,7 +109,9 @@ type Props = {
   /** Every folder; the rail lists the ones the user made (no role). */
   folders: Folder[];
   onView: (v: string) => void;
-  onCreateFolder: (name: string) => Promise<void>;
+  /** Resolves to the new folder's id, so the rail can bring its row into view,
+   *  or to undefined when the folder could not be made. */
+  onCreateFolder: (path: string) => Promise<number | undefined>;
   /** Begins carrying a folder toward a new parent. */
   onDragFolder: (e: React.PointerEvent, folderId: number, label: string) => void;
   /** Path of the folder mid-drag, so valid destinations can say so — and so
@@ -116,9 +126,9 @@ type Props = {
    *  Both act on the mail, not the folder, so both take the folder itself. */
   onMarkFolderRead: (folder: Folder, read: boolean) => void;
   onTrashFolderContents: (folder: Folder) => void;
-  /** Make a tag that is attached to nothing yet. Returns once it exists, so the
-   *  rail can put the input away only after the work succeeded. */
-  onCreateTag: (name: string) => Promise<void>;
+  /** Make a tag that is attached to nothing yet. Resolves to its id once it
+   *  exists, as a new folder does, or to undefined when it could not be made. */
+  onCreateTag: (name: string) => Promise<number | undefined>;
   onColourTag: (tagId: number, colour: string) => void;
   onDeleteTag: (tag: { id: number; name: string }) => void;
   /** Begins carrying this tag towards a conversation. */
@@ -179,33 +189,45 @@ export function Rail({
   railRef,
 }: Props) {
 
-  // Pointer drag, with the listeners on the window rather than the handle: a
-  // fast drag outruns a 6px target, and losing the pointer mid-resize leaves
-  // the rail stuck at whatever width the last event happened to land on.
-  // Naming a new tag. An inline field rather than a dialog: it is one short
-  // string, and a modal for one word is more ceremony than the act deserves.
-  const [naming, setNaming] = useState(false);
-  const [namingFolder, setNamingFolder] = useState(false);
-  /** What the naming field starts holding — "Parent/" for a subfolder. */
-  const [folderPrefill, setFolderPrefill] = useState('');
   /** Rows folded shut by hand (true) or opened by hand (false). A path that is
    *  absent takes the default, which is folded — see FOLDED_AT_LAUNCH. */
   const [folded, setFolded] = useState<Record<string, boolean>>({});
-  // Which naming dialog is up — the collapsed rail's way of asking for a
-  // name without forcing itself open.
+  // Naming a new folder or tag, always in the dialog. The rail used to open a
+  // field at the top of the section, and the row then appeared wherever the
+  // order put it, usually the bottom: you typed in one place and the result
+  // turned up in another. A subfolder's field was worse, opening at the top of
+  // Folders even when asked for from the Archive row.
   const [namingDialog, setNamingDialog] = useState<'folder' | 'tag' | null>(null);
-  // The tag being renamed, edited in place on its own row rather than in a
-  // dialog: it is one short string, and the row is where you are looking.
+  /** The folder a new one goes inside, or null for the top level. */
+  const [folderParent, setFolderParent] = useState<string | null>(null);
+  /** The row just named, until it has been scrolled into view. A new folder or
+   *  tag often lands below the bottom of a long section, and creating one then
+   *  looked like nothing had happened. */
+  const [reveal, setReveal] = useState<string | null>(null);
+  useEffect(() => {
+    if (!reveal) return;
+    const row = document.querySelector<HTMLElement>(`.rail [data-reorder="${reveal}"]`);
+    // Not drawn until its list comes back, which runs this again.
+    if (!row) return;
+    row.scrollIntoView({ block: 'nearest' });
+    setReveal(null);
+  }, [reveal, folders, tags]);
   /** Where the archive tree roots, for the mailbox row's folder-drop. */
   const archiveRolePath = nestableRolePath(folders, 'archive');
   /** The folder a mailbox row stands for, where one exists. A row's verbs act
    *  on mail, and mail lives in a folder rather than in a view. */
   const roleFolder = (key: string) => folders.find((f) => f.role === key);
-  const nameInput = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    if (naming) nameInput.current?.focus();
-  }, [naming]);
+  /** How this server nests, so a subfolder is joined to its parent with the
+   *  character the server will read as nesting rather than as part of a name. */
+  const delim = folderDelimiter(folders);
+  const askFolderName = (parent: string | null) => {
+    setFolderParent(parent);
+    setNamingDialog('folder');
+  };
 
+  // Pointer drag, with the listeners on the window rather than the handle: a
+  // fast drag outruns a 6px target, and losing the pointer mid-resize leaves
+  // the rail stuck at whatever width the last event happened to land on.
   const startDrag = (e: React.PointerEvent) => {
     e.preventDefault();
     const move = (ev: PointerEvent) => onResize(ev.clientX);
@@ -392,10 +414,7 @@ export function Rail({
               last={at === of - 1}
               onReorder={(up) => onReorderRow('folder', f.id, up)}
               onRename={() => onAskRename({ kind: 'folder', id: f.id, name: f.path })}
-              onNewChild={() => {
-                setFolderPrefill(`${f.path}/`);
-                setNamingFolder(true);
-              }}
+              onNewChild={() => askFolderName(f.path)}
               onMove={() => onMoveFolder(f)}
               onDelete={() => onDeleteFolder(f)}
               onMarkAll={(read) => onMarkFolderRead(f, read)}
@@ -565,10 +584,7 @@ export function Rail({
                     onReorder={() => {}}
                     onNewChild={
                       m.key === 'archive' && archivePath
-                        ? () => {
-                            setFolderPrefill(`${archivePath}/`);
-                            setNamingFolder(true);
-                          }
+                        ? () => askFolderName(archivePath)
                         : undefined
                     }
                     onMarkAll={(read) => onMarkFolderRead(own, read)}
@@ -655,45 +671,14 @@ export function Rail({
             type="button"
             className="rail-add"
             aria-label={t('folder-new')}
-            // Collapsed there is no row to type into, so the + asks in a
-            // dialog and the rail stays as it was. The icon says which +
-            // this is, since the header text it sits beside has faded out.
-            onClick={() => (collapsed ? setNamingDialog('folder') : setNamingFolder(true))}
+            // Collapsed, the icon says which + this is, since the header
+            // text it sits beside has faded out.
+            onClick={() => askFolderName(null)}
           >
             <Icon icon={collapsed ? FolderPlus : Plus} size={13} />
           </button>
         </Tip>
       </div>
-      {!collapsed && namingFolder && (
-        <input
-          key={folderPrefill}
-          className="rail-new-tag"
-          placeholder={t('folder-new-placeholder')}
-          aria-label={t('folder-new')}
-          autoComplete="off"
-          autoFocus
-          defaultValue={folderPrefill}
-          onBlur={(e) => {
-            const name = e.currentTarget.value.trim();
-            setNamingFolder(false);
-            setFolderPrefill('');
-            if (name) void onCreateFolder(name);
-          }}
-          onKeyDown={(e) => {
-            e.stopPropagation();
-            if (e.key === 'Escape') {
-              setNamingFolder(false);
-              return;
-            }
-            if (e.key !== 'Enter') return;
-            if (!e.currentTarget.value.trim()) {
-              setNamingFolder(false);
-              return;
-            }
-            e.currentTarget.blur();
-          }}
-        />
-      )}
       {tree.map((n, i) => renderNode(n, 0, undefined, i, tree.length))}
       {/* The header shows even with no tags yet, because the + is how the first
           one gets made — a section that only appears once you already have one
@@ -717,50 +702,12 @@ export function Rail({
                 type="button"
                 className="rail-add"
                 aria-label={t('tag-new')}
-                onClick={() => (collapsed ? setNamingDialog('tag') : setNaming(true))}
+                onClick={() => setNamingDialog('tag')}
               >
                 <Icon icon={collapsed ? TagPlus : Plus} size={13} />
               </button>
             </Tip>
           </div>
-      {/* The field itself only exists while the rail is open: there is nowhere
-          to type in a collapsed one. */}
-      {!collapsed && naming && (
-            <input
-              ref={nameInput}
-              className="rail-new-tag"
-              placeholder={t('tag-new-placeholder')}
-              aria-label={t('tag-new')}
-              autoComplete="off"
-              // Committed on the way out, not discarded. Typing a name and
-              // clicking elsewhere used to lose it silently, which reads as the
-              // tag having been created and then vanished.
-              onBlur={(e) => {
-                const name = e.currentTarget.value.trim();
-                setNaming(false);
-                if (name) void onCreateTag(name);
-              }}
-              onKeyDown={(e) => {
-                // Stopped here so the app's single-key shortcuts do not fire
-                // while a tag is being named — typing "e" should not archive.
-                e.stopPropagation();
-                if (e.key === 'Escape') {
-                  setNaming(false);
-                  return;
-                }
-                if (e.key !== 'Enter') return;
-                const name = e.currentTarget.value.trim();
-                if (!name) {
-                  setNaming(false);
-                  return;
-                }
-                // Blur does the creating; this only ends the editing, so a
-                // name is not created once by Enter and again by the blur that
-                // Enter causes.
-                e.currentTarget.blur();
-              }}
-            />
-          )}
 
       {tags.map((tag, at) => (
             <Tip key={tag.name} label={tag.name} placement="right" when={collapsed}>
@@ -1005,9 +952,25 @@ export function Rail({
         title={t('folder-new')}
         placeholder={t('folder-new-placeholder')}
         icon={FolderPlus}
+        // The parent is decided before the dialog opens, so it is shown and
+        // not typed: a prefilled "Parent/" could be deleted by accident, and
+        // Create would make a folder at the top level instead.
+        prefix={folderParent === null ? undefined : `${folderParent}${delim}`}
         confirmLabel={t('create')}
         onClose={() => setNamingDialog(null)}
-        onSubmit={(name) => void onCreateFolder(name)}
+        onSubmit={(name) => {
+          const path = folderParent === null ? name : `${folderParent}${delim}${name}`;
+          void onCreateFolder(path).then((id) => {
+            if (id === undefined) return;
+            // Every row above it opened, or a folder made inside a folded one
+            // would be drawn nowhere.
+            setFolded((prev) => ({
+              ...prev,
+              ...Object.fromEntries(folderAncestors(path).map((p) => [p, false])),
+            }));
+            setReveal(`folder:${id}`);
+          });
+        }}
       />
       <NameDialog
         open={namingDialog === 'tag'}
@@ -1016,7 +979,11 @@ export function Rail({
         icon={TagPlus}
         confirmLabel={t('create')}
         onClose={() => setNamingDialog(null)}
-        onSubmit={(name) => void onCreateTag(name)}
+        onSubmit={(name) =>
+          void onCreateTag(name).then((id) => {
+            if (id !== undefined) setReveal(`tag:${id}`);
+          })
+        }
       />
     </nav>
   );

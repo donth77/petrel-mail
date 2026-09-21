@@ -94,6 +94,19 @@ export function folderDelimiter(folders: ReadonlyArray<{ path: string }>): strin
   return folders.some((f) => f.path.startsWith('INBOX.')) ? '.' : '/';
 }
 
+/**
+ * Every path a folder sits under, outermost first: `A/B/C` is under `A` and
+ * `A/B`. Split on both delimiters, the way `buildFolderTree` draws the rows,
+ * so opening all of these opens every row drawn above it.
+ */
+export function folderAncestors(path: string): string[] {
+  const out: string[] = [];
+  for (let i = 1; i < path.length; i++) {
+    if (path[i] === '/' || path[i] === '.') out.push(path.slice(0, i));
+  }
+  return out;
+}
+
 /** A folder's own name: the last segment of its path. */
 export function folderLeaf(path: string, delim: string): string {
   const at = path.lastIndexOf(delim);

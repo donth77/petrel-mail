@@ -5,6 +5,7 @@ import {
   buildFolderTree,
   filableFolderRows,
   filableFolders,
+  folderAncestors,
   folderDelimiter,
   folderLeaf,
   movedFolderPath,
@@ -66,6 +67,31 @@ describe('a folder’s own name', () => {
 
   it('keeps the dots that belong to it', () => {
     expect(folderLeaf('Work/example.com', '/')).toBe('example.com');
+  });
+});
+
+/* A folder made inside a folded one was drawn nowhere, so the rail opens every
+   row above a new folder, and these are those rows. */
+describe('the rows a folder sits under', () => {
+  it('lists every parent, outermost first', () => {
+    expect(folderAncestors('Archive/Yearly/2026')).toEqual(['Archive', 'Archive/Yearly']);
+    expect(folderAncestors('INBOX.Receipts.2026')).toEqual(['INBOX', 'INBOX.Receipts']);
+  });
+
+  it('is empty at the top level', () => {
+    expect(folderAncestors('Receipts')).toEqual([]);
+  });
+
+  it('matches the rows the tree draws, which split on either delimiter', () => {
+    const tree = buildFolderTree([f(1, 'Work/example.com')]);
+    const drawn: string[] = [];
+    const walk = (ns: typeof tree) =>
+      ns.forEach((n) => {
+        if (n.children.length > 0) drawn.push(n.path);
+        walk(n.children);
+      });
+    walk(tree);
+    expect(folderAncestors('Work/example.com')).toEqual(drawn);
   });
 });
 

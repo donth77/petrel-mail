@@ -118,6 +118,22 @@
   color: var(--ink3);
 }
 
+/* The parent a new subfolder goes inside, written up against the field so the
+   two read as one path. A long path gives way before the field does: what is
+   being typed matters more than the start of where it goes, and the whole path
+   is in the tooltip. */
+.name-dialog-prefix {
+  flex: 0 1 auto;
+  max-inline-size: 60%;
+  /* Cancels the head's gap, so nothing stands between the slash and the name. */
+  margin-inline-end: -9px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 12.5px;
+  color: var(--ink2);
+}
+
 /* The name dialog's own footer: a verb and a way out.
    
    Distinct from .picker-foot, which is a caption rather than a row of buttons —
