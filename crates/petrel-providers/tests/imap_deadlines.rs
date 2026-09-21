@@ -123,6 +123,7 @@ async fn a_pass_whose_fetch_is_never_answered_gives_up() {
         since_uidnext: None,
         since_modseq: None,
         seed_window: 50,
+        removal: None,
     }];
 
     let started = Instant::now();
@@ -205,6 +206,7 @@ async fn a_socket_that_dies_mid_pass_fails_the_remaining_folders_rather_than_res
             since_uidnext: None,
             since_modseq: None,
             seed_window: 50,
+            removal: None,
         })
         .collect();
 

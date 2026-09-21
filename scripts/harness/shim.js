@@ -226,6 +226,21 @@
   function extractionGen() {
     return window.__PETREL_REPAIRED__ ? 1 : 0;
   }
+  // ?fileAfter=N models another client filing conversation 4 into folder 7,
+  // N ms after launch, while the window may be looking at it. The count does
+  // not move — the same mail, somewhere else — and mail_gen does, to say so.
+  // ?fileSilently=1 leaves mail_gen alone, which is what the engine did
+  // before it had one: the folder on screen never heard.
+  var FILE_AFTER = Number((String(location.search).match(/[?&]fileAfter=(\d+)/) || [])[1] || 0);
+  var FILE_SILENTLY = /[?&]fileSilently=1(?:&|$)/.test(String(location.search));
+  var mailGen = 0;
+  if (FILE_AFTER) {
+    window.setTimeout(function () {
+      rows[3].filed = 7;
+      if (!FILE_SILENTLY) mailGen += 1;
+      window.__PETREL_FILED__ = true;
+    }, FILE_AFTER);
+  }
   function afterIndexDelay(value) {
     if (!INDEX_DELAY) return value;
     return new Promise(function (resolve) { setTimeout(function () { resolve(value); }, INDEX_DELAY); });
@@ -433,6 +448,7 @@
       return {
         last_sync_ms: Date.now() - 3 * 60000,
         extraction_gen: extractionGen(),
+        mail_gen: mailGen,
         notify: (function () {
           if (location.search.indexOf('ruleNotify=1') === -1) return [];
           window.__STATUS_N__ = (window.__STATUS_N__ || 0) + 1;
@@ -475,6 +491,12 @@
           try { return localStorage.getItem('__petrel_sync_error') || null; } catch (e) { return null; }
         })(),
       };
+    },
+    // The view on screen, as the engine is told it; recorded so a probe can
+    // see what would be watched.
+    watch_mailbox: function (a) {
+      window.__PETREL_WATCHED__ = a.view;
+      return null;
     },
     list_threads: function (a) {
       // Views are modelled here, not faked away. A shim that returns the same

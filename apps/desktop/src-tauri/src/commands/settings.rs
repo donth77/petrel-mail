@@ -32,6 +32,10 @@ pub(crate) struct Status {
     /// Increments when stored subjects (and related text) were rewritten.
     /// The window reloads the list when this moves.
     extraction_gen: i64,
+    /// Increments when a sync moved, removed or reflagged mail. The window
+    /// folds a fresh first page into the list when this moves: `count`
+    /// alone misses a move, which changes no count.
+    mail_gen: i64,
     /// Arrivals a rule marked notify-anyway, drained on read: mail a rule
     /// filed away never reaches the inbox list the announcer watches, so
     /// the rule's word rides the status poll instead. Each entry is said
@@ -112,6 +116,7 @@ pub fn status(state: State<Arc<AppState>>) -> Status {
         server_total: state.server_total.load(Ordering::Relaxed),
         last_sync_ms: state.last_sync_ms.load(Ordering::Relaxed),
         extraction_gen: state.extraction_gen.load(Ordering::Relaxed),
+        mail_gen: state.mail_gen.load(Ordering::Relaxed),
         source: state
             .source
             .lock()

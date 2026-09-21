@@ -141,6 +141,7 @@ fn pass(since_uid: u32, since_uidnext: Option<u32>) -> Vec<FolderPass> {
         since_uidnext,
         since_modseq: Some(7),
         seed_window: 50,
+        removal: None,
     }]
 }
 

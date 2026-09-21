@@ -38,6 +38,7 @@ async fn a_second_cycle_over_a_warm_store_fetches_nothing() {
             since_uidnext: None,
             since_modseq: None,
             seed_window: 50,
+            removal: None,
         })
         .collect();
     let mut fetched_bytes = 0usize;
@@ -82,6 +83,7 @@ async fn a_second_cycle_over_a_warm_store_fetches_nothing() {
                 since_uidnext: nx,
                 since_modseq: m,
                 seed_window: 50,
+                removal: None,
             }
         })
         .collect();

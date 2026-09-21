@@ -81,6 +81,19 @@ export async function runReplaceLoad(
   return { items, hasMore: replaceLoadHasMore(query, items.length) };
 }
 
+/** Where the mailbox stood at a look: how much mail, and how many times a
+ *  sync has moved any. */
+export type MailboxMark = { count: number | undefined; gen: number | undefined };
+
+/** Whether the mailbox changed under the window since the last look. The
+ *  count moves when mail arrives or is deleted; the generation moves when
+ *  mail is filed in or out elsewhere, which moves no count. The first look
+ *  is a baseline, not a change. */
+export function mailboxMoved(prev: MailboxMark, next: MailboxMark): boolean {
+  if (prev.count === undefined || next.count === undefined) return false;
+  return next.count !== prev.count || next.gen !== prev.gen;
+}
+
 /** What a load was asked for, so its answer can be checked against what the
  *  window wants by the time it lands. The generation counts every replaced
  *  window — account, query, view or sort — so a page for a list since left
@@ -161,6 +174,10 @@ export function useThreadWindow(args: {
   accountEpoch: number;
   /** Live message count. Increases mean new mail — merge into the head, never replace the loaded window. */
   messageCount: number | undefined;
+  /** Moves when a sync moved, removed or reflagged mail. A move made in
+   *  another client changes no count — the same mail, somewhere else — so
+   *  this is what tells the folder on screen that mail arrived or left. */
+  mailGen?: number;
   fetchers: ThreadFetchers;
   /** A background page or refresh that failed. The rows stay; this is where
    *  the failure is said. */
@@ -180,7 +197,7 @@ export function useThreadWindow(args: {
    *  the array is new. */
   replaceEpoch: number;
 } {
-  const { query, view, sort, accountEpoch, messageCount, fetchers, onRefreshFailed } = args;
+  const { query, view, sort, accountEpoch, messageCount, mailGen, fetchers, onRefreshFailed } = args;
 
   const [items, setItems] = useState<Thread[]>([]);
   const [loading, setLoading] = useState(true);
@@ -210,6 +227,7 @@ export function useThreadWindow(args: {
 
   const loadMoreInFlight = useRef(false);
   const messageCountRef = useRef(messageCount);
+  const mailGenRef = useRef(mailGen);
   const [replaceEpoch, setReplaceEpoch] = useState(0);
   // Counts replaced windows. Every load remembers the generation it was
   // started under and is dropped if the window has been replaced since.
@@ -278,20 +296,23 @@ export function useThreadWindow(args: {
   // On a reset, remember the count without treating it as new mail.
   useEffect(() => {
     messageCountRef.current = messageCount;
+    mailGenRef.current = mailGen;
     // `messageCount` is the snapshot we store, not a trigger. Including it
     // would collapse "new mail" into "the mailbox changed" and skip the merge.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, view, sort, accountEpoch]);
 
-  // A changed count with no search running: fold a fresh first page into
-  // the window. Up is new mail; down is something deleted elsewhere, and the
-  // row it left behind should go the same way.
+  // A changed count or generation with no search running: fold a fresh first
+  // page into the window. Up is new mail; down is something deleted
+  // elsewhere, and the row it left behind should go the same way; the
+  // generation alone is mail filed in or out by another client.
   useEffect(() => {
     if (messageCount === undefined || query.trim()) return;
 
-    const prev = messageCountRef.current;
+    const prev = { count: messageCountRef.current, gen: mailGenRef.current };
     messageCountRef.current = messageCount;
-    if (prev === undefined || messageCount === prev) return;
+    mailGenRef.current = mailGen;
+    if (!mailboxMoved(prev, { count: messageCount, gen: mailGen })) return;
 
     let live = true;
     // The answer belongs to the window asked for. A page for the inbox that
@@ -309,7 +330,7 @@ export function useThreadWindow(args: {
     return () => {
       live = false;
     };
-  }, [messageCount, query, asked]);
+  }, [messageCount, mailGen, query, asked]);
 
   const loadMore = useCallback(() => {
     if (queryRef.current.trim() || !hasMoreRef.current || loadMoreInFlight.current) return;

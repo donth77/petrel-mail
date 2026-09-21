@@ -6,6 +6,7 @@ import {
   appendPage,
   firstPageCall,
   loadMoreCall,
+  mailboxMoved,
   mergeHead,
   pageMore,
   refreshHead,
@@ -276,6 +277,24 @@ function recordingSink(initial: Thread[]) {
   };
   return { sink, rows: () => items, failures };
 }
+
+describe('mailboxMoved', () => {
+  it('looks again when mail was filed elsewhere, though the count held', () => {
+    // Another client moved a conversation into the folder on screen: the
+    // same mail, in a different place. The count cannot see that.
+    expect(mailboxMoved({ count: 120, gen: 4 }, { count: 120, gen: 5 })).toBe(true);
+  });
+  it('looks again when the count moves', () => {
+    expect(mailboxMoved({ count: 120, gen: 4 }, { count: 121, gen: 4 })).toBe(true);
+    expect(mailboxMoved({ count: 120, gen: 4 }, { count: 119, gen: 5 })).toBe(true);
+  });
+  it('leaves the window alone when nothing moved', () => {
+    expect(mailboxMoved({ count: 120, gen: 4 }, { count: 120, gen: 4 })).toBe(false);
+  });
+  it('takes the first look as a baseline', () => {
+    expect(mailboxMoved({ count: undefined, gen: undefined }, { count: 120, gen: 4 })).toBe(false);
+  });
+});
 
 describe('stillWanted', () => {
   const asked: Asked = { gen: 3, view: 'inbox', sort: DEFAULT_SORT };

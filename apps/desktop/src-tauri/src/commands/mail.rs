@@ -59,6 +59,32 @@ pub async fn sync_mailbox(view: String, state: State<'_, Arc<AppState>>) -> Resu
     Ok(())
 }
 
+/// Names the mailbox on screen, whatever it is, so its folder can be watched
+/// the way the inbox is.
+///
+/// Separate from `sync_mailbox`, which is a click: this follows the view
+/// however it changed — an account switch, a launch, a deleted folder
+/// sending the window back to the inbox — and a view with no folder behind
+/// it is news too, because it is what stops the old folder being watched.
+#[tauri::command]
+pub async fn watch_mailbox(view: String, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    let account = {
+        let store = state.store()?;
+        active_account(&store)?
+    };
+    let next = Some((account, view));
+    // Only a real change wakes the watchers: the window says this on every
+    // account epoch, and an EXAMINE per repeat would be spent on nothing.
+    state.open_view.send_if_modified(|open| {
+        if *open == next {
+            return false;
+        }
+        *open = next;
+        true
+    });
+    Ok(())
+}
+
 /// One conversation by id, for a window that was opened onto it.
 ///
 /// Separate from `list_threads` because a popped-out window has an id and no

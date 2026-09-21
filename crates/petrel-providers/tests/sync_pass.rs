@@ -10,7 +10,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use petrel_providers::imap::{
-    Credential, FolderPass, ImapConfig, PassOutcome, Security, move_uid, sync_pass,
+    Credential, FolderPass, ImapConfig, PassOutcome, RemovalCheck, Security, Survivors, move_uid,
+    sync_pass,
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
@@ -35,6 +36,7 @@ struct ServerState {
     logins: AtomicUsize,
     selects: AtomicUsize,
     fetches: AtomicUsize,
+    searches: AtomicUsize,
 }
 
 fn msg(uid: u32, subject: &str) -> Msg {
@@ -223,6 +225,28 @@ async fn server(state: Arc<Mutex<ServerState>>) -> u16 {
                                 .retain(|m| !(m.deleted && by_uid.is_none_or(|u| u == m.uid)));
                         }
                         out.extend(format!("{tag} OK expunged\r\n").bytes());
+                    } else if upper.contains(" UID SEARCH UID ") {
+                        // `UID a:b`: what the folder still holds in that range.
+                        let spec = line.split_whitespace().nth(4).unwrap_or("");
+                        let (a, b) = spec.split_once(':').unwrap_or(("1", "*"));
+                        let a: u32 = a.parse().unwrap_or(1);
+                        let b: u32 = b.parse().unwrap_or(u32::MAX);
+                        let s = state.lock().unwrap();
+                        s.searches.fetch_add(1, Ordering::Relaxed);
+                        let hits: Vec<String> = selected
+                            .as_ref()
+                            .and_then(|n| s.folders.get(n))
+                            .map(|f| {
+                                f.messages
+                                    .iter()
+                                    .filter(|m| m.uid >= a && m.uid <= b)
+                                    .map(|m| m.uid.to_string())
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        out.extend(
+                            format!("* SEARCH {}\r\n{tag} OK searched\r\n", hits.join(" ")).bytes(),
+                        );
                     } else if upper.contains(" UID SEARCH ") {
                         // HEADER Message-ID "<id>", answered from the raw text.
                         let needle = line
@@ -298,6 +322,7 @@ async fn a_quiet_cycle_is_status_lines_on_one_connection() {
         logins: AtomicUsize::new(0),
         selects: AtomicUsize::new(0),
         fetches: AtomicUsize::new(0),
+        searches: AtomicUsize::new(0),
     }));
     let port = server(Arc::clone(&state)).await;
     let cfg = ImapConfig {
@@ -317,6 +342,7 @@ async fn a_quiet_cycle_is_status_lines_on_one_connection() {
                 since_uidnext: None,
                 since_modseq: *m,
                 seed_window: 200,
+                removal: None,
             })
             .collect()
     };
@@ -465,6 +491,7 @@ async fn backfill_walks_history_in_strides_and_knows_when_it_is_done() {
         logins: AtomicUsize::new(0),
         selects: AtomicUsize::new(0),
         fetches: AtomicUsize::new(0),
+        searches: AtomicUsize::new(0),
     }));
     let port = server(Arc::clone(&state)).await;
     let cfg = ImapConfig {
@@ -528,6 +555,7 @@ async fn a_backlog_is_walked_in_one_pass_slice_by_slice() {
         logins: AtomicUsize::new(0),
         selects: AtomicUsize::new(0),
         fetches: AtomicUsize::new(0),
+        searches: AtomicUsize::new(0),
     }));
     let port = server(Arc::clone(&state)).await;
     let cfg = ImapConfig {
@@ -544,6 +572,7 @@ async fn a_backlog_is_walked_in_one_pass_slice_by_slice() {
         since_uidnext: Some(11),
         since_modseq: Some(10),
         seed_window: 200,
+        removal: None,
     }];
     let mut got = Vec::new();
     let out = sync_pass(&cfg, &passes, false, |_i, uid, _f, _raw| got.push(uid))
@@ -599,6 +628,7 @@ async fn keywords_already_on_a_message_arrive_with_its_first_fetch() {
         logins: AtomicUsize::new(0),
         selects: AtomicUsize::new(0),
         fetches: AtomicUsize::new(0),
+        searches: AtomicUsize::new(0),
     }));
     let port = server(Arc::clone(&state)).await;
     let cfg = ImapConfig {
@@ -615,6 +645,7 @@ async fn keywords_already_on_a_message_arrive_with_its_first_fetch() {
         since_uidnext: None,
         since_modseq: None,
         seed_window: 200,
+        removal: None,
     }];
     let out = sync_pass(&cfg, &passes, true, |_i, _uid, _f, _raw| {})
         .await
@@ -659,6 +690,7 @@ fn two_folder_server(inbox: Vec<Msg>, archive: Vec<Msg>) -> Arc<Mutex<ServerStat
         logins: AtomicUsize::new(0),
         selects: AtomicUsize::new(0),
         fetches: AtomicUsize::new(0),
+        searches: AtomicUsize::new(0),
     }))
 }
 
@@ -726,4 +758,176 @@ async fn without_uidplus_the_source_copy_is_flagged_and_left() {
     assert_eq!(inbox.len(), 2, "nothing expunged");
     assert!(inbox[0].deleted, "the moved one is flagged");
     assert!(!inbox[1].deleted, "the other is untouched");
+}
+
+fn watched(since_uid: u32, since_uidnext: u32, removal: RemovalCheck) -> Vec<FolderPass> {
+    vec![FolderPass {
+        path: "INBOX".into(),
+        since_uid,
+        expected_validity: Some(1),
+        since_uidnext: Some(since_uidnext),
+        since_modseq: Some(1),
+        seed_window: 200,
+        removal: Some(removal),
+    }]
+}
+
+/// Mail another client moved out is named on the pass's own connection, and
+/// only when STATUS says something left: a quiet folder and a folder that
+/// only gained mail cost no search at all.
+#[tokio::test]
+async fn mail_that_left_is_found_only_when_the_numbers_say_so() {
+    let state = two_folder_server((1..=5).map(|u| msg(u, &format!("m{u}"))).collect(), vec![]);
+    let port = server(Arc::clone(&state)).await;
+    let cfg = plain(port);
+    let searches = || folders(&state).searches.load(Ordering::Relaxed);
+
+    // Nothing moved: the numbers match what was seen, so no search.
+    let check = RemovalCheck {
+        held: 5,
+        last_seen: Some((5, 6)),
+    };
+    let out = sync_pass(&cfg, &watched(5, 6, check), false, |_, _, _, _| {})
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            &out[0],
+            PassOutcome::Unchanged {
+                seen: Some((5, 6)),
+                survivors: None,
+                ..
+            }
+        ),
+        "{out:?}"
+    );
+    assert_eq!(searches(), 0);
+
+    // Another client moves two away. No new mail, no flag change — the pass
+    // would have said nothing before — and now it names the three left.
+    folders(&state)
+        .folders
+        .get_mut("INBOX")
+        .unwrap()
+        .messages
+        .retain(|m| m.uid != 2 && m.uid != 4);
+    let out = sync_pass(&cfg, &watched(5, 6, check), false, |_, _, _, _| {
+        panic!("nothing arrived")
+    })
+    .await
+    .unwrap();
+    let PassOutcome::Unchanged {
+        seen, survivors, ..
+    } = &out[0]
+    else {
+        panic!("{out:?}");
+    };
+    assert_eq!(
+        survivors,
+        &Some(Survivors {
+            uids: vec![1, 3, 5],
+            below: 6
+        })
+    );
+    assert_eq!(*seen, Some((3, 6)));
+    assert_eq!(searches(), 1);
+    assert_eq!(
+        folders(&state).logins.load(Ordering::Relaxed),
+        2,
+        "the search rides the pass's connection"
+    );
+
+    // One arrives and one leaves in the same interval: a count comparison
+    // would see three before and three after; the arithmetic sees both.
+    {
+        let mut s = folders(&state);
+        let inbox = s.folders.get_mut("INBOX").unwrap();
+        inbox.messages.retain(|m| m.uid != 1);
+        inbox.messages.push(msg(6, "m6"));
+    }
+    let check = RemovalCheck {
+        held: 3,
+        last_seen: Some((3, 6)),
+    };
+    let mut got = Vec::new();
+    let out = sync_pass(&cfg, &watched(5, 6, check), false, |_, uid, _, _| {
+        got.push(uid)
+    })
+    .await
+    .unwrap();
+    let PassOutcome::Fetched {
+        fetched, survivors, ..
+    } = &out[0]
+    else {
+        panic!("{out:?}");
+    };
+    assert_eq!(*fetched, 1);
+    assert_eq!(got, vec![6]);
+    assert_eq!(
+        survivors.as_ref().map(|s| s.uids.clone()),
+        Some(vec![3, 5, 6]),
+        "what just arrived is a survivor, not a departure"
+    );
+    assert_eq!(searches(), 2);
+
+    // Arrival alone: no search.
+    folders(&state)
+        .folders
+        .get_mut("INBOX")
+        .unwrap()
+        .messages
+        .push(msg(7, "m7"));
+    let check = RemovalCheck {
+        held: 3,
+        last_seen: Some((3, 7)),
+    };
+    let out = sync_pass(&cfg, &watched(6, 7, check), false, |_, _, _, _| {})
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            &out[0],
+            PassOutcome::Fetched {
+                fetched: 1,
+                survivors: None,
+                ..
+            }
+        ),
+        "{out:?}"
+    );
+    assert_eq!(searches(), 2, "new mail is not a reason to search");
+}
+
+#[test]
+fn the_removal_check_sees_what_a_count_cannot() {
+    // Backfill still walking: the store holds 2 of the server's 10. One
+    // leaves; the server's 9 is still far above the store's 2.
+    let walking = RemovalCheck {
+        held: 2,
+        last_seen: Some((10, 11)),
+    };
+    assert!(walking.suspects(9, Some(11)));
+    // Two arrive and nothing leaves.
+    assert!(!walking.suspects(12, Some(13)));
+    // Two arrive and one leaves.
+    assert!(walking.suspects(11, Some(13)));
+
+    // The first look of a session has only the count.
+    let first = RemovalCheck {
+        held: 5,
+        last_seen: None,
+    };
+    assert!(first.suspects(4, Some(6)));
+    assert!(!first.suspects(5, Some(6)));
+    assert!(
+        !first.suspects(40, Some(41)),
+        "more on the server proves nothing"
+    );
+
+    // Nothing held, nothing to lose.
+    let empty = RemovalCheck {
+        held: 0,
+        last_seen: Some((3, 4)),
+    };
+    assert!(!empty.suspects(0, Some(4)));
 }

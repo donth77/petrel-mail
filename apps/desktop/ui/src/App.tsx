@@ -110,7 +110,8 @@ function statusNeedsRender(prev: Status | null, next: Status): boolean {
     prev.retention !== next.retention ||
     prev.sync_error !== next.sync_error ||
     prev.last_sync_ms !== next.last_sync_ms ||
-    prev.extraction_gen !== next.extraction_gen
+    prev.extraction_gen !== next.extraction_gen ||
+    prev.mail_gen !== next.mail_gen
   );
 }
 
@@ -441,6 +442,7 @@ export function App() {
     sort: activeSort,
     accountEpoch,
     messageCount: status?.count,
+    mailGen: status?.mail_gen,
     fetchers: listFetchers,
     // Said, not shown in place of the list: the rows on screen are still
     // the rows, and one poll that could not get a page is not a reason to
@@ -1972,6 +1974,13 @@ export function App() {
     };
   }, [view, accountEpoch]);
 
+  // The engine watches the folder on screen as it watches the inbox, so it
+  // is told which that is whenever the view changes, however it changed: a
+  // click, a launch, an account switch, a folder deleted out from under it.
+  useEffect(() => {
+    void api.watchMailbox(view).catch(() => {});
+  }, [view, accountEpoch]);
+
   // The footer number is the whole mailbox, not the loaded page. Recounted
   // when mail arrives, but not by wiping the last number first — that made
   // the status line blink on every ingest tick.
@@ -1987,7 +1996,7 @@ export function App() {
       live = false;
       window.clearTimeout(timer);
     };
-  }, [status?.count, view, accountEpoch]);
+  }, [status?.count, status?.mail_gen, view, accountEpoch]);
 
   // A message that needs a decision raises a notification, once.
   //
@@ -2087,7 +2096,17 @@ export function App() {
       live = false;
       window.clearTimeout(t);
     };
-  }, [status?.count, status?.seeding, arrangement, accountEpoch, triageEpoch, setAccounts, setTags]);
+  }, [
+    status?.count,
+    // Mail filed elsewhere moves the rail's numbers without moving the count.
+    status?.mail_gen,
+    status?.seeding,
+    arrangement,
+    accountEpoch,
+    triageEpoch,
+    setAccounts,
+    setTags,
+  ]);
 
   // First run: no account can sign in, so there is nothing to show but the
   // way to add one. Decided from the status the app reports, not from an

@@ -111,6 +111,21 @@ pub(crate) struct AppState {
     /// poll carries it so the window reloads the list; otherwise the
     /// heading keeps the subject it loaded at launch.
     pub(crate) extraction_gen: std::sync::atomic::AtomicI64,
+    /// Bumped when a sync changed where mail sits or how it is flagged,
+    /// whether or not the amount of mail changed. The list reloaded on the
+    /// message count alone, and a move made in another client changes no
+    /// count: the mail is the same mail, in a different folder. So the
+    /// folder on screen kept showing what had left it, and never showed
+    /// what had arrived.
+    pub(crate) mail_gen: std::sync::atomic::AtomicI64,
+    /// The mailbox on screen, with the account it belongs to. Each
+    /// account's folder watch follows it; `None` until the window says.
+    pub(crate) open_view: tokio::sync::watch::Sender<Option<(i64, String)>>,
+    /// `(MESSAGES, UIDNEXT)` from the last STATUS each folder answered,
+    /// by folder id — the baseline that lets a pass notice mail that left
+    /// without asking the server for every UID. In memory on purpose: the
+    /// first pass of a launch has none and falls back to comparing counts.
+    pub(crate) folder_seen: Mutex<HashMap<i64, (u32, u32)>>,
     /// When the user last asked the store for something, in ms. Backfill
     /// yields to this: history is the least urgent work in the program, and
     /// a stride that makes a click wait has its priorities inverted.
@@ -579,6 +594,9 @@ pub(crate) fn test_state(dir: &std::path::Path) -> Arc<AppState> {
         pending_alerts: Mutex::new(Vec::new()),
         last_sync_ms: std::sync::atomic::AtomicI64::new(0),
         extraction_gen: std::sync::atomic::AtomicI64::new(0),
+        mail_gen: std::sync::atomic::AtomicI64::new(0),
+        open_view: tokio::sync::watch::channel(None).0,
+        folder_seen: Mutex::new(HashMap::new()),
         ui_touch_ms: std::sync::atomic::AtomicI64::new(0),
         server_total: std::sync::atomic::AtomicUsize::new(0),
         shown_once: Mutex::new(std::collections::HashSet::new()),

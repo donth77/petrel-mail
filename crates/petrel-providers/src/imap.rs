@@ -1280,6 +1280,35 @@ where
     idle_watch_session(client, cfg, folder, ceiling, on_wake).await
 }
 
+/// `idle_watch` for a folder that changes: whichever one `folder` names.
+///
+/// For the mailbox on screen. The inbox has its own watch; everything else
+/// waited for the five-minute sweep, so mail another client filed into the
+/// open folder did not appear while you looked at it. One connection follows
+/// the person around: a new folder is DONE, EXAMINE and IDLE on the socket
+/// already open — two round trips — where a watch per folder would be a TLS
+/// handshake and a LOGIN per click.
+///
+/// Returns `Ok(())` at `ceiling`, as `idle_watch` does, and when `folder`
+/// names nothing or its sender is gone — logged out first, since a
+/// connection watching nothing still counts against the account's limit.
+/// `on_wake` gets the folder that spoke.
+pub async fn idle_follow<F>(
+    cfg: &ImapConfig,
+    folder: &mut tokio::sync::watch::Receiver<Option<String>>,
+    ceiling: Duration,
+    on_wake: F,
+) -> Result<()>
+where
+    F: FnMut(&str),
+{
+    if folder.borrow().is_none() {
+        return Ok(());
+    }
+    let client = Client::new(connect_idle(cfg).await?);
+    idle_follow_session(client, cfg, folder, ceiling, on_wake).await
+}
+
 /// The SASL exchange for XOAUTH2.
 ///
 /// One initial response and nothing after it: the server either accepts, or
@@ -1586,6 +1615,72 @@ where
     Ok(())
 }
 
+async fn idle_follow_session<S, F>(
+    client: Client<S>,
+    cfg: &ImapConfig,
+    folder: &mut tokio::sync::watch::Receiver<Option<String>>,
+    ceiling: Duration,
+    mut on_wake: F,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug + 'static,
+    F: FnMut(&str),
+{
+    let started = std::time::Instant::now();
+    let Some(mut watching) = folder.borrow_and_update().clone() else {
+        return Ok(());
+    };
+    let mut session = sign_in(client, cfg).await?;
+    // EXAMINE, not SELECT: IDLE needs a mailbox open, not a writable one,
+    // and a watch should not clear \Recent for whoever looks next.
+    session.examine(wire_name(&watching)).await?;
+
+    loop {
+        let left = ceiling.saturating_sub(started.elapsed());
+        if left.is_zero() {
+            break;
+        }
+        let mut handle = session.idle();
+        handle.init().await?;
+        // Whether the server spoke, and whether the folder changed — `None`
+        // when it did not, `Some(false)` when the sender is gone, which
+        // reads as nothing to watch.
+        let (woke, moved) = {
+            // The same two timeouts as `idle_watch_session`, and the folder
+            // changing as a third way out.
+            let (idle_wait, _interrupt) = handle.wait_with_timeout(left);
+            tokio::select! {
+                r = tokio::time::timeout(left, idle_wait) => match r {
+                    Ok(r) => (matches!(r?, IdleResponse::NewData(_)), None),
+                    Err(_) => (false, None),
+                },
+                changed = folder.changed() => (false, Some(changed.is_ok())),
+            }
+        };
+        session = end_idle(handle).await?;
+        if woke {
+            on_wake(&watching);
+        }
+        if let Some(alive) = moved {
+            let next = if alive {
+                folder.borrow_and_update().clone()
+            } else {
+                None
+            };
+            match next {
+                Some(next) if next == watching => {}
+                Some(next) => {
+                    session.examine(wire_name(&next)).await?;
+                    watching = next;
+                }
+                None => break,
+            }
+        }
+    }
+    sign_out(&mut session).await?;
+    Ok(())
+}
+
 async fn idle_session<S>(
     client: Client<S>,
     cfg: &ImapConfig,
@@ -1646,6 +1741,60 @@ pub struct FolderPass {
     /// The HIGHESTMODSEQ the store last saw, for CONDSTORE flag diffs.
     pub since_modseq: Option<u64>,
     pub seed_window: u32,
+    /// Whether to look for mail that left, and what to look with. `None`
+    /// never searches.
+    pub removal: Option<RemovalCheck>,
+}
+
+/// What a pass needs to notice mail that left a folder: moved by another
+/// client, filed by a rule on the server, deleted on a phone.
+///
+/// An arrival moves UIDNEXT. A departure moves nothing but MESSAGES, and the
+/// STATUS every pass already asks reports that for free, so the test is
+/// arithmetic. The UID SEARCH that names what is still there is only spent
+/// on a folder that fails it, on the connection the pass already holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RemovalCheck {
+    /// Placements the store holds in this folder with a UID: everything
+    /// that could turn out to be gone.
+    pub held: u32,
+    /// `(MESSAGES, UIDNEXT)` from the last STATUS a pass saw here, if one
+    /// has this session.
+    pub last_seen: Option<(u32, u32)>,
+}
+
+impl RemovalCheck {
+    /// Whether mail may have left since the last look.
+    ///
+    /// Two tests, because each misses what the other catches. What was there
+    /// last time, plus every UID handed out since, is the most the folder can
+    /// hold now; fewer means something went. That one sees a departure from
+    /// a folder still being backfilled, where the store holds less than the
+    /// server and a count comparison proves nothing. The count comparison is
+    /// for the first look of a session, when there is no last time: fewer on
+    /// the server than held here is certain loss.
+    pub fn suspects(&self, exists: u32, uid_next: Option<u32>) -> bool {
+        if self.held == 0 {
+            return false;
+        }
+        let since_last = match (self.last_seen, uid_next) {
+            (Some((was, was_next)), Some(next)) => {
+                u64::from(was) + u64::from(next.saturating_sub(was_next)) > u64::from(exists)
+            }
+            _ => false,
+        };
+        since_last || exists < self.held
+    }
+}
+
+/// The UIDs a folder still holds, as a SEARCH named them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Survivors {
+    pub uids: Vec<u32>,
+    /// The search asked about UIDs below this and no higher. Anything at or
+    /// above it arrived after the look — a MOVE the drain made a moment ago
+    /// — and its absence here says nothing about it.
+    pub below: u32,
 }
 
 /// One slice of a catch-up fetch after the first seed: a closed UID range,
@@ -1721,12 +1870,21 @@ fn watermark(reported: Option<u32>, refused: Option<u32>, unplaceable: bool) -> 
 #[derive(Debug)]
 pub enum PassOutcome {
     /// STATUS said nothing moved: no select, no fetch, one line on the wire.
+    /// Unless the removal check fired, when it is also an EXAMINE and a
+    /// SEARCH.
     Unchanged {
         uid_validity: Option<u32>,
         /// Reported so a folder with no baseline can adopt one while quiet.
         highest_modseq: Option<u64>,
         uid_next: Option<u32>,
         total: u32,
+        /// `(MESSAGES, UIDNEXT)` as this pass's STATUS gave them, for the
+        /// next pass's `RemovalCheck`. `None` when there is nothing to
+        /// compare against next time, or when a search this pass needed did
+        /// not happen — so the next pass asks again rather than forgetting.
+        seen: Option<(u32, u32)>,
+        /// What the folder still holds, when the removal check fired.
+        survivors: Option<Survivors>,
     },
     Fetched {
         fetched: usize,
@@ -1741,6 +1899,10 @@ pub enum PassOutcome {
         /// (`want_keywords`) and the flag diff ran.
         keyword_updates: Vec<(u32, Vec<String>)>,
         total: u32,
+        /// As on `Unchanged`.
+        seen: Option<(u32, u32)>,
+        /// As on `Unchanged`.
+        survivors: Option<Survivors>,
     },
     /// The folder was renumbered; nothing fetched. See `FetchOutcome`.
     ValidityChanged { now: Option<u32> },
@@ -1845,13 +2007,43 @@ where
                 _ => false,
             };
 
+        let suspects = pass
+            .removal
+            .is_some_and(|check| check.suspects(status.exists, status.uid_next));
+        let seen = status.uid_next.map(|next| (status.exists, next));
+
         if !new_mail && !flags_moved {
+            let mut survivors = None;
+            let mut dead = false;
+            if suspects {
+                // Read-only, like the fetch's: looking must not change it.
+                match session.examine(wire_name(&pass.path)).await {
+                    Ok(mailbox) => {
+                        match survivors_in(&mut session, mailbox.uid_next.or(status.uid_next)).await
+                        {
+                            Ok(s) => survivors = Some(s),
+                            Err(e) => dead = session_is_dead(&e),
+                        }
+                    }
+                    Err(e) => dead = session_is_dead(&e.into()),
+                }
+            }
             out.push(PassOutcome::Unchanged {
                 uid_validity: status.uid_validity,
                 highest_modseq: status.highest_modseq,
                 uid_next: status.uid_next,
                 total: status.exists,
+                seen: if suspects && survivors.is_none() {
+                    None
+                } else {
+                    seen
+                },
+                survivors,
             });
+            if dead {
+                fail_the_rest(&mut out, passes.len());
+                break;
+            }
             continue;
         }
 
@@ -2038,6 +2230,17 @@ where
             }
         }
 
+        // After the fetch, so what just arrived is among the survivors and
+        // not mistaken for something that left.
+        let mut survivors = None;
+        let mut search_killed = false;
+        if suspects {
+            match survivors_in(&mut session, mailbox.uid_next.or(status.uid_next)).await {
+                Ok(s) => survivors = Some(s),
+                Err(e) => search_killed = session_is_dead(&e),
+            }
+        }
+
         out.push(PassOutcome::Fetched {
             fetched,
             uid_validity: mailbox.uid_validity.or(status.uid_validity),
@@ -2066,7 +2269,18 @@ where
             flag_updates,
             keyword_updates,
             total: mailbox.exists,
+            seen: if suspects && survivors.is_none() {
+                None
+            } else {
+                seen
+            },
+            survivors,
         });
+        // The fetch stands; only the folders after this one are lost.
+        if search_killed {
+            fail_the_rest(&mut out, passes.len());
+            break;
+        }
     }
     // Best effort, unlike everywhere else: the mail is already ingested and
     // every folder has said what happened to it. Throwing all of that away
@@ -2860,17 +3074,39 @@ const SEARCH_RANGE: u32 = 50_000;
 
 /// Every UID the folder currently holds — the ground truth a placement sweep
 /// compares against.
+pub async fn uids_in_folder(cfg: &ImapConfig, folder: &str) -> Result<Vec<u32>> {
+    let client = Client::new(connect(cfg).await?);
+    let mut session = sign_in(client, cfg).await?;
+    let mailbox = session.select(wire_name(folder)).await?;
+    let found = uids_below(&mut session, mailbox.uid_next).await?;
+    sign_out(&mut session).await?;
+    Ok(found)
+}
+
+/// Every UID in the selected mailbox, bounded by what the search covered.
+async fn survivors_in<S>(session: &mut Session<S>, uid_next: Option<u32>) -> Result<Survivors>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
+{
+    Ok(Survivors {
+        uids: uids_below(session, uid_next).await?,
+        // No UIDNEXT means one broad SEARCH, which asked about everything.
+        below: uid_next.unwrap_or(u32::MAX),
+    })
+}
+
+/// Every UID in the selected mailbox below `uid_next`, sorted.
 ///
 /// In ranges rather than one `SEARCH ALL`. All Mail on a long-lived Gmail
 /// account holds three hundred thousand messages, and asking about all of them
 /// at once cost twenty-one seconds of server CPU, every twenty minutes, until
 /// the backfill finished. A UID range is answered from the index instead.
-pub async fn uids_in_folder(cfg: &ImapConfig, folder: &str) -> Result<Vec<u32>> {
-    let client = Client::new(connect(cfg).await?);
-    let mut session = sign_in(client, cfg).await?;
-    let mailbox = session.select(wire_name(folder)).await?;
+async fn uids_below<S>(session: &mut Session<S>, uid_next: Option<u32>) -> Result<Vec<u32>>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
+{
     let mut found = Vec::new();
-    match mailbox.uid_next {
+    match uid_next {
         // Without a UIDNEXT there is no last number to walk towards, so the
         // one broad question is the only one that can be asked.
         None => found.extend(session.uid_search("ALL").await?),
@@ -2887,7 +3123,6 @@ pub async fn uids_in_folder(cfg: &ImapConfig, folder: &str) -> Result<Vec<u32>> 
         }
     }
     found.sort_unstable();
-    sign_out(&mut session).await?;
     Ok(found)
 }
 

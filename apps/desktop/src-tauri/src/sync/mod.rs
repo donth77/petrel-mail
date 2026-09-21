@@ -308,6 +308,13 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
         // right answer because a wake carries no detail to lose.
         let (wake_tx, mut wake_rx) = tokio::sync::mpsc::channel::<()>(1);
         if has_idle {
+            spawn_open_folder_watch(
+                Arc::clone(&state),
+                account,
+                cfg.clone(),
+                stop.clone(),
+                idle_ceiling,
+            );
             let cfg = cfg.clone();
             let mut stop = stop.clone();
             tokio::spawn(async move {
@@ -709,6 +716,140 @@ pub(crate) fn spawn_view_sync(state: Arc<AppState>, account: i64, view: &str) {
     });
 }
 
+/// The folder behind the view on screen, if this account has one to watch.
+///
+/// The same folders an open fetches: the inbox is watched already, and the
+/// views without a folder have nothing to IDLE on.
+fn watch_target(state: &AppState, account: i64, open: Option<&(i64, String)>) -> Option<String> {
+    let (owner, view) = open?;
+    if *owner != account {
+        return None;
+    }
+    let scope = open_sync_scope(view)?;
+    narrow(folders_to_sync(state, account), scope)
+        .into_iter()
+        .next()
+        .map(|(_, path, _)| path)
+}
+
+/// Keeps the folder on screen as current as the inbox.
+///
+/// A second IDLE, on whichever folder is open. Polling it was the other way,
+/// and it loses on both counts: a login a minute for as long as the folder
+/// stays open, and still up to a minute late. IDLE costs nothing while
+/// nothing happens, a click elsewhere is DONE, EXAMINE and IDLE on the same
+/// socket, and a change is on screen as fast as new mail in the inbox — the
+/// wake runs the same one-folder pass that opening the folder does.
+///
+/// `ceiling` is the inbox watch's, for the same reason: a connection held
+/// past RFC 2177's limit gets dropped without anyone being told.
+fn spawn_open_folder_watch(
+    state: Arc<AppState>,
+    account: i64,
+    cfg: ImapConfig,
+    stop: tokio::sync::watch::Receiver<bool>,
+    ceiling: std::time::Duration,
+) {
+    // Carries the folder that spoke. Capacity one for the inbox watcher's
+    // reason: a wake during a pass folds into the single pass after it.
+    let (wake_tx, mut wake_rx) = tokio::sync::mpsc::channel::<String>(1);
+    {
+        let state = Arc::clone(&state);
+        let cfg = cfg.clone();
+        let mut stop = stop.clone();
+        tauri::async_runtime::spawn(async move {
+            loop {
+                let path = tokio::select! {
+                    got = wake_rx.recv() => match got {
+                        Some(path) => path,
+                        None => return,
+                    },
+                    _ = stopped(&mut stop) => return,
+                };
+                // By id, so a role folder and one of the person's own are
+                // asked for the same way.
+                let Some(id) = folders_to_sync(&state, account)
+                    .into_iter()
+                    .find(|(_, p, _)| *p == path)
+                    .map(|(_, _, id)| id)
+                else {
+                    continue;
+                };
+                let cycle = std::time::Instant::now();
+                run_sync_cycle(&state, account, &cfg, false, Scope::FolderId(id)).await;
+                log_sync(&format!(
+                    "account {account} folder {id} wake: {:.1}s",
+                    cycle.elapsed().as_secs_f32()
+                ));
+            }
+        });
+    }
+    let mut stop = stop;
+    tauri::async_runtime::spawn(async move {
+        let mut open = state.open_view.subscribe();
+        let (aim, mut follow) = tokio::sync::watch::channel(None::<String>);
+        let mut backoff = std::time::Duration::from_secs(2);
+        let backoff_ceiling = std::time::Duration::from_secs(120);
+        loop {
+            aim.send_replace(watch_target(
+                &state,
+                account,
+                open.borrow_and_update().as_ref(),
+            ));
+            if aim.borrow().is_none() {
+                // Nothing to watch here: no connection until there is.
+                tokio::select! {
+                    changed = open.changed() => if changed.is_err() { return },
+                    _ = stopped(&mut stop) => return,
+                }
+                continue;
+            }
+            let armed = std::time::Instant::now();
+            let watching = {
+                let wake_tx = wake_tx.clone();
+                let watch =
+                    petrel_providers::imap::idle_follow(&cfg, &mut follow, ceiling, |path| {
+                        // Full means a pass is already coming.
+                        let _ = wake_tx.try_send(path.to_string());
+                    });
+                tokio::pin!(watch);
+                loop {
+                    tokio::select! {
+                        w = &mut watch => break w,
+                        // Re-aimed without leaving the watch: the provider
+                        // follows `aim` on the connection it holds.
+                        changed = open.changed() => {
+                            if changed.is_err() {
+                                return;
+                            }
+                            aim.send_replace(watch_target(&state, account, open.borrow_and_update().as_ref()));
+                        }
+                        _ = stopped(&mut stop) => return,
+                    }
+                }
+            };
+            match watching {
+                Ok(()) => backoff = std::time::Duration::from_secs(2),
+                Err(e) => {
+                    log_sync(&format!(
+                        "folder watch failed after {:.0}s, retrying in {}s: {e}",
+                        armed.elapsed().as_secs_f32(),
+                        backoff.as_secs()
+                    ));
+                    // A click elsewhere is a reason to try again sooner: the
+                    // folder that failed may be one the server no longer has.
+                    tokio::select! {
+                        _ = tokio::time::sleep(backoff) => {}
+                        changed = open.changed() => if changed.is_err() { return },
+                        _ = stopped(&mut stop) => return,
+                    }
+                    backoff = (backoff * 2).min(backoff_ceiling);
+                }
+            }
+        }
+    });
+}
+
 /// One sync cycle for one account: every folder, one connection.
 ///
 /// The shape of the whole optimisation. A cycle logs in once, asks one
@@ -734,6 +875,12 @@ async fn run_sync_cycle(
         .and_then(|v| v.parse().ok())
         .unwrap_or(200);
 
+    // Taken before the store, so the two locks are never held together.
+    let last_seen = state
+        .folder_seen
+        .lock()
+        .map(|m| m.clone())
+        .unwrap_or_default();
     let passes: Vec<petrel_providers::imap::FolderPass> = {
         let Ok(store) = state.store.lock() else {
             return CycleReport::default();
@@ -755,6 +902,16 @@ async fn run_sync_cycle(
                 since_uidnext: store.folder_uidnext(*fid).ok().flatten(),
                 since_modseq: store.folder_modseq(*fid).ok().flatten(),
                 seed_window: window,
+                // Every pass looks, not only the sweep: mail another client
+                // moved out of the inbox wakes the inbox's IDLE, and used to
+                // stay on screen there until the twenty-minute reconcile.
+                removal: Some(petrel_providers::imap::RemovalCheck {
+                    held: store
+                        .uid_placement_count(*fid)
+                        .map(|n| u32::try_from(n).unwrap_or(u32::MAX))
+                        .unwrap_or(0),
+                    last_seen: last_seen.get(fid).copied(),
+                }),
             })
             .collect()
     };
@@ -829,13 +986,20 @@ async fn run_sync_cycle(
     let mut failures = 0usize;
     let mut last_failure: Option<String> = None;
     let mut server_total = 0usize;
+    // Whether anything a list could be showing changed: arrived, left, or
+    // was flagged elsewhere.
+    let mut moved = fresh > 0;
     for (((_, path, folder_id), pass), outcome) in targets.iter().zip(&passes).zip(&outcomes) {
+        // Placements this folder lost to another client, rule or phone.
+        let mut left = 0usize;
         match outcome {
             PassOutcome::Unchanged {
                 uid_validity,
                 highest_modseq,
                 uid_next,
                 total,
+                seen,
+                survivors,
             } => {
                 server_total += *total as usize;
                 if let Ok(mut store) = state.store.lock() {
@@ -855,6 +1019,7 @@ async fn run_sync_cycle(
                         let _ = store.set_folder_uidnext(*folder_id, *n);
                     }
                 }
+                left = settle_departures(state, *folder_id, *seen, survivors.as_ref());
             }
             PassOutcome::Fetched {
                 fetched,
@@ -864,6 +1029,8 @@ async fn run_sync_cycle(
                 flag_updates,
                 keyword_updates,
                 total,
+                seen,
+                survivors,
             } => {
                 server_total += *total as usize;
                 let mut reflagged = 0usize;
@@ -909,6 +1076,8 @@ async fn run_sync_cycle(
                         "folder {folder_id}: {fetched} fetched, {reflagged} flag update(s){tags}"
                     ));
                 }
+                left = settle_departures(state, *folder_id, *seen, survivors.as_ref());
+                moved |= *fetched > 0 || reflagged > 0 || retagged > 0;
             }
             // A server that answered STATUS always names UIDVALIDITY. One
             // that named nothing did not answer — a session that died
@@ -930,8 +1099,12 @@ async fn run_sync_cycle(
                     // The modseq domain does not survive a renumbering.
                     let _ = store.clear_folder_modseq(*folder_id);
                 }
+                // Nor does a count against old numbers.
+                if let Ok(mut seen) = state.folder_seen.lock() {
+                    seen.remove(folder_id);
+                }
                 match recover_folder(state, account, cfg, path, *folder_id).await {
-                    Ok(_) => {}
+                    Ok(_) => moved = true,
                     Err(e) => {
                         log_sync(&format!("folder {folder_id}: recovery failed: {e}"));
                         last_failure = Some(e.to_string());
@@ -951,6 +1124,12 @@ async fn run_sync_cycle(
                 failures += 1;
             }
         }
+        if left > 0 {
+            log_sync(&format!(
+                "folder {folder_id}: {left} gone from the server since the last look"
+            ));
+            moved = true;
+        }
     }
     state.server_total.store(server_total, Ordering::Relaxed);
     if failures == 0 {
@@ -959,12 +1138,54 @@ async fn run_sync_cycle(
     if !arrivals.is_empty() {
         apply_rules_to(state, account, &arrivals);
     }
+    if moved {
+        note_mail_moved(state);
+    }
     CycleReport {
         fresh,
         failures,
         attempted: targets.len(),
         last_failure,
     }
+}
+
+/// Tells the window the mail moved, so the list on screen looks again.
+pub(crate) fn note_mail_moved(state: &AppState) {
+    state.mail_gen.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Drops the placements a pass's search says have left `folder_id`, and
+/// keeps the STATUS it saw for the next pass to compare against. Returns how
+/// many went.
+///
+/// Only below the search's bound. A UID at or above it arrived after the
+/// look — the drain moving a conversation in a moment ago — and the search
+/// not naming it says nothing about it.
+fn settle_departures(
+    state: &AppState,
+    folder_id: i64,
+    seen: Option<(u32, u32)>,
+    survivors: Option<&petrel_providers::imap::Survivors>,
+) -> usize {
+    let removed = survivors.map_or(0, |s| {
+        let Ok(store) = state.store.lock() else {
+            return 0;
+        };
+        let Ok(held) = store.placement_uids(folder_id) else {
+            return 0;
+        };
+        let mut present: HashSet<u32> = s.uids.iter().copied().collect();
+        present.extend(held.into_iter().filter(|u| *u >= s.below));
+        store
+            .remove_placements_absent(folder_id, &present)
+            .unwrap_or(0)
+    });
+    if let Some(seen) = seen
+        && let Ok(mut m) = state.folder_seen.lock()
+    {
+        m.insert(folder_id, seen);
+    }
+    removed
 }
 
 /// Mends one folder after the server renumbered it (UIDVALIDITY reset).
@@ -1352,6 +1573,8 @@ async fn run_label_sweep(state: &Arc<AppState>, account: i64, cfg: &ImapConfig) 
             }
             if filed > 0 {
                 number_swept_inbox_placements(state, account, cfg).await;
+                // A label added or taken away in Gmail is a move here.
+                note_mail_moved(state);
             }
         }
         // Not fatal: without it, filing falls back to the folder each
@@ -1455,6 +1678,9 @@ async fn run_thrid_sweep(state: &Arc<AppState>, account: i64, cfg: &ImapConfig) 
                     sweep.thrids.len()
                 ));
             }
+            if regrouped > 0 {
+                note_mail_moved(state);
+            }
             if let (Some(m), Ok(store)) = (sweep.modseq, state.store.lock()) {
                 let _ = store.set_setting("gmail_thrid_modseq", &m.to_string());
             }
@@ -1528,6 +1754,7 @@ async fn reconcile_ghost_placements(
             log_sync(&format!(
                 "folder {folder_id}: {removed} placement(s) the server no longer holds removed"
             ));
+            note_mail_moved(state);
         }
         // Inward: server UIDs the store never placed. The windowed sync can
         // close a watermark over a gap — a draft revision saved by webmail
@@ -1594,6 +1821,9 @@ async fn reconcile_ghost_placements(
         )
         .await
         .unwrap_or(0);
+        if fetched > 0 {
+            note_mail_moved(state);
+        }
         if fetched > 0 || overflow > 0 {
             log_sync(&format!(
                 "folder {folder_id}: {fetched} message(s) the store was missing fetched{}",
@@ -1759,5 +1989,105 @@ mod scope_tests {
         // folders would put the cost straight back.
         let none: Vec<(String, String, i64)> = vec![(String::new(), "Archive".to_string(), 4)];
         assert!(narrow(none, Scope::Inbox).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod departure_tests {
+    use super::{settle_departures, watch_target};
+    use petrel_providers::imap::Survivors;
+
+    fn raw(n: u32) -> Vec<u8> {
+        format!(
+            "From: a@example.com\r\nTo: b@example.com\r\nSubject: m{n}\r\n\
+             Message-ID: <m{n}@x>\r\nMIME-Version: 1.0\r\n\
+             Content-Type: text/plain\r\n\r\nbody {n}\r\n"
+        )
+        .into_bytes()
+    }
+
+    /// A state holding INBOX, Sent and one folder of the person's own,
+    /// returning that folder's id.
+    fn with_folders(state: &crate::state::AppState) -> i64 {
+        let account = state.account_id;
+        let mut store = state.store.lock().unwrap();
+        store
+            .sync_folders(
+                account,
+                &[
+                    ("INBOX".into(), Some("inbox".into())),
+                    ("Sent".into(), Some("sent".into())),
+                    ("Formation".into(), None),
+                ],
+            )
+            .unwrap();
+        store
+            .folders(account)
+            .unwrap()
+            .into_iter()
+            .find(|f| f.path == "Formation")
+            .unwrap()
+            .id
+    }
+
+    #[test]
+    fn the_watch_follows_folders_the_server_has_and_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = crate::state::test_state(dir.path());
+        let own = with_folders(&state);
+        let account = state.account_id;
+        let at = |view: &str| watch_target(&state, account, Some(&(account, view.to_string())));
+
+        assert_eq!(at("sent").as_deref(), Some("Sent"));
+        assert_eq!(at(&format!("folder:{own}")).as_deref(), Some("Formation"));
+        // The inbox has its own watch; these have no folder to IDLE on.
+        assert_eq!(at("inbox"), None);
+        assert_eq!(at("tag:work"), None);
+        assert_eq!(at("snoozed"), None);
+        // Nothing said yet, or another account's view: no connection here.
+        assert_eq!(watch_target(&state, account, None), None);
+        assert_eq!(
+            watch_target(&state, account, Some(&(account + 1, "sent".into()))),
+            None
+        );
+    }
+
+    #[test]
+    fn what_the_search_did_not_name_goes_and_what_came_after_it_stays() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = crate::state::test_state(dir.path());
+        let own = with_folders(&state);
+        {
+            let mut store = state.store.lock().unwrap();
+            for uid in [1, 2, 3, 9] {
+                store
+                    .ingest_raw(
+                        &state.blobs,
+                        state.account_id,
+                        Some(own),
+                        Some(uid),
+                        &raw(uid),
+                    )
+                    .unwrap();
+            }
+        }
+
+        // Another client took 2 away. 9 was placed by the drain after the
+        // search, above its bound, and must not be read as gone.
+        let survivors = Survivors {
+            uids: vec![1, 3],
+            below: 5,
+        };
+        let removed = settle_departures(&state, own, Some((2, 5)), Some(&survivors));
+        assert_eq!(removed, 1);
+        let mut held = state.store.lock().unwrap().placement_uids(own).unwrap();
+        held.sort_unstable();
+        assert_eq!(held, vec![1, 3, 9]);
+        assert_eq!(state.folder_seen.lock().unwrap().get(&own), Some(&(2, 5)));
+
+        // A pass whose search was needed and did not happen reports no
+        // baseline: the old one stays, so the next pass asks again.
+        assert_eq!(settle_departures(&state, own, None, None), 0);
+        assert_eq!(state.folder_seen.lock().unwrap().get(&own), Some(&(2, 5)));
     }
 }

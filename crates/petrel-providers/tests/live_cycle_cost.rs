@@ -119,6 +119,7 @@ async fn one_cycle_costs_this_much() {
                 since_uidnext: None,
                 since_modseq: None,
                 seed_window: 1,
+                removal: None,
             }
         })
         .collect();

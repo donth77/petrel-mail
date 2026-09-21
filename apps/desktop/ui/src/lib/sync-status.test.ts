@@ -5,7 +5,7 @@ import type { Status } from './api';
 const status = (over: Partial<Status>): Status =>
   ({
     configured: true, demo: false, seeding: false, count: 0, server_total: 0,
-    source: '', retention: '', data_dir: '', last_sync_ms: 0, extraction_gen: 0, notify: [],
+    source: '', retention: '', data_dir: '', last_sync_ms: 0, extraction_gen: 0, mail_gen: 0, notify: [],
     ...over,
   }) as Status;
 

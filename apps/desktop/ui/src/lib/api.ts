@@ -355,6 +355,9 @@ export type Status = {
   last_sync_ms: number;
   /** Increments after a re-extraction rewrites stored subjects. */
   extraction_gen: number;
+  /** Increments when a sync moved, removed or reflagged mail — which a move
+   *  made in another client does without changing `count`. */
+  mail_gen: number;
 };
 
 /* Dev-only: `npm run dev` opens in a plain browser, where Tauri's invoke does
@@ -556,6 +559,7 @@ const mock = {
   status: async (): Promise<Status> => ({
     last_sync_ms: Date.now(),
     extraction_gen: 0,
+    mail_gen: 0,
     configured: true, demo: false,
     seeding: false, count: 10000, server_total: 12500, source: 'tom@northbay.example',
     retention: 'mirror', data_dir: '~/Library/Application Support/Petrel',
@@ -619,6 +623,7 @@ const mock = {
   renameFolder: async () => {},
   pushDraft: async () => {},
   syncMailbox: async () => {},
+  watchMailbox: async () => {},
   unsubscribeInfo: async () => null,
   authenticationInfo: async () => null,
   printMessage: async () => {},
@@ -1017,6 +1022,10 @@ const real = {
   /** The composer closing must not wait out the 30s debounce. */
   pushDraft: (id: number) => invoke<void>('push_draft', { id }),
   syncMailbox: (view: string) => invoke<void>('sync_mailbox', { view }),
+  /** The view on screen, so the engine can watch its folder as it watches
+   *  the inbox. Every view, including ones with no folder: that is what
+   *  stops the last one being watched. */
+  watchMailbox: (view: string) => invoke<void>('watch_mailbox', { view }),
   /** Server first, then the store — the id survives, so the open view does. */
   renameFolder: (folderId: number, newPath: string) =>
     invoke<void>('rename_folder', { folderId, newPath }),
