@@ -321,6 +321,12 @@
    with an ellipsis and is the thing on the row with room to spare. */
 .rail-item .tag-edit {
   margin-inline-start: auto;
+  /* The ⋮ is 24px, the minimum target, and the row's text line is 15. In flow
+     it stretched every row that has one to 34px while Starred, Snoozed and
+     the Outbox stayed at 25, so the mailboxes stepped unevenly down the rail.
+     Cancelling the row's 5px padding-block lets the button keep its full 24px
+     inside a 25px row without deciding the row's height. */
+  margin-block: -5px;
 }
 
 /* The count follows it, so the auto margin above does the pushing for both.
