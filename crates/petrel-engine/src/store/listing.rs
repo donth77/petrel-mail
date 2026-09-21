@@ -369,7 +369,8 @@ fn page_walk(view: &ListView, account: i64) -> Option<PageWalk> {
             ),
             aliased: false,
         }),
-        ListView::Inbox | ListView::All => None,
+        // All Mail is most of any account, so a page fills after a short walk.
+        ListView::Inbox | ListView::All | ListView::AllMail => None,
     }
 }
 

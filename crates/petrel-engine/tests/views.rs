@@ -681,6 +681,79 @@ mod role_trees {
         assert_eq!(due, [binned, filed]);
     }
 
+    /// All Mail is every place mail sits except the bins, the way Gmail's is.
+    /// The export's `All` keeps the bins, since "everything" has to mean it.
+    #[test]
+    fn all_mail_is_everywhere_but_the_bins() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("t.db")).unwrap();
+        let blobs = BlobStore::open(&dir.path().join("blobs")).unwrap();
+        let account = store.ensure_test_account().unwrap();
+        store
+            .sync_folders(
+                account,
+                &[
+                    ("INBOX".into(), Some("inbox".into())),
+                    ("Sent".into(), Some("sent".into())),
+                    ("Archive".into(), Some("archive".into())),
+                    ("Archive/2023".into(), None),
+                    ("Junk".into(), Some("spam".into())),
+                    ("Trash".into(), Some("trash".into())),
+                    ("Trash/Old job".into(), None),
+                ],
+            )
+            .unwrap();
+        let mut uid = 0;
+        for (path, subject) in [
+            ("INBOX", "arrived"),
+            ("Sent", "written"),
+            ("Archive", "archived"),
+            ("Archive/2023", "filed"),
+            ("Junk", "junk"),
+            ("Trash", "binned"),
+            ("Trash/Old job", "binned with its folder"),
+        ] {
+            uid += 1;
+            let folder = store.ensure_named_folder(account, path).unwrap();
+            store
+                .ingest_raw(
+                    &blobs,
+                    account,
+                    Some(folder),
+                    Some(uid),
+                    &raw(&format!("{uid}@x"), subject),
+                )
+                .unwrap();
+        }
+
+        let all_mail = ListView::parse("all-mail");
+        assert_eq!(all_mail, ListView::AllMail);
+        assert_eq!(
+            super::subjects(&store, &all_mail),
+            ["archived", "arrived", "filed", "written"]
+        );
+        assert_eq!(store.count_view(&all_mail, true).unwrap(), 4);
+        assert_eq!(
+            super::subjects(&store, &ListView::All).len(),
+            7,
+            "an export of everything keeps the bins"
+        );
+        // Its unread are already counted where they sit, so it has no number
+        // unless somebody asks for one.
+        let counts: std::collections::HashMap<String, i64> = store
+            .view_counts(&super::as_shipped())
+            .unwrap()
+            .into_iter()
+            .collect();
+        assert!(!counts.contains_key("all-mail"), "{counts:?}");
+        let asked: std::collections::HashMap<String, i64> = store
+            .view_counts(&super::all_at(petrel_engine::store::CountMode::Total))
+            .unwrap()
+            .into_iter()
+            .collect();
+        assert_eq!(asked.get("all-mail"), Some(&4));
+    }
+
     /// A bin's own name is not a pattern. LIKE read `_` as any character and
     /// ignored case, so `DeletedXItems` counted as inside `Deleted_Items`.
     #[test]

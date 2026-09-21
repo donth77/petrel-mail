@@ -1054,6 +1054,8 @@ export function App() {
       : view === 'starred' ? t('empty-starred-body', { key: 'S' })
       : view === 'sent' ? t('empty-sent-body')
       : view === 'drafts' ? t('empty-drafts-body')
+      // Nothing is ever moved to All Mail, so the generic line is wrong here.
+      : view === 'all-mail' ? t('empty-all-mail-body')
       : t('empty-view-body');
     return { title: t('empty-view-title', { view: viewName }), body };
   }, [query, view, viewName, status?.count, locale]);

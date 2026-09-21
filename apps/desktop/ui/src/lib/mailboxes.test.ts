@@ -31,6 +31,10 @@ describe('what a mailbox counts by default', () => {
   it('counts nothing in Sent', () => {
     expect(defaultCount('sent')).toBe('off');
   });
+
+  it('counts nothing in All Mail, whose unread are counted where they sit', () => {
+    expect(defaultCount('all-mail')).toBe('off');
+  });
 });
 
 describe('reading a stored arrangement', () => {
@@ -53,11 +57,33 @@ describe('reading a stored arrangement', () => {
     expect(a.order.slice(0, 2)).toEqual(['trash', 'inbox']);
   });
 
-  it('appends a mailbox the stored order never mentioned, rather than raising it', () => {
-    // The rule folders already follow: arranged rows first, then the rest.
+  it('never raises a mailbox the stored order did not mention above the rows placed', () => {
     const a = parseArrangement('{"order":["trash","inbox"]}');
     expect(a.order).toHaveLength(MAILBOX_KEYS.length);
-    expect(a.order.indexOf('spam')).toBeGreaterThan(1);
+    expect(a.order.slice(0, 2)).toEqual(['trash', 'inbox']);
+  });
+
+  it('puts a new mailbox under the one it ships beneath', () => {
+    // The arrangement this sidebar had saved before All Mail existed. Appended,
+    // All Mail landed under Trash.
+    const before =
+      '{"order":["inbox","starred","snoozed","sent","drafts","outbox","archive","spam","trash"],' +
+      '"hidden":[],"counts":{"spam":"off"}}';
+    const a = parseArrangement(before);
+    expect(a.order.slice(-4)).toEqual(['archive', 'all-mail', 'spam', 'trash']);
+    expect(a.counts).toEqual({ spam: 'off' });
+  });
+
+  it('follows the mailbox it ships beneath to wherever that was moved', () => {
+    const a = parseArrangement('{"order":["archive","inbox","spam","trash"]}');
+    expect(a.order.slice(0, 2)).toEqual(['archive', 'all-mail']);
+  });
+
+  it('goes at the end when nothing it ships beneath is in the list', () => {
+    // Inbox ships first, so nothing is above it to follow.
+    const a = parseArrangement('{"order":["trash"]}');
+    expect(a.order[0]).toBe('trash');
+    expect(a.order[1]).toBe('inbox');
   });
 
   it('drops a key it does not recognise', () => {

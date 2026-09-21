@@ -2,6 +2,7 @@ import {
   Archive,
   Clock,
   Inbox,
+  Mails,
   PencilLine,
   Send,
   ShieldAlert,
@@ -39,6 +40,7 @@ export const MAILBOX_KEYS = [
   'drafts',
   'outbox',
   'archive',
+  'all-mail',
   'spam',
   'trash',
 ] as const;
@@ -61,6 +63,7 @@ export const MAILBOX_LOOK: Record<MailboxKey, { label: StringId; glyph: LucideIc
   drafts: { label: 'mailbox-drafts', glyph: PencilLine },
   outbox: { label: 'mailbox-outbox', glyph: Upload },
   archive: { label: 'mailbox-archive', glyph: Archive },
+  'all-mail': { label: 'mailbox-all-mail', glyph: Mails },
   spam: { label: 'mailbox-spam', glyph: ShieldAlert },
   trash: { label: 'mailbox-trash', glyph: Trash2 },
 };
@@ -72,11 +75,12 @@ export const ESSENTIAL: MailboxKey = 'inbox';
  * What a row counts when nobody has said otherwise. Mirrors the engine's
  * `default_count_mode`, and is the same one rule: a list you built by hand
  * counts everything on it, a place mail lands by itself counts what you have
- * not read, and nothing waits in Sent.
+ * not read, and nothing waits in Sent. All Mail's unread are already counted
+ * where they sit, so it has no number either.
  */
 export function defaultCount(key: string): CountMode {
   if (key === 'drafts' || key === 'outbox' || key === 'starred' || key === 'snoozed') return 'total';
-  if (key === 'sent') return 'off';
+  if (key === 'sent' || key === 'all-mail') return 'off';
   return 'unread';
 }
 
@@ -105,10 +109,12 @@ export function shipped(): Arrangement {
  * throwing: this is a sidebar preference, and a bad string in the settings
  * table must not be the reason somebody's mailboxes stop drawing.
  *
- * A key the list does not mention is appended in shipping order rather than
- * put at the front — the same rule folders already follow, so a mailbox added
- * in a later version turns up below the ones somebody arranged rather than
- * above them.
+ * A key the list does not mention goes in beneath the mailbox it ships under,
+ * wherever that one has been moved to, so All Mail turns up under Archive and
+ * above Spam for somebody who arranged the sidebar before it existed. Appending
+ * it put it under Trash instead, a place nobody chose. With nothing it ships
+ * under still in the list, it goes at the end rather than the front, so a
+ * mailbox added in a later version never lands above the rows somebody placed.
  */
 export function parseArrangement(raw: string): Arrangement {
   const base = shipped();
@@ -123,7 +129,13 @@ export function parseArrangement(raw: string): Arrangement {
   const from = read as Record<string, unknown>;
 
   const named = Array.isArray(from.order) ? from.order.filter(isKey) : [];
-  const order = [...new Set(named), ...MAILBOX_KEYS.filter((k) => !named.includes(k))];
+  const order: MailboxKey[] = [...new Set(named)];
+  // Shipping order, so a run of missing keys lands one under the other.
+  MAILBOX_KEYS.forEach((key, i) => {
+    if (order.includes(key)) return;
+    const above = MAILBOX_KEYS.slice(0, i).reverse().find((k) => order.includes(k));
+    order.splice(above === undefined ? order.length : order.indexOf(above) + 1, 0, key);
+  });
 
   const hidden = (Array.isArray(from.hidden) ? from.hidden.filter(isKey) : []).filter(
     (k) => k !== ESSENTIAL,

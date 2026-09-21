@@ -521,6 +521,10 @@
           return rows.filter(function (r) { return r.filed === fid; });
         }
         if (view === 'outbox') return [];
+        // Everywhere but the bins, as the engine's All Mail is.
+        if (view === 'all-mail') {
+          return rows.filter(function (r) { return r.filed !== 'trash' && r.filed !== 'spam'; });
+        }
         if (view.indexOf('tag:') === 0) {
           var name = view.slice(4);
           return rows.filter(function (r) {
@@ -570,7 +574,7 @@
         if (key === 'drafts' || key === 'outbox' || key === 'starred' || key === 'snoozed') {
           return 'total';
         }
-        return key === 'sent' ? 'off' : 'unread';
+        return key === 'sent' || key === 'all-mail' ? 'off' : 'unread';
       };
       var modeOf = function (key) { return modes[key] || byDefault(key); };
       var now = Date.now();
@@ -591,6 +595,7 @@
       push('spam', 2, 2);
       push('trash', 3, 0);
       push('archive', 12, 4);
+      push('all-mail', rows.length, rows.filter(function (r) { return r.unread; }).length);
       // Folders answer under their own key. Emitted so a folder row can be
       // seen carrying both a number and a ⋮ — the pair that has to share the
       // row's right-hand corner.

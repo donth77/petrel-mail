@@ -78,7 +78,14 @@ function activatable(target: EventTarget | null): boolean {
   );
 }
 
-const GOTO: Record<string, string> = { i: 'inbox', s: 'starred', t: 'sent', d: 'drafts' };
+const GOTO: Record<string, string> = {
+  i: 'inbox',
+  s: 'starred',
+  t: 'sent',
+  d: 'drafts',
+  // Gmail's own chord for All Mail.
+  a: 'all-mail',
+};
 
 /**
  * One listener for every global shortcut, so bindings cannot drift apart across

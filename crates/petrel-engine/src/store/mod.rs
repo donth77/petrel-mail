@@ -923,6 +923,12 @@ pub enum ListView {
     /// promise, and the exported folder header says what each message is, so
     /// whoever reads the file can leave out whatever they like.
     All,
+    /// Every conversation that has not been thrown away: the inbox, Sent, the
+    /// Archive and every folder, but not Trash, Spam or what is filed under
+    /// the Trash. Gmail's All Mail, and the one list of everything now that
+    /// Archive lists only its own folder. Separate from `All` because an
+    /// export of everything has to keep the bins.
+    AllMail,
 }
 
 /// What the numbers beside the rail's mailboxes count.
@@ -987,11 +993,12 @@ impl Default for Sort {
 ///
 /// One list, because the sidebar section that reorders and hides them, the
 /// counts query, and the settings that store somebody's arrangement all have
-/// to agree on what a mailbox *is*. A tenth key, `folders`, covers every
+/// to agree on what a mailbox *is*. One more key, `folders`, covers every
 /// folder somebody made; it has no row of its own here because it is not a
 /// mailbox.
-pub const MAILBOX_KEYS: [&str; 9] = [
-    "inbox", "starred", "snoozed", "sent", "drafts", "outbox", "archive", "spam", "trash",
+pub const MAILBOX_KEYS: [&str; 10] = [
+    "inbox", "starred", "snoozed", "sent", "drafts", "outbox", "archive", "all-mail", "spam",
+    "trash",
 ];
 
 /// The mailbox nobody may hide. Everything else is somebody's business.
@@ -1002,11 +1009,13 @@ impl Store {
     ///
     /// The rule in one function: a list you built by hand counts everything on
     /// it, a place mail lands by itself counts what you have not read, and
-    /// Sent counts nothing because nothing waits there.
+    /// Sent counts nothing because nothing waits there. All Mail counts
+    /// nothing either: its unread are the inbox's and every folder's, already
+    /// counted where they sit, and its total only ever grows.
     pub fn default_count_mode(key: &str) -> CountMode {
         match key {
             "drafts" | "outbox" | "starred" | "snoozed" => CountMode::Total,
-            "sent" => CountMode::Off,
+            "sent" | "all-mail" => CountMode::Off,
             _ => CountMode::Unread,
         }
     }
@@ -1068,6 +1077,7 @@ impl ListView {
             "snoozed" => ListView::Snoozed,
             "outbox" => ListView::Outbox,
             "all" => ListView::All,
+            "all-mail" => ListView::AllMail,
             other if other.starts_with("folder:") => {
                 match other["folder:".len()..].parse::<i64>() {
                     Ok(id) => ListView::UserFolder(id),
@@ -1154,6 +1164,8 @@ impl ListView {
             // that does not ask where a message sits. The account filter the
             // surrounding query applies is the whole of the selection.
             ListView::All => "1=1".to_string(),
+            // Everywhere but the bins, the same check search makes.
+            ListView::AllMail => not_binned(alias),
             // Excluding the bins, exactly as Starred does. A tag is a thing
             // you meant; the bin is where things go to stop mattering, and a
             // conversation in it is not still Urgent. Without this, trashing

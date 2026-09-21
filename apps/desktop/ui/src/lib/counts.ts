@@ -14,6 +14,7 @@ const COUNTED = new Set([
   'starred',
   'snoozed',
   'archive',
+  'all-mail',
   'spam',
   'trash',
   'drafts',

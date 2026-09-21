@@ -1,6 +1,6 @@
 import type { LucideIcon } from 'lucide-react';
 import {
-  Archive, BellOff, Bookmark, Clock, Inbox, PencilLine, Reply, Search, Settings,
+  Archive, BellOff, Bookmark, Clock, Inbox, Mails, PencilLine, Reply, Search, Settings,
   Star, Tag, Trash2, CircleHelp, Send, FolderInput,
 } from 'lucide-react';
 import type { ActionKind } from './api';
@@ -64,6 +64,7 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'go-sent', scope: 'goto', label: 'mailbox-sent', hint: 'hint-folder', icon: Send, keys: ['G', 'T'], run: () => ctx.onView('sent') },
     { id: 'go-drafts', scope: 'goto', label: 'mailbox-drafts', hint: 'hint-folder', icon: PencilLine, keys: ['G', 'D'], run: () => ctx.onView('drafts') },
     { id: 'go-archive', scope: 'goto', label: 'mailbox-archive', hint: 'hint-folder', icon: Archive, run: () => ctx.onView('archive') },
+    { id: 'go-all-mail', scope: 'goto', label: 'mailbox-all-mail', hint: 'hint-folder', icon: Mails, keys: ['G', 'A'], run: () => ctx.onView('all-mail') },
     { id: 'go-trash', scope: 'goto', label: 'mailbox-trash', hint: 'hint-folder', icon: Trash2, run: () => ctx.onView('trash') },
   ];
 

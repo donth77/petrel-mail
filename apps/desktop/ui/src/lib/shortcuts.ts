@@ -40,7 +40,7 @@ export const BINDINGS: Binding[] = [
     chords: [{ key: '[' }, { key: ']' }], available: true },
   { id: 'panes', group: 'move', label: 'sc-panes', display: ['F6'],
     chords: [{ key: 'F6' }], available: true },
-  { id: 'goto', group: 'move', label: 'sc-goto', display: ['G', 'I S T D'],
+  { id: 'goto', group: 'move', label: 'sc-goto', display: ['G', 'I S T D A'],
     chords: [{ key: 'g', then: 'i' }], available: true },
   { id: 'account', group: 'move', label: 'sc-account', display: 'account',
     chords: [{ key: '1', meta: true }], available: true },
