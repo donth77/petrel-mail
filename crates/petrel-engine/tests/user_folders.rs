@@ -402,12 +402,22 @@ fn a_plain_archive_folder_is_the_archive() {
     let archive = folders.iter().find(|f| f.path == "Archive").unwrap();
     assert_eq!(archive.role, "archive", "the plain folder wears the role");
 
-    // And the view built on that role finds what is filed under it.
+    // And the view built on that role finds what is in it. What is filed
+    // under it is listed by its own folder, as every client does.
     let nested = folders
         .iter()
         .find(|f| f.path == "Archive/2026")
         .unwrap()
         .id;
+    store
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(archive.id),
+            Some(2),
+            &fixture("a@x", "archived"),
+        )
+        .unwrap();
     store
         .ingest_raw(
             &blobs,
@@ -422,7 +432,14 @@ fn a_plain_archive_folder_is_the_archive() {
             .conversations_in(&ListView::Folder("archive".into()))
             .unwrap(),
         1,
-        "the archive mailbox lists what is filed beneath it"
+        "the archive mailbox lists what is in it"
+    );
+    assert_eq!(
+        store
+            .conversations_in(&ListView::UserFolder(nested))
+            .unwrap(),
+        1,
+        "and the folder under it lists its own"
     );
 
     // A later survey still reporting no flag must not take the role away.

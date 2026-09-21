@@ -531,53 +531,200 @@ mod by_id {
     }
 }
 
-/// Archived mail files *under* Archive; the view must know that.
-mod archive_tree {
+/// Archive and Trash are folders with trees under them. Each row lists its own
+/// folder, the way clients and webmail do, and what is filed under the Trash is
+/// still thrown away.
+mod role_trees {
     use petrel_engine::blob::BlobStore;
-    use petrel_engine::store::{ListView, Store};
+    use petrel_engine::store::{ListView, Store, flags};
+
+    fn raw(mid: &str, subject: &str) -> Vec<u8> {
+        format!(
+            "From: a@example.com\r\nTo: b@example.com\r\nSubject: {subject}\r\n\
+             Message-ID: <{mid}>\r\nMIME-Version: 1.0\r\nContent-Type: text/plain\r\n\r\n\
+             quarterly figures\r\n"
+        )
+        .into_bytes()
+    }
 
     #[test]
-    fn mail_in_archive_subfolders_is_archived_mail() {
+    fn archive_lists_its_own_folder_and_not_the_folders_under_it() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(&dir.path().join("t.db")).unwrap();
         let blobs = BlobStore::open(&dir.path().join("blobs")).unwrap();
         let account = store.ensure_test_account().unwrap();
-        store.ensure_folder(account, "archive", "Archive").unwrap();
+        let archive = store.ensure_folder(account, "archive", "Archive").unwrap();
         let sub = store
             .ensure_named_folder(account, "Archive/Yearly/2023")
             .unwrap();
-        let unrelated = store.ensure_named_folder(account, "Archivedream").unwrap();
-        let raw = |mid: &str| {
-            format!(
-                "From: a@example.com\r\nTo: b@example.com\r\nSubject: s\r\n\
-                 Message-ID: <{mid}>\r\nMIME-Version: 1.0\r\nContent-Type: text/plain\r\n\r\nx\r\n"
-            )
-            .into_bytes()
-        };
+        let near = store.ensure_named_folder(account, "Archivedream").unwrap();
+        for (folder, mid, subject) in [
+            (archive, "own@x", "archived"),
+            (sub, "filed@x", "filed"),
+            (near, "near@x", "near-miss"),
+        ] {
+            store
+                .ingest_raw(&blobs, account, Some(folder), Some(1), &raw(mid, subject))
+                .unwrap();
+        }
+
+        // It used to take the whole tree, so a message filed in Archive/2023
+        // was listed twice: under its folder and again under Archive.
+        let archived = ListView::parse("archive");
+        assert_eq!(super::subjects(&store, &archived), ["archived"]);
+        assert_eq!(
+            store.count_view(&archived, true).unwrap(),
+            1,
+            "the count is the list's"
+        );
+        assert_eq!(
+            super::subjects(&store, &ListView::UserFolder(sub)),
+            ["filed"],
+            "a subfolder lists what is filed in it"
+        );
+    }
+
+    /// The Namecheap account's layout: the server marks `Deleted Messages` as
+    /// the trash, `Trash` is adopted by name, and webmail puts deleted folders
+    /// inside `Trash`. `Deleted Messages` comes first, which is what hid the
+    /// folders under `Trash` from a lookup that read one bin.
+    #[test]
+    fn mail_filed_under_the_trash_is_thrown_away() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("t.db")).unwrap();
+        let blobs = BlobStore::open(&dir.path().join("blobs")).unwrap();
+        let account = store.ensure_test_account().unwrap();
         store
-            .ingest_raw(&blobs, account, Some(sub), Some(1), &raw("in-tree@x"))
+            .sync_folders(
+                account,
+                &[
+                    ("INBOX".into(), Some("inbox".into())),
+                    ("Deleted Messages".into(), Some("trash".into())),
+                    ("Trash".into(), Some("trash".into())),
+                    ("Trash/Old job".into(), None),
+                    // Starts with the bin's name, but is not inside it.
+                    ("Trashy".into(), None),
+                ],
+            )
             .unwrap();
-        // A folder whose name merely *starts* with the archive path must not
-        // be swept in — the delimiter is part of the meaning.
+        let trash = store.ensure_named_folder(account, "Trash").unwrap();
+        let old_job = store.ensure_named_folder(account, "Trash/Old job").unwrap();
+        let trashy = store.ensure_named_folder(account, "Trashy").unwrap();
+        let ingest = |store: &mut Store, folder: i64, uid: u32, mid: &str, subject: &str| {
+            store
+                .ingest_raw(&blobs, account, Some(folder), Some(uid), &raw(mid, subject))
+                .unwrap()
+                .message_id
+        };
+        let binned = ingest(&mut store, trash, 1, "binned@x", "binned");
+        let filed = ingest(&mut store, old_job, 2, "filed@x", "filed in the bin");
+        let live = ingest(&mut store, trashy, 3, "live@x", "live");
+
+        // Starred and tagged, so every list that hides the bin gets a chance
+        // to show it.
+        let tag = store.ensure_tag(account, "Urgent", None).unwrap();
+        for id in [filed, live] {
+            store.set_flags(id, flags::FLAGGED, 0).unwrap();
+            store.tag_message(id, tag).unwrap();
+        }
+
+        assert_eq!(super::subjects(&store, &ListView::Starred), ["live"]);
+        assert_eq!(
+            super::subjects(&store, &ListView::Tag("Urgent".into())),
+            ["live"]
+        );
+        let urgent = store
+            .tags_for_account(account)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.name == "Urgent")
+            .unwrap();
+        assert_eq!(urgent.thread_count, 1, "the tag's count is its list's");
+        // The search the app runs, which is the one that knows about bins.
+        let found: Vec<String> = store
+            .search_threads("quarterly", 10)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.subject)
+            .collect();
+        assert_eq!(found, ["live"], "search leaves the bin out, subfolders too");
+
+        // The rows still show what each folder holds.
+        assert_eq!(
+            super::subjects(&store, &ListView::parse("trash")),
+            ["binned"]
+        );
+        assert_eq!(
+            super::subjects(&store, &ListView::UserFolder(old_job)),
+            ["filed in the bin"]
+        );
+
+        // Empty Trash takes the subfolder with it, and the expiry clock
+        // watches it; neither touches the look-alike.
+        let mut emptied: Vec<i64> = store
+            .trash_contents(account)
+            .unwrap()
+            .into_iter()
+            .map(|(_, _, id)| id)
+            .collect();
+        emptied.sort();
+        assert_eq!(emptied, [binned, filed]);
+        let now = 1_800_000_000_000i64;
+        store.refresh_trash_clock(account, now).unwrap();
+        let mut due: Vec<i64> = store
+            .trash_expired(account, 0, now)
+            .unwrap()
+            .into_iter()
+            .map(|(_, _, id)| id)
+            .collect();
+        due.sort();
+        assert_eq!(due, [binned, filed]);
+    }
+
+    /// A bin's own name is not a pattern. LIKE read `_` as any character and
+    /// ignored case, so `DeletedXItems` counted as inside `Deleted_Items`.
+    #[test]
+    fn a_bins_name_is_matched_exactly() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("t.db")).unwrap();
+        let blobs = BlobStore::open(&dir.path().join("blobs")).unwrap();
+        let account = store.ensure_test_account().unwrap();
+        store
+            .sync_folders(
+                account,
+                &[
+                    ("Deleted_Items".into(), Some("trash".into())),
+                    ("Deleted_Items/Kept".into(), None),
+                    ("DeletedXItems/Live".into(), None),
+                ],
+            )
+            .unwrap();
+        let inside = store
+            .ensure_named_folder(account, "Deleted_Items/Kept")
+            .unwrap();
+        let lookalike = store
+            .ensure_named_folder(account, "DeletedXItems/Live")
+            .unwrap();
+        let inside_id = store
+            .ingest_raw(&blobs, account, Some(inside), Some(1), &raw("in@x", "in"))
+            .unwrap()
+            .message_id;
         store
             .ingest_raw(
                 &blobs,
                 account,
-                Some(unrelated),
+                Some(lookalike),
                 Some(1),
-                &raw("near-miss@x"),
+                &raw("out@x", "out"),
             )
             .unwrap();
-
-        let rows = store
-            .list_threads(
-                &ListView::parse("archive"),
-                0,
-                50,
-                petrel_engine::store::Sort::default(),
-            )
-            .unwrap();
-        assert_eq!(rows.len(), 1, "{rows:?}");
+        let emptied: Vec<i64> = store
+            .trash_contents(account)
+            .unwrap()
+            .into_iter()
+            .map(|(_, _, id)| id)
+            .collect();
+        assert_eq!(emptied, [inside_id]);
     }
 }
 

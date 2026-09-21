@@ -1076,15 +1076,13 @@ impl Store {
     /// clock that only started for one of those routes would delete some
     /// mail early and keep the rest forever.
     pub fn refresh_trash_clock(&self, account_id: i64, now_ms: i64) -> Result<usize> {
-        let in_trash = "EXISTS (SELECT 1 FROM placements p
-                                JOIN folders f ON f.id = p.folder_id
-                                WHERE p.message_id = messages.id
-                                  AND f.account_id = ?1
-                                  AND (f.role = 'trash'
-                                       OR f.path LIKE (SELECT path || '/%' FROM folders
-                                                        WHERE account_id = ?1 AND role = 'trash')
-                                       OR f.path LIKE (SELECT path || '.%' FROM folders
-                                                        WHERE account_id = ?1 AND role = 'trash')))";
+        let in_trash = format!(
+            "EXISTS (SELECT 1 FROM placements p
+                     JOIN folders f ON f.id = p.folder_id
+                     WHERE p.message_id = messages.id
+                       AND f.account_id = ?1
+                       AND (f.role = 'trash' OR f.id IN ({TRASH_SUBFOLDER_IDS})))"
+        );
         let started = self.conn.execute(
             &format!(
                 "UPDATE messages SET trashed_at_ms = ?2
@@ -1139,18 +1137,14 @@ impl Store {
     /// puts it there, and a bin that quietly kept the mail inside its own
     /// subfolders would not be empty in any sense the word carries.
     pub fn trash_contents(&self, account_id: i64) -> Result<Vec<(String, u32, i64)>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare(&format!(
             "SELECT f.path, p.uid, p.message_id
              FROM placements p
              JOIN folders f ON f.id = p.folder_id
              WHERE f.account_id = ?1 AND p.uid IS NOT NULL
-               AND (f.role = 'trash'
-                    OR f.path LIKE (SELECT path || '/%' FROM folders
-                                     WHERE account_id = ?1 AND role = 'trash')
-                    OR f.path LIKE (SELECT path || '.%' FROM folders
-                                     WHERE account_id = ?1 AND role = 'trash'))
-             ORDER BY f.path, p.uid",
-        )?;
+               AND (f.role = 'trash' OR f.id IN ({TRASH_SUBFOLDER_IDS}))
+             ORDER BY f.path, p.uid"
+        ))?;
         let rows = stmt.query_map(params![account_id], |r| {
             Ok((r.get(0)?, r.get::<_, i64>(1)? as u32, r.get(2)?))
         })?;

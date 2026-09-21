@@ -314,6 +314,10 @@ fn membership_walk(ids_sql: &str, extra: &str) -> PageWalk {
 /// DESC)` — inbox, archive, and "all".
 fn page_walk(view: &ListView, account: i64) -> Option<PageWalk> {
     match view {
+        // Dense on Gmail, where it is All Mail. Sparse on an account whose
+        // Archive folder holds one conversation and files the rest under it,
+        // but walking all 25,905 of that account's messages to the end
+        // measured 10ms, so one plan serves both.
         ListView::Folder(role) if role == "archive" => None,
         ListView::Folder(role) if role == "drafts" => Some(membership_walk(
             &role_folder_ids_sql(account),
@@ -1058,26 +1062,17 @@ impl Store {
                 total,
                 Some(role.as_str()),
             )?,
+            // The Archive folder's own mail, as the list shows it. Its
+            // subfolders count on their own rows.
             ListView::Folder(role) if role == "archive" => self.count_from_message_ids(
                 account,
-                &format!(
-                    "SELECT p.message_id
-                       FROM folders f
-                       JOIN placements p ON p.folder_id = f.id
-                      WHERE f.account_id = {account}
-                        AND (f.role = 'archive'
-                             OR EXISTS (SELECT 1 FROM folders af
-                                        WHERE af.role = 'archive'
-                                          AND af.account_id = f.account_id
-                                          AND (f.path LIKE af.path || '/%'
-                                               OR f.path LIKE af.path || '.%')))"
-                ),
+                &role_folder_ids_sql(account),
                 "AND NOT EXISTS (SELECT 1 FROM placements p2
                                  JOIN folders f2 ON f2.id = p2.folder_id
                                  WHERE p2.message_id = m.id AND f2.role = 'inbox')",
                 "coalesce(m.thread_id, -m.id)",
                 total,
-                None,
+                Some(role.as_str()),
             )?,
             ListView::Folder(role) => self.count_from_message_ids(
                 account,

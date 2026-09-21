@@ -16,6 +16,7 @@ import { acceptsDrop } from '../lib/dnd';
 import type { InsertPoint } from '../lib/useDrag';
 import { buildFolderTree, nestableRolePaths, type FolderNode, nestableRolePath, underAnchor } from '../lib/folders';
 import { MAILBOX_KEYS, MAILBOX_LOOK } from '../lib/mailboxes';
+import { rowCount } from '../lib/rail-counts';
 import { AccountMenu } from './AccountMenu';
 import { RailFlyout } from './RailFlyout';
 import { Tip } from './Tip';
@@ -345,6 +346,8 @@ export function Rail({
     // when there is text to indent.
     const indent = dense ? undefined : ({ paddingLeft: 10 + depth * 14 } as const);
     const f = n.folder;
+    // Folded, the row speaks for the rows it hides.
+    const shown = rowCount(f ? (counts[`folder:${f.id}`] ?? 0) : 0, n.children, open, counts);
     const inner = f ? (
       <button
           type="button"
@@ -399,9 +402,7 @@ export function Rail({
               onTrashAll={() => onTrashFolderContents(f)}
             />
           )}
-          {!dense && counts[`folder:${f.id}`] > 0 && (
-            <span className="count">{counts[`folder:${f.id}`]}</span>
-          )}
+          {!dense && shown > 0 && <span className="count">{shown}</span>}
         </button>
     ) : (
       <button
@@ -413,6 +414,7 @@ export function Rail({
         {chevron}
         <Icon icon={FolderClosed} />
         <span className="rail-text">{n.label}</span>
+        {!dense && shown > 0 && <span className="count">{shown}</span>}
       </button>
     );
     // A collapsed row with children hands them to a flyout instead of a
@@ -458,6 +460,14 @@ export function Rail({
         .filter((m): m is (typeof MAILBOXES)[number] => m !== undefined)
         .map((m) => {
         const subtree = m.key === 'archive' ? archiveTree : m.key === 'trash' ? trashTree : [];
+        // Archive and Trash list their own folder. Folded, the number also
+        // covers the folders filed under them, which are then out of sight.
+        const shown = rowCount(
+          counts[m.key] ?? 0,
+          subtree,
+          m.key === 'archive' ? archiveOpen : m.key === 'trash' ? trashOpen : true,
+          counts,
+        );
         const anchor = (
           <button
             type="button"
@@ -584,9 +594,7 @@ export function Rail({
                 onEmpty={onEmptyTrash}
               />
             )}
-            {!collapsed && counts[m.key] > 0 && (
-              <span className="count">{counts[m.key]}</span>
-            )}
+            {!collapsed && shown > 0 && <span className="count">{shown}</span>}
           </button>
         );
         // Archive and Trash wear their trees. Collapsed, that tree is in a

@@ -885,14 +885,13 @@ fn in_inbox(alias: &str) -> String {
     // and archiving, binning or moving away takes it — on both kinds of
     // provider. The bin check stays as a belt: mail a sweep marks junk
     // must drop out even if a stale inbox placement lingers.
+    // The same check the inbox count makes, so the two cannot disagree.
     format!(
         "EXISTS (SELECT 1 FROM placements p
                  JOIN folders f ON f.id = p.folder_id
                  WHERE p.message_id = {alias}.id AND f.role = 'inbox')
-         AND NOT EXISTS (SELECT 1 FROM placements p
-                         JOIN folders f ON f.id = p.folder_id
-                         WHERE p.message_id = {alias}.id
-                           AND f.role IN ('trash','spam'))"
+         AND {binned}",
+        binned = not_binned(alias),
     )
 }
 
@@ -1023,18 +1022,39 @@ impl CountMode {
     }
 }
 
+/// The folders filed under a bin, by id: `Trash/Old`, `Trash.2024`.
+///
+/// Servers put a deleted folder there whole — Namecheap's webmail does, and
+/// an account had thirteen of them — so what sits inside is thrown-away mail,
+/// even though only the bin itself wears the role. Every trash-role folder
+/// counts, not just the first: that account has both `Trash` and `Deleted
+/// Messages`, and a scalar `(SELECT path … WHERE role = 'trash')` read
+/// whichever the table happened to return first.
+///
+/// Compared with `substr` rather than LIKE, which ignores ASCII case and
+/// reads `_` and `%` in a folder's own name as wildcards. Both separators,
+/// matching `underAnchor` in the rail, which draws these under the Trash row.
+/// Uncorrelated, so SQLite builds the list once per statement.
+pub(crate) const TRASH_SUBFOLDER_IDS: &str = "SELECT sub.id FROM folders sub
+      JOIN folders bin ON bin.account_id = sub.account_id AND bin.role = 'trash'
+     WHERE substr(sub.path, 1, length(bin.path) + 1) IN (bin.path || '/', bin.path || '.')";
+
 /// Mail that has been thrown away or judged to be junk.
 ///
 /// Every view except Trash and Spam themselves leaves these out, and so does
 /// search. Written once because it was written three times: the fourth place
 /// that needed it — search — simply did not have it, and quietly returned junk
 /// among the results.
+///
+/// Folders under the Trash count as the Trash. Their mail is what Empty Trash
+/// expunges, and search was still returning it as live.
 fn not_binned(alias: &str) -> String {
     format!(
         "NOT EXISTS (SELECT 1 FROM placements p
                      JOIN folders f ON f.id = p.folder_id
                      WHERE p.message_id = {alias}.id
-                       AND f.role IN ('trash','spam'))"
+                       AND (f.role IN ('trash','spam')
+                            OR f.id IN ({TRASH_SUBFOLDER_IDS})))"
     )
 }
 
@@ -1103,21 +1123,17 @@ impl ListView {
             // synced, every inbox message would have that placement too and
             // Archive would list the entire mailbox. Not-in-the-inbox is what
             // the word actually means, on both kinds of provider.
+            //
+            // The folder itself, not the folders under it. It did take the
+            // whole tree once, so Archive listed 8,191 conversations while
+            // the Archive folder held one, and a message filed in Archive/Jobs
+            // showed in both lists. Clients and webmail show a folder's own
+            // mail; the subfolders have rows of their own under Archive, and
+            // a folded Archive row counts what they hold.
             ListView::Folder(role) if role == "archive" => format!(
                 "EXISTS (SELECT 1 FROM placements p
                          JOIN folders f ON f.id = p.folder_id
-                         WHERE p.message_id = {alias}.id
-                           AND (f.role = ?3
-                                -- A mailbox tree files its history *under*
-                                -- Archive: mail in Archive/2023 is archived
-                                -- mail, and a view that admitted only the
-                                -- bare top folder showed a lifetime of
-                                -- filing as empty.
-                                OR EXISTS (SELECT 1 FROM folders af
-                                           WHERE af.role = 'archive'
-                                             AND af.account_id = f.account_id
-                                             AND (f.path LIKE af.path || '/%'
-                                                  OR f.path LIKE af.path || '.%'))))
+                         WHERE p.message_id = {alias}.id AND f.role = ?3)
                  AND NOT EXISTS (SELECT 1 FROM placements p2
                                  JOIN folders f2 ON f2.id = p2.folder_id
                                  WHERE p2.message_id = {alias}.id AND f2.role = 'inbox')"

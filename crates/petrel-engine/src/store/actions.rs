@@ -1439,7 +1439,7 @@ impl Store {
     }
 
     pub fn tags_for_account(&self, account_id: i64) -> Result<Vec<TagSummary>> {
-        let mut stmt = self.conn.prepare_cached(
+        let mut stmt = self.conn.prepare_cached(&format!(
             "SELECT t.id, t.name, coalesce(t.colour,''),
                     count(DISTINCT coalesce(m.thread_id, -m.id))
              FROM tags t
@@ -1447,14 +1447,13 @@ impl Store {
              LEFT JOIN messages m ON m.id = mt.message_id AND m.deleted_at_ms IS NULL
                   -- The count follows the view: a conversation in the bin is
                   -- not still Urgent, and the rail said 1 over an empty list.
-                  AND NOT EXISTS (SELECT 1 FROM placements p
-                                  JOIN folders f ON f.id = p.folder_id
-                                  WHERE p.message_id = m.id
-                                    AND f.role IN ('trash','spam'))
+                  -- The view's own check, so the two cannot drift apart.
+                  AND {binned}
              WHERE t.account_id = ?1
              GROUP BY t.id
              ORDER BY (t.sort_order IS NULL), t.sort_order, t.name COLLATE NOCASE",
-        )?;
+            binned = not_binned("m"),
+        ))?;
         let rows = stmt.query_map(params![account_id], |row| {
             Ok(TagSummary {
                 id: row.get(0)?,
