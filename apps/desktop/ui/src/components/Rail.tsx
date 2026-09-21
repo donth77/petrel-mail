@@ -14,7 +14,7 @@ import { FolderMenu } from './FolderMenu';
 import { NameDialog } from './NameDialog';
 import { acceptsDrop } from '../lib/dnd';
 import type { InsertPoint } from '../lib/useDrag';
-import { buildFolderTree, type FolderNode, nestableRolePath, underAnchor } from '../lib/folders';
+import { buildFolderTree, nestableRolePaths, type FolderNode, nestableRolePath, underAnchor } from '../lib/folders';
 import { MAILBOX_KEYS, MAILBOX_LOOK } from '../lib/mailboxes';
 import { AccountMenu } from './AccountMenu';
 import { RailFlyout } from './RailFlyout';
@@ -235,16 +235,25 @@ export function Rail({
   const own = folders.filter((x) => !x.role);
   const under = (f: (typeof own)[number], anchor: string | undefined) =>
     underAnchor(f.path, anchor) && f.path !== anchor;
+  // Every folder wearing the trash role, not only the first: an account with
+  // both `Deleted Messages` and `Trash` marked as trash had everything binned
+  // under `Trash/` drawn in Folders, under a "Trash" the tree made up.
+  const trashPaths = nestableRolePaths(folders, 'trash');
+  const inTrash = (path: string) => trashPaths.some((a) => underAnchor(path, a));
   const tree = buildFolderTree(
-    own.filter((f) => !underAnchor(f.path, archivePath) && !underAnchor(f.path, trashPath)),
+    own.filter((f) => !underAnchor(f.path, archivePath) && !inTrash(f.path)),
   );
   const archiveTree = buildFolderTree(
     own.filter((f) => under(f, archivePath)),
     archivePath?.length ?? 0,
   );
-  const trashTree = buildFolderTree(
-    own.filter((f) => under(f, trashPath)),
-    trashPath?.length ?? 0,
+  // One subtree per trash anchor, each with its own prefix taken off, joined
+  // under the one Trash row.
+  const trashTree = trashPaths.flatMap((a) =>
+    buildFolderTree(
+      own.filter((f) => under(f, a)),
+      a.length,
+    ),
   );
   /* Every row with children starts folded, on every launch.
 

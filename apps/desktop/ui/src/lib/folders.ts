@@ -31,6 +31,31 @@ export function nestableRolePath(
   return path;
 }
 
+/**
+ * Every folder a role's subfolders may hang under, not just the first.
+ *
+ * An account can have two folders wearing one role: this Namecheap account
+ * holds both `Deleted Messages` (Dovecot's Apple-convention trash, marked
+ * `\Trash` by the server) and `Trash`. `nestableRolePath` answers with one —
+ * the first in the store's alphabetical order, `Deleted Messages` — and the
+ * folders binned under `Trash/` then counted as belonging nowhere: the rail
+ * put them in Folders beneath a "Trash" parent it invented from their shared
+ * prefix, while the real Trash row showed no children at all.
+ *
+ * A folder under any of these is in that role's place.
+ */
+export function nestableRolePaths(folders: Folder[], role: 'archive' | 'trash'): string[] {
+  const fallback = role === 'archive' ? 'Archive' : 'Trash';
+  const paths = folders
+    .filter((f) => f.role === role)
+    .map((f) => (f.path.startsWith('[Gmail]') ? fallback : f.path));
+  if (paths.length === 0) {
+    const one = nestableRolePath(folders, role);
+    return one === undefined ? [] : [one];
+  }
+  return [...new Set(paths)];
+}
+
 /** Whether a path sits at or under an anchor, on either separator. */
 export function underAnchor(path: string, anchor: string | undefined): boolean {
   return (

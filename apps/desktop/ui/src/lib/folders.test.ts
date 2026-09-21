@@ -12,6 +12,8 @@ import {
   nameIsTaken,
   nestableRolePath,
   splitPath,
+  nestableRolePaths,
+  underAnchor,
 } from './folders';
 import type { Folder } from './api';
 
@@ -343,5 +345,41 @@ describe('where Archive and Trash sit in a picker', () => {
     const rows = filableFolderRows(account);
     expect(rows.find((r) => r.path === 'Archive')?.hasChildren).toBe(true);
     expect(rows.find((r) => r.path === 'Receipts')?.hasChildren).toBe(false);
+  });
+});
+
+/* A real Namecheap account: the server marks `Deleted Messages` as trash and
+   Petrel knows `Trash` as trash too, so two folders wear the role. Everything
+   was binned under `Trash/`, and the rail picked `Deleted Messages` as the one
+   anchor — so the binned folders were drawn in Folders, under a "Trash" parent
+   the tree invented from their prefix, while the real Trash row had none. */
+describe('an account with two folders wearing the trash role', () => {
+  const account = [
+    { id: 1, path: 'INBOX', role: 'inbox' },
+    { id: 2, path: 'Deleted Messages', role: 'trash' },
+    { id: 3, path: 'Trash', role: 'trash' },
+    { id: 4, path: 'Trash/workday+092026(3)', role: '' },
+    { id: 5, path: 'Trash/sub2', role: '' },
+    { id: 6, path: 'Receipts', role: '' },
+  ] as unknown as Parameters<typeof nestableRolePaths>[0];
+
+  it('counts both as the trash', () => {
+    expect(nestableRolePaths(account, 'trash')).toEqual(['Deleted Messages', 'Trash']);
+  });
+
+  it('puts every binned folder under one of them, and none at the top level', () => {
+    const anchors = nestableRolePaths(account, 'trash');
+    const own = account.filter((f) => !f.role);
+    const topLevel = own.filter((f) => !anchors.some((a) => underAnchor(f.path, a)));
+    expect(topLevel.map((f) => f.path)).toEqual(['Receipts']);
+  });
+
+  it('still answers with one anchor for a Gmail account, whose trash is [Gmail]/Trash', () => {
+    const gmail = [
+      { id: 1, path: '[Gmail]/Trash', role: 'trash' },
+      { id: 2, path: 'Trash/sub2', role: '' },
+    ] as unknown as Parameters<typeof nestableRolePaths>[0];
+    expect(nestableRolePaths(gmail, 'trash')).toEqual(['Trash']);
+    expect(underAnchor('Trash/sub2', 'Trash')).toBe(true);
   });
 });
