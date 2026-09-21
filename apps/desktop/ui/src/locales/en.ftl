@@ -675,6 +675,7 @@ folder-delete-body-label = Only the label is removed. The mail keeps its other l
 folder-created = Created “{ $name }”
 folder-deleted = Deleted “{ $name }”
 folder-failed = Folder change failed: { $error }
+folder-server-pending = Couldn’t create “{ $name }” on the server yet: { $error }. It is kept here, and the next sync tries again.
 folder-name-taken = A folder called “{ $name }” is already there.
 folder-bin-refuses = Mail moved to this account’s Trash would not be deleted. Delete “{ $name }” from its menu instead.
 tag-new = New tag

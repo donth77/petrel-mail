@@ -23,6 +23,10 @@ pub(super) fn like_escape(literal: &str) -> String {
     out
 }
 
+/// The `sync_state_json` key on a folder made here that the server has not
+/// confirmed yet. See `folder_awaits_server`.
+const PENDING_CREATE: &str = "pending_create";
+
 /// The rows allowed to stand in no folder at all: a draft, pushed or not,
 /// and post waiting in the outbox. Everything else with no placement is a
 /// message the server has stopped holding. Written against the alias `m`.
@@ -204,6 +208,8 @@ impl Store {
                           WHERE id = ?1",
                         params![id, role, name],
                     )?;
+                    // Listed, so whatever was made here has arrived there.
+                    self.confirm_folder_on_server(id)?;
                 }
                 None => {
                     self.conn.execute(
@@ -286,6 +292,13 @@ impl Store {
                 // imported mail lives in one, and pruning it would delete the
                 // only placements that mail has.
                 .filter(|id| !self.folder_is_local(*id).unwrap_or(false))
+                // Nor one made here that the server has not got yet. Its
+                // absence means "not created there yet", not "deleted there":
+                // the create runs in the background and a survey can land in
+                // the gap, and a create that failed is retried by the next
+                // sync. Pruning either deleted the folder the person had just
+                // made, with no word to say it had gone.
+                .filter(|id| !self.folder_awaits_server(*id).unwrap_or(false))
                 // Nor a folder wearing a role. Those are the app's own
                 // structure rather than the server's listing, and one can
                 // legitimately exist here before the server has been told —
@@ -346,9 +359,13 @@ impl Store {
         // The leaf is the display name; the path keeps the hierarchy the server
         // uses, so "Contracts/2026" shows as 2026 nested under Contracts.
         let name = path.rsplit('/').next().unwrap_or(path);
+        // Born waiting for the server. The create there runs after this
+        // returns, and until something confirms it the folder is protected
+        // from the survey and retried by the sync. See `folder_awaits_server`.
         self.conn.execute(
-            "INSERT INTO folders(account_id, role, name, path) VALUES (?1, NULL, ?2, ?3)",
-            params![account_id, name, path],
+            "INSERT INTO folders(account_id, role, name, path, sync_state_json)
+             VALUES (?1, NULL, ?2, ?3, json_object(?4, json('true')))",
+            params![account_id, name, path, PENDING_CREATE],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
@@ -1245,6 +1262,47 @@ impl Store {
     }
 
     pub fn folder_is_local(&self, folder_id: i64) -> Result<bool> {
+        self.folder_flag(folder_id, "local")
+    }
+
+    /// Whether a folder made here is still waiting for the server to have it.
+    ///
+    /// Set when the user names a new folder, and cleared by the first survey
+    /// that lists it or by a create the server confirmed. Until then the
+    /// server has never heard of it, so renaming or deleting it there would
+    /// ask about a mailbox that does not exist — those stay local — and its
+    /// absence from a survey means "not made yet", not "deleted elsewhere".
+    pub fn folder_awaits_server(&self, folder_id: i64) -> Result<bool> {
+        self.folder_flag(folder_id, PENDING_CREATE)
+    }
+
+    /// The folders made here that the server does not have yet, as
+    /// `(id, path)`, parents before children so each create has somewhere to
+    /// go. Local folders are not in it: they are never meant to leave.
+    pub fn folders_awaiting_server(&self, account_id: i64) -> Result<Vec<(i64, String)>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, path FROM folders
+              WHERE account_id = ?1
+                AND json_valid(sync_state_json)
+                AND json_extract(sync_state_json, '$.pending_create') IN (1, 'true')
+                AND coalesce(json_extract(sync_state_json, '$.local'), 0) NOT IN (1, 'true')
+              ORDER BY length(path), path",
+        )?;
+        let rows = stmt.query_map(params![account_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// The server confirmed it has this folder: it is an ordinary one now.
+    pub fn confirm_folder_on_server(&self, folder_id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE folders SET sync_state_json = json_remove(sync_state_json, '$.pending_create')
+              WHERE id = ?1 AND json_valid(sync_state_json)",
+            params![folder_id],
+        )?;
+        Ok(())
+    }
+
+    fn folder_flag(&self, folder_id: i64, key: &str) -> Result<bool> {
         let json: Option<String> = self
             .conn
             .query_row(
@@ -1255,7 +1313,7 @@ impl Store {
             .optional()?;
         Ok(json
             .and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok())
-            .and_then(|v| v.get("local").and_then(|m| m.as_bool()))
+            .and_then(|v| v.get(key).and_then(|m| m.as_bool()))
             .unwrap_or(false))
     }
 

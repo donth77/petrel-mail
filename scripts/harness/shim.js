@@ -1087,6 +1087,14 @@
     },
     unsubscribe_one_click: function () { return null; },
     delete_folder: function () { return null; },
+    // Set localStorage.__petrel_push_fails to the server's refusal to model
+    // a folder whose create on the server did not go through.
+    push_folder: function () {
+      var refusal = null;
+      try { refusal = localStorage.getItem('__petrel_push_fails'); } catch (e) {}
+      if (refusal) throw refusal;
+      return null;
+    },
     create_folder: function (a) {
       var id = 200 + folders.length;
       folders.push({ id: id, role: '', path: a.path });

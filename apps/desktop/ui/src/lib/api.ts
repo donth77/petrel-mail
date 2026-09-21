@@ -615,6 +615,7 @@ const mock = {
     { id: 1, role: 'archive', path: 'Archive' },
   ],
   createFolder: async () => 999,
+  pushFolder: async () => {},
   renameFolder: async () => {},
   pushDraft: async () => {},
   syncMailbox: async () => {},
@@ -967,7 +968,11 @@ const real = {
   undoTriage: (actionId: number) => invoke<boolean>('undo_triage', { actionId }),
   /** Absent `account` means the one on screen — see the Rust command. */
   folders: (account?: number) => invoke<Folder[]>('list_folders', { account: account ?? null }),
+  /** Here only; the server's copy is `pushFolder`. */
   createFolder: (path: string) => invoke<number>('create_folder', { path }),
+  /** Puts a folder made here on the server, subscribed. Rejects with the
+   *  server's reason; the folder is kept, and the next sync tries again. */
+  pushFolder: (folderId: number) => invoke<void>('push_folder', { folderId }),
   /** The view's true conversation count — the list itself is a page. */
   viewCount: (view: string) => invoke<number>('view_count', { view }),
   listSavedSearches: () => invoke<SavedSearch[]>('list_saved_searches'),

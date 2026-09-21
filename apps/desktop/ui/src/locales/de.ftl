@@ -663,6 +663,7 @@ folder-delete-body-label = Nur das Label wird entfernt. Die Mail behält ihre an
 folder-created = „{ $name }“ erstellt
 folder-deleted = „{ $name }“ gelöscht
 folder-failed = Ordneränderung fehlgeschlagen: { $error }
+folder-server-pending = „{ $name }“ konnte noch nicht auf dem Server angelegt werden: { $error }. Der Ordner bleibt hier erhalten, und die nächste Synchronisierung versucht es erneut.
 folder-name-taken = Dort gibt es bereits einen Ordner namens „{ $name }“.
 folder-bin-refuses = In den Papierkorb dieses Kontos verschobene Mail würde nicht gelöscht. Löschen Sie „{ $name }“ stattdessen über sein Menü.
 tag-new = Neues Schlagwort

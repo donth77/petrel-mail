@@ -664,6 +664,7 @@ folder-delete-body-label = Apenas o marcador é removido. As mensagens mantêm o
 folder-created = “{ $name }” criada
 folder-deleted = “{ $name }” excluída
 folder-failed = Falha ao alterar a pasta: { $error }
+folder-server-pending = Ainda não foi possível criar “{ $name }” no servidor: { $error }. Ela fica guardada aqui, e a próxima sincronização tentará de novo.
 folder-name-taken = Já existe uma pasta chamada “{ $name }” ali.
 folder-bin-refuses = E-mails movidos para a Lixeira desta conta não seriam excluídos. Exclua “{ $name }” pelo menu dela.
 tag-new = Nova etiqueta

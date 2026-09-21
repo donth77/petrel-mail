@@ -665,6 +665,7 @@ folder-delete-body-label = 라벨만 제거됩니다. 메일은 다른 라벨을
 folder-created = “{ $name }” 만듦
 folder-deleted = “{ $name }” 삭제됨
 folder-failed = 폴더 변경 실패: { $error }
+folder-server-pending = “{ $name }”을(를) 아직 서버에 만들지 못했습니다: { $error }. 폴더는 여기에 남아 있으며 다음 동기화 때 다시 시도합니다.
 folder-name-taken = “{ $name }” 폴더가 이미 그곳에 있습니다.
 folder-bin-refuses = 이 계정의 휴지통으로 옮긴 메일은 삭제되지 않습니다. 대신 메뉴에서 “{ $name }”을(를) 삭제하세요.
 tag-new = 새 태그

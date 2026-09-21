@@ -663,6 +663,7 @@ folder-delete-body-label = Seul le libellé est supprimé. Les messages conserve
 folder-created = « { $name } » créé
 folder-deleted = « { $name } » supprimé
 folder-failed = Échec de la modification du dossier : { $error }
+folder-server-pending = Impossible de créer « { $name } » sur le serveur pour l’instant : { $error }. Il est conservé ici et la prochaine synchronisation réessaiera.
 folder-name-taken = Un dossier nommé « { $name } » s’y trouve déjà.
 folder-bin-refuses = Le courrier déplacé vers la corbeille de ce compte ne serait pas supprimé. Supprimez « { $name } » depuis son menu.
 tag-new = Nouvelle étiquette

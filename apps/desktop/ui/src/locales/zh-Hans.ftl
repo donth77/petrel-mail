@@ -630,6 +630,7 @@ folder-delete-body-label = 仅移除标签。邮件保留其他标签，并留�
 folder-created = 已创建“{ $name }”
 folder-deleted = 已删除“{ $name }”
 folder-failed = 文件夹更改失败：{ $error }
+folder-server-pending = 暂时无法在服务器上创建“{ $name }”：{ $error }。文件夹会保留在这里，下次同步时会重试。
 folder-name-taken = 那里已经有一个名为“{ $name }”的文件夹。
 folder-bin-refuses = 移到此账户回收站的邮件不会被删除。请从菜单中删除“{ $name }”。
 tag-new = 新建标签

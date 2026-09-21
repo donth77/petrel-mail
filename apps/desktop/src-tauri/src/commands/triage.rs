@@ -1,6 +1,6 @@
 //! Acting on mail: triage and its undo, tags, and folders.
 
-use crate::config::imap_config_for;
+use crate::config::{imap_config_for, imap_config_from_servers};
 use crate::diag::log_sync;
 use crate::state::{AppState, active_account, note_ui_touch};
 use petrel_engine::actions::{ActionKind, ActionReceipt};
@@ -118,32 +118,93 @@ pub fn list_folders(
 
 /// Creates a folder the user named, or returns the one already there. The
 /// picker offers this on the end of the same keystroke as choosing one.
+///
+/// Here only. The server's copy is `push_folder`, which the caller awaits or
+/// not as suits it — the picker has mail to file and the id is all it needs,
+/// while the rail's New folder has nothing to do but say whether it worked.
+/// This used to fire the server's create off on its own and forget it: a
+/// failure reached the log and nowhere else, and the next sync, not finding
+/// the folder on the server, deleted it here as well.
 #[tauri::command(async)]
 pub fn create_folder(path: String, state: State<Arc<AppState>>) -> Result<i64, String> {
-    let (account, id, cfg) = {
+    let store = state.store()?;
+    let account = active_account(&store)?;
+    store
+        .ensure_named_folder(account, &path)
+        .map_err(|e| e.to_string())
+}
+
+/// Puts a folder made here on the server, and subscribes to it so webmail
+/// shows it too. Ok means the server has it.
+///
+/// A folder the server already has, or a local one, is a no-op; so is one
+/// belonging to an account other than the one on screen, which the sync of
+/// its own account will create instead. A failure is returned rather than
+/// only logged, so the person hears about it — and the folder stays waiting,
+/// which is what makes the next sync try again.
+#[tauri::command]
+pub async fn push_folder(folder_id: i64, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    let (servers, path) = {
         let store = state.store()?;
         let account = active_account(&store)?;
-        let id = store
-            .ensure_named_folder(account, &path)
-            .map_err(|e| e.to_string())?;
-        (account, id, imap_config_for(&store, account))
+        let waiting = store
+            .account_owns_folder(account, folder_id)
+            .map_err(|e| e.to_string())?
+            && !store
+                .folder_is_local(folder_id)
+                .map_err(|e| e.to_string())?
+            && store
+                .folder_awaits_server(folder_id)
+                .map_err(|e| e.to_string())?;
+        if !waiting {
+            return Ok(());
+        }
+        let path = store
+            .folder_path(folder_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("no such folder")?;
+        let servers = store.account_servers(account).map_err(|e| e.to_string())?;
+        (servers.map(|s| (account, s)), path)
     };
-    let _ = account;
-    // The server's copy follows, off this thread — the picker is waiting on
-    // the id, and a move drained later re-creates on demand anyway, so the
-    // worst a failure here costs is that retry.
-    if let Some(cfg) = cfg {
-        tauri::async_runtime::spawn(async move {
-            if let Err(e) = petrel_providers::imap::create_folder(&cfg, &path).await {
-                log_sync(&format!("server create {path} failed: {e}"));
-            }
-        });
+    // Outside the lock: the keychain may ask, and nothing should queue behind it.
+    let Some(cfg) = servers.and_then(|(account, s)| imap_config_from_servers(account, s)) else {
+        return Ok(());
+    };
+    match petrel_providers::imap::create_folder(&cfg, &path).await {
+        Ok(()) => {
+            let store = state.store()?;
+            store
+                .confirm_folder_on_server(folder_id)
+                .map_err(|e| e.to_string())
+        }
+        Err(e) => {
+            log_sync(&format!(
+                "server create {path} failed, next sync retries: {e}"
+            ));
+            Err(e.to_string())
+        }
     }
-    Ok(id)
+}
+
+/// Whether a folder lives only here, so renaming or deleting it has nothing
+/// to ask the server: a local one never goes there, and one still waiting
+/// has not arrived. Asking anyway was refused as a mailbox that does not
+/// exist, and that refusal stopped the local change as well — a folder whose
+/// create had failed could be neither renamed nor deleted.
+fn only_here(store: &petrel_engine::store::Store, folder_id: i64) -> Result<bool, String> {
+    Ok(store
+        .folder_is_local(folder_id)
+        .map_err(|e| e.to_string())?
+        || store
+            .folder_awaits_server(folder_id)
+            .map_err(|e| e.to_string())?)
 }
 
 /// Renames a folder — on the server first, then locally, so the two cannot
 /// disagree with the server holding the older name.
+///
+/// One still waiting for the server is renamed here only, and keeps waiting:
+/// the sync creates it under whatever it is called by then.
 #[tauri::command]
 pub async fn rename_folder(
     folder_id: i64,
@@ -157,7 +218,11 @@ pub async fn rename_folder(
             .folder_path(folder_id)
             .map_err(|e| e.to_string())?
             .ok_or("no such folder")?;
-        (imap_config_for(&store, account), path)
+        let cfg = match only_here(&store, folder_id)? {
+            true => None,
+            false => imap_config_for(&store, account),
+        };
+        (cfg, path)
     };
     if let Some(cfg) = cfg {
         petrel_providers::imap::rename_folder(&cfg, &old_path, &new_path)
@@ -173,7 +238,7 @@ pub async fn rename_folder(
 /// Deletes a folder — on the server first. The server also deletes whatever
 /// mail the folder still holds, which is why the UI confirms in those words;
 /// the store keeps its message rows and blobs regardless, so nothing already
-/// synced is destroyed.
+/// synced is destroyed. One that lives only here is deleted only here.
 #[tauri::command]
 pub async fn delete_folder(folder_id: i64, state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let (cfg, path) = {
@@ -183,7 +248,11 @@ pub async fn delete_folder(folder_id: i64, state: State<'_, Arc<AppState>>) -> R
             .folder_path(folder_id)
             .map_err(|e| e.to_string())?
             .ok_or("no such folder")?;
-        (imap_config_for(&store, account), path)
+        let cfg = match only_here(&store, folder_id)? {
+            true => None,
+            false => imap_config_for(&store, account),
+        };
+        (cfg, path)
     };
     if let Some(cfg) = cfg {
         petrel_providers::imap::delete_folder(&cfg, &path)

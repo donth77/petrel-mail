@@ -684,6 +684,7 @@ folder-delete-body-label = Solo se quita la etiqueta. El correo conserva sus otr
 folder-created = “{ $name }” creada
 folder-deleted = “{ $name }” eliminada
 folder-failed = No se pudo cambiar la carpeta: { $error }
+folder-server-pending = Aún no se pudo crear “{ $name }” en el servidor: { $error }. Se conserva aquí y la próxima sincronización lo volverá a intentar.
 folder-name-taken = Ya hay una carpeta llamada «{ $name }» ahí.
 folder-bin-refuses = El correo movido a la papelera de esta cuenta no se eliminaría. Elimina «{ $name }» desde su menú.
 tag-new = Etiqueta nueva

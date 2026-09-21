@@ -638,6 +638,7 @@ export const STRING_IDS = [
   'folder-created',
   'folder-deleted',
   'folder-failed',
+  'folder-server-pending',
   'folder-name-taken',
   'folder-bin-refuses',
   'tag-new',

@@ -905,3 +905,114 @@ fn in_local_archive_mode_a_vanished_folder_keeps_its_mail() {
         "and stays searchable"
     );
 }
+
+/// The folder someone just made is not on the server yet — the create runs
+/// after the row exists, and it can fail. A survey landing in that gap used
+/// to read the absence as "deleted elsewhere" and prune the folder, so it
+/// vanished from the rail with nothing to say why.
+#[test]
+fn a_folder_made_here_outlives_a_survey_that_does_not_list_it_yet() {
+    let (_dir, mut store, _blobs, account) = setup();
+    store
+        .sync_folders(account, &[("INBOX".into(), None)])
+        .unwrap();
+    let made = store.ensure_named_folder(account, "Formation").unwrap();
+
+    store
+        .sync_folders(account, &[("INBOX".into(), None)])
+        .unwrap();
+
+    assert!(
+        store.folders(account).unwrap().iter().any(|f| f.id == made),
+        "still in the rail"
+    );
+    assert!(store.folder_awaits_server(made).unwrap());
+    assert_eq!(
+        store.folders_awaiting_server(account).unwrap(),
+        vec![(made, "Formation".to_string())],
+        "and on the list the sync creates from"
+    );
+}
+
+/// Once the server lists it, it is an ordinary folder again — which includes
+/// being pruned if it is later deleted somewhere else.
+#[test]
+fn the_first_survey_that_lists_it_makes_it_an_ordinary_folder() {
+    let (_dir, mut store, _blobs, account) = setup();
+    let made = store.ensure_named_folder(account, "Formation").unwrap();
+
+    store
+        .sync_folders(account, &[("Formation".into(), None)])
+        .unwrap();
+    assert!(!store.folder_awaits_server(made).unwrap());
+    assert!(store.folders_awaiting_server(account).unwrap().is_empty());
+
+    store.sync_folders(account, &[]).unwrap();
+    assert!(
+        !store.folders(account).unwrap().iter().any(|f| f.id == made),
+        "deleted elsewhere is deleted here, as for any other folder"
+    );
+}
+
+/// A create the server confirmed needs no survey to say so. Without this, a
+/// rename or delete in the seconds before the next sync would still be
+/// treated as a folder the server had never heard of, and kept local.
+#[test]
+fn a_confirmed_create_is_an_ordinary_folder_at_once() {
+    let (_dir, store, _blobs, account) = setup();
+    let made = store.ensure_named_folder(account, "Formation").unwrap();
+
+    store.confirm_folder_on_server(made).unwrap();
+
+    assert!(!store.folder_awaits_server(made).unwrap());
+    assert!(store.folders_awaiting_server(account).unwrap().is_empty());
+}
+
+/// Choosing a folder that is already there by typing its name is not making
+/// one: it was never waiting, and nothing is sent anywhere.
+#[test]
+fn naming_a_folder_that_exists_does_not_queue_a_create() {
+    let (_dir, mut store, _blobs, account) = setup();
+    store
+        .sync_folders(account, &[("Receipts".into(), None)])
+        .unwrap();
+
+    let id = store.ensure_named_folder(account, "receipts").unwrap();
+
+    assert!(!store.folder_awaits_server(id).unwrap());
+    assert!(store.folders_awaiting_server(account).unwrap().is_empty());
+}
+
+/// Imported mail lives in a local folder, which is never meant to leave.
+#[test]
+fn a_local_folder_is_never_created_on_the_server() {
+    let (_dir, mut store, _blobs, account) = setup();
+    let imported = store.ensure_named_folder(account, "Imported").unwrap();
+    store.mark_folder_local(imported).unwrap();
+
+    assert!(store.folders_awaiting_server(account).unwrap().is_empty());
+}
+
+/// A child cannot be created before the parent it sits in.
+#[test]
+fn parents_are_created_before_their_children() {
+    let (_dir, store, _blobs, account) = setup();
+    store
+        .ensure_named_folder(account, "Projects/Petrel/Specs")
+        .unwrap();
+    store.ensure_named_folder(account, "Projects").unwrap();
+    store
+        .ensure_named_folder(account, "Projects/Petrel")
+        .unwrap();
+
+    let order: Vec<String> = store
+        .folders_awaiting_server(account)
+        .unwrap()
+        .into_iter()
+        .map(|(_, p)| p)
+        .collect();
+    assert_eq!(
+        order,
+        ["Projects", "Projects/Petrel", "Projects/Petrel/Specs"]
+    );
+}

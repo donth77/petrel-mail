@@ -630,6 +630,7 @@ folder-delete-body-label = ラベルだけが削除されます。メールは�
 folder-created = 「{ $name }」を作成しました
 folder-deleted = 「{ $name }」を削除しました
 folder-failed = フォルダの変更に失敗しました: { $error }
+folder-server-pending = 「{ $name }」をまだサーバーに作成できませんでした: { $error }。フォルダはここに残り、次回の同期で再試行します。
 folder-name-taken = 「{ $name }」という名前のフォルダがすでにあります。
 folder-bin-refuses = このアカウントのゴミ箱に移動したメールは削除されません。メニューから「{ $name }」を削除してください。
 tag-new = 新規タグ

@@ -2156,8 +2156,18 @@ export function App() {
         onCreateFolder={(name) =>
           api
             .createFolder(name)
-            .then(() => api.folders().then(setFolders))
-            .then(() => setToast(t('folder-created', { name })))
+            .then((id) =>
+              api
+                .folders()
+                .then(setFolders)
+                // "Created" once the server has it, not the moment it exists
+                // here: it used to say so for a folder the server never got.
+                .then(() => api.pushFolder(id))
+                .then(
+                  () => setToast(t('folder-created', { name })),
+                  (e) => setToast(t('folder-server-pending', { name, error: String(e) })),
+                ),
+            )
             .catch((e) => setToast(t('folder-failed', { error: String(e) })))
         }
 
@@ -2940,6 +2950,12 @@ export function App() {
             .then((id) => {
               if (picker === 'folder') {
                 setPicker(null);
+                // The server's copy in the background: the move needs only the
+                // id, and the drain makes the folder itself if it gets there
+                // first. Only a failure has anything to say.
+                void api
+                  .pushFolder(id)
+                  .catch((e) => setToast(t('folder-server-pending', { name, error: String(e) })));
                 // Into the new folder goes what the picker was for, not only
                 // the highlighted row.
                 return triage.runMany('move', pickerIds, id).then(() => api.folders().then(setFolders));

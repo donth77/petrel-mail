@@ -120,6 +120,7 @@ pub(crate) fn spawn_real_sync(state: Arc<AppState>, account: i64, cfg: ImapConfi
                         let _ = store.set_account_kind(account, "gmail");
                     }
                 }
+                create_waiting_folders(&state, account, &cfg).await;
             }
             Err(e) => {
                 let raw = format!("{e}");
@@ -509,18 +510,51 @@ async fn refresh_folders(
             )
         })
         .collect();
-    let Ok(mut store) = state.store.lock() else {
-        return;
+    // In a block of its own: the guard has to be gone before the await
+    // below, and a `drop` does not convince the compiler of that.
+    {
+        let Ok(mut store) = state.store.lock() else {
+            return;
+        };
+        let tag_names: Vec<String> = store
+            .tags_for_account(account)
+            .map(|ts| ts.into_iter().map(|t| t.name).collect())
+            .unwrap_or_default();
+        let rows = without_tag_labels(rows, &tag_names, looks_like_gmail);
+        match store.sync_folders(account, &rows) {
+            Ok(n) if n > 0 => log_sync(&format!("{n} folder(s) stored")),
+            Ok(_) => {}
+            Err(e) => log_sync(&format!("folder sync failed: {e}")),
+        }
+    }
+    create_waiting_folders(state, account, cfg).await;
+}
+
+/// Creates on the server the folders made here that it does not have yet.
+///
+/// Run straight after each survey, which has just said what the server
+/// holds: anything made here and still missing from that list is created
+/// now, and subscribed. This is the retry a background create never had —
+/// one that failed, or never ran because the app quit first, used to be
+/// found missing by the next survey and deleted here too. Nothing waiting
+/// means no connection at all, which is the ordinary case.
+async fn create_waiting_folders(state: &Arc<AppState>, account: i64, cfg: &ImapConfig) {
+    let waiting = match state.store.lock() {
+        Ok(store) => store.folders_awaiting_server(account).unwrap_or_default(),
+        Err(_) => return,
     };
-    let tag_names: Vec<String> = store
-        .tags_for_account(account)
-        .map(|ts| ts.into_iter().map(|t| t.name).collect())
-        .unwrap_or_default();
-    let rows = without_tag_labels(rows, &tag_names, looks_like_gmail);
-    match store.sync_folders(account, &rows) {
-        Ok(n) if n > 0 => log_sync(&format!("{n} folder(s) stored")),
-        Ok(_) => {}
-        Err(e) => log_sync(&format!("folder sync failed: {e}")),
+    for (id, path) in waiting {
+        match petrel_providers::imap::create_folder(cfg, &path).await {
+            Ok(()) => {
+                if let Ok(store) = state.store.lock() {
+                    let _ = store.confirm_folder_on_server(id);
+                }
+                log_sync(&format!("created {path} on the server"));
+            }
+            Err(e) => log_sync(&format!(
+                "server create {path} failed, next sync retries: {e}"
+            )),
+        }
     }
 }
 

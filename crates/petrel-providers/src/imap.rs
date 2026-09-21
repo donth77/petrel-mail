@@ -2570,20 +2570,37 @@ where
 /// servers without it. The fallback is not equivalent — an expunge affects the
 /// whole mailbox, not just this message — so the capability is checked rather
 /// than assumed, and the slow path is taken only when there is no choice.
-/// Creates a folder on the server. Already-exists is success: the folder the
-/// user asked for is there, which is what they asked for.
+/// Creates a folder on the server, and subscribes to it. Already-exists is
+/// success: the folder the user asked for is there, which is what they asked
+/// for.
+///
+/// The subscription is not a nicety. IMAP keeps "exists" and "subscribed"
+/// apart, and webmail — Namecheap's among them — draws only the subscribed
+/// ones, so a folder made here and never subscribed was on the server and
+/// invisible there. Every other mail client subscribes after a create; this
+/// one did not. A refused subscribe is therefore an error, even though the
+/// folder was made: the caller retries, and the retry's CREATE answers
+/// "already exists" and subscribes again.
 pub async fn create_folder(cfg: &ImapConfig, path: &str) -> Result<()> {
     folder_op(cfg, FolderOp::Create, path, "").await
 }
 
 /// Renames a folder on the server. On IMAP a rename *is* a move: nesting a
 /// folder somewhere else is the same RENAME with a different path.
+///
+/// Subscriptions follow it — the folder's own and any of its children's —
+/// because servers disagree on whether RENAME moves them, and one that does
+/// not leaves the folder hidden in webmail under its new name. What was not
+/// subscribed stays unsubscribed: a rename changes the name, not whether
+/// anyone wanted to see it.
 pub async fn rename_folder(cfg: &ImapConfig, from: &str, to: &str) -> Result<()> {
     folder_op(cfg, FolderOp::Rename, from, to).await
 }
 
 /// Deletes a folder on the server, and whatever mail it still holds — which
 /// is why the UI confirms first and the store keeps its copies regardless.
+/// Its subscription goes too, or webmail goes on listing a folder that is
+/// no longer there.
 pub async fn delete_folder(cfg: &ImapConfig, path: &str) -> Result<()> {
     folder_op(cfg, FolderOp::Delete, path, "").await
 }
@@ -2624,26 +2641,91 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
 {
     let mut session = sign_in(client, cfg).await?;
-    let result = match op {
-        FolderOp::Create => session.create(wire_name(a)).await,
-        FolderOp::Rename => session.rename(wire_name(a), wire_name(b)).await,
-        FolderOp::Delete => session.delete(wire_name(a)).await,
-    };
-    match result {
-        Ok(()) => {}
-        // "Already exists" answers a CREATE the way success does: the folder
-        // the caller wanted is there. Everything else is a real failure —
-        // including "mailbox does not exist", which contains the word and
-        // used to be read as success, so a CREATE that failed for want of a
-        // parent folder was reported as a folder that had been made.
-        Err(e) if matches!(op, FolderOp::Create) && already_exists(&e.to_string()) => {}
-        Err(e) => {
-            let _ = sign_out(&mut session).await;
-            return Err(e.into());
-        }
+    if let Err(e) = folder_op_steps(&mut session, op, a, b).await {
+        let _ = sign_out(&mut session).await;
+        return Err(e);
     }
     sign_out(&mut session).await?;
     Ok(())
+}
+
+async fn folder_op_steps<S>(session: &mut Session<S>, op: FolderOp, a: &str, b: &str) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
+{
+    match op {
+        FolderOp::Create => {
+            let name = wire_name(a);
+            match session.create(&name).await {
+                Ok(()) => {}
+                // "Already exists" answers a CREATE the way success does: the
+                // folder the caller wanted is there. Everything else is a real
+                // failure — including "mailbox does not exist", which contains
+                // the word and used to be read as success, so a CREATE that
+                // failed for want of a parent folder was reported as a folder
+                // that had been made.
+                Err(e) if already_exists(&e.to_string()) => {}
+                Err(e) => return Err(e.into()),
+            }
+            session.subscribe(&name).await.map_err(|e| {
+                ImapError::Protocol(format!("created, but the server refused to subscribe: {e}"))
+            })?;
+        }
+        FolderOp::Rename => {
+            let (from, to) = (wire_name(a), wire_name(b));
+            // Asked before the rename, while the old names still mean something.
+            let subscribed = subscribed_within(session, &from).await;
+            session.rename(&from, &to).await?;
+            // Best effort from here: the rename has happened, and failing now
+            // would tell the caller it had not, leaving this store holding the
+            // old name while the server holds the new one. A subscription that
+            // did not follow costs visibility in webmail, and nothing else.
+            for old in subscribed {
+                let new = format!("{to}{}", &old[from.len()..]);
+                let _ = session.subscribe(&new).await;
+                let _ = session.unsubscribe(&old).await;
+            }
+        }
+        FolderOp::Delete => {
+            let name = wire_name(a);
+            session.delete(&name).await?;
+            // Best effort, as for a rename: the folder is gone either way.
+            let _ = session.unsubscribe(&name).await;
+        }
+    }
+    Ok(())
+}
+
+/// The subscribed mailboxes at `root` or below it, in wire form.
+///
+/// LSUB's `*` also matches a sibling that merely starts with the same
+/// letters — `Projects` would take `Projectsong` with it — so each answer is
+/// kept only if it is the root itself or sits under it by the delimiter the
+/// server reported for it. An LSUB the server refuses is treated as nothing
+/// subscribed: this only decides what follows a rename, and not moving a
+/// subscription is the mildest way for that to go wrong.
+async fn subscribed_within<S>(session: &mut Session<S>, root: &str) -> Vec<String>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
+{
+    let mut out = Vec::new();
+    let Ok(mut names) = session.lsub(Some(""), Some(&format!("{root}*"))).await else {
+        return out;
+    };
+    // Read to the end even past a bad line: a response left half-read is
+    // the next command's problem, and the next command is the rename.
+    while let Some(item) = names.next().await {
+        let Ok(name) = item else { continue };
+        let raw = unescape_quoted(name.name());
+        let inside = raw == root
+            || name
+                .delimiter()
+                .is_some_and(|d| raw.starts_with(&format!("{root}{d}")));
+        if inside {
+            out.push(raw);
+        }
+    }
+    out
 }
 
 /// Moves one message: by MOVE where the server has it, and by COPY, \Deleted

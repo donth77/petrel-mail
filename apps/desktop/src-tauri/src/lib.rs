@@ -678,6 +678,7 @@ pub fn run() {
             commands::triage::undo_triage,
             commands::triage::list_folders,
             commands::triage::create_folder,
+            commands::triage::push_folder,
             commands::triage::rename_folder,
             commands::triage::delete_folder,
             commands::triage::empty_trash,
