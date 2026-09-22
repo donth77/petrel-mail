@@ -316,6 +316,146 @@ fn post_one_click(url: &str) -> Result<(), String> {
         .map_err(|e| format!("the sender's unsubscribe endpoint refused: {e}"))
 }
 
+/// Whether this message's remote content may load: the three rules the
+/// message frame applies (the protocol handler in lib.rs), checked the same
+/// way. A quote of the message follows the frame, so the two must agree.
+pub(crate) fn remote_allowed(state: &AppState, message_id: i64) -> bool {
+    let Ok(store) = state.store_read_open() else {
+        return false;
+    };
+    let blocking_off = store
+        .settings()
+        .ok()
+        .map(|s| s.get("blockRemoteContent").map(String::as_str) == Some("off"))
+        .unwrap_or(false);
+    blocking_off
+        || state
+            .shown_once
+            .lock()
+            .map(|set| set.contains(&message_id))
+            .unwrap_or(false)
+        || store.remote_content_allowed(message_id).unwrap_or(false)
+}
+
+/// The kinds of picture a quote may carry: raster images, nothing that runs.
+fn picture_type(content_type: &str) -> Option<&'static str> {
+    let bare = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    match bare.as_str() {
+        "image/png" => Some("image/png"),
+        "image/jpeg" | "image/jpg" | "image/pjpeg" => Some("image/jpeg"),
+        "image/gif" => Some("image/gif"),
+        "image/webp" => Some("image/webp"),
+        _ => None,
+    }
+}
+
+/// The address a picture is fetched from, or why it will not be.
+///
+/// The rules of a one-click unsubscribe, for the same reason: a stranger chose
+/// this URL and the fetch runs from inside the person's network. Worse here,
+/// because what comes back is sent on: a picture fetched from the intranet
+/// would reach whoever the reply goes to. Plain http is asked for as https,
+/// as the message frame asks for it (`upgrade-insecure-requests`).
+fn picture_url(url: &str) -> Result<String, &'static str> {
+    let upgraded = match url.strip_prefix("http://") {
+        Some(rest) => format!("https://{rest}"),
+        None => url.to_string(),
+    };
+    let parsed = upgraded
+        .parse::<tauri::Url>()
+        .map_err(|_| "an unreadable address")?;
+    if parsed.scheme() != "https" {
+        return Err("not a web address");
+    }
+    let host = parsed.host_str().ok_or("an address with no host")?;
+    if resolves_inside(host, parsed.port().unwrap_or(443)) {
+        return Err("an address inside this network");
+    }
+    Ok(upgraded)
+}
+
+/// One of a message's remote pictures, fetched for a quote of it.
+///
+/// Over https, to somewhere outside this network, with redirects refused (the
+/// way round the address check, as for unsubscribing), within `cap` bytes,
+/// and only as a picture. Nothing is sent beyond the request itself: no
+/// cookies and no referrer.
+pub(crate) fn fetch_picture(url: &str, cap: u64) -> Result<(String, Vec<u8>), String> {
+    let url = picture_url(url).map_err(String::from)?;
+    let mut response = ureq::get(&url)
+        .config()
+        .timeout_global(Some(std::time::Duration::from_secs(6)))
+        .max_redirects(0)
+        .build()
+        .call()
+        .map_err(|e| e.to_string())?;
+    let kind = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .and_then(picture_type)
+        .ok_or("not a picture")?;
+    let bytes = response
+        .body_mut()
+        .with_config()
+        .limit(cap)
+        .read_to_vec()
+        .map_err(|e| e.to_string())?;
+    Ok((kind.to_string(), bytes))
+}
+
+#[cfg(test)]
+mod picture_tests {
+    use super::{picture_type, picture_url};
+
+    /// What comes back is sent on, so nothing inside this network is asked.
+    #[test]
+    fn a_picture_inside_this_network_is_never_fetched() {
+        for inside in [
+            "https://127.0.0.1/x.png",
+            "https://localhost/x.png",
+            "http://192.168.1.1/logo.png",
+            "https://10.0.0.1/x.png",
+            "https://169.254.169.254/latest/meta-data/",
+            "https://[::1]/x.png",
+        ] {
+            assert!(picture_url(inside).is_err(), "{inside} was allowed");
+        }
+    }
+
+    #[test]
+    fn only_web_addresses_are_fetched_and_plain_http_asks_for_https() {
+        for odd in [
+            "ftp://example.com/x.png",
+            "file:///etc/passwd",
+            "data:image/png;base64,AA",
+        ] {
+            assert!(picture_url(odd).is_err(), "{odd} was allowed");
+        }
+        // An IP literal outside, so no lookup is needed to know.
+        assert_eq!(
+            picture_url("http://93.184.216.34/x.png").as_deref(),
+            Ok("https://93.184.216.34/x.png")
+        );
+    }
+
+    #[test]
+    fn only_raster_pictures_are_taken() {
+        assert_eq!(picture_type("image/png"), Some("image/png"));
+        assert_eq!(
+            picture_type("IMAGE/JPG; charset=binary"),
+            Some("image/jpeg")
+        );
+        assert_eq!(picture_type("image/svg+xml"), None);
+        assert_eq!(picture_type("text/html"), None);
+    }
+}
+
 #[cfg(test)]
 mod unsubscribe_tests {
     use super::{post_one_click, refuse_reason};

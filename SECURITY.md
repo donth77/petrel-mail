@@ -10,7 +10,7 @@ interesting edges are if you go looking.
 | **Your mail** | Moves between your computer and your provider and stops there. No server of ours in the middle, and no telemetry. |
 | **Your passwords** | Held in the operating system's credential store: Keychain, Credential Manager or Secret Service. Never in a file, the database, or a log. |
 | **Message HTML** | Three layers, each catching what the others miss. An allowlist sanitizer strips anything not permitted and falls back to plain text when it cannot parse. The body then renders in a sandboxed frame on its own `petrel-msg://` origin. A per-message CSP blocks network egress from inside it. |
-| **Remote images** | Blocked until you ask, and Petrel says how many it blocked. The difference between reading a message and telling the sender you read it. |
+| **Remote images** | Blocked until you ask, and Petrel says how many it blocked. The difference between reading a message and telling the sender you read it. Replying to a message whose images you allowed fetches them once, from public addresses only, and sends them inside the reply rather than as links, so nobody on the reply tells the sender anything. |
 | **Deceptive links** | A link whose text and destination disagree asks first. An address can be spelled with letters that look identical to Latin ones. |
 | **Attachments** | One that is a program rather than a document says so before it opens. |
 | **Updates** | Refused unless the signature matches, before any of it runs. |

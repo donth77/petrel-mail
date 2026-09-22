@@ -322,27 +322,45 @@ pub(crate) struct Quoted {
 /// The message's own pictures are another matter: nothing is fetched to show
 /// them, so they stay, written in from its parts (`embed_cid_images`). Left as
 /// `cid:` references they were broken in the composer and broken on arrival.
+///
+/// So are the remote pictures of a message whose remote content the reader
+/// shows, because the person allowed it. Those are fetched once, here, and
+/// written in the same way (`embed_remote_pictures`): the reply carries them
+/// as its own parts, never as links, so nobody on it fires the tracker again.
 #[tauri::command(async)]
 pub fn quote_message(message_id: i64, state: State<Arc<AppState>>) -> Result<Quoted, String> {
-    let store = state.store()?;
-    let hash = store
-        .blob_hash_for(message_id)
-        .map_err(|e| e.to_string())?
-        .ok_or("message has no stored body")?;
+    // What the quote needs from the store, and then the store let go: the
+    // pictures below can take seconds to fetch, and the write lock held
+    // through that would stop every click and every sync in the app.
+    let (hash, (from, date_ms)) = {
+        let store = state.store()?;
+        let hash = store
+            .blob_hash_for(message_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("message has no stored body")?;
+        let header = store
+            .message_header(message_id)
+            .map_err(|e| e.to_string())?
+            .unwrap_or_default();
+        (hash, header)
+    };
     let raw = state
         .blobs
         .read(&hash)
         .map_err(|_| "message body unavailable")?;
     let parsed = petrel_mime::parse_message(&raw).ok_or("message could not be parsed")?;
 
-    let (from, date_ms) = store
-        .message_header(message_id)
-        .map_err(|e| e.to_string())?
-        .unwrap_or_default();
-
+    // The reader's rules for this message's remote content are the quote's.
+    let remote = super::remote::remote_allowed(&state, message_id);
     let html = match parsed.body_html.as_deref() {
         Some(h) => {
-            let clean = petrel_mime::sanitize_html(h, false).html;
+            let clean = if remote {
+                remote_quote_html(h, |url| {
+                    super::remote::fetch_picture(url, REMOTE_PICTURE_CAP)
+                })
+            } else {
+                petrel_mime::sanitize_html(h, false).html
+            };
             petrel_mime::embed_cid_images(&paragraph_breaks_as_blank_lines(&clean), &raw)
         }
         // No HTML half: the text becomes the quote, a paragraph to a line.
@@ -372,6 +390,95 @@ pub fn quote_message(message_id: i64, state: State<Arc<AppState>>) -> Result<Quo
             .map(|(_, addr)| addr.clone())
             .collect(),
     })
+}
+
+/// A remote picture past this is left out of a quote: the composer's own
+/// paste limit (`EMBED_CAP`).
+const REMOTE_PICTURE_CAP: u64 = 8 * 1024 * 1024;
+/// Every remote picture in one quote, together.
+const REMOTE_PICTURES_BUDGET: usize = 16 * 1024 * 1024;
+/// And how many are fetched at all. A newsletter can carry hundreds.
+const REMOTE_PICTURES_MAX: usize = 20;
+
+/// The quote of a message whose remote content the reader shows.
+///
+/// A quote carries no remote reference at all. Its pictures are fetched and
+/// written in as data (`embed_remote_pictures_with`), and then the ordinary
+/// pass runs over the result: it keeps data pictures and strips whatever
+/// remote reference is left, an unfetched picture, a table background, a
+/// `url()` in a style. Sanitized once with remote content allowed, those
+/// stayed in the quote, and a reply or forward sent without an edit (which
+/// is when the editor never rewrites it) carried them to everyone on it.
+fn remote_quote_html(
+    original: &str,
+    fetch: impl Fn(&str) -> Result<(String, Vec<u8>), String> + Sync,
+) -> String {
+    let with_remote = petrel_mime::sanitize_html(original, true).html;
+    let embedded = embed_remote_pictures_with(&with_remote, fetch);
+    petrel_mime::sanitize_html(&embedded, false).html
+}
+
+fn embed_remote_pictures_with(
+    html: &str,
+    fetch: impl Fn(&str) -> Result<(String, Vec<u8>), String> + Sync,
+) -> String {
+    // Every distinct remote `src`, in order, as the sanitizer serialized it.
+    let mut urls: Vec<String> = Vec::new();
+    for quote in ['"', '\''] {
+        let needle = format!("src={quote}http");
+        let mut from = 0;
+        while let Some(rel) = html[from..].find(&needle) {
+            let start = from + rel + "src=".len() + 1;
+            let Some(len) = html[start..].find(quote) else {
+                break;
+            };
+            let url = &html[start..start + len];
+            if !urls.iter().any(|u| u == url) {
+                urls.push(url.to_string());
+            }
+            from = start + len;
+        }
+    }
+    urls.truncate(REMOTE_PICTURES_MAX);
+
+    let fetched: Vec<Option<(String, Vec<u8>)>> = std::thread::scope(|s| {
+        let fetch = &fetch;
+        let running: Vec<_> = urls
+            .iter()
+            .map(|url| {
+                // The serialized form escapes `&`; the request must not.
+                let url = url.replace("&amp;", "&");
+                s.spawn(move || fetch(&url).ok())
+            })
+            .collect();
+        running
+            .into_iter()
+            .map(|t| t.join().ok().flatten())
+            .collect()
+    });
+
+    let mut out = html.to_string();
+    let mut spent = 0usize;
+    for (url, got) in urls.iter().zip(fetched) {
+        let Some((mime, bytes)) = got else {
+            continue;
+        };
+        if spent + bytes.len() > REMOTE_PICTURES_BUDGET {
+            continue;
+        }
+        spent += bytes.len();
+        let data = petrel_mime::data_url(&mime, &bytes);
+        for quote in ['"', '\''] {
+            out = out.replace(
+                &format!("src={quote}{url}{quote}"),
+                &format!("src=\"{data}\""),
+            );
+        }
+    }
+    // Whatever is still remote was refused, failed, or did not fit. Out of
+    // `src`, so the composer leaves it out rather than sending a link.
+    out.replace("src=\"http", "data-remote=\"http")
+        .replace("src='http", "data-remote='http")
 }
 
 /// The original's paragraph breaks, written in as blank lines.
@@ -883,3 +990,86 @@ mod quote_layout_tests {
     }
 }
 
+#[cfg(test)]
+mod remote_picture_tests {
+    use super::{REMOTE_PICTURES_MAX, embed_remote_pictures_with, remote_quote_html};
+    use std::sync::Mutex;
+
+    /// A quote carries no remote reference: each picture arrives as data, or
+    /// is left out.
+    #[test]
+    fn remote_pictures_arrive_as_data_or_not_at_all() {
+        let html = concat!(
+            r#"<p>Hi</p><img src="https://cdn.example/a.png">"#,
+            r#"<img src="http://cdn.example/b.png?x=1&amp;y=2">"#,
+            r#"<img src="https://cdn.example/a.png">"#,
+            r#"<img src="https://refused.example/c.png">"#,
+        );
+        let asked = Mutex::new(Vec::new());
+        let out = embed_remote_pictures_with(html, |url| {
+            asked.lock().unwrap().push(url.to_string());
+            if url.contains("refused") {
+                Err("refused".into())
+            } else {
+                Ok(("image/png".into(), vec![1, 2, 3]))
+            }
+        });
+        let mut asked = asked.into_inner().unwrap();
+        asked.sort();
+        assert_eq!(
+            asked,
+            vec![
+                "http://cdn.example/b.png?x=1&y=2",
+                "https://cdn.example/a.png",
+                "https://refused.example/c.png",
+            ],
+            "each asked once, with the ampersand as sent"
+        );
+        assert_eq!(out.matches("src=\"data:image/png;base64,AQID\"").count(), 3);
+        assert!(out.contains(r#"<img data-remote="https://refused.example/c.png">"#));
+        assert!(!out.contains("src=\"http"), "{out}");
+    }
+
+    /// What the quote hands the composer holds no remote reference of any
+    /// kind: a reply sent without an edit goes out exactly as quoted.
+    #[test]
+    fn a_quote_keeps_its_fetched_pictures_and_no_other_remote_reference() {
+        let original = concat!(
+            r#"<p>Hi <a href="https://example.com/page">a link</a></p>"#,
+            r#"<img src="https://cdn.example/shown.png">"#,
+            r#"<img src="https://cdn.example/refused.png">"#,
+            r#"<table background="https://cdn.example/bg.png"><tr><td>cell</td></tr></table>"#,
+            r#"<div style="background-image: url(https://cdn.example/css.png)">styled</div>"#,
+        );
+        let out = remote_quote_html(original, |url| {
+            if url.ends_with("shown.png") {
+                Ok(("image/png".into(), vec![1, 2, 3]))
+            } else {
+                Err("refused".into())
+            }
+        });
+        assert!(out.contains("data:image/png;base64,AQID"), "{out}");
+        assert!(
+            !out.contains("cdn.example"),
+            "a remote reference survived: {out}"
+        );
+        // A link is somewhere to go, not something that loads.
+        assert!(out.contains("https://example.com/page"), "{out}");
+    }
+
+    /// A newsletter can carry hundreds; only so many are asked for.
+    #[test]
+    fn only_so_many_remote_pictures_are_fetched() {
+        let html: String = (0..REMOTE_PICTURES_MAX + 5)
+            .map(|i| format!(r#"<img src="https://cdn.example/{i}.png">"#))
+            .collect();
+        let asked = Mutex::new(0usize);
+        let out = embed_remote_pictures_with(&html, |_| {
+            *asked.lock().unwrap() += 1;
+            Ok(("image/gif".into(), vec![0]))
+        });
+        assert_eq!(asked.into_inner().unwrap(), REMOTE_PICTURES_MAX);
+        assert_eq!(out.matches("data:image/gif").count(), REMOTE_PICTURES_MAX);
+        assert_eq!(out.matches("data-remote=").count(), 5);
+    }
+}
