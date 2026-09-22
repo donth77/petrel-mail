@@ -41,6 +41,13 @@ pub(crate) async fn push_draft_to_server(
         {
             return Ok(());
         }
+        // Nor one with a send time: that is post in the outbox, not a draft.
+        // The save inside Send starts this debounce, and firing during the
+        // undo window put a fresh draft on the server for a message already
+        // on its way — one another client could send a second time.
+        if store.has_send_time(draft_id).map_err(|e| e.to_string())? {
+            return Ok(());
+        }
         let record = store.load_draft(draft_id).map_err(|e| e.to_string())?;
         let (msgid, old_uid) = store
             .draft_sync_state(draft_id)

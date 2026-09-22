@@ -1669,16 +1669,27 @@ impl Store {
             .map(|t| (t.name, t.id))
             .collect();
         let mut changed = 0usize;
+        // Never a draft of ours or post in the outbox. Their server copies carry
+        // the draft's own Message-ID, so without this the sweep found the row
+        // and filed it like received mail.
+        let held = format!(
+            "SELECT m.id FROM messages m
+             WHERE m.account_id = ?1 AND m.message_id_hdr = ?2 AND m.deleted_at_ms IS NULL
+               AND {}",
+            folders::NOT_DRAFT_OR_OUTBOX
+        );
 
         for (msg_id, labels, inbox_uid) in labelled {
+            // A draft is not filed at all. Gmail keeps one in All Mail with no
+            // Inbox label, so the sweep read every draft on the server as
+            // archived mail, and a send undone out of the outbox came back as
+            // a message in Archive.
+            if has(labels, "Draft") {
+                continue;
+            }
             let existing: Option<i64> = self
                 .conn
-                .query_row(
-                    "SELECT id FROM messages
-                     WHERE account_id = ?1 AND message_id_hdr = ?2 AND deleted_at_ms IS NULL",
-                    params![account_id, msg_id],
-                    |r| r.get(0),
-                )
+                .query_row(&held, params![account_id, msg_id], |r| r.get(0))
                 .optional()?;
             // Not held. Knowing where a message we do not have lives is not
             // worth a row we could not open.

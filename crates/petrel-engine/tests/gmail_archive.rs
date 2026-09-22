@@ -346,3 +346,57 @@ fn an_inbox_listing_numbers_or_drops_the_placements_the_sweep_made() {
     );
     let _ = thread;
 }
+
+/// Gmail keeps a draft in All Mail with no Inbox label. Filed by that, every
+/// draft on the server read as archived mail, and a send undone out of the
+/// outbox came back as a message in Archive.
+#[test]
+fn the_label_sweep_leaves_drafts_and_outbox_post_where_they_are() {
+    let mut g = gmail();
+    g.store
+        .ensure_folder(g.account, "drafts", "[Gmail]/Drafts")
+        .unwrap();
+    let id = g
+        .store
+        .save_draft(
+            g.account,
+            None,
+            "them@example.com",
+            "Hello",
+            "body",
+            "<p>body</p>",
+        )
+        .unwrap();
+    // Pushed: the server copy carries the draft's own Message-ID.
+    g.store.set_draft_msgid(id, "d@x").unwrap();
+    let sweep = |g: &Gmail, labels: Vec<String>| {
+        g.store
+            .apply_gmail_labels(g.account, &[("d@x".to_string(), labels)])
+            .unwrap();
+    };
+
+    // As Gmail reports it: \Draft, and no \Inbox.
+    sweep(&g, vec![label("Draft")]);
+    assert_eq!(
+        g.store.placement_uid(id, g.all).unwrap(),
+        None,
+        "filed a draft as archived"
+    );
+
+    // Labelled like ordinary mail, our own draft still stays where it is.
+    sweep(&g, vec![label("Important")]);
+    assert_eq!(
+        g.store.placement_uid(id, g.all).unwrap(),
+        None,
+        "filed our draft"
+    );
+
+    // And post in the outbox, where an undone send comes back from.
+    g.store.schedule_send(id, Some(i64::MAX)).unwrap();
+    sweep(&g, vec![label("Important")]);
+    assert_eq!(
+        g.store.placement_uid(id, g.all).unwrap(),
+        None,
+        "filed outbox post"
+    );
+}

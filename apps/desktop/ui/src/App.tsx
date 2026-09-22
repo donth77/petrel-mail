@@ -811,8 +811,16 @@ export function App() {
     setOutgoing(null);
     void api
       .outboxEdit(o.id)
+      // Out of the Outbox and back in Drafts, so both numbers change. Nothing
+      // else recounts them: the message count does not move.
+      .then(() => setTriageEpoch((n) => n + 1))
       .then(() => resumeDraft(o.id))
-      .then(() => setToast(t('compose-cancelled')))
+      .then(() => {
+        // An undo offer left over from an earlier toast would ride on this
+        // one, and its Undo would reverse that, not this.
+        setUndoOffer(null);
+        setToast(t('compose-cancelled'));
+      })
       .catch((e) => setToast(t('compose-resume-failed', { error: String(e) })));
   };
 
@@ -1710,6 +1718,9 @@ export function App() {
     if (!outgoing) return;
     if (outgoing.left <= 0) {
       setOutgoing(null);
+      // Without clearing, the toast carried the Undo of whatever was done
+      // before the send, and pressing it reversed that instead.
+      setUndoOffer(null);
       setToast(t('compose-sent'));
       return;
     }
@@ -2917,7 +2928,12 @@ export function App() {
                 if (id == null) throw new Error('no draft row');
                 return api.scheduleSend(id, Date.now() + wait * 1000).then(() => id);
               })
-              .then((id) => setOutgoing({ id, subject: d.subject, left: wait }))
+              .then((id) => {
+                setOutgoing({ id, subject: d.subject, left: wait });
+                // From Drafts to the Outbox. The message count does not move,
+                // so without this neither number did until a sync happened by.
+                setTriageEpoch((n) => n + 1);
+              })
               .catch((e) => {
                 // Could not even queue it: the draft comes back. Losing what
                 // someone wrote is the one failure that is unforgivable.
@@ -2968,6 +2984,7 @@ export function App() {
               })
               .then(() => {
                 setDraft(null);
+                setTriageEpoch((n) => n + 1);
                 setToast(t('compose-scheduled', { when: new Date(id).toLocaleString() }));
               })
               .catch((e) => setToast(t('compose-save-failed', { error: String(e) })));

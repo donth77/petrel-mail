@@ -298,6 +298,19 @@ impl Store {
     /// Clearing matters as much as setting: an outbox you cannot pull something
     /// back out of is a worse promise than sending straight away, because the
     /// window where you can change your mind is exactly why it exists.
+    /// Whether this row has a send time: post in the outbox, not a draft.
+    pub fn has_send_time(&self, draft_id: i64) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT send_after_ms IS NOT NULL FROM messages WHERE id = ?1",
+                params![draft_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(false))
+    }
+
     pub fn schedule_send(&self, draft_id: i64, at_ms: Option<i64>) -> Result<()> {
         self.conn.execute(
             "UPDATE messages SET send_after_ms = ?2 WHERE id = ?1",
