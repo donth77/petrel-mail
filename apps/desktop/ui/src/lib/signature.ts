@@ -10,6 +10,10 @@ import type { Identity } from './api';
  */
 export const SEPARATOR = '-- ';
 
+/** The separator as the editor keeps it, with a space that survives; see
+ *  `startingHtml`. */
+const SEPARATOR_HTML = '--&nbsp;';
+
 export function startingBody(identity: Identity | null, isReply: boolean): string {
   if (!identity?.signature.trim()) return '';
   if (isReply && !identity.signature_on_reply) return '';
@@ -35,6 +39,11 @@ function escapeHtml(text: string): string {
  *
  * Two empty paragraphs above it, for the same reason the text version has two
  * newlines — the caret should land somewhere to write, not on the signature.
+ *
+ * The separator's space is a non-breaking one here. The editor reads HTML the
+ * way a browser lays it out, and a space at the end of a paragraph is nothing
+ * to a browser: `-- ` became `--`, which no client folds. The text half turns
+ * it back into an ordinary space (`plainTextFromDoc`).
  */
 export function startingHtml(identity: Identity | null, isReply: boolean): string {
   if (!identity?.signature.trim()) return '';
@@ -43,5 +52,5 @@ export function startingHtml(identity: Identity | null, isReply: boolean): strin
     .split('\n')
     .map((line) => `<p>${escapeHtml(line) || '<br>'}</p>`)
     .join('');
-  return `<p></p><p></p><p>${escapeHtml(SEPARATOR)}</p>${lines}`;
+  return `<p></p><p></p><p>${SEPARATOR_HTML}</p>${lines}`;
 }

@@ -43,6 +43,138 @@ pub fn attachment_bytes(raw: &[u8], index: usize) -> Option<(Attachment, Vec<u8>
     Some((meta, part.contents().to_vec()))
 }
 
+/// The composer refuses a pasted picture over this (`EMBED_CAP`), so a quoted
+/// one gets no more room.
+const QUOTE_PICTURE_CAP: usize = 8 * 1024 * 1024;
+/// Every picture in one quote, together: well under the 25MB a message may
+/// weigh, with room left for what the reply attaches.
+const QUOTE_PICTURES_BUDGET: usize = 16 * 1024 * 1024;
+
+/// One of the original's inline pictures, as a quote of it carries it.
+pub struct QuotedPicture {
+    /// The part's index in `attachments()`, the same one the store records.
+    pub part: usize,
+    pub cid: String,
+    pub mime: String,
+    pub bytes: Vec<u8>,
+}
+
+/// The inline pictures a quote of this message carries, in part order.
+///
+/// Only pictures `html` actually shows, by `cid:`; an inline part nothing
+/// refers to is an attachment in all but name, and a forward attaches it.
+/// Raster types only, never SVG. Each within the composer's paste limit and
+/// all within one budget, so a picture past either is left out of the quote.
+///
+/// `html` is the sanitized body, the one [`embed_cid_images`] rewrites, so the
+/// two agree on which pictures travel in the body. A forward uses this to
+/// leave those out of its attachments rather than send them twice.
+pub fn quoted_pictures(html: &str, raw: &[u8]) -> Vec<QuotedPicture> {
+    quoted_pictures_within(html, raw, QUOTE_PICTURE_CAP, QUOTE_PICTURES_BUDGET)
+}
+
+fn quoted_pictures_within(
+    html: &str,
+    raw: &[u8],
+    per_picture: usize,
+    budget: usize,
+) -> Vec<QuotedPicture> {
+    let mut out = Vec::new();
+    if !html.contains("cid:") {
+        return out;
+    }
+    let Some(msg) = MessageParser::default().parse(raw) else {
+        return out;
+    };
+    let mut spent = 0usize;
+    for (part, att) in msg.attachments().enumerate() {
+        let Some(cid) = att.content_id() else {
+            continue;
+        };
+        // Referenced as the sanitizer serializes an attribute value, which is
+        // also the form `resolve_cids` looks for.
+        let escaped = cid
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;");
+        if !html.contains(&format!("cid:{escaped}")) {
+            continue;
+        }
+        let mime = att
+            .content_type()
+            .map(|ct| format!("{}/{}", ct.ctype(), ct.subtype().unwrap_or_default()))
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        // SVG can carry script, and a picture is all a quote needs.
+        let mime = match mime.as_str() {
+            "image/png" | "image/gif" | "image/webp" | "image/jpeg" => mime,
+            "image/jpg" | "image/pjpeg" => "image/jpeg".to_string(),
+            _ => continue,
+        };
+        let bytes = att.contents();
+        if bytes.len() > per_picture || spent + bytes.len() > budget {
+            continue;
+        }
+        spent += bytes.len();
+        out.push(QuotedPicture {
+            part,
+            cid: cid.to_string(),
+            mime,
+            bytes: bytes.to_vec(),
+        });
+    }
+    out
+}
+
+/// Writes the original's own pictures into a quote of it.
+///
+/// A reply or a forward quotes the original's HTML, whose `cid:` images name
+/// parts of the *original* message. The new message does not carry those
+/// parts, so the pictures arrived broken at the other end, and were broken in
+/// the composer already, since only a mail renderer can follow a cid. Each is
+/// written in as a `data:` URL instead: the composer shows it, and the send
+/// turns it back into an inline part of the new message, the way a pasted
+/// picture travels. Nothing is fetched; the bytes are the message's own.
+///
+/// A `cid:` picture left over names a part the reply will not carry, so it is
+/// taken out of `src`. The composer's image node needs a `src`, so the picture
+/// is left out rather than sent broken.
+///
+/// Runs on sanitized HTML, as [`crate::resolve_cids`] does.
+pub fn embed_cid_images(html: &str, raw: &[u8]) -> String {
+    embed_pictures(html, &quoted_pictures(html, raw))
+}
+
+/// A picture as a `data:` URL, the form the composer shows and the send turns
+/// into an inline part.
+pub fn data_url(mime: &str, bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    format!(
+        "data:{mime};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    )
+}
+
+fn embed_pictures(html: &str, pictures: &[QuotedPicture]) -> String {
+    let parts: Vec<Attachment> = pictures
+        .iter()
+        .map(|p| Attachment {
+            filename: None,
+            content_type: Some(p.mime.clone()),
+            size: p.bytes.len(),
+            content_id: Some(p.cid.clone()),
+            is_inline: true,
+        })
+        .collect();
+    let resolved = crate::sanitize::resolve_cids(html, &parts, |i| {
+        data_url(&pictures[i].mime, &pictures[i].bytes)
+    });
+    resolved
+        .replace("src=\"cid:", "data-cid=\"")
+        .replace("src='cid:", "data-cid='")
+}
+
 /// The way out of a mailing list, as the message itself declares it.
 ///
 /// Read from `List-Unsubscribe` (RFC 2369) and `List-Unsubscribe-Post`
@@ -1443,5 +1575,93 @@ Content-Type: multipart/alternative; boundary=\"b\"\r\n\r\n\
     fn an_empty_body_is_still_a_message() {
         let m = parse_message(&message("8bit", b"")).expect("parses");
         assert!(m.body_text.trim().is_empty(), "body was {:?}", m.body_text);
+    }
+}
+
+#[cfg(test)]
+mod quoted_pictures {
+    use super::*;
+
+    /// The PNG signature, eight bytes: all a part needs to be a picture here.
+    const PNG: &str = "iVBORw0KGgo=";
+
+    fn message(parts: &str) -> Vec<u8> {
+        format!(
+            "From: a@example.com\r\nTo: me@example.com\r\nSubject: pictures\r\n\
+MIME-Version: 1.0\r\nContent-Type: multipart/related; boundary=\"b\"\r\n\r\n\
+--b\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>see</p>\r\n\
+{parts}--b--\r\n"
+        )
+        .into_bytes()
+    }
+
+    fn picture(cid: &str, mime: &str) -> String {
+        format!(
+            "--b\r\nContent-Type: {mime}\r\nContent-Transfer-Encoding: base64\r\n\
+Content-ID: <{cid}>\r\n\r\n{PNG}\r\n"
+        )
+    }
+
+    #[test]
+    fn a_picture_the_body_shows_is_written_in_as_data() {
+        let raw = message(&picture("logo@x", "image/png"));
+        let out = embed_cid_images(r#"<p>Logo</p><img src="cid:logo@x">"#, &raw);
+        assert_eq!(
+            out,
+            format!(r#"<p>Logo</p><img src="data:image/png;base64,{PNG}">"#)
+        );
+    }
+
+    /// Sent as it was, a cid the reply does not carry arrives broken.
+    #[test]
+    fn a_picture_the_reply_cannot_carry_is_left_out() {
+        let raw = message(&picture("logo@x", "image/png"));
+        let out = embed_cid_images(r#"<img src="cid:gone@x">"#, &raw);
+        assert_eq!(out, r#"<img data-cid="gone@x">"#);
+    }
+
+    #[test]
+    fn svg_is_never_embedded() {
+        let raw = message(&picture("art@x", "image/svg+xml"));
+        let out = embed_cid_images(r#"<img src="cid:art@x">"#, &raw);
+        assert!(!out.contains("data:"), "{out}");
+        assert!(!out.contains("src="), "{out}");
+    }
+
+    /// An inline part nothing refers to is an attachment in all but name, and
+    /// a forward attaches it. Only what the body shows travels in the body.
+    #[test]
+    fn only_the_pictures_the_body_shows_are_quoted() {
+        let raw = message(&format!(
+            "{}{}",
+            picture("shown@x", "image/png"),
+            picture("unshown@x", "image/png")
+        ));
+        let pictures = quoted_pictures(r#"<img src="cid:shown@x">"#, &raw);
+        let parts: Vec<usize> = pictures.iter().map(|p| p.part).collect();
+        assert_eq!(parts, vec![0]);
+    }
+
+    #[test]
+    fn pictures_past_either_limit_are_left_out() {
+        let raw = message(&format!(
+            "{}{}",
+            picture("one@x", "image/png"),
+            picture("two@x", "image/png")
+        ));
+        let html = r#"<img src="cid:one@x"><img src="cid:two@x">"#;
+        assert!(quoted_pictures_within(html, &raw, 4, 1024).is_empty());
+        let fitted: Vec<usize> = quoted_pictures_within(html, &raw, 8, 8)
+            .iter()
+            .map(|p| p.part)
+            .collect();
+        assert_eq!(fitted, vec![0], "the second would overspend the budget");
+    }
+
+    #[test]
+    fn an_image_jpg_part_is_embedded_as_jpeg() {
+        let raw = message(&picture("photo@x", "image/jpg"));
+        let out = embed_cid_images(r#"<img src="cid:photo@x">"#, &raw);
+        assert!(out.contains("data:image/jpeg;base64,"), "{out}");
     }
 }

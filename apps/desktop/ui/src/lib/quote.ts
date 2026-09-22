@@ -34,7 +34,10 @@ export function attribution(from: string, dateMs: number, locale?: string): stri
     month: 'long',
     year: 'numeric',
   });
-  const time = when.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' });
+  // The hour as the language writes it: "1:14 PM" where a clock is twelve
+  // hours, "13:14" where it is twenty-four. Two-digit hours wrote "01:14 PM",
+  // which no mail client does.
+  const time = when.toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit' });
   return t('quote-attribution', { date, time, who: from });
 }
 
@@ -98,7 +101,7 @@ export function forwardBody(
     month: 'short',
     year: 'numeric',
   });
-  const time = when.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' });
+  const time = when.toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit' });
   const lines = [
     `${t('quote-from')} ${escape(from)}`,
     `${t('quote-date')} ${escape(`${date} ${time}`)}`,

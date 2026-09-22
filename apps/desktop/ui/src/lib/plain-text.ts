@@ -19,6 +19,8 @@
  * alone do not: where a link goes, and who said what.
  */
 
+import { SEPARATOR } from './signature';
+
 /** A node of the editor's document, as it serialises. */
 export type DocNode = {
   type?: string;
@@ -145,7 +147,14 @@ export function plainTextFromDoc(doc: DocNode | null | undefined): string {
   if (!doc) return '';
   return block(doc)
     .split('\n')
-    .map((line) => line.replace(/[ \t]+$/, ''))
+    .map((line) => (isSeparator(line) ? SEPARATOR : line.replace(/[ \t]+$/, '')))
     .join('\n')
     .trim();
+}
+
+/** The signature separator, whose trailing space is the whole point of it:
+ *  every client folds a signature on `-- ` exactly. The editor keeps that
+ *  space as a non-breaking one, so both spellings count. */
+function isSeparator(line: string): boolean {
+  return line === '-- ' || line === '-- ';
 }

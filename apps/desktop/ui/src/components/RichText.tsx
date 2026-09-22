@@ -200,8 +200,11 @@ export function RichText({ html, onChange, onKeyDown, autoFocus, onNotice }: Pro
     immediatelyRender: false,
   });
 
+  // At the top, where a reply is written above the quote and a new message
+  // above its signature. The end put the caret below the signature, and in a
+  // reply at the foot of the quoted original, inside it.
   useEffect(() => {
-    if (autoFocus) editor?.commands.focus('end');
+    if (autoFocus) editor?.commands.focus('start');
   }, [autoFocus, editor]);
 
   // Whether the card is up, not the card itself: focus belongs on the first

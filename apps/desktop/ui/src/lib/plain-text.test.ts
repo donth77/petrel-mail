@@ -85,6 +85,14 @@ describe('plainTextFromDoc', () => {
     expect(quoted).toBe('> One.\n>\n> Two.');
   });
 
+  /* Every client folds a signature on `-- ` exactly, trailing space and all.
+     The editor keeps that space as a non-breaking one; the text half sends an
+     ordinary one, and trimming trailing spaces must not take it. */
+  it('sends the signature separator with its space', () => {
+    expect(plainTextFromDoc(doc(p(t('Hi')), p(t('--\u00a0')), p(t('You'))))).toBe('Hi\n-- \nYou');
+    expect(plainTextFromDoc(doc(p(t('Hi')), p(t('-- ')), p(t('You'))))).toBe('Hi\n-- \nYou');
+  });
+
   it('survives a node it has never seen without losing the words', () => {
     const odd = { type: 'somethingNew', content: [t('still here')] };
     expect(plainTextFromDoc(doc(odd))).toContain('still here');

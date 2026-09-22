@@ -11,6 +11,16 @@ describe('attribution', () => {
     expect(line).toContain('2026');
     expect(line).toMatch(/wrote:$/);
   });
+
+  /* "01:05 PM" is what two-digit hours wrote, and no mail client does. A
+     local time, so the check holds in any time zone the tests run in. */
+  it('writes the hour as the language does, without a leading zero', () => {
+    const afternoon = new Date(2026, 2, 4, 13, 5).getTime();
+    const line = attribution('Dana Wu', afternoon, 'en-US');
+    expect(line).toContain('1:05');
+    expect(line).not.toContain('01:05');
+    expect(attribution('Dana Wu', afternoon, 'en-GB')).toContain('13:05');
+  });
 });
 
 describe('replyBody', () => {

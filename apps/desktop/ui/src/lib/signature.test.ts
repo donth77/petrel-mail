@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SEPARATOR, startingBody } from './signature';
+import { SEPARATOR, startingBody, startingHtml } from './signature';
 import type { Identity } from './api';
 
 const identity = (over: Partial<Identity> = {}): Identity => ({
@@ -16,6 +16,13 @@ describe('the signature separator', () => {
     // trailing space, and it shows as ordinary text at the bottom of every
     // message forever — a mistake nobody notices in their own outbox.
     expect(SEPARATOR).toBe('-- ');
+  });
+
+  /* The editor lays HTML out as a browser does, and a space at the end of a
+     paragraph is nothing to a browser: `-- ` went out as `--`, which no
+     client folds. A non-breaking space survives. */
+  it('keeps its space in the editor', () => {
+    expect(startingHtml(identity(), false)).toContain('<p>--&nbsp;</p><p>You</p>');
   });
 
   it('appears on its own line above the signature', () => {

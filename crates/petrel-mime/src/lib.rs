@@ -16,8 +16,9 @@ pub mod parse;
 pub mod sanitize;
 
 pub use parse::{
-    Attachment, AuthVerdict, Authentication, ParsedMessage, Unsubscribe, attachment_bytes,
-    authentication, parse_message, unsubscribe_info,
+    Attachment, AuthVerdict, Authentication, ParsedMessage, QuotedPicture, Unsubscribe,
+    attachment_bytes, authentication, data_url, embed_cid_images, parse_message, quoted_pictures,
+    unsubscribe_info,
 };
 pub use sanitize::{
     SanitizeReport, Sanitized, declares_dark, plain_text_to_html, resolve_cids, sanitize_html,

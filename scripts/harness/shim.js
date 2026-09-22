@@ -1249,7 +1249,9 @@
     outbox_check: function () { return 'NeedsAttention'; },
     quote_message: function () {
       return {
-        html: '<p>Could you take a look before Friday?</p><p>Thanks,<br>Dana</p>',
+        // With the empty paragraph the command now writes between two worded
+        // ones, so the quote keeps the break the reader showed.
+        html: '<p>Could you take a look before Friday?</p><p></p><p>Thanks,<br>Dana</p>',
         text: 'Could you take a look before Friday?\n\nThanks,\nDana',
         from: 'Dana Wu',
         date_ms: Date.now() - 3600000,

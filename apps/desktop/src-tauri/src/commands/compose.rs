@@ -318,6 +318,10 @@ pub(crate) struct Quoted {
 /// *sent*. Quoting a tracked message with its pixel intact would forward that
 /// pixel to everyone on the reply and fire it again for each of them, turning
 /// the person replying into the tracker's delivery mechanism.
+///
+/// The message's own pictures are another matter: nothing is fetched to show
+/// them, so they stay, written in from its parts (`embed_cid_images`). Left as
+/// `cid:` references they were broken in the composer and broken on arrival.
 #[tauri::command(async)]
 pub fn quote_message(message_id: i64, state: State<Arc<AppState>>) -> Result<Quoted, String> {
     let store = state.store()?;
@@ -337,10 +341,12 @@ pub fn quote_message(message_id: i64, state: State<Arc<AppState>>) -> Result<Quo
         .unwrap_or_default();
 
     let html = match parsed.body_html.as_deref() {
-        Some(h) => petrel_mime::sanitize_html(h, false).html,
-        // No HTML half: the text becomes the quote, escaped into paragraphs so
-        // it arrives as prose rather than as one run-on line.
-        None => petrel_mime::plain_text_to_html(&parsed.body_text),
+        Some(h) => {
+            let clean = petrel_mime::sanitize_html(h, false).html;
+            petrel_mime::embed_cid_images(&paragraph_breaks_as_blank_lines(&clean), &raw)
+        }
+        // No HTML half: the text becomes the quote, a paragraph to a line.
+        None => plain_text_quote(&parsed.body_text),
     };
 
     let to = parsed
@@ -366,6 +372,93 @@ pub fn quote_message(message_id: i64, state: State<Arc<AppState>>) -> Result<Quo
             .map(|(_, addr)| addr.clone())
             .collect(),
     })
+}
+
+/// The original's paragraph breaks, written in as blank lines.
+///
+/// The composer draws a paragraph as a line with no gap under it: right for
+/// what is being written, and wrong for a quoted original whose paragraphs
+/// relied on a gap to stand apart. Two of them read as one block, the blank
+/// line between them gone. Every mail client, Petrel's reader among them, gives
+/// a `<p>` a margin, so an empty paragraph between two worded ones puts back
+/// what the reader showed. Paragraphs that already have an empty one between
+/// them, as Outlook writes its blank lines, keep just that one; lines written
+/// as `<div>`s, as Gmail and Apple Mail write them, had no gap and get none.
+///
+/// Runs on sanitized HTML, which is serialized: tags are lowercase, balanced,
+/// and paragraphs never nest, so a paragraph ends at the first `</p>`.
+fn paragraph_breaks_as_blank_lines(html: &str) -> String {
+    // Each paragraph's span, and whether it holds any words.
+    let mut paragraphs: Vec<(usize, usize, bool)> = Vec::new();
+    let mut from = 0;
+    while let Some(rel) = html[from..].find("<p") {
+        let start = from + rel;
+        let after = html.as_bytes().get(start + 2).copied();
+        if !matches!(after, Some(b'>' | b' ' | b'\t' | b'\n' | b'\r')) {
+            from = start + 2;
+            continue;
+        }
+        let Some(close) = html[start..].find("</p>").map(|c| start + c) else {
+            break;
+        };
+        let end = close + "</p>".len();
+        let inner = &html[start..close];
+        let inner = inner.find('>').map_or("", |gt| &inner[gt + 1..]);
+        paragraphs.push((start, end, has_words(inner)));
+        from = end;
+    }
+    let mut out = String::with_capacity(html.len() + paragraphs.len() * 7);
+    let mut copied = 0;
+    for pair in paragraphs.windows(2) {
+        let ((_, end, worded), (next, _, next_worded)) = (pair[0], pair[1]);
+        if worded && next_worded && html[end..next].trim().is_empty() {
+            out.push_str(&html[copied..end]);
+            out.push_str("<p></p>");
+            copied = end;
+        }
+    }
+    out.push_str(&html[copied..]);
+    out
+}
+
+/// Whether a paragraph's markup holds anything but tags, spaces and
+/// non-breaking spaces.
+fn has_words(inner: &str) -> bool {
+    let mut in_tag = false;
+    let mut text = String::new();
+    for c in inner.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => text.push(c),
+            _ => {}
+        }
+    }
+    !text
+        .replace("&nbsp;", " ")
+        .replace('\u{a0}', " ")
+        .trim()
+        .is_empty()
+}
+
+/// A plain-text original as paragraphs the composer keeps: a line each, and a
+/// blank line as an empty one. The reader's markup, a `<div>` to a line, lost
+/// every blank line on the way in: an empty div is nothing to the editor, so
+/// the original's paragraphs ran together in the quote.
+fn plain_text_quote(text: &str) -> String {
+    text.lines()
+        .map(|line| {
+            if line.trim().is_empty() {
+                "<p></p>".to_string()
+            } else {
+                let escaped = line
+                    .replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;");
+                format!("<p>{escaped}</p>")
+            }
+        })
+        .collect()
 }
 
 /// Writes a dropped file to disk and reports where it landed.
@@ -621,3 +714,52 @@ mod draft_account_tests {
         assert!(store.due_sends(first, 2_000).unwrap().is_empty());
     }
 }
+
+#[cfg(test)]
+mod quote_layout_tests {
+    use super::{paragraph_breaks_as_blank_lines, plain_text_quote};
+
+    /// Two paragraphs in the original read as two in the quote, with the blank
+    /// line between them that the reader showed.
+    #[test]
+    fn paragraphs_keep_the_break_between_them() {
+        assert_eq!(
+            paragraph_breaks_as_blank_lines("<p>Friday?</p><p>Thanks,<br>Dana</p>"),
+            "<p>Friday?</p><p></p><p>Thanks,<br>Dana</p>"
+        );
+        assert_eq!(
+            paragraph_breaks_as_blank_lines("<p>One.</p>\n<p class=\"x\">Two.</p>"),
+            "<p>One.</p><p></p>\n<p class=\"x\">Two.</p>"
+        );
+    }
+
+    /// Outlook writes its blank lines as paragraphs of their own. Adding more
+    /// beside them would double every gap.
+    #[test]
+    fn a_written_blank_line_is_not_doubled() {
+        let outlook = "<p>Hi</p><p>&nbsp;</p><p>Thanks</p><p><br></p><p>Sam</p>";
+        assert_eq!(paragraph_breaks_as_blank_lines(outlook), outlook);
+    }
+
+    /// Gmail and Apple Mail write lines as divs, with no gap to put back.
+    #[test]
+    fn lines_and_other_blocks_are_left_alone() {
+        for html in [
+            "<div>one</div><div>two</div>",
+            "<div><p>a</p></div><div><p>b</p></div>",
+            "<blockquote><p>a</p></blockquote><p>b</p>",
+            "<pre>x</pre><p>y</p>",
+        ] {
+            assert_eq!(paragraph_breaks_as_blank_lines(html), html);
+        }
+    }
+
+    #[test]
+    fn a_plain_text_original_keeps_its_blank_lines() {
+        assert_eq!(
+            plain_text_quote("Hi Sam,\n\nThanks for this.\n<b> is not markup"),
+            "<p>Hi Sam,</p><p></p><p>Thanks for this.</p><p>&lt;b&gt; is not markup</p>"
+        );
+    }
+}
+
