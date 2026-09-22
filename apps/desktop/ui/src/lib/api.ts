@@ -762,6 +762,8 @@ const mock = {
   stageAttachment: async (name: string, bytes: Uint8Array) => ({
     path: `/tmp/staged/${name}`, name, size: bytes.length,
   }),
+  stageForwarded: async (_messageId: number, parts: number[]) =>
+    parts.map((part) => ({ path: `/tmp/staged/${part}/forwarded`, name: 'forwarded', size: 0 })),
   discoverAccount: async (address: string): Promise<Discovered | null> =>
     address.endsWith('@gmail.com')
       ? { provider: 'Gmail', via: 'known-provider', imap: { host: 'imap.gmail.com', port: 993, tls: true },
@@ -917,6 +919,13 @@ const real = {
   outboxCheck: (id: number) => invoke<string>('outbox_check', { id }),
   stageAttachment: (name: string, bytes: Uint8Array) =>
     invoke<{ path: string; name: string; size: number }>('stage_attachment', { name, bytes }),
+  /** The original's attachments, as files a forward can carry. Pictures the
+   *  forwarded body already shows are left out by the command. */
+  stageForwarded: (messageId: number, parts: number[]) =>
+    invoke<{ path: string; name: string; size: number }[]>('stage_forwarded_attachments', {
+      messageId,
+      parts,
+    }),
   /** Absent `account` means the one on screen — see the Rust command. */
   tags: (account?: number) => invoke<Tag[]>('list_tags', { account: account ?? null }),
   viewCounts: (modes: Record<string, string>) =>

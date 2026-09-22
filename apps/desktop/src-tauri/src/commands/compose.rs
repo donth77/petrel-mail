@@ -476,30 +476,85 @@ fn plain_text_quote(text: &str) -> String {
 /// called `id_rsa` in the staging directory and not a path out of it.
 #[tauri::command(async)]
 pub fn stage_attachment(name: String, bytes: Vec<u8>) -> Result<AttachmentInfo, String> {
-    let stem = std::path::Path::new(&name)
+    stage_bytes(&name, &bytes)
+}
+
+/// Stages the original's attachments for a forward, as every client forwards
+/// them. `parts` are the ones the reader lists.
+///
+/// The composer attaches by path, so each part becomes a file in the staging
+/// directory: the one a dropped file lands in, which the send already accepts
+/// and the launch sweep already clears. A picture the forwarded body shows is
+/// skipped, because the body carries it (`quoted_pictures`) and attaching it as
+/// well would send it twice.
+#[tauri::command(async)]
+pub fn stage_forwarded_attachments(
+    message_id: i64,
+    parts: Vec<usize>,
+    state: State<Arc<AppState>>,
+) -> Result<Vec<AttachmentInfo>, String> {
+    let hash = state
+        .store_read_open()?
+        .blob_hash_for(message_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("message has no stored body")?;
+    let raw = state
+        .blobs
+        .read(&hash)
+        .map_err(|_| "message body unavailable")?;
+    let parsed = petrel_mime::parse_message(&raw).ok_or("message could not be parsed")?;
+    // The same sanitized body the quote is built from, so the two agree on
+    // which pictures travel inside it.
+    let in_body: std::collections::HashSet<usize> = match parsed.body_html.as_deref() {
+        Some(h) => {
+            let html = petrel_mime::sanitize_html(h, false).html;
+            petrel_mime::quoted_pictures(&html, &raw)
+                .into_iter()
+                .map(|p| p.part)
+                .collect()
+        }
+        None => Default::default(),
+    };
+    let mut staged = Vec::new();
+    for part in parts {
+        if in_body.contains(&part) {
+            continue;
+        }
+        let (meta, bytes) = petrel_mime::attachment_bytes(&raw, part)
+            .ok_or("that attachment is not in the message")?;
+        let name = super::attachments::safe_filename(meta.filename.as_deref());
+        staged.push(stage_bytes(&name, &bytes)?);
+    }
+    Ok(staged)
+}
+
+fn stage_bytes(name: &str, bytes: &[u8]) -> Result<AttachmentInfo, String> {
+    stage_bytes_in(&data_dir().join("staged"), name, bytes)
+}
+
+fn stage_bytes_in(
+    root: &std::path::Path,
+    name: &str,
+    bytes: &[u8],
+) -> Result<AttachmentInfo, String> {
+    let stem = std::path::Path::new(name)
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .filter(|n| !n.is_empty() && n != "." && n != "..")
         .unwrap_or_else(|| "attachment".to_string());
 
-    let dir = data_dir().join("staged");
     // 0700 on Unix: a staged file is somebody's mail sitting in a directory
     // under their profile, and every other account on the machine could
     // read it.
-    create_private_dir(&dir).map_err(|e| e.to_string())?;
+    create_private_dir(root).map_err(|e| e.to_string())?;
 
-    // Prefixed rather than overwritten: dropping two files of the same name
-    // from different folders is ordinary, and the second must not replace the
-    // first after the first is already listed in the composer.
-    let unique = format!(
-        "{}-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0),
-        stem
-    );
-    let path = dir.join(unique);
+    // A directory of its own for each file, and the file inside under its own
+    // name. The send names an attachment after its file, and the timestamp
+    // this used to put in front of the name went out with it: a dropped
+    // report.pdf arrived as 1726912345678901234-report.pdf. Two files of the
+    // same name still never meet.
+    let dir = fresh_private_dir(root).map_err(|e| e.to_string())?;
+    let path = dir.join(&stem);
     let size = bytes.len() as u64;
     std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
 
@@ -508,6 +563,31 @@ pub fn stage_attachment(name: String, bytes: Vec<u8>) -> Result<AttachmentInfo, 
         size,
         path: path.to_string_lossy().into_owned(),
     })
+}
+
+/// A new, empty, private directory under `root`. Created rather than reused,
+/// so one that already exists is never shared.
+fn fresh_private_dir(root: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    for n in 0..1000u32 {
+        let dir = root.join(format!("{now}-{n}"));
+        #[cfg(unix)]
+        let made = {
+            use std::os::unix::fs::DirBuilderExt;
+            std::fs::DirBuilder::new().mode(0o700).create(&dir)
+        };
+        #[cfg(not(unix))]
+        let made = std::fs::create_dir(&dir);
+        match made {
+            Ok(()) => return Ok(dir),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::other("no free staging directory"))
 }
 
 /// Name and size for files the user picked, so the composer can refuse an
@@ -712,6 +792,40 @@ mod draft_account_tests {
         // why the check has to be here.
         assert!(store.schedule_send(draft, Some(1_000)).is_ok());
         assert!(store.due_sends(first, 2_000).unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod staging_tests {
+    use super::stage_bytes_in;
+
+    /// The send names an attachment after its file, so a staged file carries
+    /// exactly the name it was given, however many share it.
+    #[test]
+    fn a_staged_file_keeps_its_own_name() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let one = stage_bytes_in(root.path(), "report.pdf", b"one").expect("first");
+        let two = stage_bytes_in(root.path(), "report.pdf", b"two").expect("second");
+        for info in [&one, &two] {
+            let path = std::path::Path::new(&info.path);
+            assert_eq!(path.file_name().expect("a file"), "report.pdf");
+            assert!(path.starts_with(root.path()), "{}", info.path);
+            assert_eq!(info.name, "report.pdf");
+        }
+        assert_ne!(one.path, two.path, "two files of one name met");
+        assert_eq!(std::fs::read(&one.path).expect("read"), b"one");
+        assert_eq!(std::fs::read(&two.path).expect("read"), b"two");
+    }
+
+    /// The name arrives from a drag or a message somebody else wrote, so it is
+    /// a name and never a path.
+    #[test]
+    fn a_staged_name_cannot_climb_out() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let info = stage_bytes_in(root.path(), "../../.ssh/id_rsa", b"x").expect("staged");
+        let path = std::path::Path::new(&info.path);
+        assert_eq!(path.file_name().expect("a file"), "id_rsa");
+        assert!(path.starts_with(root.path()), "{}", info.path);
     }
 }
 

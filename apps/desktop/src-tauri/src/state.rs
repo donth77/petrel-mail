@@ -691,6 +691,10 @@ mod worker_switch_tests {
         let ok = |p: &str| accept_path(&picked, &staged, &on_draft, p).is_ok();
         assert!(ok("/Users/me/Documents/report.pdf"), "picked this session");
         assert!(ok("/data/Petrel/staged/1-dropped.txt"), "staged by a drop");
+        assert!(
+            ok("/data/Petrel/staged/1-0/dropped.txt"),
+            "staged in a directory of its own"
+        );
         assert!(ok("/Users/me/Pictures/old.png"), "already on the draft");
 
         assert!(!ok("/etc/passwd"));

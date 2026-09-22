@@ -204,10 +204,11 @@ fn sweep_leftovers(dir: &std::path::Path) {
         log_sync("mail from an earlier removal request deleted");
     }
     // Staged attachments: copies of somebody's mail, written when a file is
-    // dragged into a composer, and nothing ever removed them. Old ones only
-    // — a draft written last night and sent this morning must still find
-    // what was attached to it, and a fortnight is far longer than a message
-    // spends being written.
+    // dragged into a composer or a message is forwarded, and nothing ever
+    // removed them. Old ones only — a draft written last night and sent this
+    // morning must still find what was attached to it, and a fortnight is far
+    // longer than a message spends being written. Each now sits in a
+    // directory of its own; files staged loose, before that, go the same way.
     let staged = dir.join("staged");
     let _ = crate::diag::create_private_dir(&staged);
     const KEEP: std::time::Duration = std::time::Duration::from_secs(14 * 24 * 60 * 60);
@@ -220,7 +221,16 @@ fn sweep_leftovers(dir: &std::path::Path) {
                 .and_then(|t| t.elapsed().map_err(std::io::Error::other))
                 .map(|age| age > KEEP)
                 .unwrap_or(false);
-            if old_enough && std::fs::remove_file(entry.path()).is_ok() {
+            if !old_enough {
+                continue;
+            }
+            let path = entry.path();
+            let removed = if path.is_dir() {
+                std::fs::remove_dir_all(&path)
+            } else {
+                std::fs::remove_file(&path)
+            };
+            if removed.is_ok() {
                 swept += 1;
             }
         }
@@ -668,6 +678,7 @@ pub fn run() {
             commands::mail::thread_by_id,
             commands::windows::open_external,
             commands::compose::stage_attachment,
+            commands::compose::stage_forwarded_attachments,
             commands::mail::list_tags,
             commands::mail::view_counts,
             commands::remote::remote_status,

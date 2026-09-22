@@ -72,7 +72,13 @@ import { useDropGuard } from './lib/useFileDrop';
 import { AppDialogs } from './components/AppDialogs';
 import { DragPreview } from './components/DragPreview';
 import { startingBody, startingHtml } from './lib/signature';
-import { ATTACHMENT_LIMIT, pickAttachments, stageDropped } from './lib/attachments';
+import {
+  ATTACHMENT_LIMIT,
+  fits,
+  pickAttachments,
+  stageDropped,
+  type Attached,
+} from './lib/attachments';
 import { extend, facing, prune, rowsOf, tagsOnAll, targets, toggle } from './lib/selection';
 import { arrivalsSince, notifiable, postDesktopNotification, shouldNotify } from './lib/notify';
 import { Help } from './components/Help';
@@ -1184,10 +1190,37 @@ export function App() {
       if (!target) return;
       const quoted = await api.quoteMessage(target.id).catch(() => null);
       const subject = quoted?.subject?.trim() || row.subject;
+      // The original's attachments go with it, as every client forwards
+      // them, up to the size a message can carry. What does not fit is named
+      // rather than left behind in silence.
+      const planned: Attached[] = [];
+      const parts: number[] = [];
+      const tooBig: string[] = [];
+      for (const a of target.attachments ?? []) {
+        if (!fits(planned, a.size)) {
+          tooBig.push(a.filename);
+          continue;
+        }
+        planned.push({ path: '', name: a.filename, size: a.size });
+        parts.push(a.part);
+      }
+      const attachments =
+        parts.length > 0
+          ? await api.stageForwarded(target.id, parts).catch((e) => {
+              setToast(t('compose-attach-failed', { error: String(e) }));
+              return [];
+            })
+          : [];
+      if (tooBig.length > 0) {
+        setToast(
+          t('compose-too-large', { name: tooBig.join(', '), limit: fileSize(ATTACHMENT_LIMIT) }),
+        );
+      }
       openComposer({
         to: '',
         cc: '',
         subject: subject.match(/^fwd:/i) ? subject : `Fwd: ${subject}`,
+        attachments,
         body: startingBody(identity, true),
         html: quoted
           ? forwardBody(

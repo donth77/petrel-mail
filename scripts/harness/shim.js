@@ -1193,6 +1193,19 @@
       var bytes = (args && args.bytes) || [];
       return { path: '/staged/' + name, name: name, size: bytes.length || 0 };
     },
+    // A forward's attachments, staged under their own names as the command
+    // does: each in a directory of its own, the file named as it was sent.
+    // The parts are the ones the harness message lists (thread_detail).
+    stage_forwarded_attachments: function (a) {
+      var listed = {
+        0: { name: 'diagram.png', size: 48123 },
+        1: { name: 'setup.sh', size: 1290 },
+      };
+      window.__PETREL_FORWARDED__ = a;
+      return (a.parts || []).filter(function (p) { return listed[p]; }).map(function (p) {
+        return { path: '/staged/' + a.messageId + '-' + p + '/' + listed[p].name, name: listed[p].name, size: listed[p].size };
+      });
+    },
     // The outbox, one row per state, so all five designs can be seen at
     // once without staging five real failures.
     discover_account: function (a) {
