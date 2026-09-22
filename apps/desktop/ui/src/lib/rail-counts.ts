@@ -1,4 +1,5 @@
 import type { FolderNode } from './folders';
+import type { CountMode } from './mailboxes';
 
 type Counts = Readonly<Record<string, number>>;
 
@@ -32,4 +33,22 @@ export function rowCount(
   counts: Counts,
 ): number {
   return open ? ownCount : ownCount + treeCount(children, counts);
+}
+
+/**
+ * The number a mailbox row wears, given what that row is set to count.
+ *
+ * A row set to None wears nothing, folded or not. Folded, Trash used to add up
+ * the folders filed under it even with its own count switched off, because
+ * those follow the Folders setting rather than Trash's, and a "2" sat on a row
+ * somebody had asked to keep quiet.
+ */
+export function mailboxCount(
+  mode: CountMode,
+  ownCount: number,
+  children: readonly FolderNode[],
+  open: boolean,
+  counts: Counts,
+): number {
+  return mode === 'off' ? 0 : rowCount(ownCount, children, open, counts);
 }

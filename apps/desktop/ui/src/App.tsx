@@ -2213,6 +2213,7 @@ export function App() {
         counts={counts}
         outboxNeedsAttention={counts['outbox:attention'] ?? 0}
         mailboxOrder={visibleMailboxes(arrangement)}
+        countModes={countModes(arrangement)}
         sectionOrder={sectionOrder}
         searches={searches}
         view={view}

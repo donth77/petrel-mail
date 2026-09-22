@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildFolderTree } from './folders';
-import { rowCount, treeCount } from './rail-counts';
+import { mailboxCount, rowCount, treeCount } from './rail-counts';
 import type { Folder } from './api';
 
 const f = (id: number, path: string): Folder => ({ id, path, role: '' });
@@ -57,5 +57,22 @@ describe('the number a row wears', () => {
     // Off rows are simply absent from the map the engine sends.
     const { 'folder:103': _off, ...rest } = counts;
     expect(treeCount(node('Archive/Yearly').children, rest)).toBe(4);
+  });
+});
+
+describe('the number a mailbox row wears', () => {
+  // Trash on the Namecheap account: nothing unread in Trash itself, two in a
+  // folder binned under it, which the Folders setting counts.
+  const bin = buildFolderTree([f(135, 'Trash/workday+092026(1)')], 'Trash'.length);
+  const binCounts = { 'folder:135': 2 };
+
+  it('says nothing when the row is set to None, folded or open', () => {
+    expect(mailboxCount('off', 0, bin, false, binCounts)).toBe(0);
+    expect(mailboxCount('off', 0, bin, true, binCounts)).toBe(0);
+  });
+
+  it('otherwise counts what a folded row hides', () => {
+    expect(mailboxCount('unread', 0, bin, false, binCounts)).toBe(2);
+    expect(mailboxCount('unread', 0, bin, true, binCounts)).toBe(0);
   });
 });

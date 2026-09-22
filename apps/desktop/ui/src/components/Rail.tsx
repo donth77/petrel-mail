@@ -23,8 +23,8 @@ import {
   nestableRolePath,
   underAnchor,
 } from '../lib/folders';
-import { MAILBOX_KEYS, MAILBOX_LOOK } from '../lib/mailboxes';
-import { rowCount } from '../lib/rail-counts';
+import { MAILBOX_KEYS, MAILBOX_LOOK, defaultCount, type CountMode } from '../lib/mailboxes';
+import { mailboxCount, rowCount } from '../lib/rail-counts';
 import { AccountMenu } from './AccountMenu';
 import { RailFlyout } from './RailFlyout';
 import { Tip } from './Tip';
@@ -86,6 +86,9 @@ type Props = {
   /** Which mailboxes to draw, in order. From the sidebar arrangement, so a row
    *  somebody hid is simply absent rather than drawn and ignored. */
   mailboxOrder: string[];
+  /** What each mailbox row is set to count. A row set to None wears no
+   *  number even when folded over folders that have one of their own. */
+  countModes: Record<string, CountMode>;
   /** Which groups to draw, in order (`rail-sections.ts`). */
   sectionOrder: SectionKey[];
   /** Whether a drag is in flight, so destinations can say they will take it
@@ -185,6 +188,7 @@ export function Rail({
   dragActive,
   outboxNeedsAttention,
   mailboxOrder,
+  countModes,
   sectionOrder,
   railRef,
 }: Props) {
@@ -481,7 +485,8 @@ export function Rail({
         const subtree = m.key === 'archive' ? archiveTree : m.key === 'trash' ? trashTree : [];
         // Archive and Trash list their own folder. Folded, the number also
         // covers the folders filed under them, which are then out of sight.
-        const shown = rowCount(
+        const shown = mailboxCount(
+          countModes[m.key] ?? defaultCount(m.key),
           counts[m.key] ?? 0,
           subtree,
           m.key === 'archive' ? archiveOpen : m.key === 'trash' ? trashOpen : true,

@@ -754,6 +754,60 @@ mod role_trees {
         assert_eq!(asked.get("all-mail"), Some(&4));
     }
 
+    /// A folder under the Trash answers to the Trash's badge setting, not
+    /// the Folders one. Trash set to None was still showing a 2 for the unread
+    /// in a folder binned under it.
+    #[test]
+    fn folders_in_the_trash_count_by_the_trash_setting() {
+        use petrel_engine::store::CountMode;
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("t.db")).unwrap();
+        let blobs = BlobStore::open(&dir.path().join("blobs")).unwrap();
+        let account = store.ensure_test_account().unwrap();
+        store
+            .sync_folders(
+                account,
+                &[
+                    ("Trash".into(), Some("trash".into())),
+                    ("Trash/Old job".into(), None),
+                    ("Receipts".into(), None),
+                ],
+            )
+            .unwrap();
+        let binned = store.ensure_named_folder(account, "Trash/Old job").unwrap();
+        let receipts = store.ensure_named_folder(account, "Receipts").unwrap();
+        for (uid, folder) in [(1, binned), (2, receipts)] {
+            store
+                .ingest_raw(
+                    &blobs,
+                    account,
+                    Some(folder),
+                    Some(uid),
+                    &raw(&format!("{uid}@x"), "unread"),
+                )
+                .unwrap();
+        }
+        let badges = |modes: &[(&str, CountMode)]| -> Vec<String> {
+            let modes = modes.iter().map(|(k, m)| ((*k).to_string(), *m)).collect();
+            let mut keys: Vec<String> = store
+                .view_counts(&modes)
+                .unwrap()
+                .into_iter()
+                .map(|(k, _)| k)
+                .filter(|k| k.starts_with("folder:"))
+                .collect();
+            keys.sort();
+            keys
+        };
+        let (b, r) = (format!("folder:{binned}"), format!("folder:{receipts}"));
+
+        let mut both = vec![b.clone(), r.clone()];
+        both.sort();
+        assert_eq!(badges(&[]), both);
+        assert_eq!(badges(&[("trash", CountMode::Off)]), [r.as_str()]);
+        assert_eq!(badges(&[("folders", CountMode::Off)]), [b.as_str()]);
+    }
+
     /// A bin's own name is not a pattern. LIKE read `_` as any character and
     /// ignored case, so `DeletedXItems` counted as inside `Deleted_Items`.
     #[test]

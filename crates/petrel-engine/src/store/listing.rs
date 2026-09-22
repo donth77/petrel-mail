@@ -930,30 +930,36 @@ impl Store {
         // measurable share of what made the app feel stuck mid-sync.
         // Folders answer under one key of their own. Mail lands in them by
         // itself, so unread is what waiting means there.
-        let folders_mode = mode_for("folders");
-        if let Some(account) = self.active_account()?
-            && folders_mode != CountMode::Off
-        {
-            let unread_clause = match folders_mode {
-                CountMode::Total | CountMode::Off => String::new(),
-                CountMode::Unread => format!(" AND m.flags & {} = 0", flags::SEEN),
-            };
-            let mut stmt = self.conn.prepare_cached(&format!(
-                "SELECT p.folder_id, count(DISTINCT coalesce(m.thread_id, -m.id))
-                 FROM placements p
-                 JOIN folders f ON f.id = p.folder_id
-                 JOIN messages m ON m.id = p.message_id
-                 WHERE f.account_id = ?1 AND coalesce(f.role,'') = ''
-                   AND m.deleted_at_ms IS NULL{unread_clause}
-                 GROUP BY p.folder_id",
-            ))?;
-            let rows = stmt.query_map(params![account], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
-            })?;
-            for row in rows {
-                let (fid, n) = row?;
-                if n > 0 {
-                    out.push((format!("folder:{fid}"), n));
+        //
+        // Except the folders filed under the Trash, which answer to the
+        // Trash's setting. They are the bin's contents, and a Trash set to
+        // None still showed their unread on the rows beneath it.
+        if let Some(account) = self.active_account()? {
+            for (mode, under_trash) in [(mode_for("folders"), "NOT IN"), (mode_for("trash"), "IN")]
+            {
+                let unread_clause = match mode {
+                    CountMode::Off => continue,
+                    CountMode::Total => String::new(),
+                    CountMode::Unread => format!(" AND m.flags & {} = 0", flags::SEEN),
+                };
+                let mut stmt = self.conn.prepare_cached(&format!(
+                    "SELECT p.folder_id, count(DISTINCT coalesce(m.thread_id, -m.id))
+                     FROM placements p
+                     JOIN folders f ON f.id = p.folder_id
+                     JOIN messages m ON m.id = p.message_id
+                     WHERE f.account_id = ?1 AND coalesce(f.role,'') = ''
+                       AND f.id {under_trash} ({TRASH_SUBFOLDER_IDS})
+                       AND m.deleted_at_ms IS NULL{unread_clause}
+                     GROUP BY p.folder_id",
+                ))?;
+                let rows = stmt.query_map(params![account], |r| {
+                    Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+                })?;
+                for row in rows {
+                    let (fid, n) = row?;
+                    if n > 0 {
+                        out.push((format!("folder:{fid}"), n));
+                    }
                 }
             }
         }
