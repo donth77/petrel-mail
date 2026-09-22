@@ -57,32 +57,20 @@ function prefixLines(text: string, prefix: string): string {
     .join('\n');
 }
 
-/** Joins blocks with a blank line between them, counting the blank ones.
+/** Joins blocks one to a line, so an empty paragraph is an empty line.
  *
- * A paragraph break is one blank line: that is what marks a paragraph in plain
- * text, where there is no margin to do it. An empty paragraph the author typed
- * is one blank line *more*, so n of them read as n + 1.
+ * A paragraph is a line: Enter goes to the next one with no gap, as it does in
+ * Gmail, Apple Mail and Outlook, and a blank line is one somebody typed. So the
+ * text half is what the composer shows, and n typed blank lines arrive as n.
+ * That count matters in Japanese, where the blank line is the paragraph mark
+ * rather than decoration.
  *
- * Joining with `\n\n` throughout does not give that. An empty block renders as
- * an empty string with a separator on each side, so every one added two blank
- * lines rather than one, and a single typed blank line arrived as three. The
- * first version of this collapsed every run down to one blank instead, which
- * lost the difference between none and three — and in Japanese, where the blank
- * line is the paragraph mark rather than decoration, losing it changes what was
- * written.
+ * This used to put a blank line between every two paragraphs, when the composer
+ * drew a gap there too. The two changed together: a text part that disagrees
+ * with the HTML beside it is a different message to anyone reading plain text.
  */
 function joinBlocks(parts: string[]): string {
-  let out = '';
-  let first = true;
-  for (const part of parts) {
-    if (part === '') {
-      out += '\n';
-      continue;
-    }
-    out += first ? part : `\n\n${part}`;
-    first = false;
-  }
-  return out;
+  return parts.join('\n');
 }
 
 function block(node: DocNode): string {

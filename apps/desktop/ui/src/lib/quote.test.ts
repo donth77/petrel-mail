@@ -14,7 +14,10 @@ describe('attribution', () => {
 });
 
 describe('replyBody', () => {
-  const body = replyBody('<p>-- </p>', 'Dana Wu', WHEN, '<p>The original.</p>', 'en-GB');
+  // A signature as startingHtml writes it: the caret line, a blank one, the
+  // separator, then the signature's own lines.
+  const SIG = '<p></p><p></p><p>-- </p><p>Sam</p>';
+  const body = replyBody(SIG, 'Dana Wu', WHEN, '<p>The original.</p>', 'en-GB');
 
   /* Apple Mail, Thunderbird and Outlook fold on type="cite" specifically. A
      bare blockquote is styled as a quote and never collapsed, so every reply
@@ -32,6 +35,15 @@ describe('replyBody', () => {
 
   it('opens with somewhere to write', () => {
     expect(body.startsWith('<p></p>')).toBe(true);
+    expect(replyBody('', 'Dana Wu', WHEN, '<p>x</p>', 'en-GB').startsWith('<p></p>')).toBe(true);
+  });
+
+  /* A paragraph is one line with no gap under it, so the space between what
+     you write and the attribution has to be a blank line of its own. */
+  it('leaves one blank line above the attribution, with or without a signature', () => {
+    expect(body).toContain('<p>Sam</p><p></p><p>On ');
+    const bare = replyBody('', 'Dana Wu', WHEN, '<p>x</p>', 'en-GB');
+    expect(bare.startsWith('<p></p><p></p><p>On ')).toBe(true);
   });
 
   it('keeps the original inside the quote', () => {
@@ -63,6 +75,14 @@ describe('forwardBody', () => {
     expect(out).toContain('From: Dana');
     expect(out).toContain('Subject: Q3');
     expect(out).toContain('To: Sam');
+  });
+
+  /* The header block stands apart from what is written above it and from the
+     message under it, as every client lays a forward out. */
+  it('sets the header block apart with a blank line each side', () => {
+    const out = forwardBody('', 'Dana', '', 'Q3', 0, html, 'en-GB');
+    expect(out.startsWith('<p></p><p></p><p>---------- Forwarded message ----------')).toBe(true);
+    expect(out).toContain('</p><p></p><p>The original.</p>');
   });
 
   it('leaves out a To line the original did not have', () => {

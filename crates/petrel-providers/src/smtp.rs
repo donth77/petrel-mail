@@ -507,6 +507,50 @@ fn fill_empty_paragraphs(html: &str) -> String {
     out
 }
 
+/// Zeroes every paragraph's margin, inline.
+///
+/// The composer draws a paragraph as a line: Enter goes to the next one with no
+/// gap, and a blank line is one somebody typed, as in Gmail, Apple Mail and
+/// Outlook. A receiving client gives a bare `<p>` its default margin, about a
+/// line above and below, which double-spaced everything that was written.
+/// Inline because a stylesheet in the head is stripped by most webmail, the
+/// same reason fonts ride on spans. A margin the markup already sets comes
+/// later in the same declaration, so it still wins.
+fn zero_paragraph_margins(html: &str) -> String {
+    let mut out = String::with_capacity(html.len() + 32);
+    let mut i = 0;
+    while let Some(p) = next_p(html, i) {
+        out.push_str(&html[i..p.start]);
+        out.push_str(&with_zero_margin(&html[p.start..p.inner_start]));
+        out.push_str(&html[p.inner_start..p.end]);
+        i = p.end;
+    }
+    out.push_str(&html[i..]);
+    out
+}
+
+/// A `<p …>` opening tag with `margin:0` leading its style.
+fn with_zero_margin(open: &str) -> String {
+    // ASCII lowercasing moves no byte, so an index found in the copy is an
+    // index into the original.
+    let lower = open.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
+    let mut from = 0;
+    while let Some(rel) = lower.get(from..).and_then(|rest| rest.find("style=")) {
+        let at = from + rel;
+        // The attribute itself, not the tail of one like `data-style`.
+        let whole = at > 0 && bytes[at - 1].is_ascii_whitespace();
+        let quoted = matches!(bytes.get(at + 6), Some(b'"' | b'\''));
+        if whole && quoted {
+            let value = at + 7;
+            return format!("{}margin:0;{}", &open[..value], &open[value..]);
+        }
+        from = at + 6;
+    }
+    let head = open.strip_suffix('>').unwrap_or(open).trim_end();
+    format!("{head} style=\"margin:0\">")
+}
+
 /// Wraps an HTML body in a document, if it is not one already.
 ///
 /// The composer produces a fragment — `<p>…</p>`, the contenteditable's own
@@ -601,10 +645,13 @@ impl Outgoing {
         // the ids are as unique as the message they belong to.
         // Wrapped after the inline-image rewrite, so the cid substitution sees
         // the markup the composer produced rather than a document it did not.
+        // Margins are zeroed after the blank lines are filled, so the `<br>`
+        // that keeps a blank line open sits in a paragraph with no margin.
         let (html, inline) = match &self.body_html {
             Some(html) => {
                 let (rewritten, inline) = extract_inline_images(html, &message_id);
-                (Some(as_document(&html_for_send(&rewritten))), inline)
+                let body = zero_paragraph_margins(&html_for_send(&rewritten));
+                (Some(as_document(&body)), inline)
             }
             None => (None, Vec::new()),
         };
@@ -1549,6 +1596,46 @@ mod tests {
             "<p>Done.</p>"
         );
         assert_eq!(html_for_send("<p></p><p></p>"), "");
+    }
+
+    /// A paragraph is a line in the composer. A client's default margin at the
+    /// other end would double-space every one of them, quoted lines included.
+    #[test]
+    fn every_paragraph_goes_out_with_no_margin() {
+        assert_eq!(
+            zero_paragraph_margins(
+                "<p>One.</p><p><br></p><blockquote type=\"cite\"><p>Two.</p></blockquote>"
+            ),
+            "<p style=\"margin:0\">One.</p><p style=\"margin:0\"><br></p>\
+             <blockquote type=\"cite\"><p style=\"margin:0\">Two.</p></blockquote>"
+        );
+    }
+
+    #[test]
+    fn a_paragraph_keeps_the_attributes_it_had() {
+        // An existing style gains the margin first, so its own declarations,
+        // a margin among them, still come last and win.
+        assert_eq!(
+            zero_paragraph_margins("<p style=\"text-align: center\">Hi</p>"),
+            "<p style=\"margin:0;text-align: center\">Hi</p>"
+        );
+        assert_eq!(
+            zero_paragraph_margins("<p class=\"x\">Hi</p>"),
+            "<p class=\"x\" style=\"margin:0\">Hi</p>"
+        );
+        // `data-style` is not the style attribute.
+        assert_eq!(
+            zero_paragraph_margins("<p data-style=\"a\">Hi</p>"),
+            "<p data-style=\"a\" style=\"margin:0\">Hi</p>"
+        );
+    }
+
+    #[test]
+    fn zeroing_margins_leaves_every_other_tag_alone() {
+        assert_eq!(
+            zero_paragraph_margins("<pre>x</pre><param name=\"a\"><div>y</div>"),
+            "<pre>x</pre><param name=\"a\"><div>y</div>"
+        );
     }
 
     #[test]

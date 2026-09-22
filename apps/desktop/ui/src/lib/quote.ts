@@ -39,12 +39,21 @@ export function attribution(from: string, dateMs: number, locale?: string): stri
 }
 
 /**
- * A reply's starting body: room to write, the attribution, then the original.
+ * What a reply or a forward opens with: the line the caret goes on, then a
+ * blank line, then the signature if there is one, then a blank line under it.
  *
- * The empty paragraph at the top is where the caret goes. Without it the reply
- * begins immediately above the attribution line with nowhere obvious to type,
- * which is the single most irritating thing a composer can do.
+ * Without the empty paragraph at the top the reply begins immediately above
+ * the attribution line with nowhere obvious to type, which is the single most
+ * irritating thing a composer can do. The blank lines are written in because a
+ * paragraph is one line with no gap under it, as in every mainstream composer;
+ * when paragraphs had a gap, that gap did the separating. A signature already
+ * starts with the caret line and the blank one (`startingHtml`).
  */
+function openingLines(signature: string): string {
+  return signature ? `${signature}<p></p>` : '<p></p><p></p>';
+}
+
+/** A reply's starting body: room to write, the attribution, then the original. */
 export function replyBody(
   signature: string,
   from: string,
@@ -54,8 +63,7 @@ export function replyBody(
 ): string {
   const line = escape(attribution(from, dateMs, locale));
   return [
-    '<p></p>',
-    signature,
+    openingLines(signature),
     `<p>${line}</p>`,
     `<blockquote type="cite">${originalHtml}</blockquote>`,
   ].join('');
@@ -101,9 +109,11 @@ export function forwardBody(
     ...(to.trim() ? [`${t('quote-to')} ${escape(to)}`] : []),
   ];
   return [
-    '<p></p>',
-    signature,
+    openingLines(signature),
     `<p>${escape(t('quote-forwarded'))}<br>${lines.join('<br>')}</p>`,
+    // A blank line between the header block and the message, as every client
+    // writes it; the header would otherwise run straight into the first line.
+    '<p></p>',
     originalHtml,
   ].join('');
 }

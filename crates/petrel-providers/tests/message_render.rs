@@ -412,14 +412,18 @@ mod deliverability {
     #[test]
     fn an_empty_paragraph_between_sentences_is_a_break() {
         // TipTap writes <p></p> for a blank line. Clients collapse that, so
-        // the wire carries <p><br></p>. Edge empties are still dropped.
+        // the wire carries <p><br></p>. Edge empties are still dropped. Every
+        // paragraph has no margin, because in the composer each is one line.
         let out = rendered(&note(Some("<p></p><p>One.</p><p></p><p>Two.</p><p></p>")));
         assert!(
-            out.contains("<p>One.</p><p><br></p><p>Two.</p>"),
+            out.contains(
+                "<p style=\"margin:0\">One.</p><p style=\"margin:0\"><br></p>\
+                 <p style=\"margin:0\">Two.</p>"
+            ),
             "blank line missing in:\n{out}"
         );
         assert!(
-            !out.contains("<body><p></p>"),
+            out.contains("<body><p style=\"margin:0\">One.</p>"),
             "leading empty paragraph travelled in:\n{out}"
         );
     }
@@ -431,7 +435,7 @@ mod deliverability {
             out.contains("<html><head><meta charset=\"utf-8\"></head><body>"),
             "no document wrapper in:\n{out}"
         );
-        assert!(out.contains("<p>Hello there.</p>"));
+        assert!(out.contains("<p style=\"margin:0\">Hello there.</p>"));
         assert!(out.contains("</body></html>"));
     }
 

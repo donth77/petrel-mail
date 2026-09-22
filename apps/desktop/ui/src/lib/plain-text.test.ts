@@ -7,8 +7,10 @@ const doc = (...content: DocNode[]): DocNode => ({ type: 'doc', content });
 const link = (href: string) => [{ type: 'link', attrs: { href } }];
 
 describe('plainTextFromDoc', () => {
-  it('keeps paragraphs apart', () => {
-    expect(plainTextFromDoc(doc(p(t('One.')), p(t('Two.'))))).toBe('One.\n\nTwo.');
+  /* A paragraph is a line, as the composer draws it: Enter goes to the next
+     one with no gap. */
+  it('puts each paragraph on a line of its own', () => {
+    expect(plainTextFromDoc(doc(p(t('One.')), p(t('Two.'))))).toBe('One.\nTwo.');
   });
 
   it('writes a link as text and address', () => {
@@ -28,12 +30,12 @@ describe('plainTextFromDoc', () => {
     expect(plainTextFromDoc(doc(p(marked)))).toBe('important');
   });
 
-  it('quotes with > on every line, including the blank ones', () => {
+  it('quotes with > on every line', () => {
     const quoted = {
       type: 'blockquote',
       content: [p(t('First.')), p(t('Second.'))],
     };
-    expect(plainTextFromDoc(doc(quoted))).toBe('> First.\n>\n> Second.');
+    expect(plainTextFromDoc(doc(quoted))).toBe('> First.\n> Second.');
   });
 
   it('marks bullets and numbers the ordered list', () => {
@@ -64,17 +66,15 @@ describe('plainTextFromDoc', () => {
      chrome. Collapsing three-or-more newlines used to fold every run down to
      one blank, so none, one and three typed blank lines all read the same.
 
-     Counted, not merely preserved: a paragraph break is one blank line because
-     plain text has no margin to mark it with, and each empty paragraph the
-     author typed is one more. Simply dropping the collapse doubled them — a
-     single typed blank line arrived as three. */
-  it('keeps a blank paragraph between sentences, one line per paragraph', () => {
+     Counted, not merely preserved: every empty paragraph the author typed is
+     one blank line, exactly as the composer shows it, and no more. */
+  it('keeps every blank line the author typed, and adds none', () => {
     const blanks = (out: string) => out.split('\n').filter((l) => l === '').length;
-    expect(blanks(plainTextFromDoc(doc(p(t('One.')), p(t('Two.')))))).toBe(1);
-    expect(blanks(plainTextFromDoc(doc(p(t('One.')), p(), p(t('Two.')))))).toBe(2);
-    expect(blanks(plainTextFromDoc(doc(p(t('One.')), p(), p(), p(t('Two.')))))).toBe(3);
-    expect(blanks(plainTextFromDoc(doc(p(t('One.')), p(), p(), p(), p(t('Two.')))))).toBe(4);
-    expect(plainTextFromDoc(doc(p(t('One.')), p(), p(t('Two.'))))).toBe('One.\n\n\nTwo.');
+    expect(blanks(plainTextFromDoc(doc(p(t('One.')), p(t('Two.')))))).toBe(0);
+    expect(blanks(plainTextFromDoc(doc(p(t('One.')), p(), p(t('Two.')))))).toBe(1);
+    expect(blanks(plainTextFromDoc(doc(p(t('One.')), p(), p(), p(t('Two.')))))).toBe(2);
+    expect(blanks(plainTextFromDoc(doc(p(t('One.')), p(), p(), p(), p(t('Two.')))))).toBe(3);
+    expect(plainTextFromDoc(doc(p(t('One.')), p(), p(t('Two.'))))).toBe('One.\n\nTwo.');
   });
 
   /* The gap inside a quote is the original author's too. */
@@ -82,7 +82,7 @@ describe('plainTextFromDoc', () => {
     const quoted = plainTextFromDoc(
       doc({ type: 'blockquote', content: [p(t('One.')), p(), p(t('Two.'))] }),
     );
-    expect(quoted).toBe('> One.\n>\n>\n> Two.');
+    expect(quoted).toBe('> One.\n>\n> Two.');
   });
 
   it('survives a node it has never seen without losing the words', () => {
@@ -106,6 +106,6 @@ describe('plainTextFromDoc', () => {
     };
     // The convention incoming mail uses, so a text-only client reads a
     // message, not a hole.
-    expect(plainTextFromDoc(doc)).toBe('Look:\n\n[image]\n\nseen?');
+    expect(plainTextFromDoc(doc)).toBe('Look:\n[image]\nseen?');
   });
 });

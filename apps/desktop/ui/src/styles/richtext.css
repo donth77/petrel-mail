@@ -183,14 +183,15 @@
   min-block-size: 160px;
   padding: 14px 16px;
   font-size: 13.5px;
-  line-height: 1.6;
+  /* Single-spaced, as Gmail, Apple Mail and Outlook write. Nothing sets a line
+     height on the way out, so each recipient's client decides, and most draw
+     mail at this spacing. At 1.6 the message looked airier here than it
+     arrives. */
+  line-height: normal;
   color: var(--ink);
   outline: none;
 }
 
-/* The editor's own markup. Paragraph spacing is margin rather than a gap,
-   because this is also roughly what the HTML will do in the recipient's
-   client — what is written should look like what arrives. */
 /* A pasted image sits in the flow like a paragraph does. Never wider than
    the composer, whatever the screenshot's own size, and marked when selected
    so deleting one feels like deleting anything else. */
@@ -206,12 +207,13 @@
   outline-offset: 1px;
 }
 
+/* A paragraph is a line. Enter goes to the next one with no gap and two leave
+   a blank line, as in every mainstream composer. The sent mail carries the same
+   zero margin on each paragraph (smtp.rs), so what is written here is what
+   arrives: a receiving client's default margin would otherwise double-space
+   it. */
 .rich-body p {
-  margin: 0 0 0.75em;
-}
-
-.rich-body p:last-child {
-  margin-block-end: 0;
+  margin: 0;
 }
 
 .rich-body ul,
