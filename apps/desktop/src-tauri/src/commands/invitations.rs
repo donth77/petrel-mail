@@ -1,7 +1,7 @@
 //! Calendar invitations: the card's data, and the answer sent back.
 
 use crate::commands::clean_header;
-use crate::diag::{create_private_dir, data_dir, log_sync};
+use crate::diag::log_sync;
 use crate::state::active_account;
 use crate::state::{AppState, note_ui_touch, now_ms};
 use petrel_engine::store::DraftEnvelope;
@@ -142,6 +142,11 @@ pub fn invitation(
 pub fn respond_invitation(
     message_id: i64,
     response: String,
+    // False records the answer and tells nobody, as Outlook and Thunderbird
+    // offer: an invitation from a system that reads no replies, or one
+    // already answered elsewhere, does not need a message. Absent means tell
+    // the organizer, which is what answering has always done.
+    notify: Option<bool>,
     state: State<Arc<AppState>>,
 ) -> Result<(), String> {
     note_ui_touch(&state);
@@ -154,6 +159,16 @@ pub fn respond_invitation(
     let inv = load_invitation(&state, message_id)?;
     if inv.method.as_deref() != Some("REQUEST") {
         return Err("this event asks for no answer".into());
+    }
+    if notify == Some(false) {
+        state
+            .store()?
+            .set_invite_response(message_id, &response)
+            .map_err(|e| e.to_string())?;
+        log_sync(&format!(
+            "invitation {message_id} answered {partstat}; no reply sent"
+        ));
+        return Ok(());
     }
     let organizer = inv
         .organizer
@@ -181,16 +196,10 @@ pub fn respond_invitation(
     };
 
     let ics = build_reply_ics(&inv, &uid, &organizer, &me, &my_name, partstat);
-    let dir = data_dir().join("staged");
-    create_private_dir(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join(format!(
-        "{}-invite-reply.ics",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
-    std::fs::write(&path, ics.as_bytes()).map_err(|e| e.to_string())?;
+    // Staged like any attachment, under the name it travels by. The send
+    // names a file after itself, and the timestamp this used to put in front
+    // went out with it: the organizer received 1726…-invite-reply.ics.
+    let path = super::compose::stage_file("invite.ics", ics.as_bytes())?;
 
     // The summary is text an organiser wrote, and it reaches this subject
     // with no window in between: pressing Accept on a crafted invitation was
@@ -203,7 +212,7 @@ pub fn respond_invitation(
         let envelope = DraftEnvelope {
             in_reply_to: in_reply_to.clone(),
             references: in_reply_to.into_iter().collect(),
-            attachments: vec![path.to_string_lossy().into_owned()],
+            attachments: vec![path],
         };
         let id = store
             .save_draft_full(

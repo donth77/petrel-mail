@@ -532,6 +532,12 @@ fn stage_bytes(name: &str, bytes: &[u8]) -> Result<AttachmentInfo, String> {
     stage_bytes_in(&data_dir().join("staged"), name, bytes)
 }
 
+/// Stages a file this app wrote itself, such as an invitation reply, and
+/// returns the path the send accepts.
+pub(crate) fn stage_file(name: &str, bytes: &[u8]) -> Result<String, String> {
+    stage_bytes(name, bytes).map(|info| info.path)
+}
+
 fn stage_bytes_in(
     root: &std::path::Path,
     name: &str,

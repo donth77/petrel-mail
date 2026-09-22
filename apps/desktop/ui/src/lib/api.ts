@@ -959,8 +959,9 @@ const real = {
   exportSettings: (path: string) => invoke<string>('export_settings', { path }),
   importSettings: (path: string) => invoke<string>('import_settings', { path }),
   invitation: (messageId: number) => invoke<InvitationView | null>('invitation', { messageId }),
-  respondInvitation: (messageId: number, response: string) =>
-    invoke<void>('respond_invitation', { messageId, response }),
+  /** `notify` false records the answer without replying to the organizer. */
+  respondInvitation: (messageId: number, response: string, notify = true) =>
+    invoke<void>('respond_invitation', { messageId, response, notify }),
   popoutMessage: (threadId: number) => invoke<void>('popout_message', { threadId }),
   quoteMessage: (messageId: number) => invoke<Quoted>('quote_message', { messageId }),
   completeAddresses: (prefix: string) =>

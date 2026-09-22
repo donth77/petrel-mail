@@ -65,8 +65,32 @@
 
 .invite-acts {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+}
+
+/* An answer and its arrow, drawn as one button with a seam, as Thunderbird
+   draws them. The arrow opens the same answer without a reply. */
+.invite-split {
+  display: inline-flex;
+}
+
+.invite-split > .reply:first-child {
+  border-start-end-radius: 0;
+  border-end-end-radius: 0;
+}
+
+.invite-split > .invite-more {
+  margin-inline-start: -1px;
+  padding-inline: 6px;
+  border-start-start-radius: 0;
+  border-end-start-radius: 0;
+}
+
+/* The seam on the accent fill, where the shared border is the fill itself. */
+.invite-split > .invite-more.primary {
+  border-inline-start-color: color-mix(in oklab, var(--accent-fill) 70%, #000);
 }
 
 .invite-acts .reply {

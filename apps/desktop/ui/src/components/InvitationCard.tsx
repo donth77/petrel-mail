@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
-import { CalendarDays, Check, HelpCircle, X } from 'lucide-react';
+import { Menu, MenuButton, MenuItem, MenuProvider } from '@ariakit/react';
+import type { LucideIcon } from 'lucide-react';
+import { CalendarDays, Check, ChevronDown, HelpCircle, X } from 'lucide-react';
 import { api, type InvitationTime, type InvitationView } from '../lib/api';
 import { Icon } from './Icon';
 import { t, type StringId } from '../lib/strings';
@@ -35,11 +37,12 @@ function timeText(start: InvitationTime | null, end: InvitationTime | null): str
   if (start.kind === 'utc') {
     const s = new Date(start.ms);
     const date = s.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
-    const from = s.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    // The hour as the language writes it: "2:14 PM", never "02:14 PM".
+    const from = s.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
     if (end && end.kind === 'utc') {
       const e = new Date(end.ms);
       const sameDay = s.toDateString() === e.toDateString();
-      const to = e.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+      const to = e.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
       return sameDay
         ? `${date}, ${from}–${to}`
         : `${date}, ${from} → ${e.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}, ${to}`;
@@ -112,14 +115,17 @@ export function InvitationCard({
 
   const cancelled = inv.method === 'CANCEL' || inv.status === 'CANCELLED';
   const when = timeText(inv.start, inv.end);
-  const answer = (response: Response) => {
+  // `notify` false answers without telling the organizer: the arrow's
+  // "Don't send a response", for a choice made on that one click.
+  const answer = (response: Response, notify: boolean) => {
     setBusy(true);
     void api
-      .respondInvitation(messageId, response)
+      .respondInvitation(messageId, response, notify)
       .then(() => {
         setAnswered(response);
         setChanging(false);
-        onToast(t('invite-answered', { response: t(ANSWER[response]) }));
+        const said = t(ANSWER[response]);
+        onToast(notify ? t('invite-answered', { response: said }) : t('invite-answered-quietly', { response: said }));
       })
       .catch((e) => onToast(t('invite-failed', { error: String(e) })))
       .finally(() => setBusy(false));
@@ -168,19 +174,76 @@ export function InvitationCard({
             </>
           ) : (
             <>
-              <button type="button" className="reply primary" disabled={busy} onClick={() => answer('accepted')}>
-                <Icon icon={Check} size={13} /> {t('invite-accept')}
-              </button>
-              <button type="button" className="reply" disabled={busy} onClick={() => answer('tentative')}>
-                <Icon icon={HelpCircle} size={13} /> {t('invite-tentative')}
-              </button>
-              <button type="button" className="reply" disabled={busy} onClick={() => answer('declined')}>
-                <Icon icon={X} size={13} /> {t('invite-decline')}
-              </button>
+              <AnswerButton
+                label={t('invite-accept')}
+                icon={Check}
+                primary
+                busy={busy}
+                onAnswer={(notify) => answer('accepted', notify)}
+              />
+              <AnswerButton
+                label={t('invite-tentative')}
+                icon={HelpCircle}
+                busy={busy}
+                onAnswer={(notify) => answer('tentative', notify)}
+              />
+              <AnswerButton
+                label={t('invite-decline')}
+                icon={X}
+                busy={busy}
+                onAnswer={(notify) => answer('declined', notify)}
+              />
             </>
           )}
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * One answer, as Thunderbird offers it. The button answers and tells the
+ * organizer; the arrow beside it opens the same answer with "Don't send a
+ * response", for an invitation from a system that reads no replies or one
+ * already answered somewhere else. The choice belongs to that one click, so
+ * there is no setting to leave switched off by mistake.
+ */
+function AnswerButton({
+  label,
+  icon,
+  primary = false,
+  busy,
+  onAnswer,
+}: {
+  label: string;
+  icon: LucideIcon;
+  primary?: boolean;
+  busy: boolean;
+  onAnswer: (notify: boolean) => void;
+}) {
+  const look = `reply${primary ? ' primary' : ''}`;
+  return (
+    <span className="invite-split">
+      <button type="button" className={look} disabled={busy} onClick={() => onAnswer(true)}>
+        <Icon icon={icon} size={13} /> {label}
+      </button>
+      <MenuProvider placement="bottom-end">
+        <MenuButton
+          className={`${look} invite-more`}
+          disabled={busy}
+          aria-label={t('invite-options', { answer: label })}
+        >
+          <Icon icon={ChevronDown} size={12} />
+        </MenuButton>
+        <Menu portal gutter={4} className="menu" aria-label={t('invite-options', { answer: label })}>
+          <MenuItem className="menu-item" onClick={() => onAnswer(true)}>
+            <span className="menu-label">{t('invite-send-now')}</span>
+          </MenuItem>
+          <MenuItem className="menu-item" onClick={() => onAnswer(false)}>
+            <span className="menu-label">{t('invite-dont-send')}</span>
+          </MenuItem>
+        </Menu>
+      </MenuProvider>
+    </span>
   );
 }
