@@ -65,6 +65,35 @@ function insertionAt(el: Element | null, y: number, band = EDGE_BAND): InsertPoi
 }
 
 /**
+ * Hands the pointer to the body until the button comes up.
+ *
+ * While the button is down, WebKit moves `:hover` only among the elements the
+ * press began on and leaves every other element's flag as it is. A Force Touch
+ * trackpad breaks that: each change in pressure during the drag arrives as a
+ * force event, and WebKit's force path sets hover on whatever is under the
+ * pointer with no such restriction. A rail row the drag crossed was marked
+ * hovered by one of those and never unmarked, because the ordinary drag move
+ * that left it is not allowed to touch it — so it stayed tinted after the
+ * drop, until the pointer happened to cross it again.
+ *
+ * Captured, every event in the press targets the body, force events included,
+ * so hover stays on the body and no row can be marked. That is also what the
+ * rail's styles ask for: a row is not being pointed at while something is
+ * being carried over it. The capture ends by itself on pointerup or
+ * pointercancel, and the next move works hover out afresh from wherever the
+ * pointer then is. Finding the destination is unaffected, since `targetAt`
+ * asks `elementFromPoint`, which capture does not touch.
+ */
+function holdPointer(pointerId: number) {
+  try {
+    document.body.setPointerCapture(pointerId);
+  } catch {
+    // Refused only for a pointer that is no longer active, which means the
+    // press is already over and there is nothing to hold.
+  }
+}
+
+/**
  * Dragging conversations with the pointer.
  *
  * The target under the pointer is found by asking the document what is at that
@@ -161,6 +190,7 @@ export function useDrag(
       if (start && !live.current) {
         // Still deciding whether this is a click or a drag.
         if (Math.hypot(e.clientX - start.x, e.clientY - start.y) < DRAG_THRESHOLD) return;
+        holdPointer(e.pointerId);
         set({
           ...start,
           x: e.clientX,
@@ -210,6 +240,10 @@ export function useDrag(
     // Escape abandons the drag without dropping. A gesture you have committed
     // to but changed your mind about needs a way out that is not "drop it
     // somewhere harmless and undo".
+    //
+    // The pointer stays captured. The button is still down, and releasing it
+    // now would hand hover back to the press that marked rows in the first
+    // place; it lets go by itself when the button comes up.
     function key(e: KeyboardEvent) {
       if (e.key === 'Escape' && live.current) {
         pending.current = null;
