@@ -3,6 +3,7 @@ import { ArrowLeft, Check, ExternalLink, Loader2 } from 'lucide-react';
 import { api, type AccountSetup, type Discovered, type Server } from '../lib/api';
 import { Icon } from './Icon';
 import { t } from '../lib/strings';
+import { adviceText } from '../lib/advice';
 
 /**
  * Adding an account: address, confirm, first sync.
@@ -131,7 +132,7 @@ export function Onboarding({
       // The command's message already says which server and why; an
       // "Error:" prefix from the bridge on top of "Could not sign in —" reads
       // as a stutter.
-      setTesting(String(e).replace(/^Error:\s*/, ''));
+      setTesting(adviceText(String(e).replace(/^Error:\s*/, '')));
       return;
     }
     // From here the account is being stored, which takes a moment and is

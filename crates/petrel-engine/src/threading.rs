@@ -51,6 +51,24 @@ const PREFIXES: &[&str] = &[
 /// stacked `Re: Re: Fwd: Re:` that a long thread accumulates. The result is
 /// what two messages in one conversation should agree on.
 pub fn normalize_subject(subject: &str) -> String {
+    strip_leading(subject, true)
+}
+
+/// Whether a subject says it answers or passes on something: a reply or
+/// forward prefix, behind any list tags — `Re: x`, `[list] AW: x`.
+///
+/// What the subject fallback asks of a pair before joining it. Two messages
+/// neither of which is a reply are two conversations that happen to share a
+/// subject: "Your verification code" from two different services, "Order
+/// confirmation" from two shops. Joined, a thread-wide delete or rule on one
+/// took the other with it.
+pub fn has_reply_prefix(subject: &str) -> bool {
+    strip_leading(subject, false) != strip_leading(subject, true)
+}
+
+/// Leading list tags off a subject, and its reply and forward prefixes too
+/// when `prefixes` is set; whitespace collapsed either way.
+fn strip_leading(subject: &str, prefixes: bool) -> String {
     let mut s = subject.trim().to_string();
 
     loop {
@@ -68,7 +86,7 @@ pub fn normalize_subject(subject: &str) -> String {
         }
 
         let lower = s.to_lowercase();
-        for p in PREFIXES {
+        for p in PREFIXES.iter().filter(|_| prefixes) {
             // `Re:` and the numbered `Re[2]:` variant Outlook emits.
             for candidate in [format!("{p}:"), format!("{p} :")] {
                 if lower.starts_with(&candidate) {
@@ -109,6 +127,29 @@ pub const SUBJECT_THREAD_WINDOW_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reply_prefix_is_read_behind_list_tags_and_nowhere_else() {
+        for reply in [
+            "Re: Q3 vendor contracts",
+            "AW: Q3 vendor contracts",
+            "[rust-dev] Re: thing to discuss",
+            "Re: [rust-dev] thing to discuss",
+            "Fwd: Re: Q3 vendor contracts",
+            "RE[2]: Q3 vendor contracts",
+        ] {
+            assert!(has_reply_prefix(reply), "{reply}");
+        }
+        for post in [
+            "Your verification code",
+            "[rust-dev] thing to discuss",
+            "[ANN]",
+            "Regarding the Q3 contracts",
+            "",
+        ] {
+            assert!(!has_reply_prefix(post), "{post}");
+        }
+    }
 
     #[test]
     fn strips_reply_and_forward_prefixes() {

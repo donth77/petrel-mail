@@ -872,6 +872,102 @@ fn an_action_settles_only_when_every_message_has_an_outcome() {
     assert!(store.pending_actions(account).unwrap().is_empty());
 }
 
+/// Undo after the drain has delivered part of a conversation. The action is
+/// still queued — it settles on its last message — and undo used to accept
+/// it: every message went back locally, including the one the server had
+/// already moved, so the next pass dropped that one's placement and it
+/// surfaced in the Trash the person had just taken it out of.
+#[test]
+fn an_action_part_of_which_reached_the_server_is_too_late_to_undo() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&dir.path().join("t.db")).unwrap();
+    let blobs = petrel_engine::blob::BlobStore::open(&dir.path().join("blobs")).unwrap();
+    let account = store.ensure_test_account().unwrap();
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+    let ids = ingest_reply_chain(&mut store, &blobs, account, inbox, 3);
+    let thread = store.thread_of(ids[0]).unwrap().unwrap();
+    let receipt = store
+        .apply_thread_action(
+            account,
+            thread,
+            ActionKind::Trash,
+            None,
+            PlacementPolicy::Exclusive,
+        )
+        .unwrap();
+    let action = receipt.action_id;
+    let trash = store.folder_for_role(account, "trash").unwrap().unwrap();
+    let queued: Vec<i64> = store
+        .pending_actions(account)
+        .unwrap()
+        .iter()
+        .map(|p| p.message_id)
+        .collect();
+    assert_eq!(queued.len(), 3, "{queued:?}");
+
+    assert!(!store.mark_message_outcome(action, queued[0], true).unwrap());
+    assert_eq!(
+        store.action_state(action).unwrap().as_deref(),
+        Some("queued"),
+        "the action is still waiting on its other two messages"
+    );
+    assert!(
+        !store.undo_action(action).unwrap(),
+        "one message is already in the server's Trash: undo is too late"
+    );
+    for id in &ids {
+        assert_eq!(
+            store.folders_of(*id).unwrap(),
+            vec![trash],
+            "nothing is put back behind the server's back"
+        );
+    }
+    assert_eq!(
+        store.action_state(action).unwrap().as_deref(),
+        Some("queued"),
+        "and the rest still go, so server and store end up agreeing"
+    );
+    assert_eq!(store.pending_actions(account).unwrap().len(), 2);
+}
+
+/// A message with no server copy to change is not one the server moved, so
+/// it does not make the rest of the action too late to take back.
+#[test]
+fn an_action_whose_only_outcome_so_far_is_a_drop_can_still_be_undone() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&dir.path().join("t.db")).unwrap();
+    let blobs = petrel_engine::blob::BlobStore::open(&dir.path().join("blobs")).unwrap();
+    let account = store.ensure_test_account().unwrap();
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+    let ids = ingest_reply_chain(&mut store, &blobs, account, inbox, 3);
+    let thread = store.thread_of(ids[0]).unwrap().unwrap();
+    let receipt = store
+        .apply_thread_action(
+            account,
+            thread,
+            ActionKind::Archive,
+            None,
+            PlacementPolicy::Exclusive,
+        )
+        .unwrap();
+    let action = receipt.action_id;
+    let queued: Vec<i64> = store
+        .pending_actions(account)
+        .unwrap()
+        .iter()
+        .map(|p| p.message_id)
+        .collect();
+    assert!(
+        !store
+            .mark_message_outcome(action, queued[0], false)
+            .unwrap()
+    );
+    assert!(store.undo_action(action).unwrap());
+    for id in &ids {
+        assert_eq!(store.folders_of(*id).unwrap(), vec![inbox]);
+    }
+}
+
 #[test]
 fn an_action_none_of_whose_messages_had_a_server_copy_is_undeliverable() {
     let dir = tempfile::tempdir().unwrap();

@@ -1700,7 +1700,15 @@ fn attr_flags<'a>(attrs: &'a [AttributeValue<'a>]) -> impl Iterator<Item = Flag<
         .map(|f| Flag::from(f.as_ref()))
 }
 
-/// Gmail's labels on a FETCH item.
+/// Gmail's labels on a FETCH item, as a person reads them.
+///
+/// A label travels the way a mailbox name does — modified UTF-7 inside a
+/// quoted string whose escapes the parser leaves in — so `R&D` arrives as
+/// `R&-D`, `Ärger` as `&AMQ-rger` and `say "hi"` with its backslashes. Read
+/// raw, none of them matched the tag of that name, and the sweep removed the
+/// tag from every message it swept: every Japanese, Chinese or Korean tag on
+/// a Gmail account, minutes after it was applied. System labels (`\Inbox`)
+/// pass through unchanged.
 fn attr_labels(attrs: &[AttributeValue<'_>]) -> Vec<String> {
     attrs
         .iter()
@@ -1709,7 +1717,7 @@ fn attr_labels(attrs: &[AttributeValue<'_>]) -> Vec<String> {
             _ => None,
         })
         .flatten()
-        .map(|l| l.to_string())
+        .map(|l| display_name(l))
         .collect()
 }
 
@@ -2934,8 +2942,14 @@ where
     select_numbered(&mut session, folder, validity).await?;
     let op = if add { "+X-GM-LABELS" } else { "-X-GM-LABELS" };
     {
+        // In the label's wire form, as `attr_labels` reads it back: raw, a
+        // non-ASCII tag went out as 8-bit bytes in a quoted string, and `&`
+        // as the start of a shift sequence.
         let mut updates = session
-            .uid_store(uid.to_string(), format!("{op} ({})", quote_imap(label)))
+            .uid_store(
+                uid.to_string(),
+                format!("{op} ({})", quote_imap(&wire_name(label))),
+            )
             .await?;
         while updates.next().await.is_some() {}
     }
@@ -3574,12 +3588,30 @@ const SEARCH_RANGE: u32 = 50_000;
 /// Every UID the folder currently holds — the ground truth a placement sweep
 /// compares against.
 pub async fn uids_in_folder(cfg: &ImapConfig, folder: &str) -> Result<Vec<u32>> {
+    Ok(folder_uids(cfg, folder).await?.uids)
+}
+
+/// A folder's UIDs, and the numbering they belong to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FolderUids {
+    pub uids: Vec<u32>,
+    /// The UIDVALIDITY the SELECT reported. UIDs mean something only under
+    /// the numbering they were read in: compared with UIDs stored under
+    /// another, every one of them looks missing.
+    pub uid_validity: Option<u32>,
+}
+
+/// `uids_in_folder`, with the UIDVALIDITY they are numbered under.
+pub async fn folder_uids(cfg: &ImapConfig, folder: &str) -> Result<FolderUids> {
     let client = Client::new(connect(cfg).await?);
     let mut session = sign_in(client, cfg).await?;
     let mailbox = session.select(wire_name(folder)).await?;
-    let found = uids_below(&mut session, mailbox.uid_next).await?;
+    let uids = uids_below(&mut session, mailbox.uid_next).await?;
     sign_out(&mut session).await?;
-    Ok(found)
+    Ok(FolderUids {
+        uids,
+        uid_validity: mailbox.uid_validity,
+    })
 }
 
 /// Every UID in the selected mailbox, bounded by what the search covered.

@@ -609,6 +609,10 @@ pub struct FolderSummary {
     /// Empty for folders the user made; otherwise archive, sent, trash and so on.
     pub role: String,
     pub path: String,
+    /// The hierarchy delimiter the server reported for this folder, once a
+    /// survey has said. The rail nests by it, so what it draws inside a
+    /// folder is what the engine acts on as inside it.
+    pub delim: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -971,12 +975,14 @@ fn match_expr(query: &str, prefix_last: bool) -> Option<String> {
 /// Reference links win; a distinctive subject is a narrow fallback. When a
 /// message links two previously separate threads, they are merged — the common
 /// case where the middle of a conversation arrives after its ends.
+#[allow(clippy::too_many_arguments)]
 fn assign_thread(
     tx: &rusqlite::Transaction<'_>,
     account_id: i64,
     row_id: i64,
     msgid: Option<&str>,
     references: &[String],
+    subject: &str,
     subject_norm: &str,
     date_ms: i64,
 ) -> Result<i64> {
@@ -1028,18 +1034,51 @@ fn assign_thread(
     // Subject fallback, only for subjects distinctive enough to be evidence and
     // only within a window. A wrong merge hides mail inside an unrelated
     // conversation, where nobody thinks to look — worse than an extra thread.
+    //
+    // And only for a pair that looks like a conversation: one of the two a
+    // reply, a correspondent in common besides the account itself, and
+    // neither in the bin. Without that, "Your verification code" from two
+    // different services became one conversation, and a thread-wide Delete
+    // forever on one deleted the other; rules act on the whole thread too, so
+    // a rule for one shop's "Order confirmation" binned another's. The pair
+    // is what mailing lists that strip References still produce — a reply,
+    // to the list, under the post's subject — whichever arrives first.
     if candidates.is_empty() && crate::threading::subject_is_threadable(subject_norm) {
         let window = crate::threading::SUBJECT_THREAD_WINDOW_MS;
-        let mut stmt = tx.prepare_cached(
-            "SELECT thread_id FROM messages
-             WHERE account_id = ?1 AND subject_norm = ?2 AND thread_id IS NOT NULL
-               AND abs(date_ms - ?3) <= ?4
-             ORDER BY abs(date_ms - ?3) LIMIT 1",
+        let reply = crate::threading::has_reply_prefix(subject);
+        let nearest: Vec<(i64, i64, String)> = {
+            let mut stmt = tx.prepare_cached(&format!(
+                "SELECT m.id, m.thread_id, coalesce(m.subject, '') FROM messages m
+                 WHERE m.account_id = ?1 AND m.subject_norm = ?2 AND m.thread_id IS NOT NULL
+                   AND abs(m.date_ms - ?3) <= ?4
+                   AND {}
+                 ORDER BY abs(m.date_ms - ?3) LIMIT 20",
+                not_binned("m")
+            ))?;
+            let rows = stmt.query_map(params![account_id, subject_norm, date_ms, window], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })?;
+            rows.collect::<std::result::Result<_, _>>()?
+        };
+        let mut shared = tx.prepare_cached(
+            "SELECT EXISTS (
+               SELECT 1 FROM message_addresses a
+               JOIN message_addresses b ON b.addr_norm = a.addr_norm
+              WHERE a.message_id = ?1 AND b.message_id = ?2
+                AND a.role IN ('from', 'to', 'cc') AND b.role IN ('from', 'to', 'cc')
+                AND a.addr_norm <> lower(coalesce(
+                      (SELECT email FROM accounts WHERE id = ?3), '')))",
         )?;
-        if let Ok(t) = stmt.query_row(params![account_id, subject_norm, date_ms, window], |r| {
-            r.get::<_, i64>(0)
-        }) {
-            candidates.insert(t);
+        for (other, thread, other_subject) in nearest {
+            if !reply && !crate::threading::has_reply_prefix(&other_subject) {
+                continue;
+            }
+            let in_common: bool =
+                shared.query_row(params![row_id, other, account_id], |r| r.get(0))?;
+            if in_common {
+                candidates.insert(thread);
+                break;
+            }
         }
     }
 
@@ -1240,12 +1279,19 @@ impl CountMode {
 /// whichever the table happened to return first.
 ///
 /// Compared with `substr` rather than LIKE, which ignores ASCII case and
-/// reads `_` and `%` in a folder's own name as wildcards. Both separators,
-/// matching `underAnchor` in the rail, which draws these under the Trash row.
-/// Uncorrelated, so SQLite builds the list once per statement.
+/// reads `_` and `%` in a folder's own name as wildcards. By the delimiter
+/// the server reported for the bin, as `underAnchor` in the rail draws them:
+/// on a `/` server a top-level `Trash.2019` is a folder of its own, and
+/// reading both separators had Empty Trash expunge it. Both only until the
+/// server has said (`folders::child_separators`). Uncorrelated, so SQLite
+/// builds the list once per statement.
 pub(crate) const TRASH_SUBFOLDER_IDS: &str = "SELECT sub.id FROM folders sub
       JOIN folders bin ON bin.account_id = sub.account_id AND bin.role = 'trash'
-     WHERE substr(sub.path, 1, length(bin.path) + 1) IN (bin.path || '/', bin.path || '.')";
+     WHERE substr(sub.path, 1, length(bin.path) + 1) IN (
+           bin.path || coalesce(CASE WHEN json_valid(bin.sync_state_json)
+                                     THEN json_extract(bin.sync_state_json, '$.delim') END, '/'),
+           bin.path || coalesce(CASE WHEN json_valid(bin.sync_state_json)
+                                     THEN json_extract(bin.sync_state_json, '$.delim') END, '.'))";
 
 /// Mail that has been thrown away or judged to be junk.
 ///
@@ -2348,10 +2394,11 @@ impl Store {
             }
         }
 
-        let subject_norm = crate::threading::normalize_subject(match &composer_subject {
+        let subject = match &composer_subject {
             Some(own) => own.as_str(),
             None => parsed.subject.as_deref().unwrap_or(""),
-        });
+        };
+        let subject_norm = crate::threading::normalize_subject(subject);
         // The nearest ancestors, and no more of them. References grows by one
         // id per reply and nothing trims it: a long-running list thread
         // arrived carrying 32,771 of them, and the ancestor lookup binds one
@@ -2370,6 +2417,7 @@ impl Store {
                 id,
                 parsed.message_id.as_deref(),
                 references,
+                subject,
                 &subject_norm,
                 date_ms,
             )?;

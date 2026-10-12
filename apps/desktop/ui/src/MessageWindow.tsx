@@ -3,6 +3,7 @@ import { api, type Thread } from './lib/api';
 import { Reader } from './components/Reader';
 import { Toast } from './components/Toast';
 import { t } from './lib/strings';
+import { doneText } from './lib/useTriage';
 import { useMessageLinks, type HomographRisk } from './lib/links';
 import { RiskyLinkDialog } from './components/RiskyLinkDialog';
 import { useDropGuard } from './lib/useFileDrop';
@@ -94,7 +95,7 @@ export function MessageWindow({ threadId }: { threadId: number }) {
           void api
             .triage(threadId, kind)
             .then((receipt) => {
-              setToast(receipt.description);
+              setToast(doneText(receipt.kind));
               // Filing it somewhere means this window is now showing something
               // that is no longer where you left it. Closing is the honest
               // outcome; leaving a stale copy open is not.

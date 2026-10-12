@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { ATTACHMENT_LIMIT, encodedSize, fits, pickAttachments, stageDropped } from './attachments';
+import {
+  ATTACHMENT_LIMIT,
+  encodedSize,
+  fits,
+  pickAttachments,
+  stageDropped,
+  withAttached,
+} from './attachments';
 
 describe('encodedSize', () => {
   it('is always at least the raw size', () => {
@@ -89,5 +96,31 @@ describe('pickAttachments', () => {
     const res = await pickAttachments([already], info, async () => ['/a.pdf', '/b.pdf']);
     expect(res?.kept.map((a) => a.path)).toEqual(['/a.pdf', '/b.pdf']);
     expect(res?.rejected).toEqual([]);
+  });
+});
+
+describe('withAttached', () => {
+  const file = (path: string, size = 1000) => ({ path, name: path, size });
+
+  it('adds to what the message carries now, after what it already had', () => {
+    // The composer's copy from before a drop's await is not consulted at all:
+    // a file attached meanwhile stays, and the dropped one goes after it.
+    const now = [file('/a'), file('/meanwhile')];
+    const { kept, rejected } = withAttached(now, [file('/dropped')]);
+    expect(kept.map((a) => a.path)).toEqual(['/a', '/meanwhile', '/dropped']);
+    expect(rejected).toEqual([]);
+    expect(kept.slice(now.length).map((a) => a.path)).toEqual(['/dropped']);
+  });
+
+  it('takes a file once, however many routes it arrived by', () => {
+    const { kept } = withAttached([file('/a')], [file('/a'), file('/b'), file('/b')]);
+    expect(kept.map((a) => a.path)).toEqual(['/a', '/b']);
+  });
+
+  it('refuses what no longer fits beside what was added since', () => {
+    const big = Math.floor(ATTACHMENT_LIMIT / 2);
+    const { kept, rejected } = withAttached([file('/one', big)], [file('/two', big)]);
+    expect(kept.map((a) => a.path)).toEqual(['/one']);
+    expect(rejected).toEqual(['/two']);
   });
 });

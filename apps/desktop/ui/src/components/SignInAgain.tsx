@@ -5,6 +5,7 @@ import { api, type AccountForm } from '../lib/api';
 import { ServerFields } from './Onboarding';
 import { Icon } from './Icon';
 import { t } from '../lib/strings';
+import { adviceText } from '../lib/advice';
 
 /**
  * Signing an account in again: its password, and, behind a disclosure, the
@@ -82,7 +83,7 @@ export function SignInAgain({
       });
       onSignedIn(email || account.email);
     } catch (e) {
-      setError(String(e).replace(/^Error:\s*/, ''));
+      setError(adviceText(String(e).replace(/^Error:\s*/, '')));
     } finally {
       setBusy(false);
     }

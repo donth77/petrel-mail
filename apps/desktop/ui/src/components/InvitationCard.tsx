@@ -155,7 +155,18 @@ export function InvitationCard({
         {inv.organizer_email && (
           <>
             <dt>{t('invite-organizer')}</dt>
-            <dd className="clip">{inv.organizer_name ?? inv.organizer_email}</dd>
+            {/* The address as well as the name: answering mails it from your
+                own account, and a name is whatever the sender typed. */}
+            <dd className="clip">
+              {inv.organizer_name ? (
+                <>
+                  {inv.organizer_name}{' '}
+                  <span className="invite-addr mono">{inv.organizer_email}</span>
+                </>
+              ) : (
+                inv.organizer_email
+              )}
+            </dd>
           </>
         )}
       </dl>

@@ -171,14 +171,32 @@ pub async fn authentication_info(
 ) -> Result<Option<AuthInfo>, String> {
     super::off_runtime(state, move |state| {
         let raw = raw_message_of(&state, message_id)?;
-        Ok(petrel_mime::authentication(&raw).map(|a| AuthInfo {
-            verified: a.identity_verified(),
-            domain: a.domain.clone(),
-            authserv: a.authserv.clone(),
-            spf: word(a.spf),
-            dkim: word(a.dkim),
-            dmarc: word(a.dmarc),
-        }))
+        // Whose mailbox this came from: a verdict is shown only when the
+        // server that wrote it is that account's own provider. Anybody can
+        // write the header; see `authserv_trusted`.
+        let host = {
+            let store = state.store_read_open()?;
+            store
+                .account_of_message(message_id)
+                .ok()
+                .flatten()
+                .and_then(|account| store.account_servers(account).ok().flatten())
+                .map(|servers| servers.imap_host)
+        };
+        let trusted = |a: &petrel_mime::Authentication| {
+            host.as_deref()
+                .is_some_and(|h| petrel_mime::authserv_trusted(a.authserv.as_deref(), h))
+        };
+        Ok(petrel_mime::authentication(&raw)
+            .filter(trusted)
+            .map(|a| AuthInfo {
+                verified: a.identity_verified(),
+                domain: a.domain.clone(),
+                authserv: a.authserv.clone(),
+                spf: word(a.spf),
+                dkim: word(a.dkim),
+                dmarc: word(a.dmarc),
+            }))
     })
     .await
 }

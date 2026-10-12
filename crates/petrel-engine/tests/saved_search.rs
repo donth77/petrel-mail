@@ -276,6 +276,7 @@ fn renaming_a_folder_reaches_every_way_a_query_can_name_it() {
             &Renamed::Folder {
                 from: "Clients/Receipts",
                 to: "Clients/Invoices",
+                separators: &['/', '.'],
             },
         )
         .unwrap();

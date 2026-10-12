@@ -53,6 +53,9 @@ type Props = {
   open: boolean;
   /** True on Gmail, where what IMAP calls folders are labels. */
   labelsNotFolders?: boolean;
+  /** Folder mode: the delimiter the server reported, so a row's name and
+   *  what a fold hides follow the tree the rows were drawn from. */
+  delim?: string;
   /** Move is a single choice that closes; tag is a set you toggle. Snooze and
    *  Send later are a choice of times, for a conversation or for the message
    *  being written. */
@@ -88,7 +91,7 @@ function glyphOf(o: { anchor?: 'archive' | 'trash'; icon?: LucideIcon }) {
  * that does not exist yet" is the same intent as "file this", and making it a
  * different gesture is what pushes people back to the mouse.
  */
-export function Picker({ open, mode, options, subject, onClose, onChoose, onCreate , labelsNotFolders }: Props) {
+export function Picker({ open, mode, options, subject, onClose, onChoose, onCreate , labelsNotFolders, delim }: Props) {
   const [query, setQuery] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -122,7 +125,7 @@ export function Picker({ open, mode, options, subject, onClose, onChoose, onCrea
       .sort((a, b) => scoreMatch(b.hits, b.o.label) - scoreMatch(a.hits, a.o.label));
   }, [options, query]);
   const browsing = query.trim().length === 0;
-  const fold = useFolderFold(options);
+  const fold = useFolderFold(options, delim);
   // Folding only means anything while the tree is on screen. A search is
   // already a filter, and hiding matches inside a folded parent would drop
   // rows that matched for a reason that is no longer visible.
@@ -236,7 +239,7 @@ export function Picker({ open, mode, options, subject, onClose, onChoose, onCrea
                   </button>
                 )}
                 <Icon icon={glyphOf(o)} size={13} />
-                <span className="clip">{splitPath(o.label).leaf}</span>
+                <span className="clip">{splitPath(o.label, delim).leaf}</span>
               </div>
             ) : (
             <ComboboxItem
@@ -298,9 +301,9 @@ export function Picker({ open, mode, options, subject, onClose, onChoose, onCrea
                 // Its own name only. The indentation is already saying where
                 // it sits, and repeating the parents beside it is the noise
                 // the indentation was drawn to remove.
-                <span className="clip">{splitPath(o.label).leaf}</span>
+                <span className="clip">{splitPath(o.label, delim).leaf}</span>
               ) : (
-                <PathLabel path={o.label} hits={hits} />
+                <PathLabel path={o.label} hits={hits} delim={delim} />
               )}
               {o.detail && <span className="picker-when mono">{o.detail}</span>}
             </ComboboxItem>

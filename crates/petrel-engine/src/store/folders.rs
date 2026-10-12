@@ -27,6 +27,25 @@ pub(super) fn like_escape(literal: &str) -> String {
 /// confirmed yet. See `folder_awaits_server`.
 const PENDING_CREATE: &str = "pending_create";
 
+/// The separators a folder's children may be named with, given the
+/// hierarchy delimiter its server reported (`set_folder_delimiters`).
+///
+/// IMAP names a child by its parent, the parent's delimiter and a leaf, and
+/// each server has its own: `/` on Gmail, iCloud and Outlook, `.` on many
+/// Courier and Dovecot hosts. Reading both everywhere made a folder honestly
+/// called `Trash.2019` on a `/` server part of the bin — Empty Trash and the
+/// bin's expiry expunged it — and dragged `Receipts.old` along whenever
+/// `Receipts` was renamed, emptied or marked read. Once the server has said
+/// which it uses, only that one nests. Before it has, both still do, which
+/// is how every folder was read until it could.
+pub(super) fn child_separators(delim: Option<&str>) -> Vec<char> {
+    let mut one = delim.into_iter().flat_map(str::chars);
+    match (one.next(), one.next()) {
+        (Some(c), None) => vec![c],
+        _ => vec!['/', '.'],
+    }
+}
+
 /// Where a folder's name stands among the conventional names for its role,
 /// lower first; any other name sorts after all of them. Compared on the
 /// last segment, so `INBOX.Trash` and `[Gmail]/Sent Mail` read as their
@@ -85,6 +104,7 @@ fn repoint_queued_actions(
     account_id: i64,
     old_path: &str,
     new_path: &str,
+    separators: &[char],
 ) -> Result<()> {
     let rows: Vec<(i64, String)> = {
         let mut stmt = tx.prepare(
@@ -110,7 +130,7 @@ fn repoint_queued_actions(
                 Some(new_path.to_string())
             } else {
                 path.strip_prefix(old_path)
-                    .filter(|rest| rest.starts_with(['/', '.']))
+                    .filter(|rest| rest.starts_with(separators))
                     .map(|rest| format!("{new_path}{rest}"))
             };
             if let Some(moved) = moved {
@@ -179,10 +199,53 @@ impl Store {
             return Ok(id);
         }
         self.conn.execute(
-            "INSERT INTO folders(account_id, role, name, path) VALUES (?1, ?2, ?3, ?4)",
-            params![account_id, role, path, path],
+            "INSERT INTO folders(account_id, role, name, path, sync_state_json)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                account_id,
+                role,
+                path,
+                path,
+                self.born_state(account_id, None)?
+            ],
         )?;
         Ok(self.conn.last_insert_rowid())
+    }
+
+    /// The `sync_state_json` a folder made here starts with: `key` set when
+    /// given, and the account's delimiter (`account_delimiter`) when it has
+    /// one, so the folder nests the way every folder the server listed does
+    /// — a folder made before the next survey, or never listed at all, read
+    /// both separators while the rail beside it read one.
+    fn born_state(&self, account_id: i64, key: Option<&str>) -> Result<String> {
+        let mut state = serde_json::Map::new();
+        if let Some(key) = key {
+            state.insert(key.into(), serde_json::Value::Bool(true));
+        }
+        if let Some(delim) = self.account_delimiter(account_id)? {
+            state.insert("delim".into(), serde_json::Value::String(delim));
+        }
+        Ok(serde_json::Value::Object(state).to_string())
+    }
+
+    /// The delimiter this account's server nests with, as its survey recorded
+    /// it on the folders it listed: the inbox's where the inbox has one.
+    fn account_delimiter(&self, account_id: i64) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT d FROM (
+                   SELECT CASE WHEN json_valid(sync_state_json)
+                               THEN json_extract(sync_state_json, '$.delim') END AS d,
+                          path, id
+                     FROM folders WHERE account_id = ?1)
+                  WHERE length(d) = 1
+                  ORDER BY upper(path) = 'INBOX' DESC, id
+                  LIMIT 1",
+                params![account_id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?)
     }
 
     /// Every folder on the account, for the move picker.
@@ -192,7 +255,10 @@ impl Store {
     /// are here only so V can get to them too.
     pub fn folders(&self, account_id: i64) -> Result<Vec<FolderSummary>> {
         let mut stmt = self.conn.prepare_cached(
-            "SELECT id, coalesce(role,''), path FROM folders
+            "SELECT id, coalesce(role,''), path,
+                    CASE WHEN json_valid(sync_state_json)
+                         THEN json_extract(sync_state_json, '$.delim') END
+               FROM folders
              WHERE account_id = ?1
              -- sort_order IS NULL sorts first in SQLite, which would put every
              -- folder nobody has dragged above the ones somebody arranged on
@@ -207,6 +273,11 @@ impl Store {
                 id: r.get(0)?,
                 role: r.get(1)?,
                 path: r.get(2)?,
+                delim: r
+                    .get::<_, Option<String>>(3)
+                    .ok()
+                    .flatten()
+                    .filter(|d| d.chars().count() == 1),
             })
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
@@ -550,8 +621,13 @@ impl Store {
         // from the survey and retried by the sync. See `folder_awaits_server`.
         self.conn.execute(
             "INSERT INTO folders(account_id, role, name, path, sync_state_json)
-             VALUES (?1, NULL, ?2, ?3, json_object(?4, json('true')))",
-            params![account_id, name, path, PENDING_CREATE],
+             VALUES (?1, NULL, ?2, ?3, ?4)",
+            params![
+                account_id,
+                name,
+                path,
+                self.born_state(account_id, Some(PENDING_CREATE))?
+            ],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
@@ -566,31 +642,45 @@ impl Store {
             params![folder_id],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
-        let name = new_path.rsplit(['/', '.']).next().unwrap_or(new_path);
+        let separators = self.folder_separators(folder_id)?;
+        let name = new_path
+            .rsplit(separators.as_slice())
+            .next()
+            .unwrap_or(new_path);
         let tx = self.conn.transaction()?;
-        tx.execute(
-            "UPDATE folders SET path = ?2, name = ?3 WHERE id = ?1",
-            params![folder_id, new_path, name],
-        )?;
         // The server renames a subtree in one RENAME (RFC 3501); the local
         // tree follows suit, or every descendant's path goes quietly stale
         // and the next survey prunes real folders as strangers.
         //
-        // The pattern is escaped because a folder name is not a LIKE pattern.
-        // An underscore matches any single character, so binning `a_b` also
-        // matched `axb/child` and rewrote it to `Trash/a_b/child` — an
-        // unrelated subtree dragged into the bin, onto a path the real child
-        // already held. Mailboxes named `glassdoor+102025_2` are ordinary.
-        let pattern = like_escape(&old_path);
-        for delim in ['/', '.'] {
-            tx.execute(
-                "UPDATE folders
-                 SET path = ?3 || substr(path, length(?2) + 1)
-                 WHERE account_id = ?1 AND path LIKE ?5 || ?4 ESCAPE '\\'",
-                params![account, old_path, new_path, format!("{delim}%"), pattern],
-            )?;
-        }
-        repoint_queued_actions(&tx, account, &old_path, new_path)?;
+        // One statement, so each row is judged once and by its old path, and
+        // never the folder itself. Run per separator after the folder's own
+        // update, renaming `Taxes` to `Taxes.old` found the renamed row under
+        // `Taxes.` and made it `Taxes.old.old` here while the server had
+        // `Taxes.old`. Compared exactly rather than with LIKE, which ignores
+        // ASCII case — renaming `Work` also took `work/Private`, a different
+        // folder — and reads `_` and `%` in a name as wildcards: binning
+        // `a_b` once took `axb/child` along. Mailboxes named
+        // `glassdoor+102025_2` are ordinary.
+        let (first, last) = (separators[0], separators[separators.len() - 1]);
+        tx.execute(
+            "UPDATE folders
+                SET path = ?3 || substr(path, length(?2) + 1)
+              WHERE account_id = ?1 AND id <> ?4
+                AND substr(path, 1, length(?2) + 1) IN (?2 || ?5, ?2 || ?6)",
+            params![
+                account,
+                old_path,
+                new_path,
+                folder_id,
+                first.to_string(),
+                last.to_string()
+            ],
+        )?;
+        tx.execute(
+            "UPDATE folders SET path = ?2, name = ?3 WHERE id = ?1",
+            params![folder_id, new_path, name],
+        )?;
+        repoint_queued_actions(&tx, account, &old_path, new_path, &separators)?;
         tx.commit()?;
         // And the saved searches that name it — by leaf, by whole path, or as a
         // descendant the rename carried with it. After the commit rather than
@@ -601,6 +691,7 @@ impl Store {
             &crate::search_query::Renamed::Folder {
                 from: &old_path,
                 to: new_path,
+                separators: &separators,
             },
         )?;
         Ok(())
@@ -692,27 +783,35 @@ impl Store {
     /// stopped at the named folder would report marking one and look broken.
     /// Empty Trash already read the subtree; these follow it.
     ///
-    /// Both separators, because a path is the server's and servers differ.
-    /// Escaped, because a folder called `glassdoor+102025_2` is a name and not
-    /// a LIKE pattern.
+    /// By the separator the server nests with (`child_separators`): on a `/`
+    /// server `Receipts.old` is a sibling, and emptying or marking `Receipts`
+    /// used to reach into it on the server. Compared exactly, not with LIKE,
+    /// which ignores case and reads `_` in `glassdoor+102025_2` as a wildcard.
     pub fn folder_subtree(&self, folder_id: i64) -> Result<Vec<(i64, String)>> {
         let (account, path): (i64, String) = self.conn.query_row(
             "SELECT account_id, path FROM folders WHERE id = ?1",
             params![folder_id],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
-        let pattern = like_escape(&path);
+        let separators = self.folder_separators(folder_id)?;
+        let (first, last) = (separators[0], separators[separators.len() - 1]);
         let mut stmt = self.conn.prepare(
             "SELECT id, path FROM folders
               WHERE account_id = ?1
                 AND (id = ?2
-                     OR path LIKE ?3 || '/%' ESCAPE '\\'
-                     OR path LIKE ?3 || '.%' ESCAPE '\\')
+                     OR substr(path, 1, length(?3) + 1) IN (?3 || ?4, ?3 || ?5))
               ORDER BY path",
         )?;
-        let rows = stmt.query_map(params![account, folder_id, pattern], |r| {
-            Ok((r.get(0)?, r.get(1)?))
-        })?;
+        let rows = stmt.query_map(
+            params![
+                account,
+                folder_id,
+                path,
+                first.to_string(),
+                last.to_string()
+            ],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
@@ -1698,6 +1797,94 @@ impl Store {
             params![folder_id],
         )?;
         Ok(())
+    }
+
+    /// Records the hierarchy delimiter the server reported for each folder,
+    /// which is what `child_separators` nests by. `delims` pairs a path with
+    /// the delimiter its LIST line carried; a folder not named keeps what it
+    /// had, or takes the account's if it had none. A delimiter that is not
+    /// one character (NIL, on a flat server) is not one this can nest by, and
+    /// is forgotten rather than guessed at.
+    pub fn set_folder_delimiters(
+        &mut self,
+        account_id: i64,
+        delims: &[(String, Option<String>)],
+    ) -> Result<()> {
+        let one = |d: &Option<String>| d.clone().filter(|d| d.chars().count() == 1);
+        // The account's: what the inbox was listed with, or failing that the
+        // first folder that said. Folders the survey did not name — made here
+        // and never listed, or listed before delimiters were kept — take it
+        // when they have none, so every folder of the account nests alike.
+        let account = delims
+            .iter()
+            .find(|(path, _)| path.eq_ignore_ascii_case("INBOX"))
+            .and_then(|(_, d)| one(d))
+            .or_else(|| delims.iter().find_map(|(_, d)| one(d)));
+        let named: std::collections::HashSet<&str> =
+            delims.iter().map(|(path, _)| path.as_str()).collect();
+        let unnamed: Vec<i64> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, path FROM folders
+                  WHERE account_id = ?1
+                    AND CASE WHEN json_valid(sync_state_json)
+                             THEN json_extract(sync_state_json, '$.delim') END IS NULL",
+            )?;
+            let rows = stmt.query_map(params![account_id], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+                .into_iter()
+                .filter(|(_, path)| !named.contains(path.as_str()))
+                .map(|(id, _)| id)
+                .collect()
+        };
+        let tx = self.conn.transaction()?;
+        if let Some(d) = &account {
+            for id in unnamed {
+                tx.execute(
+                    "UPDATE folders SET sync_state_json = json_set(
+                        CASE WHEN json_valid(sync_state_json) THEN sync_state_json ELSE '{}' END,
+                        '$.delim', ?2)
+                      WHERE id = ?1",
+                    params![id, d],
+                )?;
+            }
+        }
+        for (path, delim) in delims {
+            match delim.as_deref().filter(|d| d.chars().count() == 1) {
+                Some(d) => tx.execute(
+                    "UPDATE folders SET sync_state_json = json_set(
+                        CASE WHEN json_valid(sync_state_json) THEN sync_state_json ELSE '{}' END,
+                        '$.delim', ?3)
+                      WHERE account_id = ?1 AND path = ?2",
+                    params![account_id, path, d],
+                )?,
+                None => tx.execute(
+                    "UPDATE folders SET sync_state_json = json_remove(sync_state_json, '$.delim')
+                      WHERE account_id = ?1 AND path = ?2 AND json_valid(sync_state_json)",
+                    params![account_id, path],
+                )?,
+            };
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The separators this folder's children are named with. See
+    /// `child_separators`.
+    pub(crate) fn folder_separators(&self, folder_id: i64) -> Result<Vec<char>> {
+        let delim: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT CASE WHEN json_valid(sync_state_json)
+                             THEN json_extract(sync_state_json, '$.delim') END
+                   FROM folders WHERE id = ?1",
+                params![folder_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        Ok(child_separators(delim.as_deref()))
     }
 
     /// Records which of the account's folders the server flags `\All`, on a

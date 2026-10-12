@@ -64,6 +64,7 @@ import { draftFromRecord } from './lib/draft-record';
 import { settleDraft } from './lib/close-draft';
 import { replyHeaders, replyTargets } from './lib/reply';
 import { forwardBody, replyBody } from './lib/quote';
+import { adviceText } from './lib/advice';
 import { draggedIds, dropMeaning } from './lib/dnd';
 import {
   binDestination,
@@ -76,6 +77,8 @@ import {
   movedFolderPath,
   movedFolders,
   nameIsTaken,
+  reportedDelimiter,
+  splitPath,
 } from './lib/folders';
 import { useDrag } from './lib/useDrag';
 import { useReferenceData } from './lib/useReferenceData';
@@ -88,6 +91,7 @@ import {
   fits,
   pickAttachments,
   stageDropped,
+  withAttached,
   type Attached,
 } from './lib/attachments';
 import { extend, facing, prune, reanchor, rowsOf, tagsOnAll, targets, toggle } from './lib/selection';
@@ -1336,7 +1340,9 @@ export function App() {
         : view.startsWith('folder:')
           ? (() => {
               const f = folders.find((x) => `folder:${x.id}` === view);
-              return f ? f.path.split(/[/.]/).pop() || f.path : t('rail-folders');
+              return f
+                ? splitPath(f.path, reportedDelimiter(folders)).leaf || f.path
+                : t('rail-folders');
             })()
           : // A saved search's view is titled from `pinnedState`, not here: only
             // that knows whether the text is still the saved one's. Left to this
@@ -1860,21 +1866,36 @@ export function App() {
     try {
       const current = draftRef.current;
       if (!current) return;
-      const result = await pickAttachments(current.attachments ?? [], api.attachmentInfo, () =>
+      // The message the files are for: the panel waits on the person, and
+      // the composer may hold another message, or none, when it returns.
+      const slot = slotRef.current;
+      const base = current.attachments ?? [];
+      const result = await pickAttachments(base, api.attachmentInfo, () =>
         api.pickFiles('attach'),
       );
-      if (!result) return;
-      setDraft({ ...current, attachments: result.kept });
-      if (result.rejected.length > 0) {
-        setToast(
-          t('compose-too-large', {
-            name: result.rejected.join(', '),
-            limit: fileSize(ATTACHMENT_LIMIT),
-          }),
-        );
-      }
+      if (!result || slotRef.current !== slot) return;
+      addAttached(result.kept.slice(base.length), result.rejected);
     } catch (e) {
       setToast(t('compose-attach-failed', { error: String(e) }));
+    }
+  };
+
+  /** Files picked or dropped, added to the message as it is now
+   *  (`withAttached` says why not as it was before the await). */
+  const addAttached = (added: Attached[], refused: string[]) => {
+    const now = draftRef.current;
+    if (!now) return;
+    const rejected = [...refused, ...withAttached(now.attachments ?? [], added).rejected];
+    setDraft((cur) =>
+      cur ? { ...cur, attachments: withAttached(cur.attachments ?? [], added).kept } : cur,
+    );
+    if (rejected.length > 0) {
+      setToast(
+        t('compose-too-large', {
+          name: rejected.join(', '),
+          limit: fileSize(ATTACHMENT_LIMIT),
+        }),
+      );
     }
   };
 
@@ -2069,20 +2090,14 @@ export function App() {
     try {
       const current = draftRef.current;
       if (!current) return;
-      const result = await stageDropped(
-        [...files],
-        current.attachments ?? [],
-        api.stageAttachment,
-      );
-      setDraft({ ...draftRef.current!, attachments: result.kept });
-      if (result.rejected.length > 0) {
-        setToast(
-          t('compose-too-large', {
-            name: result.rejected.join(', '),
-            limit: fileSize(ATTACHMENT_LIMIT),
-          }),
-        );
-      }
+      // The message they were dropped on. A large file takes seconds to
+      // stage, and by then the composer may have sent, closed or opened
+      // another message: the files belong to this one or to nothing.
+      const slot = slotRef.current;
+      const base = current.attachments ?? [];
+      const result = await stageDropped([...files], base, api.stageAttachment);
+      if (slotRef.current !== slot) return;
+      addAttached(result.kept.slice(base.length), result.rejected);
     } catch (e) {
       setToast(t('compose-attach-failed', { error: String(e) }));
     }
@@ -2199,8 +2214,17 @@ export function App() {
   // status poll, already drained server-side so each is said once. The
   // pause and off switches still govern: a rule outranks the level (the
   // rule is a priority declaration), never the silence.
+  //
+  // Once per poll, not once per run. The effect runs again whenever a
+  // setting changes, and the poll keeps the status it has when nothing else
+  // moved — still holding the batch already said — so changing the sort, or
+  // every pointer-move of a divider drag, posted the same notification
+  // again. A batch that arrives while paused is not saved up for later.
+  const saidNotify = useRef<Status | null>(null);
   useEffect(() => {
-    const fresh = status?.notify ?? [];
+    if (!status || saidNotify.current === status) return;
+    saidNotify.current = status;
+    const fresh = status.notify ?? [];
     if (fresh.length === 0) return;
     if (!shouldNotify(settings, Date.now())) return;
     const [who] = fresh[0];
@@ -2228,8 +2252,12 @@ export function App() {
   // them, so each is said once, named by its account.
   const accountsRef = useRef(accounts);
   accountsRef.current = accounts;
+  // Once per poll, for the reason `saidNotify` is.
+  const saidElsewhere = useRef<Status | null>(null);
   useEffect(() => {
-    const groups = elsewhereNotices(settings, status?.elsewhere ?? [], Date.now());
+    if (!status || saidElsewhere.current === status) return;
+    saidElsewhere.current = status;
+    const groups = elsewhereNotices(settings, status.elsewhere ?? [], Date.now());
     for (const { account, arrivals } of groups) {
       const email = accountsRef.current.find((a) => a.id === account)?.email;
       if (!email) continue;
@@ -2764,7 +2792,7 @@ export function App() {
           // an account with no mail in it, and that ambiguity cost real time.
           <div className="sync-error" role="alert">
             <strong>{t('sync-failed-title')}</strong>
-            <span>{status.sync_error}</span>
+            <span>{adviceText(status.sync_error)}</span>
             <span className="sync-error-note">{t('sync-failed-body')}</span>
           </div>
         )
@@ -3641,6 +3669,7 @@ export function App() {
         // about label behaviour is telling them something false about their own
         // mail, so the note is shown to the accounts it describes.
         labelsNotFolders={activeAccount?.kind === 'gmail'}
+        delim={reportedDelimiter(folders)}
         open={picker !== null}
         mode={picker ?? 'folder'}
         // What the choice will land on. One conversation is named; several

@@ -18,8 +18,11 @@ type Foldable = { label: string; hasChildren?: boolean; anchor?: 'archive' | 'tr
  * the list. Everything else arrives open. A row absent from `folded` takes that
  * default, so the anchors can be unfolded by hand and stay unfolded, and a
  * folder list that loads a moment later does not un-fold what you just opened.
+ *
+ * `delim` is the server's reported delimiter (`reportedDelimiter`), so what a
+ * fold hides is what the tree drew inside it.
  */
-export function useFolderFold(options: readonly Foldable[]) {
+export function useFolderFold(options: readonly Foldable[], delim?: string) {
   const [folded, setFolded] = useState<Record<string, boolean>>({});
 
   const anchors = useMemo(
@@ -40,7 +43,7 @@ export function useFolderFold(options: readonly Foldable[]) {
   return {
     isOpen,
     /** Whether a row is folded away inside something above it. */
-    hidden: (path: string) => underAnyClosed(path, closed),
+    hidden: (path: string) => underAnyClosed(path, closed, delim),
     toggle: (path: string) =>
       setFolded((prev) => ({ ...prev, [path]: !(prev[path] ?? foldedByDefault(path)) })),
   };

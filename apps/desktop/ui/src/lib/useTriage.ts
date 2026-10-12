@@ -68,6 +68,13 @@ function negated(deltas: Record<string, number>): Record<string, number> {
   return Object.fromEntries(Object.entries(deltas).map(([k, d]) => [k, -d]));
 }
 
+/** What the person is told once an action has happened, in their language.
+ *  The receipt's own `description` is the engine's English, for its log; a
+ *  toast built from it said "Archived" in every one of the eight. */
+export function doneText(kind: ActionKind): string {
+  return t(`triage-done-${kind}`);
+}
+
 /** What to say when the store found nothing to act on. Archive has its own
  *  word; everything else that can come back empty is a move. */
 function notAppliedText(kind: ActionKind): 'triage-nothing-to-archive' | 'triage-not-applied' {
@@ -274,7 +281,7 @@ export function useTriage(opts: {
         if (quiet) return;
         const offer: UndoOffer = {
           actionId: receipt.action_id,
-          description: receipt.description,
+          description: doneText(receipt.kind),
           row,
           atIndex,
           removed: removes,
@@ -287,7 +294,7 @@ export function useTriage(opts: {
           collecting.current.push(offer);
         } else {
           lastUndo.current = offer;
-          onMessage(receipt.description, offer);
+          onMessage(offer.description, offer);
         }
       } catch (err) {
         if (quiet) {

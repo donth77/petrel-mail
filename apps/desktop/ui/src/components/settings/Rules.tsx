@@ -4,7 +4,7 @@ import { api, type Folder, type Rule, type Tag } from '../../lib/api';
 import { Icon } from '../Icon';
 import { PickerField } from '../PickerField';
 import { AccountNote } from './AccountNote';
-import { filableFolderRows } from '../../lib/folders';
+import { filableFolderRows, reportedDelimiter } from '../../lib/folders';
 import { t } from '../../lib/strings';
 import { folderPending } from '../../lib/signin-refusal';
 import {
@@ -285,6 +285,7 @@ export function Rules({ onMessage }: { onMessage: (text: string) => void }) {
               <span>{t('rule-act-move')}</span>
               <PickerField
                 mode="folder"
+                delim={reportedDelimiter(folders)}
                 label={t('rule-act-move')}
                 value={editing.actions.move_to}
                 options={filableFolderRows(folders).map((r) => ({

@@ -178,6 +178,46 @@ mod inbound_labels {
         );
     }
 
+    /// A tag's name is matched whole, quotes and all. The sweep hands labels
+    /// over decoded, and trimming quotes off them made `say "hi"` miss its own
+    /// label — and the sweep then took the tag off the message.
+    #[test]
+    fn a_tag_whose_name_has_quotes_or_accents_keeps_its_label() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("t.db")).unwrap();
+        let blobs = BlobStore::open(&dir.path().join("blobs")).unwrap();
+        let account = store.ensure_test_account().unwrap();
+        let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+        let quoted = store.ensure_tag(account, "say \"hi\"", None).unwrap();
+        let accented = store.ensure_tag(account, "Ärger", None).unwrap();
+        let japanese = store.ensure_tag(account, "日本語", None).unwrap();
+        let m = store
+            .ingest_raw(&blobs, account, Some(inbox), Some(1), &fixture("m3@x"))
+            .unwrap();
+        for tag in [quoted, accented, japanese] {
+            store.tag_message(m.message_id, tag).unwrap();
+        }
+        store
+            .apply_gmail_labels(
+                account,
+                &[(
+                    "m3@x".to_string(),
+                    vec![
+                        "\\Inbox".to_string(),
+                        "say \"hi\"".to_string(),
+                        "Ärger".to_string(),
+                        "日本語".to_string(),
+                    ],
+                )],
+            )
+            .unwrap();
+        let mut kept = store.tags_of(m.message_id).unwrap();
+        kept.sort();
+        let mut want = vec![quoted, accented, japanese];
+        want.sort();
+        assert_eq!(kept, want);
+    }
+
     /// A user label that merely ends in a system label's name is not that
     /// label: "Old Inbox" is a place the user made, and a message filed
     /// there is not in the inbox.

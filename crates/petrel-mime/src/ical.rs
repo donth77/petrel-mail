@@ -239,13 +239,27 @@ fn non_empty(s: String) -> Option<String> {
     (!t.is_empty()).then_some(t)
 }
 
+/// The one address a CAL-ADDRESS names, or nothing.
+///
+/// One, because answering an invitation emails this address straight from
+/// the person's own account, with no window in between. A stranger's
+/// `ORGANIZER;CN="Your Manager":mailto:boss@corp.example,a@x.example,b@…`
+/// showed as "Your Manager" on the card, and Accept queued a reply, due at
+/// once, to every address in the list: mail sent through the victim's account
+/// to people they never saw, telling each that the address is read. A value
+/// that is anything but a single address is not an organizer to answer, and
+/// the card offers no buttons for it.
 fn mailto(value: &str) -> Option<String> {
     let v = value.trim();
-    let rest = v
-        .strip_prefix("mailto:")
-        .or_else(|| v.strip_prefix("MAILTO:"))
-        .unwrap_or(v);
-    non_empty(rest.to_string()).filter(|s| s.contains('@'))
+    let rest = match v.get(..7) {
+        Some(scheme) if scheme.eq_ignore_ascii_case("mailto:") => &v[7..],
+        _ => v,
+    };
+    let single = rest.matches('@').count() == 1
+        && !rest.contains(|c: char| {
+            c.is_whitespace() || matches!(c, ',' | ';' | ':' | '<' | '>' | '"' | '?' | '(' | ')')
+        });
+    non_empty(rest.to_string()).filter(|_| single)
 }
 
 /// `\n \, \; \\` written out (RFC 5545 §3.3.11).

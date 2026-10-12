@@ -13,6 +13,8 @@ import {
   movedFolderPath,
   nameIsTaken,
   nestableRolePath,
+  reportedDelimiter,
+  splitPath,
   underAnchor,
 } from '../lib/folders';
 import { Archive as ArchiveIcon, Trash2 } from 'lucide-react';
@@ -127,7 +129,8 @@ export function AppDialogs({
   /** Whether a folder already sits in the bin, which is what makes deleting
    *  it mean deletion rather than a move. */
   const binned = (f: Folder | null) =>
-    f !== null && underAnchor(f.path, nestableRolePath(folders, 'trash'));
+    f !== null &&
+    underAnchor(f.path, nestableRolePath(folders, 'trash'), reportedDelimiter(folders));
 
   /** Where Delete would put this folder, or nothing when Delete means delete.
    *
@@ -212,13 +215,14 @@ export function AppDialogs({
       <Picker
         open={movingFolder !== null}
         mode="folder"
-        subject={movingFolder ? (movingFolder.path.split(/[/.]/).pop() ?? movingFolder.path) : null}
+        delim={reportedDelimiter(folders)}
+        subject={movingFolder ? splitPath(movingFolder.path, reportedDelimiter(folders)).leaf : null}
         options={(() => {
           if (!movingFolder) return [];
           const archiveAnchor = nestableRolePath(folders, 'archive');
           const trashAnchor = nestableRolePath(folders, 'trash');
           const within = (p: string, root: string | undefined) =>
-            root !== undefined && (p === root || p.startsWith(`${root}/`) || p.startsWith(`${root}.`));
+            underAnchor(p, root, reportedDelimiter(folders));
           // Where the folder already stands is not a move: a top-level folder
           // is not offered Top level, and a child is not offered its own
           // parent.

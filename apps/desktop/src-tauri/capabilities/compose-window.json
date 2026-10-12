@@ -1,0 +1,11 @@
+{
+  "$schema": "https://schema.tauri.app/capability/2",
+  "identifier": "compose-window",
+  "description": "What only a pop-out composer needs. Its close request is answered by the page, which saves the message first; the runtime then waits for the page to destroy the window, so without destroy no close of any kind could ever finish — not the button, not Cmd-W, not the close after Send.",
+  "windows": [
+    "compose-*"
+  ],
+  "permissions": [
+    "core:window:allow-destroy"
+  ]
+}

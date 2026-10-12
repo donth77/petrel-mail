@@ -84,6 +84,15 @@ export function availableLocales(): string[] {
   return Object.keys(SOURCES);
 }
 
+/** A string as English has it, whatever language the interface is in: for
+ *  recognising text the engine words in English (`adviceText`). */
+export function english(id: StringId): string {
+  const bundle = bundleFor(FALLBACK);
+  const message = bundle?.getMessage(id);
+  if (!bundle || !message?.value) return id;
+  return bundle.formatPattern(message.value, undefined, []);
+}
+
 export function t(id: StringId, args?: Args): string {
   for (const locale of chain(active)) {
     const bundle = bundleFor(locale);

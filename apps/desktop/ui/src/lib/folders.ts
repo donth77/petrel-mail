@@ -56,12 +56,39 @@ export function nestableRolePaths(folders: Folder[], role: 'archive' | 'trash'):
   return [...new Set(paths)];
 }
 
-/** Whether a path sits at or under an anchor, on either separator. */
-export function underAnchor(path: string, anchor: string | undefined): boolean {
+/**
+ * The delimiter this account's server reported, once a survey has said.
+ *
+ * IMAP names a child as parent, delimiter, leaf, and the server says which
+ * delimiter it uses on every folder it lists. The engine nests by that one
+ * character alone, so on a `/` server `Trash.2019` is a folder of its own and
+ * Empty Trash leaves it be; the rail has to draw it the same way, or it shows
+ * a folder inside the bin that the bin does not hold. Undefined until the
+ * server has said, and then both `/` and `.` nest, as they always did.
+ */
+export function reportedDelimiter(
+  folders: ReadonlyArray<{ delim?: string | null }>,
+): string | undefined {
+  for (const f of folders) if (f.delim && f.delim.length === 1) return f.delim;
+  return undefined;
+}
+
+/** Whether `c`, the character after a parent's path, nests: the reported
+ *  delimiter, or either separator while there is none. */
+function nests(c: string | undefined, delim: string | undefined): boolean {
+  return delim === undefined ? c === '/' || c === '.' : c === delim;
+}
+
+/** Whether a path sits at or under an anchor: on the reported delimiter, or
+ *  on either separator until the server has said (`reportedDelimiter`). */
+export function underAnchor(
+  path: string,
+  anchor: string | undefined,
+  delim?: string,
+): boolean {
   return (
     anchor !== undefined &&
-    (path === anchor ||
-      (path.startsWith(anchor) && (path[anchor.length] === '/' || path[anchor.length] === '.')))
+    (path === anchor || (path.startsWith(anchor) && nests(path[anchor.length], delim)))
   );
 }
 
@@ -83,8 +110,15 @@ export function underAnchor(path: string, anchor: string | undefined): boolean {
  * `/` is the answer whenever nothing settles it, which is also what the rest
  * of the app has always assumed — so an unfamiliar server is no worse off
  * than it was.
+ *
+ * All of that is for a server that has not said yet. Once one has, its own
+ * word is the answer (`reportedDelimiter`).
  */
-export function folderDelimiter(folders: ReadonlyArray<{ path: string }>): string {
+export function folderDelimiter(
+  folders: ReadonlyArray<{ path: string; delim?: string | null }>,
+): string {
+  const reported = reportedDelimiter(folders);
+  if (reported !== undefined) return reported;
   for (const child of folders) {
     for (const parent of folders) {
       if (parent.path.length >= child.path.length || !child.path.startsWith(parent.path)) continue;
@@ -96,13 +130,14 @@ export function folderDelimiter(folders: ReadonlyArray<{ path: string }>): strin
 
 /**
  * Every path a folder sits under, outermost first: `A/B/C` is under `A` and
- * `A/B`. Split on both delimiters, the way `buildFolderTree` draws the rows,
- * so opening all of these opens every row drawn above it.
+ * `A/B`. Split where `buildFolderTree` splits — on the reported delimiter, or
+ * on both while there is none — so opening all of these opens every row
+ * drawn above it.
  */
-export function folderAncestors(path: string): string[] {
+export function folderAncestors(path: string, delim?: string): string[] {
   const out: string[] = [];
   for (let i = 1; i < path.length; i++) {
-    if (path[i] === '/' || path[i] === '.') out.push(path.slice(0, i));
+    if (nests(path[i], delim)) out.push(path.slice(0, i));
   }
   return out;
 }
@@ -268,11 +303,16 @@ export type FolderNode = {
  *
  * All of `folders` must share that prefix; the caller partitions.
  */
-export function buildFolderTree(folders: Folder[], consumed = 0): FolderNode[] {
+export function buildFolderTree(
+  folders: Folder[],
+  consumed = 0,
+  delim: string | undefined = reportedDelimiter(folders),
+): FolderNode[] {
   const roots: FolderNode[] = [];
   const attach = (path: string, level: FolderNode[]): FolderNode => {
     let prefix = consumed > 0 ? path.slice(0, consumed) : '';
-    const segs = path.slice(consumed > 0 ? consumed + 1 : 0).split(/[/.]/);
+    const rest = path.slice(consumed > 0 ? consumed + 1 : 0);
+    const segs = delim === undefined ? rest.split(/[/.]/) : rest.split(delim);
     let node: FolderNode | undefined;
     for (const seg of segs) {
       prefix = prefix ? `${prefix}${path[prefix.length]}${seg}` : seg;
@@ -340,7 +380,9 @@ export function filableFolderRows(folders: Folder[]): FolderRow[] {
   // in alphabetical place buries the five or six you actually file into beneath
   // everything you have already dealt with. Sort is stable, so nothing else
   // moves.
-  const roots = [...buildFolderTree(filableFolders(folders))].sort(
+  // The account's delimiter, read off every folder rather than the filable
+  // few: the pickers fold and name these rows by that same one.
+  const roots = [...buildFolderTree(filableFolders(folders), 0, reportedDelimiter(folders))].sort(
     (a, b) => Number(anchorOf(a.path) !== undefined) - Number(anchorOf(b.path) !== undefined),
   );
 
@@ -379,8 +421,12 @@ export const ARCHIVE_VERB = -1_000_001;
 export const TRASH_VERB = -1_000_002;
 
 /** Whether a path sits under any of these folded-away ones. */
-export function underAnyClosed(path: string, closed: ReadonlySet<string>): boolean {
-  for (const c of closed) if (path !== c && underAnchor(path, c)) return true;
+export function underAnyClosed(
+  path: string,
+  closed: ReadonlySet<string>,
+  delim?: string,
+): boolean {
+  for (const c of closed) if (path !== c && underAnchor(path, c, delim)) return true;
   return false;
 }
 
@@ -391,13 +437,16 @@ export function underAnyClosed(path: string, closed: ReadonlySet<string>): boole
  * back to what was given — the pickers rely on that to map fuzzy-match indices
  * onto the two spans they draw.
  *
- * Split on the last `/` or `.`, which is how `attach` in the rail already reads
- * a path: either character nests, and which one it is belongs to the server.
- * A name with no separator in it is all leaf, which is also the right answer
- * for a tag.
+ * Split where `buildFolderTree` splits: on the last reported delimiter, or
+ * the last `/` or `.` while the server has not said which one nests. A name
+ * with no separator in it is all leaf, which is also the right answer for a
+ * tag.
  */
-export function splitPath(path: string): { parent: string; leaf: string } {
-  const at = Math.max(path.lastIndexOf('/'), path.lastIndexOf('.'));
+export function splitPath(path: string, delim?: string): { parent: string; leaf: string } {
+  const at =
+    delim === undefined
+      ? Math.max(path.lastIndexOf('/'), path.lastIndexOf('.'))
+      : path.lastIndexOf(delim);
   if (at < 0) return { parent: '', leaf: path };
   return { parent: path.slice(0, at + 1), leaf: path.slice(at + 1) };
 }

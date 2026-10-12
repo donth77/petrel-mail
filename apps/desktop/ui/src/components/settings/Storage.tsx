@@ -7,6 +7,7 @@ import type { LucideIcon } from 'lucide-react';
 import { api, type Account, type Folder, type RemovalReport, type StorageReport, type Tag } from '../../lib/api';
 import { fileSize } from '../../lib/format';
 import { exportScopes } from '../../lib/export-scopes';
+import { reportedDelimiter } from '../../lib/folders';
 import { Icon } from '../Icon';
 import { Confirm } from '../Confirm';
 import { PickerField, type FieldOption } from '../PickerField';
@@ -293,6 +294,7 @@ export function Storage({ onMessage }: { onMessage: (text: string) => void }) {
       <div className="storage-actions">
         <PickerField
           mode="folder"
+          delim={account ? reportedDelimiter(folders[account.id] ?? []) : undefined}
           label={t('storage-export-scope')}
           value={scope ? scope.id : null}
           options={scopes}

@@ -233,6 +233,188 @@ fn stripped_references_fall_back_to_a_distinctive_subject() {
     );
 }
 
+/// `mail` from a sender to the test account's own address and nobody else,
+/// so the only correspondent two of these share is the account itself.
+fn mail_to_me(from: &str, msgid: &str, subject: &str, date_ms: i64) -> Vec<u8> {
+    let raw = String::from_utf8(mail(msgid, subject, &[], date_ms, "hi")).unwrap();
+    raw.replacen(
+        "From: Someone <someone@example.com>\r\nTo: me@example.com",
+        &format!("From: {from}\r\nTo: test@example.com"),
+        1,
+    )
+    .into_bytes()
+}
+
+/// Two services' "Your verification code", an hour apart: neither is a reply,
+/// and they are two conversations. Joined, a thread-wide Delete forever on
+/// one deleted the other.
+#[test]
+fn two_messages_neither_a_reply_are_not_joined_by_subject() {
+    let (_d, mut store, blobs, account) = setup();
+    let inbox = inboxed(&store, account);
+    let a = store
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(inbox),
+            None,
+            &mail_from(
+                "GitHub <noreply@github.example>",
+                "v1@x",
+                "Your verification code",
+                &[],
+                T0,
+            ),
+        )
+        .expect("a");
+    let b = store
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(inbox),
+            None,
+            &mail_from(
+                "Bank <alerts@bank.example>",
+                "v2@x",
+                "Your verification code",
+                &[],
+                T0 + DAY / 24,
+            ),
+        )
+        .expect("b");
+    assert_ne!(
+        store.thread_of(a.message_id).unwrap(),
+        store.thread_of(b.message_id).unwrap()
+    );
+}
+
+/// The reply can arrive first — backfill walks newest first — and the post
+/// still joins it.
+#[test]
+fn a_post_joins_the_reply_that_arrived_before_it() {
+    let (_d, mut store, blobs, account) = setup();
+    let inbox = inboxed(&store, account);
+    let reply = store
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(inbox),
+            None,
+            &mail("o2@x", "Re: Offsite agenda draft", &[], T0 + DAY, "two"),
+        )
+        .expect("reply");
+    let post = store
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(inbox),
+            None,
+            &mail("o1@x", "Offsite agenda draft", &[], T0, "one"),
+        )
+        .expect("post");
+    assert_eq!(
+        store.thread_of(reply.message_id).unwrap(),
+        store.thread_of(post.message_id).unwrap()
+    );
+}
+
+/// A "Re:" from someone the conversation never included, sharing nothing with
+/// it but the account's own address, is not part of it.
+#[test]
+fn a_reply_sharing_only_the_account_is_not_joined_by_subject() {
+    let (_d, mut store, blobs, account) = setup();
+    let inbox = inboxed(&store, account);
+    let post = store
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(inbox),
+            None,
+            &mail_to_me(
+                "Alice <alice@example.com>",
+                "p1@x",
+                "Invoice 4471 overdue",
+                T0,
+            ),
+        )
+        .expect("post");
+    let stranger = store
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(inbox),
+            None,
+            &mail_to_me(
+                "Mallory <mallory@elsewhere.example>",
+                "p2@x",
+                "Re: Invoice 4471 overdue",
+                T0 + DAY,
+            ),
+        )
+        .expect("stranger");
+    assert_ne!(
+        store.thread_of(post.message_id).unwrap(),
+        store.thread_of(stranger.message_id).unwrap()
+    );
+    let answer = store
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(inbox),
+            None,
+            &mail_from(
+                "Alice <alice@example.com>",
+                "p3@x",
+                "Re: Invoice 4471 overdue",
+                &[],
+                T0 + 2 * DAY,
+            ),
+        )
+        .expect("answer");
+    assert_eq!(
+        store.thread_of(post.message_id).unwrap(),
+        store.thread_of(answer.message_id).unwrap(),
+        "Alice's own follow-up is the same conversation"
+    );
+}
+
+/// Mail in the bin is not a conversation to join: a reply arriving later
+/// would otherwise sit in a thread whose other half Empty Trash deletes.
+#[test]
+fn nothing_joins_a_message_in_the_bin_by_subject() {
+    let (_d, mut store, blobs, account) = setup();
+    let inbox = inboxed(&store, account);
+    let trash = store.ensure_folder(account, "trash", "Trash").unwrap();
+    let binned = store
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(trash),
+            Some(1),
+            &mail("b1@x", "Venue shortlist for March", &[], T0, "one"),
+        )
+        .expect("binned");
+    let reply = store
+        .ingest_raw(
+            &blobs,
+            account,
+            Some(inbox),
+            Some(2),
+            &mail(
+                "b2@x",
+                "Re: Venue shortlist for March",
+                &[],
+                T0 + DAY,
+                "two",
+            ),
+        )
+        .expect("reply");
+    assert_ne!(
+        store.thread_of(binned.message_id).unwrap(),
+        store.thread_of(reply.message_id).unwrap()
+    );
+}
+
 /// The failure mode that matters more than a missed merge: a *wrong* merge
 /// hides mail inside an unrelated conversation, where nobody looks for it.
 #[test]
@@ -796,7 +978,8 @@ fn gmail_thread_ids_are_authoritative_where_known() {
             &raw("b@x", "Interview times"),
         )
         .expect("ingest");
-    // Identical distinctive subjects, same hour: JWZ glues them together.
+    // A distinctive subject and a reply to it, same hour, no References: the
+    // subject fallback glues them together.
     let c = store
         .ingest_raw(
             &blobs,
@@ -812,7 +995,7 @@ fn gmail_thread_ids_are_authoritative_where_known() {
             account,
             Some(all),
             Some(4),
-            &raw("d@x", "Quarterly planning review"),
+            &raw("d@x", "Re: Quarterly planning review"),
         )
         .expect("ingest");
     let thread_of = |store: &petrel_engine::store::Store, id| {

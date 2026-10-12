@@ -701,10 +701,9 @@ pub fn run() {
                 }
             }
             for (id, cfg) in configs {
-                eprintln!(
-                    "[sync] account {id} configured: {} @ {}",
-                    cfg.user, cfg.host
-                );
+                // By id alone, as the line below for the environment's
+                // account: the username is the person's address.
+                eprintln!("[sync] account {id} configured");
                 spawn_real_sync(state.clone(), id, cfg);
                 started += 1;
             }

@@ -856,3 +856,46 @@ fn settling_a_draft_conflict_after_drafts_is_renumbered_erases_no_other_draft() 
         );
     }
 }
+
+/// The gap filler compares the server's UIDs with the store's, and ran before
+/// the cycle that notices a renumbering. Under the new numbering every stored
+/// UID that was not reused looked gone: D, still on the server, lost its
+/// placement and dropped out of the inbox and out of search. The sweep now
+/// checks the numbering first and leaves a changed one to the recovery.
+#[test]
+fn the_gap_filler_leaves_a_renumbered_folder_to_the_recovery() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = test_state(dir.path());
+    let srv = Imap::new("MOVE UIDPLUS", &[("INBOX", "")]);
+    for s in ["Z", "A", "B", "C", "D"] {
+        srv.put(
+            "INBOX",
+            raw_msg(&format!("{s}@example.com"), &format!("msg {s}"), s),
+            &[],
+        );
+    }
+    // Sparse numbers, as a folder that has seen deletions has: A at 2, C at
+    // 4, D at 5.
+    srv.expunge_where("INBOX", "msg Z");
+    srv.expunge_where("INBOX", "msg B");
+    let ids = synced(&state, &srv, &[("INBOX", "inbox")], "INBOX");
+    assert_eq!(ids.len(), 3);
+    let d = ids[2];
+    // Another client deletes C, and the server renumbers: A is 1, D is 2.
+    srv.expunge_where("INBOX", "msg C");
+    srv.renumber("INBOX", 2);
+    tauri::async_runtime::block_on(async {
+        let port = serve(Arc::clone(&srv)).await;
+        super::reconcile_ghost_placements(&state, state.account_id, &plain(port)).await;
+    });
+    assert_eq!(
+        where_is(&state, d),
+        ["INBOX"],
+        "D is on the server; only its number changed"
+    );
+    assert!(
+        srv.said("FETCH").is_empty(),
+        "nothing fetched against the old numbers: {:?}",
+        srv.said("FETCH")
+    );
+}

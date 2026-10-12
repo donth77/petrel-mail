@@ -63,6 +63,11 @@
   min-inline-size: 0;
 }
 
+.invite-addr {
+  font-size: 11.5px;
+  color: var(--ink2);
+}
+
 .invite-acts {
   display: flex;
   flex-wrap: wrap;

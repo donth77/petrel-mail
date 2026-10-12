@@ -818,6 +818,25 @@ impl Store {
         if state != "queued" && state != "local" {
             return Ok(false);
         }
+        // Queued is not the same as untouched. An action settles when its
+        // last message does, and the drain delivers them one at a time: with
+        // the first of a conversation's three MOVEs already on the server,
+        // putting all three back here left the server holding that one where
+        // the undo had taken it from. The next pass dropped its placement as
+        // gone, it surfaced in the Trash again, and the bin's expiry deleted
+        // a message the person had un-deleted. Once any of it has gone, it
+        // is too late, and saying so is the truth.
+        if state == "queued" {
+            let reached: bool = self.conn.query_row(
+                "SELECT EXISTS (SELECT 1 FROM action_messages
+                                 WHERE action_id = ?1 AND delivered_ms IS NOT NULL)",
+                params![action_id],
+                |r| r.get(0),
+            )?;
+            if reached {
+                return Ok(false);
+            }
+        }
         let Ok(payload) = serde_json::from_str::<ActionPayload>(&json) else {
             return Ok(false);
         };
@@ -1876,10 +1895,11 @@ impl Store {
             // Gmail's web UI" and "tagged here" the same fact. System labels
             // arrive backslash-prefixed and are never tag material.
             for (tag_name, tag_id) in &tags {
-                let carried = labels.iter().any(|l| {
-                    let name = l.trim_matches('"').trim_start_matches('\\');
-                    !l.trim_matches('"').starts_with('\\') && name == tag_name
-                });
+                // The whole name, as written: the sweep hands labels over
+                // decoded, and a tag called `say "hi"` keeps its quotes —
+                // trimming them made it miss its own label, and a label
+                // called `"hi"` count as the tag `hi`.
+                let carried = labels.iter().any(|l| !l.starts_with('\\') && l == tag_name);
                 if carried {
                     self.conn.execute(
                         "INSERT OR IGNORE INTO message_tags(message_id, tag_id) VALUES (?1, ?2)",

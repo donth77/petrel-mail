@@ -165,3 +165,40 @@ fn the_calendar_part_is_found_wherever_it_hides() {
     let inv = invitation_in(attached.as_bytes()).expect("found as attachment");
     assert_eq!(inv.summary.as_deref(), Some("Planning 1:1"));
 }
+
+/// Answering emails the organizer from the person's own account, at once. A
+/// value naming several addresses — the card showed only the CN — made Accept
+/// a way to send mail to anyone the sender listed.
+#[test]
+fn an_organizer_is_one_address_or_none() {
+    let with = |organizer: &str| {
+        let ics = google_style().replace(
+            "ORGANIZER;CN=\"Wu, Dana\":mailto:dana@example.com",
+            organizer,
+        );
+        parse_invitation(&ics)
+            .expect("parsed")
+            .organizer
+            .and_then(|o| o.email)
+    };
+    for hostile in [
+        "ORGANIZER;CN=\"Your Manager\":mailto:boss@corp.example,victim@other.example",
+        "ORGANIZER;CN=Boss:mailto:boss@corp.example;victim@other.example",
+        "ORGANIZER;CN=Boss:mailto:boss@corp.example victim@other.example",
+        "ORGANIZER;CN=Boss:mailto:Boss <boss@corp.example>",
+        "ORGANIZER;CN=Boss:mailto:boss@corp.example?cc=victim@other.example",
+        "ORGANIZER;CN=Boss:mailto:nobody",
+    ] {
+        assert_eq!(with(hostile), None, "{hostile}");
+    }
+    assert_eq!(
+        with("ORGANIZER;CN=Boss:MailTo:boss@corp.example").as_deref(),
+        Some("boss@corp.example"),
+        "the scheme in any case"
+    );
+    assert_eq!(
+        with("ORGANIZER:boss@corp.example").as_deref(),
+        Some("boss@corp.example"),
+        "or none at all"
+    );
+}

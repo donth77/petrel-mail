@@ -102,7 +102,7 @@ async fn check_setup(setup: &AccountSetup, which: Option<&str>) -> Result<(), Se
         petrel_providers::imap::login_check(&imap)
             .await
             .map_err(|e| SetupFailure {
-                half: "Incoming (IMAP)",
+                half: crate::diag::advice("advice-half-imap"),
                 server: Server::Incoming,
                 host: setup.imap_host.clone(),
                 raw: e.to_string(),
@@ -118,7 +118,7 @@ async fn check_setup(setup: &AccountSetup, which: Option<&str>) -> Result<(), Se
         petrel_providers::smtp::login_check(&smtp)
             .await
             .map_err(|e| SetupFailure {
-                half: "Outgoing (SMTP)",
+                half: crate::diag::advice("advice-half-smtp"),
                 server: Server::Outgoing,
                 host: setup.smtp_host.clone(),
                 raw: e.to_string(),

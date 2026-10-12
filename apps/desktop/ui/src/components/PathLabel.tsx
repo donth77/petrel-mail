@@ -20,8 +20,18 @@ import { Highlight } from './Highlight';
  * still runs over `Archive` as well as `2023`. The hits simply land in two
  * spans instead of one, split at the boundary between them.
  */
-export function PathLabel({ path, hits }: { path: string; hits: number[] }) {
-  const { parent, leaf } = splitPath(path);
+export function PathLabel({
+  path,
+  hits,
+  delim,
+}: {
+  path: string;
+  hits: number[];
+  /** The server's reported delimiter, so the split falls where the tree's
+   *  does (`reportedDelimiter`). */
+  delim?: string;
+}) {
+  const { parent, leaf } = splitPath(path, delim);
   if (!parent) return <span className="clip">{<Highlight text={leaf} hits={hits} />}</span>;
   return (
     <span className="path">

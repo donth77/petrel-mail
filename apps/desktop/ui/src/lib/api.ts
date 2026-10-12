@@ -295,7 +295,14 @@ export type AccountStorage = { account_id: number; messages: number; blob_bytes:
  *  search field, character for character (docs 22). */
 export type SavedSearch = { id: number; name: string; query: string; position: number };
 
-export type Folder = { id: number; role: string; path: string };
+export type Folder = {
+  id: number;
+  role: string;
+  path: string;
+  /** The hierarchy delimiter the server reported, once a survey has said.
+   *  See `reportedDelimiter`. */
+  delim?: string | null;
+};
 
 export type UnsubInfo = { one_click: boolean; url: string | null; mailto: string | null };
 

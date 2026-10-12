@@ -4,6 +4,7 @@ use crate::config::imap_config_for;
 use crate::diag::log_sync;
 use crate::signin::SignIn;
 use crate::state::AppState;
+use crate::sync::loggable;
 use petrel_engine::store::Store;
 use std::sync::Arc;
 
@@ -147,7 +148,10 @@ pub(crate) async fn push_draft_to_server(
         )
         .await
         {
-            log_sync(&format!("old draft copy (uid {old}) not removed: {e}"));
+            log_sync(&format!(
+                "old draft copy (uid {old}) not removed: {}",
+                loggable(&e)
+            ));
         }
     }
     // Absent (search failed), the next push simply leaves a copy behind
@@ -181,7 +185,7 @@ pub(crate) fn schedule_draft_push(state: Arc<AppState>, draft_id: i64) {
             .map(|mut d| d.remove(&draft_id))
             .unwrap_or(false);
         if still_dirty && let Err(e) = push_draft_to_server(&state, draft_id).await {
-            log_sync(&format!("draft {draft_id} push failed: {e}"));
+            log_sync(&format!("draft {draft_id} push failed: {}", loggable(&e)));
         }
     });
 }
@@ -240,7 +244,10 @@ pub(crate) async fn expunge_copies(
         if let Err(e) =
             petrel_providers::imap::expunge_uid(cfg, &path, uid, validity, uidplus).await
         {
-            log_sync(&format!("server draft copy (uid {uid}) not removed: {e}"));
+            log_sync(&format!(
+                "server draft copy (uid {uid}) not removed: {}",
+                loggable(&e)
+            ));
         }
     }
 }
@@ -288,7 +295,7 @@ pub(crate) async fn push_held(
         }
         // Signed out meanwhile, the push holds the draft again itself.
         if let Err(e) = push_draft_to_server(state, draft).await {
-            log_sync(&format!("draft {draft} push failed: {e}"));
+            log_sync(&format!("draft {draft} push failed: {}", loggable(&e)));
         }
     }
     if held.drops.is_empty() {

@@ -51,10 +51,29 @@ export async function pickAttachments(
   const picked = await pick();
   if (picked.length === 0) return null;
 
-  const files = await info(picked);
+  return withAttached(existing, await info(picked));
+}
+
+/**
+ * Files added to what a message already carries: each once, and only while
+ * they fit. The new ones come after the old, so `kept.slice(existing.length)`
+ * is what this added.
+ *
+ * Also how a composer folds in what a picker or a drop produced once the
+ * await is over. Written back as `{ ...draft, attachments }` from a copy
+ * taken before it, that put back whatever had changed meanwhile — typing, a
+ * subject, the row id a save had just learned — and with the composer closed
+ * by then it replaced the message with a bare list, and the window crashed.
+ * Applied to the message as it is now, against what it carries now, none of
+ * that can happen.
+ */
+export function withAttached(
+  existing: readonly Attached[],
+  added: readonly Attached[],
+): { kept: Attached[]; rejected: string[] } {
   const kept = [...existing];
   const rejected: string[] = [];
-  for (const f of files) {
+  for (const f of added) {
     if (kept.some((a) => a.path === f.path)) continue;
     if (!fits(kept, f.size)) {
       rejected.push(f.name);

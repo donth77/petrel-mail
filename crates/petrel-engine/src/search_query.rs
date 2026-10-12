@@ -815,26 +815,31 @@ pub enum Renamed<'a> {
     Folder {
         from: &'a str,
         to: &'a str,
+        /// What the folder's children are named with, as the store nests
+        /// them (`folders::child_separators`): the server's delimiter, or
+        /// `/` and `.` both before it has said. A descendant here is one the
+        /// store's own rename carried, so the two never disagree about which
+        /// folders moved.
+        separators: &'a [char],
     },
 }
 
-/// A folder's last part, split the way `folders.rs` splits it: IMAP
-/// hierarchies are delimited by `/` or by `.` depending on the server.
-fn leaf_of(path: &str) -> &str {
-    path.rsplit(['/', '.']).next().unwrap_or(path)
+/// A folder's last part, split the way the store splits that folder's path.
+fn leaf_of<'p>(path: &'p str, separators: &[char]) -> &'p str {
+    path.rsplit(separators).next().unwrap_or(path)
 }
 
 /// What an `in:` value becomes, or `None` when it names another folder.
-fn folder_renamed(value: &str, from: &str, to: &str) -> Option<String> {
+fn folder_renamed(value: &str, from: &str, to: &str, separators: &[char]) -> Option<String> {
     let low = value.to_lowercase();
     if low == from.to_lowercase() {
         return Some(to.to_string());
     }
-    if low == leaf_of(from).to_lowercase() {
-        return Some(leaf_of(to).to_string());
+    if low == leaf_of(from, separators).to_lowercase() {
+        return Some(leaf_of(to, separators).to_string());
     }
     // A descendant, named by its full path: the parent moved and took it.
-    for delim in ['/', '.'] {
+    for delim in separators {
         let prefix = format!("{}{delim}", from.to_lowercase());
         if let Some(rest) = low.strip_prefix(&prefix) {
             return Some(format!("{to}{delim}{rest}"));
@@ -875,8 +880,15 @@ fn rename_in(expr: &mut Expr, what: &Renamed) -> bool {
                 *name = (*to).to_string();
                 true
             }
-            (Term::In(name), Renamed::Folder { from, to }) => {
-                match folder_renamed(name, from, to) {
+            (
+                Term::In(name),
+                Renamed::Folder {
+                    from,
+                    to,
+                    separators,
+                },
+            ) => {
+                match folder_renamed(name, from, to, separators) {
                     // Held lowercased, as `term_for` holds it.
                     Some(next) => {
                         *name = next.to_lowercase();

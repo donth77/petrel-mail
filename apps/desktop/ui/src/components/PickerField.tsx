@@ -76,6 +76,7 @@ export function PickerField({
   noneLabel,
   onChange,
   onCreate,
+  delim,
 }: {
   mode: 'folder' | 'tag';
   /** Names the control. It cannot come from a wrapping <label>: see the note
@@ -90,6 +91,9 @@ export function PickerField({
   /** Makes the name that was typed and chooses it. Absent where creating from
    *  here would not make sense. */
   onCreate?: (name: string) => void;
+  /** Folder mode: the delimiter the server reported, so a row's name and
+   *  what a fold hides follow the tree the rows were drawn from. */
+  delim?: string;
 }) {
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
@@ -110,7 +114,7 @@ export function PickerField({
       .sort((a, b) => scoreMatch(b.hits, b.o.label) - scoreMatch(a.hits, a.o.label));
   }, [options, query]);
   const browsing = query.trim().length === 0;
-  const fold = useFolderFold(options);
+  const fold = useFolderFold(options, delim);
   // Folding only means anything while the tree is on screen; a search is
   // already a filter, and hiding a match inside a folded parent would drop a
   // row for a reason no longer visible.
@@ -218,7 +222,7 @@ export function PickerField({
                     </button>
                   )}
                   <Icon icon={glyphOf(o)} size={13} />
-                  <span className="clip">{splitPath(o.label).leaf}</span>
+                  <span className="clip">{splitPath(o.label, delim).leaf}</span>
                 </div>
               ) : (
                 <ComboboxItem
@@ -264,9 +268,9 @@ export function PickerField({
                       <Highlight text={o.label} hits={hits} />
                     </span>
                   ) : browsing ? (
-                    <span className="clip">{splitPath(o.label).leaf}</span>
+                    <span className="clip">{splitPath(o.label, delim).leaf}</span>
                   ) : (
-                    <PathLabel path={o.label} hits={hits} />
+                    <PathLabel path={o.label} hits={hits} delim={delim} />
                   )}
                 </ComboboxItem>
               ),

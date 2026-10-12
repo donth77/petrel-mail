@@ -17,6 +17,16 @@ pub(crate) const DIAG: &str = r#"
     }
   }
   function send(obj) { try { buf.push(JSON.stringify(obj)); } catch (e) { buf.push('"unserializable"'); } flush(); }
+  // Where a blocked or failed resource lives, never its whole address. The
+  // composer's remote images are a message's trackers, and a tracker's path
+  // is commonly the recipient's address; the scheme and host say what was
+  // refused without writing that into frontend.log. CSP's keywords
+  // ("inline", "eval") carry no colon and pass through as they are.
+  function origin(u) {
+    var s = String(u);
+    if (s.indexOf(':') < 0) { return s; }
+    try { var x = new URL(s); return x.protocol + (x.host ? '//' + x.host : ''); } catch (e) { return 'unparsable'; }
+  }
 
   // What remains of the diagnostics is the part that still earns its place:
   // uncaught errors. The input and focus probes below this were scaffolding for
@@ -27,14 +37,14 @@ pub(crate) const DIAG: &str = r#"
   send({ kind: 'boot', href: String(location.href), readyState: document.readyState });
   window.addEventListener('error', function (e) {
     if (e && e.target && e.target !== window && (e.target.src || e.target.href)) {
-      send({ kind: 'resource-error', url: String(e.target.src || e.target.href) });
+      send({ kind: 'resource-error', url: origin(e.target.src || e.target.href) });
       return;
     }
     send({ kind: 'js-error', msg: String(e.message), src: String(e.filename) + ':' + e.lineno });
   }, true);
   window.addEventListener('unhandledrejection', function (e) { send({ kind: 'rejection', msg: String(e.reason) }); });
   document.addEventListener('securitypolicyviolation', function (e) {
-    send({ kind: 'csp-violation', directive: String(e.violatedDirective), blocked: String(e.blockedURI) });
+    send({ kind: 'csp-violation', directive: String(e.violatedDirective), blocked: origin(e.blockedURI) });
   });
   window.addEventListener('DOMContentLoaded', function () {
     send({ kind: 'dom', scripts: document.scripts.length, root: !!document.getElementById('root') });
@@ -63,7 +73,6 @@ pub(crate) const SELFTEST: &str = r#"
   }
   function rows() { return document.querySelectorAll('.row').length; }
   function timing() { var m = document.querySelectorAll('.meta span'); return m.length > 1 ? m[1].textContent : ''; }
-  function firstRow() { var r = document.querySelector('.row'); return r ? r.innerText.replace(/\s+/g, ' ').slice(0, 90) : ''; }
   var queries = (window.__PETREL_SELFTEST_QUERIES__ || ['meeting', 'zephyrite5000', '東京計', 'quarterly report']);
   var i = 0;
   function step() {
@@ -86,7 +95,9 @@ pub(crate) const SELFTEST: &str = r#"
     var q = queries[i++];
     type(input, q);
     setTimeout(function () {
-      log({ kind: 'selftest', query: q, results: rows(), timing: timing(), first: firstRow() });
+      // How many rows, never what they say: the first row is somebody's
+      // sender, subject and opening line, and this runs on real mailboxes.
+      log({ kind: 'selftest', query: q, results: rows(), timing: timing() });
       step();
     }, 900);
   }
@@ -261,6 +272,78 @@ pub(crate) enum Server {
     Outgoing,
 }
 
+/// What `friendly_error_for` says, by the id the window translates it under.
+///
+/// The English is en.ftl's, word for word (`advice_is_the_strings_file`
+/// holds the two equal), because the window knows a sentence by it and shows
+/// its own language's instead (`adviceText`). It said these in English in
+/// every one of the eight, on the screen a new account first fails on.
+/// Anything else that reaches the screen is the server's own words, and is
+/// shown as they came.
+pub(crate) const ADVICE: &[(&str, &str)] = &[
+    (
+        "advice-access-refused-gmail",
+        "The server accepted the password but refused access. For Gmail this usually means IMAP is switched off in settings.",
+    ),
+    (
+        "advice-access-refused",
+        "The server accepted the password but refused access. Check whether IMAP is switched on for this account.",
+    ),
+    (
+        "advice-signin-refused-gmail",
+        "Sign-in was refused. Gmail needs 2-Step Verification switched on and an app password — your ordinary account password will not work for IMAP.",
+    ),
+    (
+        "advice-signin-refused-microsoft",
+        "Sign-in was refused. Microsoft accounts increasingly require OAuth sign-in for mail, which Petrel does not support yet, so a password may not work here however it is set up.",
+    ),
+    (
+        "advice-signin-refused",
+        "Sign-in was refused. Check the address and password. Many providers will not accept your ordinary password for mail and want an app password made in their security settings.",
+    ),
+    (
+        "advice-no-such-host",
+        "That server name could not be looked up. Check the host.",
+    ),
+    (
+        "advice-no-answer-imap",
+        "The server did not answer. Check the host and port, and whether something on this network blocks IMAP.",
+    ),
+    (
+        "advice-no-answer-smtp",
+        "The server did not answer. Check the host and port, and whether something on this network blocks outgoing mail (SMTP).",
+    ),
+    (
+        "advice-no-tls",
+        "The encrypted connection could not be established, so Petrel stopped rather than continuing in the clear.",
+    ),
+    (
+        "advice-unparsable",
+        "The server sent a response Petrel could not parse. Your mail is still on the server.",
+    ),
+    (
+        "advice-unreadable",
+        "The server sent something Petrel could not read. Your mail is still on the server.",
+    ),
+    ("advice-no-folder-synced", "No folder could be synced."),
+    // Which server a connection test failed on, ahead of the advice.
+    ("advice-half-imap", "Incoming (IMAP)"),
+    ("advice-half-smtp", "Outgoing (SMTP)"),
+];
+
+/// What a sync says when every folder failed and the server gave no reason
+/// of its own. Petrel's words, so they are advice like the rest.
+pub(crate) const NO_FOLDER_SYNCED: &str = "no folder could be synced";
+
+/// One of `ADVICE`, by id.
+pub(crate) fn advice(id: &str) -> &'static str {
+    ADVICE
+        .iter()
+        .find(|(key, _)| *key == id)
+        .map(|(_, text)| *text)
+        .unwrap_or_default()
+}
+
 /// Turns a protocol error into something a person can act on.
 ///
 /// The raw text is Rust's Debug rendering of an IMAP response — `code: None,
@@ -281,17 +364,16 @@ pub(crate) fn friendly_sync_error_for(host: &str, raw: &str) -> String {
 /// in again test both, and the outgoing one was told to check whether the
 /// network blocks IMAP.
 pub(crate) fn friendly_error_for(server: Server, host: &str, raw: &str) -> String {
+    if raw == NO_FOLDER_SYNCED {
+        return advice("advice-no-folder-synced").into();
+    }
     let r = raw.to_ascii_uppercase();
     // Before the password's advice: refused at sign-in, these too read as a
     // refusal, but the password was right and the advice is not about it.
     if r.contains("AUTHORIZATIONFAILED") || r.contains("WEBALERT") {
         return match provider_of(host) {
-            Provider::Gmail => "The server accepted the password but refused access. \
-                For Gmail this usually means IMAP is switched off in settings."
-                .into(),
-            _ => "The server accepted the password but refused access. Check whether \
-                IMAP is switched on for this account."
-                .into(),
+            Provider::Gmail => advice("advice-access-refused-gmail").into(),
+            _ => advice("advice-access-refused").into(),
         };
     }
     // Gmail's word for its ordinary password, with 2-Step Verification on,
@@ -300,26 +382,17 @@ pub(crate) fn friendly_error_for(server: Server, host: &str, raw: &str) -> Strin
     // reports the server's text unmarked.
     if is_password_refusal(raw) || r.contains("APPLICATION-SPECIFIC PASSWORD REQUIRED") {
         return match provider_of(host) {
-            Provider::Gmail => "Sign-in was refused. Gmail needs 2-Step Verification \
-                switched on and an app password — your ordinary account password will \
-                not work for IMAP."
-                .into(),
+            Provider::Gmail => advice("advice-signin-refused-gmail").into(),
             // Not "make an app password": Microsoft has been retiring password
             // sign-in for mail, and Petrel cannot do the OAuth that replaces
             // it. Saying so is more use than sending somebody to a settings
             // page that will not help.
-            Provider::Microsoft => "Sign-in was refused. Microsoft accounts increasingly \
-                require OAuth sign-in for mail, which Petrel does not support yet, so a \
-                password may not work here however it is set up."
-                .into(),
-            Provider::Other => "Sign-in was refused. Check the address and password. \
-                Many providers will not accept your ordinary password for mail and want \
-                an app password made in their security settings."
-                .into(),
+            Provider::Microsoft => advice("advice-signin-refused-microsoft").into(),
+            Provider::Other => advice("advice-signin-refused").into(),
         };
     }
     if r.contains("DNS") || r.contains("NAME OR SERVICE") || r.contains("RESOLVE") {
-        return "That server name could not be looked up. Check the host.".into();
+        return advice("advice-no-such-host").into();
     }
     // Windows words both differently: a refused port is "the target machine
     // actively refused it" (os error 10061), and a silent one "the connected
@@ -332,31 +405,21 @@ pub(crate) fn friendly_error_for(server: Server, host: &str, raw: &str) -> Strin
         || r.contains("FAILED TO RESPOND")
     {
         return match server {
-            Server::Incoming => {
-                "The server did not answer. Check the host and port, and whether \
-                 something on this network blocks IMAP."
-            }
+            Server::Incoming => advice("advice-no-answer-imap"),
             // Sending is what networks block most: port 25 often, and some
             // hotel and office networks every SMTP port.
-            Server::Outgoing => {
-                "The server did not answer. Check the host and port, and whether \
-                 something on this network blocks outgoing mail (SMTP)."
-            }
+            Server::Outgoing => advice("advice-no-answer-smtp"),
         }
         .into();
     }
     if r.contains("CERTIFICATE") || r.contains("TLS") || r.contains("HANDSHAKE") {
-        return "The encrypted connection could not be established, so Petrel \
-                stopped rather than continuing in the clear."
-            .into();
+        return advice("advice-no-tls").into();
     }
     if is_imap_parse_error(raw) {
         // Parser failures embed the raw FETCH line — subjects, addresses, all
         // of it — in the error text. The detail stays in the engine; what
         // reaches the screen must not repeat any of that.
-        return "The server sent a response Petrel could not parse. Your mail \
-                is still on the server."
-            .into();
+        return advice("advice-unparsable").into();
     }
     // Anything not recognised above is shown only if it cannot be carrying
     // mail. The old rule was the other way round — print the raw text and
@@ -370,9 +433,7 @@ pub(crate) fn friendly_error_for(server: Server, host: &str, raw: &str) -> Strin
     // hundred characters, and no mail content that fits in them next to an
     // error code.
     if looks_like_a_dump(raw) {
-        return "The server sent something Petrel could not read. Your mail is \
-                still on the server."
-            .into();
+        return advice("advice-unreadable").into();
     }
     raw.to_string()
 }
@@ -498,9 +559,31 @@ mod address_tests {
 #[cfg(test)]
 mod sync_error_tests {
     use super::{
-        Server, friendly_error_for, friendly_sync_error_for, is_imap_parse_error,
+        ADVICE, Server, advice, friendly_error_for, friendly_sync_error_for, is_imap_parse_error,
         is_password_refusal, is_sign_in_refusal,
     };
+
+    /// The window knows each sentence by its English, so the English here
+    /// and in en.ftl must be the same, character for character. Changed in
+    /// one place only, the sentence would be shown untranslated again.
+    #[test]
+    fn advice_is_the_strings_file() {
+        let ftl = include_str!("../../ui/src/locales/en.ftl");
+        for (id, english) in ADVICE {
+            let line = format!("{id} = {english}");
+            assert!(
+                ftl.lines().any(|l| l == line),
+                "en.ftl lacks, or words differently: {line}"
+            );
+            assert_eq!(advice(id), *english);
+        }
+        assert_eq!(advice("advice-nothing-of-the-sort"), "");
+        assert_eq!(
+            friendly_sync_error_for("imap.example.com", super::NO_FOLDER_SYNCED),
+            advice("advice-no-folder-synced"),
+            "Petrel's own words are advice like the rest"
+        );
+    }
 
     /// Advice for the wrong provider is worse than none.
     ///

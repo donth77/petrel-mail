@@ -1,13 +1,17 @@
 import { useState } from 'react';
 import { useSettings } from '../../lib/settings';
 import { postDesktopNotification } from '../../lib/notify';
-import { t } from '../../lib/strings';
+import { t, type StringId } from '../../lib/strings';
 
-/** Pause options, as offsets from now. `0` clears the pause. */
-const PAUSES: { label: string; ms: number }[] = [
-  { label: t('notify-pause-off'), ms: 0 },
-  { label: t('notify-pause-hour'), ms: 60 * 60 * 1000 },
-  { label: t('notify-pause-tomorrow'), ms: 0 },
+/** Pause options, as offsets from now. `0` clears the pause.
+ *
+ *  Labels by id, read at render. Read when the module loaded, they were in
+ *  whatever language the bundle had before the settings chose one — English,
+ *  in every locale, and they stayed so when the language changed. */
+const PAUSES: { label: StringId; ms: number }[] = [
+  { label: 'notify-pause-off', ms: 0 },
+  { label: 'notify-pause-hour', ms: 60 * 60 * 1000 },
+  { label: 'notify-pause-tomorrow', ms: 0 },
 ];
 
 export function Notifications() {
@@ -53,21 +57,21 @@ export function Notifications() {
             aria-pressed={!paused}
             onClick={() => set('notifyPausedUntil', '0')}
           >
-            {PAUSES[0].label}
+            {t(PAUSES[0].label)}
           </button>
           <button
             type="button"
             className={paused && pausedUntil < tomorrowMorning() ? 'on' : undefined}
             onClick={() => set('notifyPausedUntil', String(Date.now() + PAUSES[1].ms))}
           >
-            {PAUSES[1].label}
+            {t(PAUSES[1].label)}
           </button>
           <button
             type="button"
             className={paused && pausedUntil >= tomorrowMorning() ? 'on' : undefined}
             onClick={() => set('notifyPausedUntil', String(tomorrowMorning()))}
           >
-            {PAUSES[2].label}
+            {t(PAUSES[2].label)}
           </button>
         </div>
       </section>

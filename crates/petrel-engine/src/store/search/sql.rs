@@ -312,18 +312,23 @@ impl Store {
                 // 92ms against 84ms for the broadest prefix — because it builds the
                 // whole mailbox's placement list whatever the match narrows to.
                 // Both plans open on the FTS match, so neither walks the mailbox.
-                for _ in 0..2 {
+                //
+                // The leaf is what follows the folder's own delimiter, as the
+                // rail and a rename read it (`folders::child_separators`): on
+                // a `/` server `in:old` is not `Receipts.old`. Both `/` and
+                // `.` only until the server has said which it nests with.
+                for _ in 0..5 {
                     args.push(Box::new(name.clone()));
-                }
-                for _ in 0..2 {
-                    args.push(Box::new(folders::like_escape(name)));
                 }
                 let lower = fold(name);
                 let holds = format!(
                     "(f.role = ?
                       OR {lower}(f.path) = ?
-                      OR {lower}(f.path) LIKE '%/' || ? ESCAPE '\\'
-                      OR {lower}(f.path) LIKE '%.' || ? ESCAPE '\\')"
+                      OR substr({lower}(f.path), -(length(?) + 1)) IN (
+                           coalesce(CASE WHEN json_valid(f.sync_state_json)
+                                         THEN json_extract(f.sync_state_json, '$.delim') END, '/') || ?,
+                           coalesce(CASE WHEN json_valid(f.sync_state_json)
+                                         THEN json_extract(f.sync_state_json, '$.delim') END, '.') || ?))"
                 );
                 // A lookup per message, even where the others are asked of
                 // their whole table at once (`walking`). A mailbox is usually

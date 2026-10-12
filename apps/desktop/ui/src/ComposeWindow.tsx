@@ -4,7 +4,13 @@ import { draftFromRecord } from './lib/draft-record';
 import { Compose, type Draft } from './components/Compose';
 import { firstUnsendable, hasRecipient } from './lib/recipients';
 import { Picker } from './components/Picker';
-import { ATTACHMENT_LIMIT, pickAttachments, stageDropped } from './lib/attachments';
+import {
+  ATTACHMENT_LIMIT,
+  pickAttachments,
+  stageDropped,
+  withAttached,
+  type Attached,
+} from './lib/attachments';
 import { settleDraft } from './lib/close-draft';
 import { AUTOSAVE_MS, draftSignature, slotFor, unsaved } from './lib/draft-autosave';
 import type { ComposerSlot } from './lib/draft-autosave';
@@ -156,6 +162,27 @@ export function ComposeWindow({ draftId }: { draftId: number }) {
     };
   }, []);
 
+  /** Files picked or dropped, added to the message as it is now. Written
+   *  back from the copy taken when the file was dropped, a large one's
+   *  seconds of staging reverted everything typed meanwhile, and autosave
+   *  then wrote the older text (`withAttached`). */
+  const addAttached = (added: Attached[], refused: string[]) => {
+    const now = draftRef.current;
+    if (!now) return;
+    const rejected = [...refused, ...withAttached(now.attachments ?? [], added).rejected];
+    setDraft((cur) =>
+      cur ? { ...cur, attachments: withAttached(cur.attachments ?? [], added).kept } : cur,
+    );
+    if (rejected.length > 0) {
+      setToast(
+        t('compose-too-large', {
+          name: rejected.join(', '),
+          limit: fileSize(ATTACHMENT_LIMIT),
+        }),
+      );
+    }
+  };
+
   if (error) return <div className="empty"><p>{error}</p></div>;
   if (!draft) return <div className="empty" />;
 
@@ -179,36 +206,17 @@ export function ComposeWindow({ draftId }: { draftId: number }) {
         }
         onNotice={setToast}
         onAttach={() => {
-          void pickAttachments(draft.attachments ?? [], api.attachmentInfo, () =>
-            api.pickFiles('attach'),
-          )
+          const base = draft.attachments ?? [];
+          void pickAttachments(base, api.attachmentInfo, () => api.pickFiles('attach'))
             .then((result) => {
-              if (!result) return;
-              setDraft({ ...draft, attachments: result.kept });
-              if (result.rejected.length > 0) {
-                setToast(
-                  t('compose-too-large', {
-                    name: result.rejected.join(', '),
-                    limit: fileSize(ATTACHMENT_LIMIT),
-                  }),
-                );
-              }
+              if (result) addAttached(result.kept.slice(base.length), result.rejected);
             })
             .catch((e) => setToast(t('compose-attach-failed', { error: String(e) })));
         }}
         onDropFiles={(files) => {
-          void stageDropped([...files], draft.attachments ?? [], api.stageAttachment)
-            .then((result) => {
-              setDraft({ ...draft, attachments: result.kept });
-              if (result.rejected.length > 0) {
-                setToast(
-                  t('compose-too-large', {
-                    name: result.rejected.join(', '),
-                    limit: fileSize(ATTACHMENT_LIMIT),
-                  }),
-                );
-              }
-            })
+          const base = draft.attachments ?? [];
+          void stageDropped([...files], base, api.stageAttachment)
+            .then((result) => addAttached(result.kept.slice(base.length), result.rejected))
             .catch((e) => setToast(t('compose-attach-failed', { error: String(e) })));
         }}
         onSendLater={(d) => {

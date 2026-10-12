@@ -387,19 +387,51 @@ fn holds(c: &Condition, envelope: &Envelope) -> bool {
 /// really separate instructions: when a destination is named, the move *is*
 /// the skip.
 pub fn planned_actions(a: &Actions) -> Vec<(ActionKind, Option<i64>)> {
+    planned_for(&[a])
+        .into_iter()
+        .map(|(kind, target, _)| (kind, target))
+        .collect()
+}
+
+/// What every rule that matched a conversation asks for, planned as one.
+///
+/// `matched` is in rule order. The trap `planned_actions` describes crosses
+/// rules too: "from the vendor: move to Vendors" and "subject has invoice:
+/// skip inbox", planned rule by rule, queued Move then Archive, and on a
+/// folder-style account the Archive took the mail out of Vendors — it ended
+/// in Archive and nothing said why. So a move anywhere is the skip
+/// everywhere, and of several moves the last rule's wins, as running them in
+/// order would leave it. Tags are each applied once; read is marked once.
+///
+/// Each action comes with the index in `matched` of the rule it is from, so a
+/// refusal can name that rule.
+pub fn planned_for(matched: &[&Actions]) -> Vec<(ActionKind, Option<i64>, usize)> {
     let mut acts = Vec::new();
-    match a.move_to {
-        Some(folder) => acts.push((ActionKind::Move, Some(folder))),
+    let moved = matched
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(i, a)| a.move_to.map(|folder| (i, folder)));
+    match moved {
+        Some((i, folder)) => acts.push((ActionKind::Move, Some(folder), i)),
         // Only meaningful on its own: with nowhere to go, skipping the inbox
         // is exactly what archiving means.
-        None if a.skip_inbox => acts.push((ActionKind::Archive, None)),
-        None => {}
+        None => {
+            if let Some(i) = matched.iter().position(|a| a.skip_inbox) {
+                acts.push((ActionKind::Archive, None, i));
+            }
+        }
     }
-    if let Some(tag) = a.tag {
-        acts.push((ActionKind::Tag, Some(tag)));
+    let mut tagged = std::collections::HashSet::new();
+    for (i, a) in matched.iter().enumerate() {
+        if let Some(tag) = a.tag
+            && tagged.insert(tag)
+        {
+            acts.push((ActionKind::Tag, Some(tag), i));
+        }
     }
-    if a.mark_read {
-        acts.push((ActionKind::MarkRead, None));
+    if let Some(i) = matched.iter().position(|a| a.mark_read) {
+        acts.push((ActionKind::MarkRead, None, i));
     }
     acts
 }
@@ -476,6 +508,76 @@ mod tests {
             planned_actions(&skip_only),
             vec![(ActionKind::Archive, None)]
         );
+    }
+
+    /// The same trap across two rules: one moves, the other skips the inbox.
+    /// Planned rule by rule, Move then Archive filed the mail in Archive.
+    #[test]
+    fn a_move_in_one_rule_is_not_undone_by_skipping_the_inbox_in_another() {
+        let vendors = Actions {
+            move_to: Some(7),
+            ..Actions::default()
+        };
+        let invoices = Actions {
+            skip_inbox: true,
+            tag: Some(5),
+            ..Actions::default()
+        };
+        assert_eq!(
+            planned_for(&[&vendors, &invoices]),
+            vec![
+                (ActionKind::Move, Some(7), 0),
+                (ActionKind::Tag, Some(5), 1)
+            ]
+        );
+        assert_eq!(
+            planned_for(&[&invoices, &vendors]),
+            vec![
+                (ActionKind::Move, Some(7), 1),
+                (ActionKind::Tag, Some(5), 0)
+            ],
+            "whichever comes first"
+        );
+    }
+
+    /// Several moves end where running them in order would: the last.
+    /// Several rules tagging, or marking read, do each thing once.
+    #[test]
+    fn merged_rules_move_once_and_do_nothing_twice() {
+        let first = Actions {
+            move_to: Some(3),
+            tag: Some(5),
+            mark_read: true,
+            ..Actions::default()
+        };
+        let second = Actions {
+            move_to: Some(4),
+            tag: Some(5),
+            mark_read: true,
+            ..Actions::default()
+        };
+        let third = Actions {
+            tag: Some(6),
+            skip_inbox: true,
+            ..Actions::default()
+        };
+        assert_eq!(
+            planned_for(&[&first, &second, &third]),
+            vec![
+                (ActionKind::Move, Some(4), 1),
+                (ActionKind::Tag, Some(5), 0),
+                (ActionKind::Tag, Some(6), 2),
+                (ActionKind::MarkRead, None, 0),
+            ]
+        );
+        assert_eq!(
+            planned_for(&[&third]),
+            vec![
+                (ActionKind::Archive, None, 0),
+                (ActionKind::Tag, Some(6), 0)
+            ]
+        );
+        assert!(planned_for(&[]).is_empty());
     }
 
     #[test]

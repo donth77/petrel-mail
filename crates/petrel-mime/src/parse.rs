@@ -267,9 +267,10 @@ pub fn unsubscribe_info(raw: &[u8]) -> Option<Unsubscribe> {
 /// verdict rather than reaching one.
 ///
 /// That makes the header only as trustworthy as the server that wrote it,
-/// which is why `authserv` is kept and shown. A stamp from your own provider
-/// means something; one a sender put there themselves means nothing, and the
-/// two are told apart by who is named, not by the header's presence.
+/// which is why `authserv` is kept. A stamp from your own provider means
+/// something; one a sender put there themselves means nothing, and the two
+/// are told apart by who is named (`authserv_trusted`), not by the header's
+/// presence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthVerdict {
     /// The check ran and the message passed it.
@@ -284,7 +285,8 @@ pub enum AuthVerdict {
 /// The verdicts a message carries, and who reached them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Authentication {
-    /// The server that performed the checks, verbatim from the header.
+    /// The server that performed the checks, verbatim from the header. None
+    /// when the header names none, as Microsoft's do.
     pub authserv: Option<String>,
     pub spf: Option<AuthVerdict>,
     pub dkim: Option<AuthVerdict>,
@@ -293,6 +295,9 @@ pub struct Authentication {
     /// showing a person: "really from example.com" is a sentence, whereas
     /// "dmarc=pass" is a log line.
     pub domain: Option<String>,
+    /// The domain of the From address on screen, which is the one DMARC is
+    /// about. A verdict naming another domain says nothing about this mail.
+    pub from_domain: Option<String>,
 }
 
 impl Authentication {
@@ -308,11 +313,16 @@ impl Authentication {
     /// From line, so neither on its own says the sender is who they appear to
     /// be. DMARC is the check that ties them to it. Where DMARC is absent,
     /// this stays quiet rather than promoting a weaker check into a claim it
-    /// cannot support.
+    /// cannot support — and so it does when the verdict names a domain other
+    /// than the one in the From line, which is a verdict about other mail.
     pub fn identity_verified(&self) -> Option<bool> {
+        let about_this_mail = matches!(
+            (&self.domain, &self.from_domain),
+            (Some(d), Some(f)) if d.eq_ignore_ascii_case(f)
+        );
         match self.dmarc {
-            Some(AuthVerdict::Pass) => Some(true),
-            Some(AuthVerdict::Fail) => Some(false),
+            Some(AuthVerdict::Pass) if about_this_mail => Some(true),
+            Some(AuthVerdict::Fail) if about_this_mail => Some(false),
             _ => None,
         }
     }
@@ -333,7 +343,17 @@ fn verdict(word: &str) -> AuthVerdict {
 /// Only the *first* `Authentication-Results` header is read. Mail can carry
 /// several, and they are prepended in order, so the first is the one written
 /// by the server closest to you. A later one was written further upstream,
-/// possibly by a host you have no reason to trust.
+/// possibly by a host you have no reason to trust. Whether the first one's
+/// author is believed at all is `authserv_trusted`'s question, which needs
+/// to know whose mailbox this is.
+///
+/// Read as RFC 8601 lays it out, not by searching for words. The receiving
+/// server copies text the sender chose — the envelope sender, into a comment
+/// and into `smtp.mailfrom=` — ahead of the DMARC result, and `+` and `=` are
+/// legal in an address. Searching for the first `dmarc=` found
+/// `x+dmarc=pass@attacker.example` there, and the first `header.from=` found
+/// the real, failing domain after it: Gmail's own header for a forgery read
+/// as "Verified — really from bank.example".
 pub fn authentication(raw: &[u8]) -> Option<Authentication> {
     let msg = MessageParser::default().parse(raw)?;
     // header_values, not header_raw. header_raw hands back the *last*
@@ -350,67 +370,319 @@ pub fn authentication(raw: &[u8]) -> Option<Authentication> {
             msg.header_raw("Authentication-Results")
                 .map(|h| h.to_string())
         })?;
-    let flat = header.replace(['\r', '\n'], " ");
-    let lower = flat.to_ascii_lowercase();
+    let flat = without_comments(&header.replace(['\r', '\n'], " "));
 
-    // Everything before the first semicolon is the authserv-id.
-    let authserv = flat
-        .split(';')
-        .next()
-        .map(|s| s.trim().trim_matches('"').to_string())
-        .filter(|s| !s.is_empty());
-
-    // `method=result`, with the result running to the next space, semicolon or
-    // bracket. Values may be quoted and may carry a `(comment)` after them.
-    let read = |method: &str| -> Option<AuthVerdict> {
-        let needle = format!("{method}=");
-        let mut from = 0usize;
-        while let Some(at) = lower[from..].find(&needle) {
-            let start = from + at;
-            // Must not be the tail of a longer token: `header.dkim=` and
-            // `dkim=` are different things, and so is `xdmarc=`.
-            let ok_before = start == 0
-                || !lower.as_bytes()[start - 1].is_ascii_alphanumeric()
-                    && lower.as_bytes()[start - 1] != b'.'
-                    && lower.as_bytes()[start - 1] != b'-';
-            let after = &lower[start + needle.len()..];
-            let word: String = after
-                .chars()
-                .take_while(|c| c.is_ascii_alphabetic())
-                .collect();
-            if ok_before && !word.is_empty() {
-                return Some(verdict(&word));
-            }
-            from = start + needle.len();
-        }
-        None
+    let mut parts = outside_quotes(&flat, ';').into_iter();
+    // The authserv-id comes first, and an optional version after it. A
+    // header that opens with a result instead has none — Microsoft writes
+    // them that way — and that first part is a result like the rest.
+    let first = parts.next().unwrap_or_default();
+    let (authserv, opening) = if first.contains('=') {
+        (None, Some(first))
+    } else {
+        let id = first
+            .split_whitespace()
+            .next()
+            .map(|s| s.trim_matches('"').to_string())
+            .filter(|s| !s.is_empty());
+        (id, None)
     };
 
-    // The domain DMARC aligned against, when the server names it.
-    let mut domain = None;
-    for key in ["header.from=", "d="] {
-        if let Some(at) = lower.find(key) {
-            let after = &flat[at + key.len()..];
-            let found: String = after
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '-')
-                .collect();
-            if !found.is_empty() {
-                domain = Some(found.to_ascii_lowercase());
-                break;
-            }
+    let mut out = Authentication {
+        authserv,
+        from_domain: msg
+            .from()
+            .and_then(|a| a.first())
+            .and_then(|a| a.address())
+            .and_then(domain_of),
+        ..Authentication::default()
+    };
+    // How many DMARC results the header holds. A message has one DMARC
+    // evaluation, so a second is somebody's text read as a result, and which
+    // of the two is the server's cannot be known: neither is believed.
+    let mut dmarc_results = 0;
+    for part in opening.into_iter().chain(parts) {
+        let mut pairs = key_values(&part).into_iter();
+        // `method[/version]=result` opens a result, and only there is a
+        // method named: `header.dkim=` further along is a property.
+        let Some((method, result)) = pairs.next() else {
+            continue;
+        };
+        let method = method
+            .split('/')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let word: String = result
+            .to_ascii_lowercase()
+            .chars()
+            .take_while(|c| c.is_ascii_alphabetic())
+            .collect();
+        if word.is_empty() {
+            continue;
+        }
+        if method == "dmarc" {
+            dmarc_results += 1;
+        }
+        let slot = match method.as_str() {
+            "spf" => &mut out.spf,
+            "dkim" => &mut out.dkim,
+            "dmarc" => &mut out.dmarc,
+            _ => continue,
+        };
+        // The first result for a method stands, as the first header does.
+        if slot.is_some() {
+            continue;
+        }
+        *slot = Some(verdict(&word));
+        if method == "dmarc" {
+            // The domain from DMARC's own result and nowhere else. One it
+            // does not name is the From domain, which is what DMARC checks.
+            out.domain = pairs
+                .find(|(k, _)| k.eq_ignore_ascii_case("header.from"))
+                .and_then(|(_, v)| domain_of(&v))
+                .or_else(|| out.from_domain.clone());
         }
     }
 
-    let out = Authentication {
-        authserv,
-        spf: read("spf"),
-        dkim: read("dkim"),
-        dmarc: read("dmarc"),
-        domain,
-    };
+    if dmarc_results > 1 {
+        out.dmarc = None;
+        out.domain = None;
+    }
 
     if out.is_empty() { None } else { Some(out) }
+}
+
+/// The domain of an address, or of a bare domain: lowercased, without a
+/// trailing dot, and only if it could be a host name.
+fn domain_of(value: &str) -> Option<String> {
+    let host = value.rsplit('@').next()?.trim().trim_end_matches('.');
+    let ok = !host.is_empty()
+        && host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
+    ok.then(|| host.to_ascii_lowercase())
+}
+
+/// Whether an `Authentication-Results` header naming `authserv` can be
+/// believed for mail read from `imap_host`.
+///
+/// A receiving server that writes these headers removes any that arrive
+/// claiming its own name (RFC 8601 §5), so its name on the first one is its
+/// word. Anybody else's name means the sender wrote it, or a server you have
+/// no relationship with did: on a provider that writes none, a message
+/// carrying `mx.google.com; dmarc=pass header.from=bank.example` was believed
+/// as it stood. So the name has to be the provider's own: the IMAP host's
+/// domain, or the domain the provider is known to stamp under where those
+/// differ. Microsoft names no server at all, and is believed only for its own
+/// mailboxes.
+///
+/// A provider that writes no verdict and strips none can still be imitated
+/// by a sender who uses its name; nothing in the header itself can tell
+/// those apart. What this stops is a verdict from a stranger being shown as
+/// one from your own provider.
+pub fn authserv_trusted(authserv: Option<&str>, imap_host: &str) -> bool {
+    let Some(provider) = registrable(imap_host) else {
+        return false;
+    };
+    let stamps_as: &[&str] = match provider.as_str() {
+        "gmail.com" | "googlemail.com" => &["google.com"],
+        "me.com" | "icloud.com" | "mac.com" => &["icloud.com"],
+        "fastmail.com" => &["messagingengine.com"],
+        "office365.com" | "outlook.com" | "hotmail.com" | "live.com" => &["outlook.com"],
+        "yahoo.com" | "aol.com" => &["yahoo.com"],
+        "zoho.com" => &["zohomail.com"],
+        _ => &[],
+    };
+    match authserv.and_then(registrable) {
+        Some(id) => id == provider || stamps_as.contains(&id.as_str()),
+        // No authserv-id: the shape Microsoft writes, and only theirs.
+        None if authserv.is_none() => stamps_as.contains(&"outlook.com"),
+        None => false,
+    }
+}
+
+/// The part of a host name that one organisation controls: `google.com` for
+/// `mx.google.com`, `provider.co.uk` for `imap.provider.co.uk`. Close enough
+/// without a public-suffix list for the comparison `authserv_trusted` makes,
+/// which only ever asks whether two hosts are the same provider. None for an
+/// address, a bare word, or anything that is not a host name.
+fn registrable(host: &str) -> Option<String> {
+    let host = host
+        .trim()
+        .trim_matches('"')
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    if host.parse::<std::net::IpAddr>().is_ok()
+        || !host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+    {
+        return None;
+    }
+    let labels: Vec<&str> = host.split('.').collect();
+    if labels.len() < 2 || labels.iter().any(|l| l.is_empty()) {
+        return None;
+    }
+    let n = labels.len();
+    // `co.uk`, `com.au`, `ne.jp`: a two-letter country under a short generic
+    // label is a suffix, and the organisation is the label before it.
+    let country_suffix = n >= 3
+        && labels[n - 1].len() == 2
+        && matches!(
+            labels[n - 2],
+            "co" | "com"
+                | "net"
+                | "org"
+                | "ac"
+                | "gov"
+                | "edu"
+                | "ne"
+                | "or"
+                | "go"
+                | "ltd"
+                | "plc"
+        );
+    let take = if country_suffix { 3 } else { 2 };
+    Some(labels[n - take..].join("."))
+}
+
+/// The header with its comments taken out. RFC 8601 allows a comment wherever
+/// whitespace may go, and a comment is where a receiving server puts text a
+/// sender chose. Quoted strings are left alone, a backslash escapes the next
+/// character in either, and a comment that never closes takes the rest.
+///
+/// A quoted string inside a comment is read as one too, which RFC 5322 does
+/// not ask for: a server that copies a quoted envelope sender into its SPF
+/// comment unescaped — `domain of "x)y; dmarc=pass header.from=bank.example;
+/// z"@attacker.example` — would otherwise have the `)` end the comment and the
+/// rest read as results.
+fn without_comments(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut depth = 0usize;
+    let mut quoted = false;
+    let mut quoted_in_comment = false;
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if quoted {
+            out.push(c);
+            match c {
+                '\\' => {
+                    if let Some(next) = chars.next() {
+                        out.push(next);
+                    }
+                }
+                '"' => quoted = false,
+                _ => {}
+            }
+        } else if depth > 0 {
+            match c {
+                '\\' => {
+                    chars.next();
+                }
+                '"' => quoted_in_comment = !quoted_in_comment,
+                '(' if !quoted_in_comment => depth += 1,
+                ')' if !quoted_in_comment => depth -= 1,
+                _ => {}
+            }
+        } else {
+            match c {
+                '(' => {
+                    depth = 1;
+                    out.push(' ');
+                }
+                '"' => {
+                    quoted = true;
+                    out.push(c);
+                }
+                _ => out.push(c),
+            }
+        }
+    }
+    out
+}
+
+/// `s` split at `sep` wherever it is not inside a quoted string.
+fn outside_quotes(s: &str, sep: char) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut part = String::new();
+    let mut quoted = false;
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if quoted && c == '\\' {
+            part.push(c);
+            if let Some(next) = chars.next() {
+                part.push(next);
+            }
+            continue;
+        }
+        if c == '"' {
+            quoted = !quoted;
+        }
+        if c == sep && !quoted {
+            parts.push(std::mem::take(&mut part));
+        } else {
+            part.push(c);
+        }
+    }
+    parts.push(part);
+    parts
+}
+
+/// The `key=value` pairs of one result, in order, with whitespace allowed
+/// around the `=` as the grammar allows. A quoted value is unquoted; a word
+/// with no `=` after it is passed over.
+fn key_values(s: &str) -> Vec<(String, String)> {
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = 0;
+    let skip_space = |i: &mut usize| {
+        while *i < chars.len() && chars[*i].is_whitespace() {
+            *i += 1;
+        }
+    };
+    let mut out = Vec::new();
+    loop {
+        skip_space(&mut i);
+        if i >= chars.len() {
+            break;
+        }
+        let key_start = i;
+        while i < chars.len() && !chars[i].is_whitespace() && chars[i] != '=' {
+            i += 1;
+        }
+        let key: String = chars[key_start..i].iter().collect();
+        skip_space(&mut i);
+        if i >= chars.len() || chars[i] != '=' {
+            // A word on its own. Whatever follows is read afresh.
+            if key.is_empty() {
+                i += 1;
+            }
+            continue;
+        }
+        i += 1;
+        skip_space(&mut i);
+        let mut value = String::new();
+        if i < chars.len() && chars[i] == '"' {
+            i += 1;
+            while i < chars.len() && chars[i] != '"' {
+                if chars[i] == '\\' && i + 1 < chars.len() {
+                    i += 1;
+                }
+                value.push(chars[i]);
+                i += 1;
+            }
+            i += 1;
+        } else {
+            while i < chars.len() && !chars[i].is_whitespace() {
+                value.push(chars[i]);
+                i += 1;
+            }
+        }
+        if !key.is_empty() {
+            out.push((key, value));
+        }
+    }
+    out
 }
 
 /// A parsed view of a message. Never authoritative — the raw bytes are.

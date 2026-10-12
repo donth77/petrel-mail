@@ -14,7 +14,9 @@ import {
   nestableRolePath,
   splitPath,
   nestableRolePaths,
+  reportedDelimiter,
   underAnchor,
+  underAnyClosed,
 } from './folders';
 import type { Folder } from './api';
 
@@ -407,5 +409,77 @@ describe('an account with two folders wearing the trash role', () => {
     ] as unknown as Parameters<typeof nestableRolePaths>[0];
     expect(nestableRolePaths(gmail, 'trash')).toEqual(['Trash']);
     expect(underAnchor('Trash/sub2', 'Trash')).toBe(true);
+  });
+});
+
+describe('once the server has said which delimiter it nests with', () => {
+  // The engine nests by the delimiter the survey recorded and no other, so
+  // what the rail draws inside a folder has to be exactly what the engine
+  // acts on as inside it. On a `/` server a dot is part of a name.
+  const slash = (id: number, path: string, role = ''): Folder => ({ id, path, role, delim: '/' });
+  const account = [
+    slash(1, 'INBOX', 'inbox'),
+    slash(2, 'Trash', 'trash'),
+    slash(3, 'Trash/Old job'),
+    slash(4, 'Trash.2019'),
+    slash(5, 'Receipts'),
+    slash(6, 'Receipts/2026'),
+    slash(7, 'Receipts.old'),
+    slash(8, 'Clients/acme.com'),
+  ];
+
+  it('is the one the folders carry, and folderDelimiter answers with it', () => {
+    expect(reportedDelimiter(account)).toBe('/');
+    expect(reportedDelimiter([f(1, 'INBOX.Sent')])).toBeUndefined();
+    // Reported beats the guess: nothing here nests by slash, and a dot server
+    // under INBOX. would otherwise read as one.
+    expect(folderDelimiter([{ path: 'INBOX.Sent', delim: '/' }])).toBe('/');
+  });
+
+  it('keeps a folder named after the bin out of it', () => {
+    expect(underAnchor('Trash.2019', 'Trash', '/')).toBe(false);
+    expect(underAnchor('Trash/Old job', 'Trash', '/')).toBe(true);
+    expect(underAnchor('Trash', 'Trash', '/')).toBe(true);
+  });
+
+  it('draws a dotted sibling beside its namesake, not under it', () => {
+    const tree = buildFolderTree(account.filter((x) => !x.role));
+    expect(tree.map((n) => n.label)).toEqual([
+      'Trash',
+      'Trash.2019',
+      'Receipts',
+      'Receipts.old',
+      'Clients',
+    ]);
+    const receipts = tree.find((n) => n.path === 'Receipts');
+    expect(receipts?.children.map((n) => n.label)).toEqual(['2026']);
+    const clients = tree.find((n) => n.path === 'Clients');
+    expect(clients?.children.map((n) => n.label)).toEqual(['acme.com']);
+  });
+
+  it('splits a path, and lists its parents, where the tree does', () => {
+    expect(splitPath('Clients/acme.com', '/')).toEqual({ parent: 'Clients/', leaf: 'acme.com' });
+    expect(folderAncestors('Clients/acme.com/2026', '/')).toEqual(['Clients', 'Clients/acme.com']);
+  });
+
+  it('does not fold a sibling away with the folder it is named after', () => {
+    const closed = new Set(['Receipts']);
+    expect(underAnyClosed('Receipts/2026', closed, '/')).toBe(true);
+    expect(underAnyClosed('Receipts.old', closed, '/')).toBe(false);
+  });
+
+  it('nests by the dot alone on a server that says so', () => {
+    expect(underAnchor('Trash.Old job', 'Trash', '.')).toBe(true);
+    expect(underAnchor('Trash/2019', 'Trash', '.')).toBe(false);
+    const dot = (id: number, path: string): Folder => ({ id, path, role: '', delim: '.' });
+    const tree = buildFolderTree([dot(1, 'Work'), dot(2, 'Work.Projects'), dot(3, 'Work/Notes')]);
+    expect(tree.map((n) => n.label)).toEqual(['Work', 'Work/Notes']);
+    expect(tree[0].children.map((n) => n.label)).toEqual(['Projects']);
+  });
+
+  it('reads both separators, as it always did, until the server has said', () => {
+    expect(underAnchor('Trash.2019', 'Trash')).toBe(true);
+    expect(underAnyClosed('Receipts.old', new Set(['Receipts']))).toBe(true);
+    expect(splitPath('Clients/acme.com').leaf).toBe('com');
   });
 });
