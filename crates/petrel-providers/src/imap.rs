@@ -761,14 +761,21 @@ pub struct DraftReplacement {
 /// came back through the reconcile as separate drafts of the same words.
 ///
 /// The new UID is `APPENDUID` when the server names it. Otherwise it is a
-/// UID this session's search found, newer than `old_uid`, whose subject and
-/// body are the revision just appended. A search that only names `old_uid`
-/// has not seen the append: that number is not recorded as the new copy,
-/// and the old copy is still removed.
+/// UID this session's search found, newer than `old_uid`, that says what
+/// the revision just appended says (`draft_content`). A search that only
+/// names `old_uid` has not seen the append: that number is not recorded as
+/// the new copy, and the old copy is still removed.
 ///
-/// Also removed: every other UID under `message_id` with that same subject
-/// and body. A UID whose subject or body differs is another client's
-/// revision and stays.
+/// Also removed: every other UID under `message_id` that says the same and
+/// is older than the copy just appended. A copy that says something else —
+/// other words, other recipients, other files — is another client's
+/// revision and stays. So does a newer one: another push of this draft
+/// wrote it after this one did, and two pushes that each removed the
+/// other's copy left the server with none.
+///
+/// The search passes over copies already marked deleted. Without UIDPLUS
+/// they are never expunged, and every push fetched each of them again in
+/// full to compare it.
 pub async fn replace_draft_copy(
     cfg: &ImapConfig,
     folder: &str,
@@ -784,16 +791,16 @@ pub async fn replace_draft_copy(
     select_numbered(&mut session, folder, validity).await?;
     let appended =
         append_capturing_uid(&mut session, folder, Some("(\\Draft \\Seen)"), raw).await?;
-    let hits = exact_message_id_hits(&mut session, message_id).await;
+    let hits = exact_message_id_hits(&mut session, message_id, true).await;
     let hits = match hits {
         Ok(hits) => hits,
         Err(_) if appended.is_some() => Vec::new(),
         Err(e) => return Err(e),
     };
+    let sent = draft_content(raw);
     let new_uid = match appended {
         Some(uid) => Some(uid),
         None => {
-            let sent = message_words(raw);
             let mut newer: Vec<u32> = hits
                 .iter()
                 .map(|copy| copy.uid)
@@ -806,7 +813,7 @@ pub async fn replace_draft_copy(
                 let Some(bytes) = message_at(&mut session, uid).await? else {
                     continue;
                 };
-                if message_words(&bytes) == sent && sent.is_some() {
+                if sent.is_some() && draft_content(&bytes) == sent {
                     found = Some(uid);
                     break;
                 }
@@ -820,15 +827,18 @@ pub async fn replace_draft_copy(
     {
         going.push(old);
     }
-    let sent = message_words(raw);
     for copy in &hits {
-        if Some(copy.uid) == new_uid || going.contains(&copy.uid) {
+        // Ours, already going, or written after ours by another push.
+        if Some(copy.uid) == new_uid
+            || going.contains(&copy.uid)
+            || new_uid.is_some_and(|new| copy.uid > new)
+        {
             continue;
         }
         let Some(bytes) = message_at(&mut session, copy.uid).await? else {
             continue;
         };
-        if message_words(&bytes) == sent && sent.is_some() {
+        if sent.is_some() && draft_content(&bytes) == sent {
             going.push(copy.uid);
         }
     }
@@ -837,20 +847,53 @@ pub async fn replace_draft_copy(
     Ok(DraftReplacement { new_uid, unremoved })
 }
 
-/// Subject and body, with the line ending a renderer and a parser disagree
-/// on taken out. The date is not part of it: every push stamps a new one,
-/// and two renders of the same draft would otherwise never match.
-fn message_words(raw: &[u8]) -> Option<(String, String)> {
+/// What a copy of a draft says, for telling this client's own push from
+/// another client's revision: the subject, the plain text, who it is
+/// addressed to, and the files it carries, by name and size.
+///
+/// Comparing the words alone took another client's revision for a
+/// duplicate when it changed only the recipients, and removed it. Not the
+/// date: every push stamps a new one, and two renders of the same draft
+/// would otherwise never match. Not the sender either: the reconcile
+/// renders the stored draft to compare with, and which identity a push
+/// went out under is not part of what the draft says. Line endings a
+/// renderer and a parser disagree on are taken out.
+#[derive(Debug, PartialEq, Eq)]
+pub struct DraftContent {
+    subject: String,
+    body: String,
+    to: Vec<String>,
+    cc: Vec<String>,
+    bcc: Vec<String>,
+    attachments: Vec<(Option<String>, usize)>,
+}
+
+/// `DraftContent` of a whole message; `None` when it does not parse.
+pub fn draft_content(raw: &[u8]) -> Option<DraftContent> {
     let parsed = petrel_mime::parse_message(raw)?;
-    Some((
-        parsed
-            .subject
-            .unwrap_or_default()
-            .replace("\r\n", "\n")
-            .trim()
-            .to_string(),
-        parsed.body_text.replace("\r\n", "\n").trim().to_string(),
-    ))
+    Some(DraftContent {
+        subject: plain_words(parsed.subject.as_deref().unwrap_or_default()),
+        body: plain_words(&parsed.body_text),
+        to: bare_addresses(&parsed.to),
+        cc: bare_addresses(&parsed.cc),
+        bcc: bare_addresses(&parsed.bcc),
+        attachments: parsed
+            .attachments
+            .iter()
+            .map(|a| (a.filename.clone(), a.size))
+            .collect(),
+    })
+}
+
+fn plain_words(text: &str) -> String {
+    text.replace("\r\n", "\n").trim().to_string()
+}
+
+/// The addresses alone, as the store keys them: a display name another
+/// client wrote back in its own encoding is not a different recipient.
+fn bare_addresses(list: &[(Option<String>, String)]) -> Vec<String> {
+    let bare = |(_, addr): &(Option<String>, String)| addr.trim().to_lowercase();
+    list.iter().map(bare).collect()
 }
 
 /// The message at `uid` in the selected mailbox.
@@ -3554,7 +3597,7 @@ where
     let already_there = match stored {
         Some(stored) => {
             session.select(wire_name(to)).await?;
-            match exact_message_id_hits(&mut session, stored.message_id).await {
+            match exact_message_id_hits(&mut session, stored.message_id, false).await {
                 Ok(hits) if hits.is_empty() => false,
                 Ok(hits) => {
                     select_numbered(&mut session, from, validity).await?;
@@ -3663,7 +3706,7 @@ where
 {
     let mut session = sign_in(client, cfg).await?;
     session.select(wire_name(folder)).await?;
-    let found = exact_message_id_hits(&mut session, message_id).await?;
+    let found = exact_message_id_hits(&mut session, message_id, false).await?;
     sign_out(&mut session).await?;
     Ok(found)
 }
@@ -3727,9 +3770,15 @@ const HIT_CHECK_BATCH: usize = 500;
 /// An error, never an empty answer, when there is no id to ask about or no
 /// safe way to ask: callers read empty as absent, and Gmail's Sent check
 /// reads absent as "did not go" and sends again.
+///
+/// `undeleted_only` leaves out copies already marked `\Deleted`. Only the
+/// draft push asks for that: a copy it marked last time, on a server that
+/// cannot expunge just that one, is gone as far as it is concerned. A send
+/// or a move asks about every copy, marked or not.
 async fn exact_message_id_hits<S>(
     session: &mut Session<S>,
     message_id: &str,
+    undeleted_only: bool,
 ) -> Result<Vec<MessageCopy>>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
@@ -3744,9 +3793,10 @@ where
             "this Message-ID has too little plain text to search for".into(),
         ));
     };
+    let live = if undeleted_only { "UNDELETED " } else { "" };
     let hits = search_command(
         session,
-        format!("UID SEARCH HEADER Message-ID {}", quote_imap(&term)),
+        format!("UID SEARCH {live}HEADER Message-ID {}", quote_imap(&term)),
     )
     .await?;
     let asked: std::collections::HashSet<u32> = hits.iter().copied().collect();

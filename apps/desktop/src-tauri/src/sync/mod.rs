@@ -2273,18 +2273,23 @@ async fn run_thrid_sweep(state: &Arc<AppState>, account: i64, cfg: &ImapConfig) 
     }
 }
 
-/// Whether `raw` restates a draft's subject and plain text.
+/// Whether `raw` is this client's own push of the open draft `id`: the
+/// copy a push would write now says what `raw` says (`draft_content`).
 ///
-/// Line endings are the only thing taken out. A push renders the same words
-/// under a new date, and the date is what made the copy look like a
-/// different message.
-fn draft_echo(subject: &str, body: &str, raw: &[u8]) -> bool {
-    let Some(parsed) = petrel_mime::parse_message(raw) else {
+/// Rendered the way the push renders it, so the two are read alike. The
+/// words alone took a revision that changed only the recipients for an
+/// echo, and it was never offered as a conflict.
+fn draft_echo(store: &Store, id: i64, message_id: &str, raw: &[u8]) -> bool {
+    if !store.is_composer_draft(id).unwrap_or(false) {
+        return false;
+    }
+    let Ok(record) = store.load_draft(id) else {
         return false;
     };
-    let norm = |s: &str| s.replace("\r\n", "\n");
-    norm(parsed.subject.as_deref().unwrap_or("")).trim() == norm(subject).trim()
-        && norm(&parsed.body_text).trim() == norm(body).trim()
+    // The sender is not compared, so the rendering needs none.
+    let ours = drafts::draft_copy(&record, String::new(), String::new(), message_id);
+    let theirs = petrel_providers::imap::draft_content(raw);
+    theirs.is_some() && petrel_providers::imap::draft_content(&ours) == theirs
 }
 
 /// Drops placements the server no longer backs.
@@ -2444,12 +2449,14 @@ async fn reconcile_ghost_placements(
                     // Our own push, come back before the previous copy was
                     // removed. The bytes differ — each push stamps a new
                     // date — so the ordinary second-copy path kept it as
-                    // another draft of the same words. A revision whose
-                    // subject or body differs is still someone else's, and
-                    // stays a row of its own.
-                    if let Ok(Some((subject, body))) = store.composer_draft_words(existing)
-                        && draft_echo(&subject, &body, raw)
-                    {
+                    // another draft of the same words. A revision that says
+                    // something else, in its words or to other people, is
+                    // still someone else's, and stays a row of its own.
+                    // Fenced like the ingest below: it parses under the lock.
+                    let echo = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        draft_echo(&store, existing, mid, raw)
+                    }));
+                    if echo.unwrap_or(false) {
                         return;
                     }
                     let second = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

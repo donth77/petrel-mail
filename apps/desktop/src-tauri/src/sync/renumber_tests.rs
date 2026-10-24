@@ -900,9 +900,14 @@ fn the_gap_filler_leaves_a_renumbered_folder_to_the_recovery() {
     );
 }
 
+/// A message to the address the test drafts are written to.
 fn letter(id: &str, subject: &str, body: &str, date: &str) -> Vec<u8> {
+    letter_to(id, "dana@example.com", subject, body, date)
+}
+
+fn letter_to(id: &str, to: &str, subject: &str, body: &str, date: &str) -> Vec<u8> {
     format!(
-        "From: Dana Wu <dana@example.com>\r\nTo: Sam Ortiz <sam@example.com>\r\n\
+        "From: Dana Wu <dana@example.com>\r\nTo: {to}\r\n\
          Subject: {subject}\r\nDate: {date}\r\nMessage-ID: <{id}>\r\n\
          MIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n{body}\r\n"
     )
@@ -910,9 +915,10 @@ fn letter(id: &str, subject: &str, body: &str, date: &str) -> Vec<u8> {
 }
 
 /// The reconcile files a second UID of one Message-ID as its own row. An
-/// open draft is the exception when that UID only repeats the draft's words:
-/// it is this client's push, not another client's revision. A different body
-/// is still the revision.
+/// open draft is the exception when that UID only repeats what the draft
+/// says: it is this client's push, not another client's revision. A
+/// different body is still the revision, and so are the same words to
+/// other people.
 #[test]
 fn an_open_drafts_own_copy_is_not_filed_beside_it() {
     let dir = tempfile::tempdir().unwrap();
@@ -933,6 +939,17 @@ fn an_open_drafts_own_copy_is_not_filed_beside_it() {
     srv.put(
         "Drafts",
         letter(id, "Plans", "their edit", "Tue, 01 Oct 2026 09:06:00 +0000"),
+        &[],
+    );
+    srv.put(
+        "Drafts",
+        letter_to(
+            id,
+            "dana@example.com, sam@example.com",
+            "Plans",
+            "yes",
+            "Tue, 01 Oct 2026 09:07:00 +0000",
+        ),
         &[],
     );
     let (draft, folder) = {
@@ -963,8 +980,8 @@ fn an_open_drafts_own_copy_is_not_filed_beside_it() {
     uids.sort_unstable();
     assert_eq!(
         uids,
-        vec![1, 3],
-        "the same words became a second draft, or the other revision did not"
+        vec![1, 3, 4],
+        "the same words became a second draft, or another revision did not"
     );
     assert!(
         state

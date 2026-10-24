@@ -44,6 +44,9 @@ pub(crate) struct Imap {
     /// names it. A draft push that learned its UID from a later search used
     /// to miss the copy it had just appended and leave the previous one.
     pub(crate) hide_newest_message_id: AtomicBool,
+    /// The next APPEND lands twice, the second copy at the next UID: another
+    /// push of the same draft, finishing just after this one.
+    pub(crate) twin_next_append: AtomicBool,
 }
 
 impl Imap {
@@ -70,6 +73,7 @@ impl Imap {
             garble: Mutex::new(None),
             arrivals: Mutex::new(0),
             hide_newest_message_id: AtomicBool::new(false),
+            twin_next_append: AtomicBool::new(false),
         })
     }
 
@@ -296,16 +300,36 @@ fn append_literal(srv: &Imap, line: &str, raw: &[u8]) -> (Vec<u8>, bool) {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    b.msgs.push(Msg {
-        uid,
-        raw: raw.to_vec(),
-        flags,
-        date: "01-Oct-2026 09:00:00 +0000".into(),
-    });
-    (
-        format!("{tag} OK [APPENDUID {validity} {uid}] Appended\r\n").into_bytes(),
-        false,
-    )
+    if srv.twin_next_append.swap(false, Ordering::Relaxed) {
+        b.msgs.push(Msg {
+            uid,
+            raw: raw.to_vec(),
+            flags: flags.clone(),
+            date: "01-Oct-2026 09:00:00 +0000".into(),
+        });
+        let twin = b.next;
+        b.next += 1;
+        b.msgs.push(Msg {
+            uid: twin,
+            raw: raw.to_vec(),
+            flags,
+            date: "01-Oct-2026 09:00:01 +0000".into(),
+        });
+    } else {
+        b.msgs.push(Msg {
+            uid,
+            raw: raw.to_vec(),
+            flags,
+            date: "01-Oct-2026 09:00:00 +0000".into(),
+        });
+    }
+    // APPENDUID is UIDPLUS's (RFC 4315); a server without it names nothing.
+    let reply = if srv.caps.contains("UIDPLUS") {
+        format!("{tag} OK [APPENDUID {validity} {uid}] Appended\r\n")
+    } else {
+        format!("{tag} OK Appended\r\n")
+    };
+    (reply.into_bytes(), false)
 }
 
 fn mailbox_of_append(line: &str) -> Option<String> {
@@ -426,6 +450,9 @@ fn answer(srv: &Imap, selected: &mut Option<String>, line: &str) -> (Vec<u8>, bo
                         .to_lowercase();
                     let mut found = Vec::new();
                     for (i, m) in b.msgs.iter().enumerate() {
+                        if crit.contains("UNDELETED") && m.flags.iter().any(|f| f == "\\Deleted") {
+                            continue;
+                        }
                         let pick = if crit.contains("HEADER MESSAGE-ID") {
                             let id = header_value(&m.raw, "Message-ID").unwrap_or_default();
                             !term.is_empty() && id.to_lowercase().contains(&term)

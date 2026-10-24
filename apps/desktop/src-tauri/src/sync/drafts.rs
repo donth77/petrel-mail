@@ -696,9 +696,9 @@ mod push_replaces_its_copy {
         }
     }
 
-    fn letter(id: &str, subject: &str, body: &str) -> Vec<u8> {
+    fn letter(id: &str, to: &str, subject: &str, body: &str) -> Vec<u8> {
         format!(
-            "From: Dana Wu <dana@example.com>\r\nTo: Sam Ortiz <sam@example.com>\r\n\
+            "From: Dana Wu <dana@example.com>\r\nTo: {to}\r\n\
              Subject: {subject}\r\nDate: Tue, 01 Oct 2026 09:00:00 +0000\r\n\
              Message-ID: <{id}>\r\nMIME-Version: 1.0\r\n\
              Content-Type: text/plain; charset=utf-8\r\n\r\n{body}\r\n"
@@ -735,6 +735,21 @@ mod push_replaces_its_copy {
                     .to_string()
             })
             .collect()
+    }
+
+    /// The server UID this store holds for the draft's copy.
+    fn recorded(state: &crate::state::AppState, draft: i64) -> Option<u32> {
+        let store = state.store.lock().unwrap();
+        store.draft_sync_state(draft).unwrap().1
+    }
+
+    /// The composer saving new words, to the same recipient as `open`.
+    fn edit(state: &crate::state::AppState, draft: i64, body: &str) {
+        let account = state.account_id;
+        let store = state.store.lock().unwrap();
+        store
+            .save_draft(account, Some(draft), "dana@example.com", "Plans", body, "")
+            .unwrap();
     }
 
     async fn push(state: &Arc<crate::state::AppState>, draft: i64, port: u16) {
@@ -796,12 +811,17 @@ mod push_replaces_its_copy {
         let srv = Imap::new("UIDPLUS", &[("INBOX", ""), ("Drafts", "\\Drafts")]);
         srv.put(
             "Drafts",
-            letter("d-keep@example.com", "Plans", "yes"),
+            letter("d-keep@example.com", "dana@example.com", "Plans", "yes"),
             &["\\Draft"],
         );
         srv.put(
             "Drafts",
-            letter("d-keep@example.com", "Plans", "their edit"),
+            letter(
+                "d-keep@example.com",
+                "dana@example.com",
+                "Plans",
+                "their edit",
+            ),
             &["\\Draft"],
         );
         tauri::async_runtime::block_on(async {
@@ -815,5 +835,96 @@ mod push_replaces_its_copy {
             vec!["their edit".to_string(), "yes".to_string()],
             "the duplicate of this draft stayed, or the other revision went"
         );
+    }
+
+    /// The same words to other people are still the other client's
+    /// revision: a copy that changed only who it goes to stays.
+    #[test]
+    fn a_copy_to_other_recipients_is_another_clients_revision() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+        let draft = open(&state, "Plans", "yes");
+        {
+            let mut store = state.store.lock().unwrap();
+            store.set_draft_msgid(draft, "d-cc@example.com").unwrap();
+        }
+        let srv = Imap::new("UIDPLUS", &[("INBOX", ""), ("Drafts", "\\Drafts")]);
+        srv.put(
+            "Drafts",
+            letter(
+                "d-cc@example.com",
+                "dana@example.com, sam@example.com",
+                "Plans",
+                "yes",
+            ),
+            &["\\Draft"],
+        );
+        tauri::async_runtime::block_on(async {
+            let port = serve(Arc::clone(&srv)).await;
+            push(&state, draft, port).await;
+        });
+        assert_eq!(
+            srv.held("Drafts").len(),
+            2,
+            "a revision that changed only the recipients was taken for a duplicate"
+        );
+    }
+
+    /// Without UIDPLUS the server names no UID for an append and cannot
+    /// expunge one message. The push finds its copy by searching, marks the
+    /// one before it, and a later push does not fetch a marked copy again.
+    #[test]
+    fn without_uidplus_a_push_finds_its_copy_and_passes_over_marked_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+        let draft = open(&state, "Plans", "one");
+        let srv = Imap::new("MOVE", &[("INBOX", ""), ("Drafts", "\\Drafts")]);
+        let (first, last) = tauri::async_runtime::block_on(async {
+            let port = serve(Arc::clone(&srv)).await;
+            push(&state, draft, port).await;
+            let first = recorded(&state, draft);
+            edit(&state, draft, "two");
+            push(&state, draft, port).await;
+            edit(&state, draft, "three");
+            push(&state, draft, port).await;
+            (first, recorded(&state, draft))
+        });
+        assert_eq!(first, Some(1), "the first push did not find its copy");
+        assert_eq!(last, Some(3), "the last push did not find its copy");
+        let held = srv.held("Drafts");
+        let live: Vec<u32> = held
+            .iter()
+            .filter(|m| !m.flags.iter().any(|f| f == "\\Deleted"))
+            .map(|m| m.uid)
+            .collect();
+        assert_eq!(live, vec![3], "an earlier copy was not marked deleted");
+        assert_eq!(
+            srv.said("UID FETCH 1 (BODY.PEEK[])").len(),
+            1,
+            "a copy already marked deleted was fetched again to compare"
+        );
+    }
+
+    /// Another push of this draft can land between this one's append and
+    /// its search. That copy says the same and is newer: removing it, while
+    /// that push removed this one's, left the server with neither.
+    #[test]
+    fn a_newer_copy_of_the_same_draft_is_left_to_the_push_that_wrote_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+        let draft = open(&state, "Plans", "yes");
+        let srv = Imap::new("UIDPLUS", &[("INBOX", ""), ("Drafts", "\\Drafts")]);
+        srv.twin_next_append.store(true, Ordering::Relaxed);
+        tauri::async_runtime::block_on(async {
+            let port = serve(Arc::clone(&srv)).await;
+            push(&state, draft, port).await;
+        });
+        let uids: Vec<u32> = srv.held("Drafts").iter().map(|m| m.uid).collect();
+        assert_eq!(
+            uids,
+            vec![1, 2],
+            "the newer copy of the same draft was removed"
+        );
+        assert_eq!(recorded(&state, draft), Some(1));
     }
 }
