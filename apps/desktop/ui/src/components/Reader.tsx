@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type MouseEvent,
+} from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { Menu, MenuButton, MenuItem, MenuProvider } from '@ariakit/react';
 import {
@@ -46,6 +54,15 @@ import { Marked } from '../lib/search-highlight';
 import { t } from '../lib/strings';
 import { Unsubscribe } from './Unsubscribe';
 import { mailKeyAllowed } from '../lib/useKeyboard';
+import {
+  ROLE_SLOT,
+  addressesForCopy,
+  pairRecipients,
+  recipientCopyText,
+  splitRole,
+} from '../lib/recipient-menu';
+import type { StringId } from '../lib/strings';
+import { RecipientMenu } from './RecipientMenu';
 
 /** A message that is not the one you came here to read: one line, expandable. */
 function messageFromCard(
@@ -74,6 +91,61 @@ function messageFromCard(
     msgid: null,
     references: [],
   };
+}
+
+function recipientRoles({
+  to,
+  toAddrs,
+  cc,
+  ccAddrs,
+  bcc,
+  bccAddrs,
+}: {
+  to: string[];
+  toAddrs: string[];
+  cc: string[];
+  ccAddrs: string[];
+  bcc: string[];
+  bccAddrs: string[];
+}): { id: StringId; labels: string[]; addrs: string[] }[] {
+  const roles: { id: StringId; labels: string[]; addrs: string[] }[] = [];
+  if (to.length > 0) roles.push({ id: 'reader-to', labels: to, addrs: toAddrs });
+  if (cc.length > 0) roles.push({ id: 'reader-cc', labels: cc, addrs: ccAddrs });
+  if (bcc.length > 0) roles.push({ id: 'reader-bcc', labels: bcc, addrs: bccAddrs });
+  return roles;
+}
+
+function RecipientRole({
+  roleId,
+  labels,
+  addrs,
+  onPartyContextMenu,
+}: {
+  roleId: StringId;
+  labels: string[];
+  addrs: string[];
+  onPartyContextMenu: (e: MouseEvent<HTMLSpanElement>, label: string) => void;
+}) {
+  const { before, after } = splitRole(t(roleId, { who: ROLE_SLOT }));
+  const paired = pairRecipients({ labels, addrs });
+  return (
+    <>
+      {before}
+      {paired.map((p, i) => (
+        <Fragment key={`${p.label}\u0000${p.addr}\u0000${i}`}>
+          {i > 0 ? ', ' : null}
+          {p.addr ? (
+            <span data-mail-address={p.addr} onContextMenu={(e) => onPartyContextMenu(e, p.label)}>
+              {p.label}
+            </span>
+          ) : (
+            <span>{p.label}</span>
+          )}
+        </Fragment>
+      ))}
+      {after}
+    </>
+  );
 }
 
 function Collapsed({ m, onExpand }: { m: ThreadIndexRow; onExpand: () => void }) {
@@ -114,6 +186,32 @@ function Expanded({
   later?: () => (text: string) => void;
   onComposeMailto?: (to: string, subject: string) => void;
 }) {
+  const msgToRef = useRef<HTMLSpanElement>(null);
+  const [recipientMenu, setRecipientMenu] = useState<{
+    at: { x: number; y: number };
+    copyText: string;
+    addressText: string;
+  } | null>(null);
+
+  const onPartyContextMenu = useCallback((e: MouseEvent<HTMLSpanElement>, label: string) => {
+    e.preventDefault();
+    // The handler sits on the party span. The event target can be the text
+    // inside it, which has no attribute; the span does.
+    const target = e.currentTarget;
+    const selection = window.getSelection();
+    const parties = Array.from(msgToRef.current?.querySelectorAll('[data-mail-address]') ?? []);
+    setRecipientMenu({
+      at: { x: e.clientX, y: e.clientY },
+      copyText: recipientCopyText({ selection, target, partyLabel: label, parties }),
+      addressText: addressesForCopy({ parties, selection, target }),
+    });
+  }, []);
+
+  const bccLabels = m.bcc ?? [];
+  const bccAddrs = m.bcc_addrs ?? [];
+  const showRecipients =
+    m.to.length > 0 || m.cc.length > 0 || bccLabels.length > 0;
+
   return (
     <article className="msg" id={`msg-body-${m.id}`} data-focused={focused || undefined}>
       {/* The toggle is the header's own area rather than the whole header,
@@ -168,18 +266,35 @@ function Expanded({
                 <SenderAuth messageId={m.id} />
               </span>
             </span>
-            {(m.to.length > 0 || m.cc.length > 0 || (m.bcc?.length ?? 0) > 0) && (
-              <span className="msg-to">
+            {showRecipients && (
+              <span className="msg-to" ref={msgToRef}>
                 {/* Bcc appears only on your own copy, where the header was
                     kept: who you blind-copied, as Apple Mail and Thunderbird
-                    show it. */}
-                {[
-                  m.to.length > 0 && t('reader-to', { who: m.to.join(', ') }),
-                  m.cc.length > 0 && t('reader-cc', { who: m.cc.join(', ') }),
-                  (m.bcc?.length ?? 0) > 0 && t('reader-bcc', { who: m.bcc!.join(', ') }),
-                ]
-                  .filter(Boolean)
-                  .join(' · ')}
+                    show it.
+
+                    Each person is their own element. The line used to be one
+                    string of display names, so Copy could only write the name
+                    a context click had selected. The address lives on the
+                    element, paired by index with the label, and the menu reads
+                    it from there. */}
+                {recipientRoles({
+                  to: m.to,
+                  toAddrs: m.to_addrs,
+                  cc: m.cc,
+                  ccAddrs: m.cc_addrs,
+                  bcc: bccLabels,
+                  bccAddrs,
+                }).map((role, i) => (
+                  <Fragment key={role.id}>
+                    {i > 0 ? ' · ' : null}
+                    <RecipientRole
+                      roleId={role.id}
+                      labels={role.labels}
+                      addrs={role.addrs}
+                      onPartyContextMenu={onPartyContextMenu}
+                    />
+                  </Fragment>
+                ))}
               </span>
             )}
           </span>
@@ -331,6 +446,16 @@ function Expanded({
           </div>
         )}
       </header>
+      {/* Outside the header row. That row is the name, the time and the
+          actions, and this menu is not one of them. */}
+      {recipientMenu && (
+        <RecipientMenu
+          at={recipientMenu.at}
+          copyText={recipientMenu.copyText}
+          addressText={recipientMenu.addressText}
+          onClose={() => setRecipientMenu(null)}
+        />
+      )}
 
       {m.has_calendar && <InvitationCard messageId={m.id} onToast={onToast} />}
 

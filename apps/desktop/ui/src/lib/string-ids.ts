@@ -57,6 +57,8 @@ export const STRING_IDS = [
   'reader-to',
   'reader-cc',
   'reader-bcc',
+  'recipient-copy-address',
+  'recipient-menu',
   'reader-collapse',
   'msg-reply',
   'msg-reply-all',

@@ -424,8 +424,13 @@ pub struct ThreadMessage {
     pub cc_addrs: Vec<String>,
     /// Bcc, display names: on the sender's own copy, where the header was
     /// kept. Not in `recipients`, `recipient_addrs`, `to_addrs`, or `cc_addrs`,
-    /// so no reply reaches them.
+    /// so no reply reaches them; addresses live in `bcc_addrs`.
     pub bcc: Vec<String>,
+    /// Bcc, addresses, header order. On the sender's own copy, where the header
+    /// was kept. Not in `recipients`, `recipient_addrs`, `to_addrs`, or `cc_addrs`,
+    /// so no reply reaches them. The reading pane copies from this field; a reply
+    /// must not.
+    pub bcc_addrs: Vec<String>,
     /// Display names, To then Cc — "to Sam Ortiz, Dana Wu". Reply-all to
     /// somebody else's message still walks this combined list so original To
     /// people are not left off; reply-all to your own takes `to_addrs` and

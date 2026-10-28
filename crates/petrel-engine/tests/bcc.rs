@@ -121,6 +121,13 @@ fn a_sent_copy_shows_its_blind_copies_and_never_offers_them_to_reply_to() {
         m.bcc,
         vec!["Priya Nair".to_string(), "board@example.org".to_string()]
     );
+    assert_eq!(
+        m.bcc_addrs,
+        vec![
+            "priya@example.net".to_string(),
+            "board@example.org".to_string()
+        ]
+    );
     assert_eq!(m.to, vec!["Dana Wu".to_string()]);
     assert_eq!(m.cc, vec!["alex@example.com".to_string()]);
     assert_eq!(
@@ -144,6 +151,10 @@ fn a_sent_copy_shows_its_blind_copies_and_never_offers_them_to_reply_to() {
         assert!(
             !m.cc_addrs.iter().any(|a| a == blind),
             "cc_addrs must not contain {blind}"
+        );
+        assert!(
+            !m.recipient_addrs.iter().any(|a| a == blind),
+            "recipient_addrs must not contain {blind}"
         );
     }
 }

@@ -1690,6 +1690,7 @@ impl Store {
             let to: Vec<String> = buckets.to.iter().map(|(d, _)| d.clone()).collect();
             let cc: Vec<String> = buckets.cc.iter().map(|(d, _)| d.clone()).collect();
             let bcc: Vec<String> = buckets.bcc.iter().map(|(d, _)| d.clone()).collect();
+            let bcc_addrs: Vec<String> = buckets.bcc.iter().map(|(_, a)| a.clone()).collect();
             let recipients: Vec<String> = to.iter().chain(cc.iter()).cloned().collect();
             let recipient_addrs: Vec<String> = buckets
                 .to
@@ -1714,6 +1715,7 @@ impl Store {
                 to_addrs,
                 cc_addrs,
                 bcc,
+                bcc_addrs,
                 recipients,
                 recipient_addrs,
                 attachments,

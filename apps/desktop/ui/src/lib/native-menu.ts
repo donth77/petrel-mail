@@ -25,6 +25,13 @@ export function keepsNativeMenu(target: Element | null, selection: Selection | n
   const field = target.closest('input, textarea');
   if (field?.tagName === 'TEXTAREA') return true;
   if (field?.tagName === 'INPUT') return TYPED_INPUTS.has((field as HTMLInputElement).type);
+  // A named recipient has Petrel's own menu. This has to precede the selection
+  // check: a context click selects the word first, so the name is selected by
+  // the time the menu is asked for, and WebKit's Copy would write that label.
+  // The name sits inside the collapse button. Refusing the menu here is what
+  // eats the Control-click that follows; a preventDefault in the button does
+  // not, and the message would close.
+  if (target.closest('[data-mail-address]')) return false;
   // On the selection itself, not merely while something is selected: text
   // selected in the reader says nothing about a click on the Compose button.
   return !!selection && !selection.isCollapsed && selection.containsNode(target, true);

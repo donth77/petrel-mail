@@ -11,7 +11,13 @@ import { keepsNativeMenu, nativeMenuRule } from './native-menu';
 class FakeElement {
   constructor(
     readonly tagName: string,
-    readonly opts: { type?: string; editable?: boolean; field?: FakeElement } = {},
+    readonly opts: {
+      type?: string;
+      editable?: boolean;
+      field?: FakeElement;
+      mailAddress?: string;
+      mailParty?: FakeElement;
+    } = {},
   ) {}
   get type() {
     return this.opts.type ?? '';
@@ -20,6 +26,10 @@ class FakeElement {
     return this.opts.editable ?? false;
   }
   closest(selector: string) {
+    if (selector === '[data-mail-address]') {
+      if (this.opts.mailAddress !== undefined) return this;
+      return this.opts.mailParty ?? null;
+    }
     if (selector !== 'input, textarea') return null;
     if (this.tagName === 'INPUT' || this.tagName === 'TEXTAREA') return this;
     return this.opts.field ?? null;
@@ -63,6 +73,15 @@ describe('keepsNativeMenu', () => {
     const subject = el('H2');
     expect(keepsNativeMenu(el('BUTTON'), selecting(subject))).toBe(false);
   });
+
+  it('refuses it on a named recipient even when the selection contains them', () => {
+    const party = new FakeElement('SPAN', { mailAddress: 'a@example.com' });
+    const inner = new FakeElement('SPAN', { mailParty: party });
+    const partyEl = party as unknown as Element;
+    const innerEl = inner as unknown as Element;
+    expect(keepsNativeMenu(partyEl, selecting(partyEl))).toBe(false);
+    expect(keepsNativeMenu(innerEl, selecting(partyEl))).toBe(false);
+  });
 });
 
 describe('a Control-click whose menu is refused', () => {
@@ -93,6 +112,20 @@ describe('a Control-click whose menu is refused', () => {
     const menu = event(archive, 0, true);
     rule.contextmenu(menu);
     const click = event(archive, 0, true);
+    rule.click(click);
+    expect(menu.prevented).toBe(true);
+    expect([click.prevented, click.stopped]).toEqual([true, true]);
+  });
+
+  it('refuses and swallows a Control-click on a named recipient', () => {
+    // The word is already selected, which is when WebKit would otherwise keep
+    // its own Copy. The refusal still has to swallow the click.
+    const party = el('SPAN', { mailAddress: 'a@example.com' });
+    const rule = nativeMenuRule(() => selecting(party));
+    rule.pointerdown();
+    const menu = event(party, 0, true);
+    rule.contextmenu(menu);
+    const click = event(party, 0, true);
     rule.click(click);
     expect(menu.prevented).toBe(true);
     expect([click.prevented, click.stopped]).toEqual([true, true]);
