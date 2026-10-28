@@ -15,10 +15,10 @@ use std::sync::Arc;
 /// life: every later push carries the same one, so the server copy is an edit
 /// rather than a sibling — and when ordinary folder sync fetches it back, the
 /// dedupe key lands it on the local draft row instead of beside it. The copy
-/// this store recorded last time is removed, and so is any other copy of
-/// these same words. A copy whose subject or body differs is another
-/// client's revision and is left standing, so a conflict is never silently
-/// discarded.
+/// this store recorded last time is removed even when its words have changed,
+/// and so is every older copy of this Message-ID except the newest one that
+/// says something else. That one is another client's revision and is left
+/// standing, so a conflict is never silently discarded.
 pub(crate) async fn push_draft_to_server(
     state: &Arc<AppState>,
     draft_id: i64,
@@ -152,11 +152,13 @@ where
     for uid in &replaced.unremoved {
         log_sync(&format!("old draft copy (uid {uid}) not removed"));
     }
-    // Unknown, the next push must not treat the previous UID as the copy
-    // just written: that is how a search which had not caught up skipped
-    // the removal and left a duplicate behind.
-    if let Ok(mut store) = state.store.lock() {
-        let _ = store.set_draft_server_uid(draft_id, replaced.new_uid);
+    // A UID this push could not name is left as it was. Clearing it made the
+    // next push forget the copy it had written, and every later autosave
+    // added another.
+    if let Some(uid) = replaced.new_uid
+        && let Ok(mut store) = state.store.lock()
+    {
+        let _ = store.set_draft_server_uid(draft_id, Some(uid));
     }
     log_sync(&format!("draft {draft_id} pushed to folder {drafts_id}"));
     Ok(())
@@ -926,5 +928,167 @@ mod push_replaces_its_copy {
             "the newer copy of the same draft was removed"
         );
         assert_eq!(recorded(&state, draft), Some(1));
+    }
+
+    /// Three edits, and a search never lists the copy just appended. One
+    /// message remains, and it is the last edit. The number comes from
+    /// APPENDUID, which still names a message the search has not listed.
+    #[test]
+    fn three_edits_leave_one_copy_when_search_misses_the_append() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+        let draft = open(&state, "Plans", "one");
+        let srv = Imap::new("UIDPLUS", &[("INBOX", ""), ("Drafts", "\\Drafts")]);
+        srv.hide_newest_message_id.store(true, Ordering::Relaxed);
+        tauri::async_runtime::block_on(async {
+            let port = serve(Arc::clone(&srv)).await;
+            push(&state, draft, port).await;
+            edit(&state, draft, "two");
+            push(&state, draft, port).await;
+            edit(&state, draft, "three");
+            push(&state, draft, port).await;
+        });
+        let held = srv.held("Drafts");
+        assert_eq!(held.len(), 1, "each edit left its own copy: {held:?}");
+        let body = String::from_utf8_lossy(&held[0].raw);
+        assert!(
+            body.contains("three"),
+            "the remaining copy is an earlier edit"
+        );
+        assert_eq!(recorded(&state, draft), Some(held[0].uid));
+    }
+
+    /// The UID named by APPENDUID is gone, and the bytes sit at the next
+    /// number. Recording the vanished number leaves every rewritten copy in
+    /// the folder: the next push deletes a message that is not there.
+    #[test]
+    fn a_rewritten_append_is_recorded_as_the_copy_that_remains() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+        let draft = open(&state, "Plans", "one");
+        let srv = Imap::new("UIDPLUS", &[("INBOX", ""), ("Drafts", "\\Drafts")]);
+        srv.rewrite_appended.store(true, Ordering::Relaxed);
+        tauri::async_runtime::block_on(async {
+            let port = serve(Arc::clone(&srv)).await;
+            push(&state, draft, port).await;
+            edit(&state, draft, "two");
+            push(&state, draft, port).await;
+            edit(&state, draft, "three");
+            push(&state, draft, port).await;
+        });
+        let held = srv.held("Drafts");
+        assert_eq!(held.len(), 1, "rewritten copies piled up: {held:?}");
+        let body = String::from_utf8_lossy(&held[0].raw);
+        assert!(
+            body.contains("three"),
+            "the remaining copy is an earlier edit"
+        );
+        assert_eq!(
+            recorded(&state, draft),
+            Some(held[0].uid),
+            "the vanished APPENDUID was stored"
+        );
+    }
+
+    /// Four older copies, each saying something else. One push leaves the
+    /// copy it just wrote and the newest of those older copies. The rest
+    /// are this draft's own history, not four separate revisions to keep.
+    #[test]
+    fn older_divergent_copies_collapse_to_the_newest() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+        let draft = open(&state, "Plans", "five");
+        {
+            let mut store = state.store.lock().unwrap();
+            store.set_draft_msgid(draft, "d-many@example.com").unwrap();
+        }
+        let srv = Imap::new("UIDPLUS", &[("INBOX", ""), ("Drafts", "\\Drafts")]);
+        for body in ["one", "two", "three", "four"] {
+            srv.put(
+                "Drafts",
+                letter("d-many@example.com", "dana@example.com", "Plans", body),
+                &["\\Draft"],
+            );
+        }
+        tauri::async_runtime::block_on(async {
+            let port = serve(Arc::clone(&srv)).await;
+            push(&state, draft, port).await;
+        });
+        let held = srv.held("Drafts");
+        assert_eq!(held.len(), 2, "every older copy stayed: {held:?}");
+        let raws: Vec<String> = held
+            .iter()
+            .map(|m| String::from_utf8_lossy(&m.raw).into_owned())
+            .collect();
+        assert!(
+            raws.iter().any(|r| r.contains("\r\nfour\r\n")),
+            "the newest older copy went: {raws:?}"
+        );
+        assert!(
+            raws.iter().any(|r| r.contains("five")),
+            "the copy just written went: {raws:?}"
+        );
+        for gone in ["\r\none\r\n", "\r\ntwo\r\n", "\r\nthree\r\n"] {
+            assert!(
+                !raws.iter().any(|r| r.contains(gone)),
+                "{gone} is still in Drafts: {raws:?}"
+            );
+        }
+    }
+
+    /// Two pushes, then the sweep that files server UIDs the store has not
+    /// placed. The earlier copy is already gone, so the sweep has nothing
+    /// to file beside the draft.
+    #[test]
+    fn two_pushes_are_not_filed_as_extra_drafts() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+        let account = state.account_id;
+        let draft = open(&state, "Plans", "one");
+        let srv = Imap::new("UIDPLUS", &[("INBOX", ""), ("Drafts", "\\Drafts")]);
+        srv.rewrite_appended.store(true, Ordering::Relaxed);
+        tauri::async_runtime::block_on(async {
+            let port = serve(Arc::clone(&srv)).await;
+            push(&state, draft, port).await;
+            edit(&state, draft, "two");
+            push(&state, draft, port).await;
+        });
+        let held = srv.held("Drafts");
+        assert_eq!(held.len(), 1, "the first edit is still on the server");
+        let uid = recorded(&state, draft).expect("the surviving copy");
+        assert_eq!(held[0].uid, uid);
+        let folder = {
+            let mut store = state.store.lock().unwrap();
+            let folder = store.folder_for_role(account, "drafts").unwrap().unwrap();
+            store.set_folder_validity(folder, Some(1)).unwrap();
+            assert!(
+                store
+                    .heal_placement_uid(draft, account, "Drafts", uid, Some(1))
+                    .unwrap()
+            );
+            store.set_backfill_floor(folder, 1).unwrap();
+            folder
+        };
+        tauri::async_runtime::block_on(async {
+            let port = serve(Arc::clone(&srv)).await;
+            super::super::reconcile_ghost_placements(&state, account, &plain(port)).await;
+        });
+        let mut uids = state.store.lock().unwrap().placement_uids(folder).unwrap();
+        uids.sort_unstable();
+        assert_eq!(
+            uids,
+            vec![uid],
+            "an earlier copy was filed as its own draft"
+        );
+        assert!(
+            state
+                .store
+                .lock()
+                .unwrap()
+                .draft_conflict(draft)
+                .unwrap()
+                .is_none(),
+            "the draft's own earlier push was offered as another client's revision"
+        );
     }
 }

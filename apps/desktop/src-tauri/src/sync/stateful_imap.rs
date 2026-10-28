@@ -47,6 +47,10 @@ pub(crate) struct Imap {
     /// The next APPEND lands twice, the second copy at the next UID: another
     /// push of the same draft, finishing just after this one.
     pub(crate) twin_next_append: AtomicBool,
+    /// APPENDUID names a UID that is never stored. The bytes are kept at the
+    /// following UID: a server that accepts the append and then files a
+    /// rewritten copy under a new number.
+    pub(crate) rewrite_appended: AtomicBool,
 }
 
 impl Imap {
@@ -74,6 +78,7 @@ impl Imap {
             arrivals: Mutex::new(0),
             hide_newest_message_id: AtomicBool::new(false),
             twin_next_append: AtomicBool::new(false),
+            rewrite_appended: AtomicBool::new(false),
         })
     }
 
@@ -300,7 +305,17 @@ fn append_literal(srv: &Imap, line: &str, raw: &[u8]) -> (Vec<u8>, bool) {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    if srv.twin_next_append.swap(false, Ordering::Relaxed) {
+    if srv.rewrite_appended.load(Ordering::Relaxed) {
+        // The number APPENDUID will name. Nothing is stored under it.
+        let real = b.next;
+        b.next += 1;
+        b.msgs.push(Msg {
+            uid: real,
+            raw: raw.to_vec(),
+            flags,
+            date: "01-Oct-2026 09:00:00 +0000".into(),
+        });
+    } else if srv.twin_next_append.swap(false, Ordering::Relaxed) {
         b.msgs.push(Msg {
             uid,
             raw: raw.to_vec(),

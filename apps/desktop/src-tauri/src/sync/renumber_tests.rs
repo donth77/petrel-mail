@@ -995,6 +995,90 @@ fn an_open_drafts_own_copy_is_not_filed_beside_it() {
     );
 }
 
+/// A second copy already filed beside a draft leaves the Drafts list once
+/// the server no longer holds that UID. The placement goes, and with it the
+/// conflict; the row is not a draft this app is writing, so it does not stay
+/// on the list with no folder.
+#[test]
+fn a_filed_extra_copy_leaves_the_list_when_the_server_drops_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = test_state(dir.path());
+    let account = state.account_id;
+    let srv = Imap::new("UIDPLUS", &[("Drafts", "\\Drafts")]);
+    let id = "d-gone@example.com";
+    srv.put(
+        "Drafts",
+        letter(id, "Plans", "yes", "Tue, 01 Oct 2026 09:00:00 +0000"),
+        &[],
+    );
+    srv.put(
+        "Drafts",
+        letter(
+            id,
+            "Plans, revised",
+            "their edit",
+            "Tue, 01 Oct 2026 09:05:00 +0000",
+        ),
+        &[],
+    );
+    let (draft, folder) = {
+        let mut store = state.store.lock().unwrap();
+        store
+            .sync_folders(account, &[("Drafts".into(), Some("drafts".into()))])
+            .unwrap();
+        let folder = store.folder_for_role(account, "drafts").unwrap().unwrap();
+        let draft = store
+            .save_draft(account, None, "dana@example.com", "Plans", "yes", "")
+            .unwrap();
+        store.set_draft_msgid(draft, id).unwrap();
+        store.set_folder_validity(folder, Some(1)).unwrap();
+        assert!(
+            store
+                .heal_placement_uid(draft, account, "Drafts", 1, Some(1))
+                .unwrap()
+        );
+        store.set_draft_server_uid(draft, Some(1)).unwrap();
+        store.set_backfill_floor(folder, 1).unwrap();
+        (draft, folder)
+    };
+    tauri::async_runtime::block_on(async {
+        let port = serve(Arc::clone(&srv)).await;
+        super::reconcile_ghost_placements(&state, account, &plain(port)).await;
+    });
+    assert!(
+        state
+            .store
+            .lock()
+            .unwrap()
+            .draft_conflict(draft)
+            .unwrap()
+            .is_some(),
+        "the extra copy was not filed, so this test shows nothing"
+    );
+    srv.expunge_where("Drafts", "Plans, revised");
+    tauri::async_runtime::block_on(async {
+        let port = serve(Arc::clone(&srv)).await;
+        super::reconcile_ghost_placements(&state, account, &plain(port)).await;
+    });
+    let mut uids = state.store.lock().unwrap().placement_uids(folder).unwrap();
+    uids.sort_unstable();
+    assert_eq!(
+        uids,
+        vec![1],
+        "the copy the server dropped is still placed in Drafts"
+    );
+    assert!(
+        state
+            .store
+            .lock()
+            .unwrap()
+            .draft_conflict(draft)
+            .unwrap()
+            .is_none(),
+        "a copy the server no longer holds is still a conflict"
+    );
+}
+
 /// The exception is the open draft. Two deliveries of an ordinary message
 /// stay two rows, even when the words match and only the date differs.
 #[test]

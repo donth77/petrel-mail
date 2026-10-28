@@ -276,23 +276,50 @@ if [ "${PETREL_NO_UPDATE_ARTIFACT:-}" != "1" ]; then
   # and the moment one contains a quote or a line break, string interpolation
   # emits a broken manifest. A manifest that will not parse means every
   # install silently stops seeing updates. These go in as data.
+  #
+  # Platform keys this script does not own are kept. scripts/release.ps1
+  # writes windows-x86_64 into the same file, and the second machine to
+  # finish would otherwise publish a manifest the first platform can never
+  # update from. A version that does not match is refused: mixing 1.0.0's
+  # Windows entry into 1.0.1's manifest is how an install updates forever
+  # and never arrives.
   RELEASE_VERSION="$VERSION" RELEASE_NOTES="$NOTES" RELEASE_PUBDATE="$PUBDATE" \
   RELEASE_SIG="$SIGNATURE" RELEASE_URL="$URL" RELEASE_OUT="$ROOT/target/release/latest.json" \
   python3 -c 'import json, os
 sig, url = os.environ["RELEASE_SIG"], os.environ["RELEASE_URL"]
-json.dump({
-    "version":  os.environ["RELEASE_VERSION"],
-    "notes":    os.environ["RELEASE_NOTES"],
+out = os.environ["RELEASE_OUT"]
+version = os.environ["RELEASE_VERSION"]
+doc = {
+    "version": version,
+    "notes": os.environ["RELEASE_NOTES"],
     "pub_date": os.environ["RELEASE_PUBDATE"],
-    # One universal tarball serves both kinds of Mac; see the lipo step.
-    "platforms": {
-        "darwin-aarch64": {"signature": sig, "url": url},
-        "darwin-x86_64":  {"signature": sig, "url": url},
-    },
-}, open(os.environ["RELEASE_OUT"], "w"), indent=2)' || die "could not write latest.json"
+    "platforms": {},
+}
+if os.path.exists(out):
+    with open(out, encoding="utf-8") as handle:
+        existing = json.load(handle)
+    if not isinstance(existing, dict):
+        raise SystemExit("latest.json is not an object")
+    prev = existing.get("version")
+    if prev != version:
+        raise SystemExit("latest.json says %r, this release is %r" % (prev, version))
+    platforms = existing.get("platforms") or {}
+    if not isinstance(platforms, dict):
+        raise SystemExit("latest.json platforms is not an object")
+    doc["platforms"].update(platforms)
+# One universal tarball serves both kinds of Mac; see the lipo step.
+doc["platforms"]["darwin-aarch64"] = {"signature": sig, "url": url}
+doc["platforms"]["darwin-x86_64"] = {"signature": sig, "url": url}
+with open(out, "w", encoding="utf-8") as handle:
+    json.dump(doc, handle, indent=2)
+    handle.write("\n")
+' || die "could not write latest.json"
   MANIFEST="$ROOT/target/release/latest.json"
   echo "signed tarball: $TARBALL"
   echo "manifest:       $ROOT/target/release/latest.json"
+  if ! grep -q '"windows-x86_64"' "$MANIFEST"; then
+    echo "warning: latest.json has no windows-x86_64 key. Windows installs will treat this release as unsupported until scripts/release.bat adds one." >&2
+  fi
 else
   echo "PETREL_NO_UPDATE_ARTIFACT=1: no update artifact; existing installs will not see this release." >&2
 fi
