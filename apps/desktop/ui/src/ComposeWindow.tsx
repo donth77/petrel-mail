@@ -7,10 +7,10 @@ import { Picker } from './components/Picker';
 import {
   ATTACHMENT_LIMIT,
   pickAttachments,
-  stageDropped,
   withAttached,
   type Attached,
 } from './lib/attachments';
+import { useDroppedAttachments } from './lib/useDroppedAttachments';
 import { settleDraft } from './lib/close-draft';
 import { AUTOSAVE_MS, draftSignature, slotFor, unsaved } from './lib/draft-autosave';
 import type { ComposerSlot } from './lib/draft-autosave';
@@ -86,19 +86,35 @@ export function ComposeWindow({ draftId }: { draftId: number }) {
     }
   };
 
+  const drops = useDroppedAttachments({
+    getDraft: () => draftRef.current,
+    setDraft,
+    composer: () => slotRef.current,
+    stage: api.stageAttachment,
+    onRejected: (names) =>
+      setToast(
+        t('compose-too-large', {
+          name: names.join(', '),
+          limit: fileSize(ATTACHMENT_LIMIT),
+        }),
+      ),
+    onFailed: (error) => setToast(t('compose-attach-failed', { error: String(error) })),
+  });
+
   /** Writes the draft and remembers its row. Throws on failure, so every
    *  chain that would go on to close the window stops here instead. */
   const save = (d: Draft): Promise<number | null> => {
-    const signature = draftSignature(d);
     const slot = slotRef.current;
     const run = saveChain.current.then(async () => {
-      const known = slot.id ?? d.savedId ?? null;
-      const id = await api.saveDraft(known, d.to, d.subject, d.body, d.html, {
-        cc: d.cc,
-        bcc: d.bcc ?? '',
-        inReplyTo: d.inReplyTo ?? null,
-        references: d.references ?? [],
-        attachments: (d.attachments ?? []).map((a) => a.path),
+      const ready = await drops.finish(d, slot);
+      const signature = draftSignature(ready);
+      const known = slot.id ?? ready.savedId ?? null;
+      const id = await api.saveDraft(known, ready.to, ready.subject, ready.body, ready.html, {
+        cc: ready.cc,
+        bcc: ready.bcc ?? '',
+        inReplyTo: ready.inReplyTo ?? null,
+        references: ready.references ?? [],
+        attachments: (ready.attachments ?? []).map((a) => a.path),
       });
       slot.id = id;
       slot.signature = signature;
@@ -213,12 +229,8 @@ export function ComposeWindow({ draftId }: { draftId: number }) {
             })
             .catch((e) => setToast(t('compose-attach-failed', { error: String(e) })));
         }}
-        onDropFiles={(files) => {
-          const base = draft.attachments ?? [];
-          void stageDropped(files, base, api.stageAttachment)
-            .then((result) => addAttached(result.kept.slice(base.length), result.rejected))
-            .catch((e) => setToast(t('compose-attach-failed', { error: String(e) })));
-        }}
+        onDropFiles={drops.drop}
+        onRemoveCopying={drops.remove}
         onSendLater={(d) => {
           // The checks Send makes, before a time is asked for: a message
           // scheduled with nobody to send to failed later, in the Outbox.

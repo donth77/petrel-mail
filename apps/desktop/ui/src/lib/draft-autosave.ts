@@ -7,7 +7,13 @@ export const AUTOSAVE_MS = 1500;
  *  count: a draft that was only a Cc line was once dropped on close. */
 export function draftHasContent(d: Draft): boolean {
   return Boolean(
-    d.to || d.cc || d.bcc || d.subject || d.body.trim() || (d.attachments?.length ?? 0) > 0,
+    d.to ||
+      d.cc ||
+      d.bcc ||
+      d.subject ||
+      d.body.trim() ||
+      (d.attachments?.length ?? 0) > 0 ||
+      (d.copying?.length ?? 0) > 0,
   );
 }
 
@@ -26,6 +32,9 @@ export function draftSignature(d: Draft): string {
     d.inReplyTo ?? null,
     d.references ?? [],
     (d.attachments ?? []).map((a) => a.path),
+    // A chip shown before its copy has finished. The saved row does not hold
+    // it yet; the signature does, so closing in that gap still writes the draft.
+    (d.copying ?? []).map((a) => a.id),
   ]);
 }
 

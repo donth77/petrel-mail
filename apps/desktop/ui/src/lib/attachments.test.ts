@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   ATTACHMENT_LIMIT,
+  copiedDraft,
   encodedSize,
   fits,
   pickAttachments,
+  planDrop,
   stageDropped,
   withAttached,
 } from './attachments';
@@ -49,6 +51,61 @@ describe('fits', () => {
   });
 });
 
+describe('planDrop', () => {
+  it('chooses from the name and the size, before any bytes are read', () => {
+    const { take, rejected } = planDrop(
+      [
+        { name: 'ok.pdf', size: 1000 },
+        { name: 'huge.mov', size: ATTACHMENT_LIMIT },
+      ],
+      [],
+    );
+    expect(take).toEqual([0]);
+    expect(rejected).toEqual(['huge.mov']);
+  });
+
+  it('counts a file earlier in the same drop', () => {
+    const half = Math.floor(ATTACHMENT_LIMIT / 2);
+    const { take, rejected } = planDrop(
+      [
+        { name: 'a.bin', size: half },
+        { name: 'b.bin', size: half },
+      ],
+      [],
+    );
+    expect(take).toEqual([0]);
+    expect(rejected).toEqual(['b.bin']);
+  });
+
+  it('counts a chip that is still copying', () => {
+    const copying = [{ path: 'copying-1', name: 'a.bin', size: ATTACHMENT_LIMIT - 2000 }];
+    const { take, rejected } = planDrop([{ name: 'b.bin', size: 100_000 }], copying);
+    expect(take).toEqual([]);
+    expect(rejected).toEqual(['b.bin']);
+  });
+});
+
+describe('copiedDraft', () => {
+  const blank = { to: 'a@example.com', attachments: [] as { path: string; name: string; size: number }[] };
+
+  it('keeps a chip that finished copying and drops one that did not', async () => {
+    const next = await copiedDraft(
+      {
+        ...blank,
+        body: 'hello',
+        copying: [
+          { id: 'keep', name: 'a.pdf', size: 4 },
+          { id: 'drop', name: 'b.pdf', size: 4 },
+        ],
+      },
+      async (id) => (id === 'keep' ? { path: '/staged/a.pdf', name: 'a.pdf', size: 4 } : null),
+    );
+    expect(next.body).toBe('hello');
+    expect(next.copying).toEqual([]);
+    expect(next.attachments).toEqual([{ path: '/staged/a.pdf', name: 'a.pdf', size: 4 }]);
+  });
+});
+
 describe('stageDropped', () => {
   const file = (name: string, size: number) =>
     ({ name, size, arrayBuffer: async () => new ArrayBuffer(size) }) as unknown as File;
@@ -69,6 +126,21 @@ describe('stageDropped', () => {
     const res = await stageDropped([file('b.bin', 100_000)], existing, stage);
     expect(res.kept).toHaveLength(1);
     expect(res.rejected).toEqual(['b.bin']);
+  });
+
+  it('does not write a file whose bytes are larger than the size it reported', async () => {
+    const file = {
+      name: 'huge.mov',
+      size: 1,
+      arrayBuffer: async () => new ArrayBuffer(ATTACHMENT_LIMIT),
+    } as unknown as File;
+    const staged: string[] = [];
+    const res = await stageDropped([file], [], async (name, bytes) => {
+      staged.push(name);
+      return { path: `/staged/${name}`, name, size: bytes.byteLength };
+    });
+    expect(staged).toEqual([]);
+    expect(res.rejected).toEqual(['huge.mov']);
   });
 
   it('never writes down a file it is going to refuse', async () => {

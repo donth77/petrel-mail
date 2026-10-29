@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { classifyComposerDrag, type ComposerDrag } from './composer-drag';
 import { filesFromDataTransfer } from './dropped-files';
 
 /**
@@ -27,16 +28,20 @@ import { filesFromDataTransfer } from './dropped-files';
  * application is simply gone — which is precisely what a rich-text body would
  * have caused, being editable and the most natural place to drop a picture.
  */
-function droppingTextIntoAField(e: DragEvent): boolean {
-  const types = e.dataTransfer?.types;
-  if (!types || types.length === 0) return false;
-  const carriesFiles = Array.from(types).includes('Files');
-  const carriesText = Array.from(types).some((t) => t.startsWith('text/'));
-  if (carriesFiles || !carriesText) return false;
+function overComposerTextField(e: DragEvent): boolean {
   const el = e.target as HTMLElement | null;
   // The message body is deliberately not in this list: it is editable, but a
   // picture dropped on it should become an attachment, not a navigation.
   return !!el?.closest?.('input, textarea');
+}
+
+function composerDragKind(e: DragEvent): ComposerDrag {
+  const types = e.dataTransfer?.types ?? [];
+  return classifyComposerDrag(Array.from(types), overComposerTextField(e));
+}
+
+function droppingTextIntoAField(e: DragEvent): boolean {
+  return composerDragKind(e) === 'field';
 }
 
 export function useDropGuard() {
@@ -91,13 +96,12 @@ export function useFileDropZone(onFiles: (files: readonly File[]) => void) {
   useEffect(() => stopClock, []);
 
   const onDragOverCapture = useCallback((e: React.DragEvent) => {
+    const kind = composerDragKind(e.nativeEvent);
+    if (kind === 'field') return;
     // Cancelled whatever is being dragged, so a drop is always possible here;
-    // the drop itself decides whether there were files. Only the sign shown to
-    // the reader depends on the engine's description of the drag, so the worst
-    // an unfamiliar one costs is a missing highlight rather than a lost file.
-    if (droppingTextIntoAField(e.nativeEvent)) return;
+    // the drop itself decides whether there were files.
     e.preventDefault();
-    if (!e.dataTransfer.types.includes('Files')) return;
+    if (kind !== 'file') return;
     e.dataTransfer.dropEffect = 'copy';
     setOver(true);
     stopClock();
@@ -106,12 +110,16 @@ export function useFileDropZone(onFiles: (files: readonly File[]) => void) {
     timer.current = window.setTimeout(() => setOver(false), 160);
   }, []);
 
-  const onDropCapture = useCallback(
+  // Bubble, not capture. Capture runs before the editor, and on WKWebView
+  // `getAsFile()` returns the file only for the element the drag was already
+  // over — an overlay that reads it first, or a capture handler that does,
+  // leaves the body with nothing and no chip is drawn. The editor stops the
+  // event when it attached the file, so this runs only for a drop on the
+  // headers or the footer.
+  const onDrop = useCallback(
     (e: React.DragEvent) => {
-      if (droppingTextIntoAField(e.nativeEvent)) return;
-      // `files` alone is not always populated — on WKWebView it is often empty
-      // while `items` still holds the file. `filesFromDataTransfer` is the
-      // check worth acting on.
+      const kind = composerDragKind(e.nativeEvent);
+      if (kind === 'field') return;
       const files = filesFromDataTransfer(e.dataTransfer);
       if (files.length === 0) return;
       e.preventDefault();
@@ -123,5 +131,5 @@ export function useFileDropZone(onFiles: (files: readonly File[]) => void) {
     [onFiles],
   );
 
-  return { over, dropProps: { onDragOverCapture, onDropCapture } };
+  return { over, dropProps: { onDragOverCapture, onDrop } };
 }

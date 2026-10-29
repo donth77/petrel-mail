@@ -235,8 +235,9 @@ export function RichText({ html, onChange, onKeyDown, autoFocus, onNotice, onDro
         const files = filesFromDataTransfer(event.dataTransfer);
         if (files.length === 0) return false;
         event.preventDefault();
-        // Some webviews only expose dropped files on the target; if capture
-        // already handled the drop this never runs, so nothing is staged twice.
+        // This element is the one the drag was over, so it is the read that
+        // WKWebView will answer. Stopping it keeps the composer's own drop
+        // from asking a second time and getting nothing.
         event.stopPropagation();
         dropRef.current?.(files);
         return true;

@@ -83,6 +83,7 @@ import {
 import { useDrag } from './lib/useDrag';
 import { useReferenceData } from './lib/useReferenceData';
 import { useDropGuard } from './lib/useFileDrop';
+import { useDroppedAttachments } from './lib/useDroppedAttachments';
 import { AppDialogs } from './components/AppDialogs';
 import { DragPreview } from './components/DragPreview';
 import { startingBody, startingHtml } from './lib/signature';
@@ -90,7 +91,6 @@ import {
   ATTACHMENT_LIMIT,
   fits,
   pickAttachments,
-  stageDropped,
   withAttached,
   type Attached,
 } from './lib/attachments';
@@ -1938,21 +1938,47 @@ export function App() {
     attachments: (d.attachments ?? []).map((a) => a.path),
   });
 
+  const drops = useDroppedAttachments({
+    getDraft: () => draftRef.current,
+    setDraft,
+    composer: () => slotRef.current,
+    stage: api.stageAttachment,
+    onRejected: (names) =>
+      setToast(
+        t('compose-too-large', {
+          name: names.join(', '),
+          limit: fileSize(ATTACHMENT_LIMIT),
+        }),
+      ),
+    onFailed: (error) => setToast(t('compose-attach-failed', { error: String(error) })),
+  });
+
   /**
    * Saves the composer's contents, and remembers the id so saving again
    * updates the same draft rather than leaving a trail of near-identical ones.
    */
   const saveDraft = (d: Draft, opts: { quiet?: boolean } = {}): Promise<number | null> => {
-    const signature = draftSignature(d);
     // The slot of the message being saved, taken now: by the time this save
     // runs, the composer may hold another message with a row of its own.
     const slot = slotRef.current;
     const run = saveChain.current.then(async () => {
+      // A chip can be on screen before its bytes are copied. The row is
+      // written with the real path, so a send in that gap does not go without
+      // the file.
+      const ready = await drops.finish(d, slot);
+      const signature = draftSignature(ready);
       // The latest known row for this message, whichever save learned it:
       // the draft object in hand may predate an autosave that just landed.
-      const known = slot.id ?? d.savedId ?? null;
+      const known = slot.id ?? ready.savedId ?? null;
       try {
-        const id = await api.saveDraft(known, d.to, d.subject, d.body, d.html, envelopeOf(d));
+        const id = await api.saveDraft(
+          known,
+          ready.to,
+          ready.subject,
+          ready.body,
+          ready.html,
+          envelopeOf(ready),
+        );
         slot.id = id;
         slot.signature = signature;
         if (slotRef.current === slot) {
@@ -2222,24 +2248,6 @@ export function App() {
       }
     }
   );
-
-  /** Files dragged onto the composer from the desktop. */
-  const dropAttachments = async (files: readonly File[]) => {
-    try {
-      const current = draftRef.current;
-      if (!current) return;
-      // The message they were dropped on. A large file takes seconds to
-      // stage, and by then the composer may have sent, closed or opened
-      // another message: the files belong to this one or to nothing.
-      const slot = slotRef.current;
-      const base = current.attachments ?? [];
-      const result = await stageDropped(files, base, api.stageAttachment);
-      if (slotRef.current !== slot) return;
-      addAttached(result.kept.slice(base.length), result.rejected);
-    } catch (e) {
-      setToast(t('compose-attach-failed', { error: String(e) }));
-    }
-  };
 
   // The undo-send countdown. A clock on the toast, nothing more: the message
   // is in the outbox with its time set, and the outbox clock sends it. When
@@ -3743,7 +3751,8 @@ export function App() {
             setDraft(null);
           }}
           onAttach={() => void attach()}
-          onDropFiles={(files) => void dropAttachments(files)}
+          onDropFiles={drops.drop}
+          onRemoveCopying={drops.remove}
           onSaveDraft={(d) => void saveDraft(d)}
           onSendLater={(d) => {
             // The checks Send makes, before a time is asked for: a message
