@@ -178,6 +178,9 @@ export type ThreadMessage = {
    *  Never part of `recipients`, `recipient_addrs`, `to_addrs`, or `cc_addrs`,
    *  so no reply reaches them. */
   bcc?: string[];
+  /** Bcc addresses, header order. Never part of `recipients`, `recipient_addrs`,
+   *  `to_addrs`, or `cc_addrs`. Absent when an older engine is on the other side. */
+  bcc_addrs?: string[];
   recipients: string[];
   recipient_addrs: string[];
   attachments: Attachment[];
