@@ -1,5 +1,5 @@
 /**
- * Files dragged onto the composer or attachment zone.
+ * Files dragged onto the composer, read at the drop target.
  *
  * Drop handling must read the payload in the same turn as the event: after
  * the handler returns, `getAsFile()` on `DataTransferItem` yields null even

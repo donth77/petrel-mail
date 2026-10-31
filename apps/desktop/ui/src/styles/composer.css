@@ -9,6 +9,9 @@
   max-block-size: 74vh;
   display: flex;
   flex-direction: column;
+  /* A long reply used to grow past this cap and paint the attachment row
+     below the window. The editor is the part that scrolls. */
+  overflow: hidden;
   border: 1px solid var(--hair);
   border-block-end: 0;
   border-start-start-radius: 12px;
@@ -114,6 +117,7 @@
   gap: 8px;
   padding: 10px 16px 12px;
   border-block-start: 1px solid var(--hair2);
+  flex-shrink: 0;
 }
 
 /* The undo-send window. A control with a deadline, so it gets its own bar
@@ -565,6 +569,7 @@ body.resizing {
   flex-wrap: wrap;
   gap: 6px;
   padding: 8px 16px 0;
+  flex-shrink: 0;
 }
 
 .att-chip {
@@ -577,6 +582,12 @@ body.resizing {
   border-radius: 999px;
   background: var(--bg);
   font-size: 12px;
+}
+
+/* The name ellipsizes. Overflow hidden would otherwise let it shrink to
+   nothing, and the chip would be an icon with no filename. */
+.att-chip .clip {
+  min-inline-size: 1em;
 }
 
 .att-chip .att-size {
@@ -653,10 +664,10 @@ body.resizing {
   position: static;
   inset: auto;
   inline-size: auto;
-  max-block-size: none;
+  max-block-size: 100%;
   min-inline-size: 0;
   min-block-size: 0;
-  block-size: auto;
+  block-size: 100%;
   border: 0;
   border-radius: 0;
   box-shadow: none;

@@ -75,3 +75,27 @@ describe('filesFromDataTransfer', () => {
     expect(filesFromDataTransfer(transfer)).toEqual([kept]);
   });
 });
+
+describe('one read of a webkit drop', () => {
+  it('returns the file on the first call and nothing on the second', () => {
+    // WKWebView's getAsFile() yields the file once. The composer must make
+    // that call from the element the drag was already over — the body — and
+    // not from an overlay that appeared on top of it.
+    const pdf = new File(['%PDF'], 'doc.pdf', { type: 'application/pdf' });
+    let reads = 0;
+    const transfer = dropTransfer([], [
+      {
+        kind: 'file',
+        type: 'application/pdf',
+        getAsFile: () => {
+          reads += 1;
+          return reads === 1 ? pdf : null;
+        },
+      },
+    ]);
+
+    expect(filesFromDataTransfer(transfer)).toEqual([pdf]);
+    expect(filesFromDataTransfer(transfer)).toEqual([]);
+    expect(reads).toBe(2);
+  });
+});

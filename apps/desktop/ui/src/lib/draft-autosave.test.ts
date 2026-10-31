@@ -14,6 +14,8 @@ describe('draftHasContent', () => {
     expect(
       draftHasContent({ ...blank, attachments: [{ path: '/tmp/a.pdf', name: 'a.pdf', size: 1 }] }),
     ).toBe(true);
+    // Shown before the bytes are copied. Closing then must still keep the draft.
+    expect(draftHasContent({ ...blank, copying: [{ id: 'c', name: 'a.pdf', size: 1 }] })).toBe(true);
   });
 });
 
@@ -24,6 +26,9 @@ describe('draftSignature', () => {
     expect(draftSignature(a)).not.toBe(draftSignature({ ...a, body: 'hello!' }));
     expect(draftSignature(a)).not.toBe(
       draftSignature({ ...a, attachments: [{ path: '/x', name: 'x', size: 0 }] }),
+    );
+    expect(draftSignature(a)).not.toBe(
+      draftSignature({ ...a, copying: [{ id: 'c', name: 'x', size: 1 }] }),
     );
   });
 });

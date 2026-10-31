@@ -23,6 +23,12 @@ export const ATTACHMENT_LIMIT = 25 * 1024 * 1024;
 
 export type Attached = { path: string; name: string; size: number };
 
+/** A chip shown the moment a file is dropped, before its bytes are copied.
+ *
+ *  The copy is what takes the time. The name and the size are known without
+ *  it, and the chip is the thing someone is waiting to see. */
+export type Copying = { id: string; name: string; size: number };
+
 /** Whether one more file fits, counting what is already attached. */
 export function fits(existing: Attached[], addition: number): boolean {
   const used = existing.reduce((n, a) => n + encodedSize(a.size), 0);
@@ -85,6 +91,58 @@ export function withAttached(
 }
 
 /**
+ * Which dropped files can be shown at once.
+ *
+ * Decided from the name and the size alone. Reading the bytes is what makes
+ * a drop feel late, and a file that cannot fit is refused here so it is never
+ * read at all. Sizes already taken, including chips still copying, count.
+ */
+export function planDrop(
+  files: readonly { name: string; size: number }[],
+  existing: readonly Attached[],
+): { take: number[]; rejected: string[] } {
+  const kept = [...existing];
+  const take: number[] = [];
+  const rejected: string[] = [];
+  files.forEach((file, index) => {
+    if (!fits(kept, file.size)) {
+      rejected.push(file.name);
+      return;
+    }
+    // Reserve this file's size so the next one in the same drop is judged
+    // against it, not against an empty message.
+    kept.push({ path: `drop:${index}`, name: file.name, size: file.size });
+    take.push(index);
+  });
+  return { take, rejected };
+}
+
+/**
+ * The draft as it can be saved: chips that were waiting on a copy are either
+ * real files now, or gone because the copy was cancelled or failed.
+ *
+ * `take` returns null for a chip that must not be kept. Fields other than
+ * the attachment lists are left as they were.
+ */
+export async function copiedDraft<T extends { attachments?: Attached[]; copying?: Copying[] }>(
+  draft: T,
+  take: (id: string) => Promise<Attached | null>,
+): Promise<T> {
+  const pending = draft.copying ?? [];
+  if (pending.length === 0) return draft;
+  const landed: Attached[] = [];
+  for (const item of pending) {
+    const ready = await take(item.id);
+    if (ready) landed.push(ready);
+  }
+  return {
+    ...draft,
+    copying: [],
+    attachments: withAttached(draft.attachments ?? [], landed).kept,
+  };
+}
+
+/**
  * Takes files dragged in from the desktop.
  *
  * Shares the size rule and the de-duplication with `pickAttachments` for the
@@ -109,6 +167,12 @@ export async function stageDropped(
       continue;
     }
     const bytes = new Uint8Array(await file.arrayBuffer());
+    // The size on the drop can be a guess. The bytes are the size that counts,
+    // and they are not written down when they do not fit.
+    if (!fits(kept, bytes.byteLength)) {
+      rejected.push(file.name);
+      continue;
+    }
     kept.push(await stage(file.name, bytes));
   }
   return { kept, rejected };

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Paperclip, X } from 'lucide-react';
 import { fileSize } from '../lib/format';
-import type { Attached } from '../lib/attachments';
+import type { Attached, Copying } from '../lib/attachments';
 import { Icon } from './Icon';
 import { Recipients, type RecipientsHandle } from './Recipients';
 import { RichText, type RichTextHandle } from './RichText';
@@ -29,6 +29,9 @@ export type Draft = {
   inReplyTo?: string | null;
   references?: string[];
   attachments?: Attached[];
+  /** Dropped files whose bytes are still being copied. Shown at once; the
+   *  saved row learns the real path when the copy finishes. */
+  copying?: Copying[];
   /** Set once saved, so saving again updates rather than multiplying. */
   savedId?: number | null;
   /** The account the message is from, when that is not the one on screen:
@@ -57,6 +60,9 @@ type Props = {
   /** Files dragged in from the desktop. Separate from `onAttach`, which opens
       the picker: these arrive as bytes and have to be written down first. */
   onDropFiles: (files: readonly File[]) => void;
+  /** Takes a chip back while its copy is still running, so the copy is not
+   *  kept when it finishes. */
+  onRemoveCopying: (id: string) => void;
   onSaveDraft: (d: Draft) => void;
   /** Handed the draft as it stands at the keystroke, as Send is, so it can
    *  say there is nobody to send to before a time is asked for. */
@@ -82,7 +88,7 @@ export { splitRecipients as addresses } from '../lib/recipients';
  * are reading, and taking over the screen to write two lines loses the thing
  * being replied to. Popping out is a deliberate escalation, not the default.
  */
-export function Compose({ draft, account, onChange, onClose, onSend, onAttach, onDropFiles, onSaveDraft, onSendLater, onPopOut, onNotice, pane }: Props) {
+export function Compose({ draft, account, onChange, onClose, onSend, onAttach, onDropFiles, onRemoveCopying, onSaveDraft, onSendLater, onPopOut, onNotice, pane }: Props) {
   const { over: dropping, dropProps } = useFileDropZone(onDropFiles);
   const toRef = useRef<HTMLInputElement>(null);
   const ccRef = useRef<HTMLInputElement>(null);
@@ -256,11 +262,9 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
         }
       }}
     >
-      {/* Shown over the composer rather than in it, so nothing shifts as the
-          pointer arrives. It takes the hit while a file drag is overhead: with
-          pointer-events off the drop landed on the body and ProseMirror treated
-          the file as text. The section reads the drop on the way down, in
-          capture, and stops it before the editor can. */}
+      {/* A sign only. It must not take the drop: WKWebView hands the file to
+          the element the drag was already over, which is the body, and an
+          overlay that intercepts it gets nothing — no name, no remove button. */}
       {dropping && (
         <div className="compose-drop" aria-hidden="true">
           <span>{t('compose-drop')}</span>
@@ -379,10 +383,28 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
         onNotice={onNotice}
       />
 
-      {(draft.attachments?.length ?? 0) > 0 && (
+      {((draft.attachments?.length ?? 0) > 0 || (draft.copying?.length ?? 0) > 0) && (
         <div className="compose-files">
-          {draft.attachments!.map((a) => (
-            <span className="att-chip" key={a.path}>
+          {[
+            ...(draft.attachments ?? []).map((a) => ({
+              key: a.path,
+              name: a.name,
+              size: a.size,
+              remove: () =>
+                onChange((current) =>
+                  patchDraft(current, {
+                    attachments: (current.attachments ?? []).filter((x) => x.path !== a.path),
+                  }),
+                ),
+            })),
+            ...(draft.copying ?? []).map((a) => ({
+              key: a.id,
+              name: a.name,
+              size: a.size,
+              remove: () => onRemoveCopying(a.id),
+            })),
+          ].map((a) => (
+            <span className="att-chip" key={a.key}>
               <Icon icon={Paperclip} size={11} />
               <span className="clip">{a.name}</span>
               <span className="mono att-size">{fileSize(a.size)}</span>
@@ -390,13 +412,7 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
                 type="button"
                 className="att-remove"
                 aria-label={t('compose-remove-attachment', { name: a.name })}
-                onClick={() =>
-                  onChange((current) =>
-                    patchDraft(current, {
-                      attachments: (current.attachments ?? []).filter((x) => x.path !== a.path),
-                    }),
-                  )
-                }
+                onClick={a.remove}
               >
                 <Icon icon={X} size={11} />
               </button>
