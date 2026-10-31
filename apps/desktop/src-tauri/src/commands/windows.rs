@@ -30,6 +30,11 @@ pub fn popout_compose(draft_id: i64, app: tauri::AppHandle) -> Result<(), String
         WebviewUrl::App(format!("index.html?compose={draft_id}").into()),
     ))
     .title("Petrel")
+    // A file dropped on this composer is the page's to read, as in the main
+    // window. Tauri's own handler takes every file drag first and tells the
+    // webview nothing, so the composer's drop never fired here, on any
+    // platform; nothing listens for the event Tauri sends instead.
+    .disable_drag_drop_handler()
     .inner_size(720.0, 620.0)
     .min_inner_size(420.0, 360.0)
     // The same allow-list as the main window: this is the same bundle, and
