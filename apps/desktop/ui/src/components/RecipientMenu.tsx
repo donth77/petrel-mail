@@ -104,10 +104,13 @@ export function RecipientMenu({ at, copyText, addressText, onClose }: Props) {
         getAnchorRect={() => ({ x: at.x, y: at.y, width: 0, height: 0 })}
         onClose={onClose}
       >
+        {/* An item closes the menu itself once its click is handled. Closing
+            again when the clipboard settles would close the next menu opened
+            on this message. */}
         <MenuItem
           className="menu-item"
           onClick={() => {
-            void writeClipboard(copyText).finally(onClose);
+            void writeClipboard(copyText);
           }}
         >
           <Icon icon={Copy} size={14} />
@@ -116,7 +119,7 @@ export function RecipientMenu({ at, copyText, addressText, onClose }: Props) {
         <MenuItem
           className="menu-item"
           onClick={() => {
-            void writeClipboard(addressText).finally(onClose);
+            void writeClipboard(addressText);
           }}
         >
           <Icon icon={AtSign} size={14} />
