@@ -268,9 +268,9 @@ function Expanded({
             </span>
             {showRecipients && (
               <span className="msg-to" ref={msgToRef}>
-                {/* Bcc appears only on your own copy, where the header was
-                    kept: who you blind-copied, as Apple Mail and Thunderbird
-                    show it.
+                {/* Bcc appears wherever the header was kept, which is mostly
+                    your own copy: who you blind-copied, as Apple Mail and
+                    Thunderbird show it.
 
                     Each person is their own element. The line used to be one
                     string of display names, so Copy could only write the name

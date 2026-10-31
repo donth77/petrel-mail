@@ -174,9 +174,10 @@ export type ThreadMessage = {
   to_addrs: string[];
   /** Cc, addresses. Empty when the message copied nobody. */
   cc_addrs: string[];
-  /** Bcc, display names: on your own sent copies, where the header was kept.
-   *  Never part of `recipients`, `recipient_addrs`, `to_addrs`, or `cc_addrs`,
-   *  so no reply reaches them. */
+  /** Bcc, display names, from any Bcc header the message kept: usually your
+   *  own sent copy, sometimes a draft or a delivery that left the blind copy's
+   *  name on it. Never part of `recipients`, `recipient_addrs`, `to_addrs`, or
+   *  `cc_addrs`, so no reply reaches them. */
   bcc?: string[];
   /** Bcc addresses, header order. Never part of `recipients`, `recipient_addrs`,
    *  `to_addrs`, or `cc_addrs`. Absent when an older engine is on the other side. */
