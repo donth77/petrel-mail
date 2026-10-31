@@ -25,10 +25,28 @@ describe('settleDraft', () => {
       },
       push,
     );
-    expect(failed).toEqual({ ok: false, error: 'Error: disk full' });
+    expect(failed).toMatchObject({ ok: false, error: 'Error: disk full' });
     const none = await settleDraft(typed, slotFor(blank), async () => null, push);
     expect(none.ok).toBe(false);
     // Nothing was written, so there is nothing to push.
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it('hands over what the save threw', async () => {
+    // A close the save stopped on purpose is told apart from one that failed:
+    // the first has nothing to add to what the person was already told.
+    const thrown = new Error('files left out');
+    const push = vi.fn(async () => {});
+    const result = await settleDraft(
+      typed,
+      slotFor(blank),
+      async () => {
+        throw thrown;
+      },
+      push,
+    );
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.cause).toBe(thrown);
     expect(push).not.toHaveBeenCalled();
   });
 

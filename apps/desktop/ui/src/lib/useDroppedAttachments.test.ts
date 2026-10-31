@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Draft } from '../components/Compose';
 import type { Attached } from './attachments';
+import { FilesLeftOut, keptWhole } from './files-left-out';
 import { useDroppedAttachments } from './useDroppedAttachments';
 
 /* A dropped file's chip is drawn before its bytes are copied, and every save
@@ -35,11 +36,12 @@ let state: {
   draft: Draft | null;
   copies: { resolve: (a: Attached) => void; reject: (e: unknown) => void }[];
   failed: unknown[];
+  rejected: string[];
 };
 let drops: ReturnType<typeof useDroppedAttachments>;
 
 beforeEach(() => {
-  state = { draft: blank, copies: [], failed: [] };
+  state = { draft: blank, copies: [], failed: [], rejected: [] };
   drops = useDroppedAttachments({
     getDraft: () => state.draft,
     setDraft: (update) => {
@@ -49,7 +51,7 @@ beforeEach(() => {
       new Promise<Attached>((resolve, reject) => {
         state.copies.push({ resolve, reject });
       }),
-    onRejected: () => {},
+    onRejected: (names) => state.rejected.push(...names),
     onFailed: (error) => state.failed.push(error),
   });
 });
@@ -72,8 +74,8 @@ describe('useDroppedAttachments', () => {
     const send = autosave.then(() => drops.finish(shown));
     await settle();
     state.copies[0]!.resolve(staged('big.pdf'));
-    expect((await autosave).attachments).toEqual([staged('big.pdf')]);
-    expect((await send).attachments).toEqual([staged('big.pdf')]);
+    expect((await autosave).draft.attachments).toEqual([staged('big.pdf')]);
+    expect((await send).draft.attachments).toEqual([staged('big.pdf')]);
   });
 
   it('a message that comes back after a failed send keeps the file it was copying', async () => {
@@ -89,7 +91,7 @@ describe('useDroppedAttachments', () => {
     await send;
     state.draft = sent;
     const saved = await drops.finish(sent);
-    expect(saved.attachments).toEqual([staged('big.pdf')]);
+    expect(saved.draft.attachments).toEqual([staged('big.pdf')]);
     expect(state.draft?.attachments).toEqual([staged('big.pdf')]);
     expect(state.draft?.copying ?? []).toEqual([]);
   });
@@ -114,7 +116,7 @@ describe('useDroppedAttachments', () => {
     const send = drops.finish(sent);
     await settle();
     state.copies[0]!.reject(new Error('disk full'));
-    expect((await send).attachments ?? []).toEqual([]);
+    expect((await send).draft.attachments ?? []).toEqual([]);
     expect(state.failed).toHaveLength(1);
   });
 
@@ -125,7 +127,7 @@ describe('useDroppedAttachments', () => {
     const send = autosave.then(() => drops.finish(shown));
     await settle();
     state.copies[0]!.reject(new Error('disk full'));
-    expect((await send).attachments ?? []).toEqual([]);
+    expect((await send).draft.attachments ?? []).toEqual([]);
     expect(state.failed).toHaveLength(1);
     expect(state.draft?.copying ?? []).toEqual([]);
   });
@@ -137,7 +139,7 @@ describe('useDroppedAttachments', () => {
     drops.remove(shown.copying![0]!.id);
     await settle();
     state.copies[0]!.reject(new Error('disk full'));
-    expect((await autosave).attachments ?? []).toEqual([]);
+    expect((await autosave).draft.attachments ?? []).toEqual([]);
     expect(state.failed).toEqual([]);
   });
 
@@ -148,7 +150,7 @@ describe('useDroppedAttachments', () => {
     drops.remove(shown.copying![0]!.id);
     await settle();
     state.copies[0]!.resolve(staged('big.pdf'));
-    expect((await autosave).attachments ?? []).toEqual([]);
+    expect((await autosave).draft.attachments ?? []).toEqual([]);
     expect(state.draft?.attachments ?? []).toEqual([]);
   });
 
@@ -161,5 +163,142 @@ describe('useDroppedAttachments', () => {
     await settle();
     expect(state.draft?.attachments ?? []).toEqual([]);
     expect(state.draft?.copying ?? []).toEqual([]);
+  });
+});
+
+/* Send, Send later, Pop out and a popped-out window's Close take the message
+ * out of the composer, and a window can go with the copy's toast still in
+ * it. So the save says what it left out, and they stop on it. */
+describe('what a save left out', () => {
+  const MB = 1024 * 1024;
+
+  it('names a chip whose copy failed', async () => {
+    drops.drop([file('big.pdf')]);
+    const save = drops.finish(state.draft!);
+    await settle();
+    state.copies[0]!.reject(new Error('disk full'));
+    const { draft, leftOut } = await save;
+    expect(draft.attachments ?? []).toEqual([]);
+    expect(leftOut.map((c) => c.name)).toEqual(['big.pdf']);
+    // Said by the copy, as the failure it was, and not again as a misfit.
+    expect(state.failed).toHaveLength(1);
+    expect(state.rejected).toEqual([]);
+  });
+
+  it('tells every save that was waiting on the failed copy', async () => {
+    // Send queued behind an autosave: both were handed the chip, and Send is
+    // the one that has to stop.
+    drops.drop([file('big.pdf')]);
+    const shown = state.draft!;
+    const autosave = drops.finish(shown);
+    close();
+    const send = autosave.then(() => drops.finish(shown));
+    await settle();
+    state.copies[0]!.reject(new Error('disk full'));
+    expect((await autosave).leftOut.map((c) => c.name)).toEqual(['big.pdf']);
+    expect((await send).leftOut.map((c) => c.name)).toEqual(['big.pdf']);
+    expect(state.failed).toHaveLength(1);
+    expect(state.rejected).toEqual([]);
+  });
+
+  it('names a file refused once its bytes are counted', async () => {
+    // The size on the drop was a guess; the bytes do not fit.
+    const guessed = {
+      name: 'huge.mov',
+      size: 4,
+      arrayBuffer: async () => new ArrayBuffer(26 * MB),
+    } as unknown as File;
+    drops.drop([guessed]);
+    const { leftOut } = await drops.finish(state.draft!);
+    expect(leftOut.map((c) => c.name)).toEqual(['huge.mov']);
+    expect(state.rejected).toEqual(['huge.mov']);
+  });
+
+  it('names a copied file that no longer fits beside what the message carries', async () => {
+    drops.drop([file('big.pdf', 10 * MB)]);
+    // Picked while the copy ran. The picker counts what is attached, not
+    // chips still copying, so the two together no longer fit.
+    state.draft = { ...state.draft!, attachments: [staged('other.pdf', 15 * MB)] };
+    const save = drops.finish(state.draft);
+    await settle();
+    state.copies[0]!.resolve(staged('big.pdf', 10 * MB));
+    const { draft, leftOut } = await save;
+    expect(draft.attachments).toEqual([staged('other.pdf', 15 * MB)]);
+    expect(leftOut.map((c) => c.name)).toEqual(['big.pdf']);
+    // Said as it landed on screen, and not again by the save.
+    expect(state.rejected).toEqual(['big.pdf']);
+  });
+
+  it('says a copied file did not fit when it landed with no message on screen', async () => {
+    // Send took the message away before the copy landed, so nothing on
+    // screen could say the file did not fit. The save says it, once, however
+    // many saves were holding the message.
+    drops.drop([file('big.pdf', 10 * MB)]);
+    state.draft = { ...state.draft!, attachments: [staged('other.pdf', 15 * MB)] };
+    const sent = state.draft;
+    close();
+    const send = drops.finish(sent);
+    const again = send.then(() => drops.finish(sent));
+    await settle();
+    state.copies[0]!.resolve(staged('big.pdf', 10 * MB));
+    expect((await send).leftOut.map((c) => c.name)).toEqual(['big.pdf']);
+    expect((await again).leftOut.map((c) => c.name)).toEqual(['big.pdf']);
+    expect(state.rejected).toEqual(['big.pdf']);
+  });
+
+  it('does not name a chip taken off on purpose', async () => {
+    drops.drop([file('big.pdf')]);
+    const shown = state.draft!;
+    const save = drops.finish(shown);
+    drops.remove(shown.copying![0]!.id);
+    await settle();
+    state.copies[0]!.reject(new Error('disk full'));
+    expect((await save).leftOut).toEqual([]);
+  });
+
+  it('does not name a copy that landed', async () => {
+    drops.drop([file('big.pdf')]);
+    const save = drops.finish(state.draft!);
+    await settle();
+    state.copies[0]!.resolve(staged('big.pdf'));
+    const { draft, leftOut } = await save;
+    expect(draft.attachments).toEqual([staged('big.pdf')]);
+    expect(leftOut).toEqual([]);
+  });
+
+  it('a send waiting on a copy that fails writes the message and is not queued', async () => {
+    // The chain both composers run for Send: finish, write, then queue.
+    // It used to queue the message without the file.
+    const written: Draft[] = [];
+    const queued: number[] = [];
+    drops.drop([file('big.pdf')]);
+    const sent = state.draft!;
+    close();
+    const send = drops
+      .finish(sent)
+      .then((finished) => {
+        written.push(finished.draft);
+        return keptWhole(7, finished, true);
+      })
+      .then((id) => {
+        queued.push(id);
+      });
+    await settle();
+    state.copies[0]!.reject(new Error('disk full'));
+    const stopped = await send.then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(stopped).toBeInstanceOf(FilesLeftOut);
+    expect(queued).toEqual([]);
+    expect(written).toHaveLength(1);
+    // What comes back to the composer: the words, in the row just written,
+    // with no chip left spinning.
+    expect((stopped as FilesLeftOut).draft).toMatchObject({
+      subject: 'Plans',
+      savedId: 7,
+      copying: [],
+      attachments: [],
+    });
   });
 });
