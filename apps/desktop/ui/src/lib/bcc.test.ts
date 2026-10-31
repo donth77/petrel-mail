@@ -62,6 +62,7 @@ describe('a draft read back from the store', () => {
     body: '',
     html: '',
     envelope,
+    files: [],
   });
 
   it('brings its blind copies', () => {

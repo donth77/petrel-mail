@@ -264,8 +264,41 @@ where
     Ok(())
 }
 
+/// A draft as a composer opens it: the stored record, and each attached file's
+/// name and size.
+///
+/// The envelope keeps paths only, so a reopened file used to come back as
+/// 0 B: its chip said so, and it counted for nothing against the attachment
+/// limit. The sizes are read from disk here, as they are for a file just
+/// picked (`attachment_info`). These paths come from the store: the window's
+/// went through `vetted_path` in `save_draft`, and the rest are files the
+/// backend staged itself, so the window cannot use this to stat a path of its
+/// choosing.
+#[derive(serde::Serialize)]
+pub struct OpenedDraft {
+    #[serde(flatten)]
+    record: DraftRecord,
+    files: Vec<AttachmentInfo>,
+}
+
+impl OpenedDraft {
+    fn new(record: DraftRecord) -> Self {
+        let files = record
+            .envelope
+            .attachments
+            .iter()
+            .map(|path| file_info(path.clone(), std::path::Path::new(path)))
+            .collect();
+        Self { record, files }
+    }
+}
+
 #[tauri::command(async)]
-pub fn load_draft(id: i64, state: State<Arc<AppState>>) -> Result<DraftRecord, String> {
+pub fn load_draft(id: i64, state: State<Arc<AppState>>) -> Result<OpenedDraft, String> {
+    stored_draft(id, &state).map(OpenedDraft::new)
+}
+
+fn stored_draft(id: i64, state: &AppState) -> Result<DraftRecord, String> {
     let store = state.store()?;
     let record = store.load_draft(id).map_err(|e| e.to_string())?;
     if !record.body.is_empty() || !record.html.is_empty() {
@@ -894,17 +927,23 @@ pub fn attachment_info(paths: Vec<String>, state: State<Arc<AppState>>) -> Vec<A
         // says whether it exists and how big it is, which is a little
         // filesystem oracle for anything that gets into the window.
         .filter_map(|path| state.vetted_path(&path, &[]).ok().map(|p| (path, p)))
-        .map(|(path, p)| AttachmentInfo {
-            name: p
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| path.clone()),
-            // Unreadable reports zero rather than failing the whole pick;
-            // the send will report it properly if it is still a problem.
-            size: std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0),
-            path,
-        })
+        .map(|(path, p)| file_info(path, &p))
         .collect()
+}
+
+/// A file's name and size, as its chip shows them: `path` as the window
+/// names it, read at `on_disk`. Unreadable reports zero rather than failing
+/// the whole pick or the whole draft; the send will report it properly if it
+/// is still a problem.
+fn file_info(path: String, on_disk: &std::path::Path) -> AttachmentInfo {
+    AttachmentInfo {
+        name: on_disk
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.clone()),
+        size: std::fs::metadata(on_disk).map(|m| m.len()).unwrap_or(0),
+        path,
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -1120,6 +1159,68 @@ mod staging_tests {
         let path = std::path::Path::new(&info.path);
         assert_eq!(path.file_name().expect("a file"), "id_rsa");
         assert!(path.starts_with(root.path()), "{}", info.path);
+    }
+}
+
+#[cfg(test)]
+mod opened_draft_tests {
+    use super::OpenedDraft;
+    use petrel_engine::store::{DraftEnvelope, DraftRecord};
+
+    fn with_files(attachments: Vec<String>) -> DraftRecord {
+        DraftRecord {
+            id: 7,
+            to: String::new(),
+            cc: String::new(),
+            subject: String::new(),
+            body: "body".into(),
+            html: String::new(),
+            envelope: DraftEnvelope {
+                attachments,
+                ..DraftEnvelope::default()
+            },
+        }
+    }
+
+    /// A reopened file comes back with its size, so its chip does not say
+    /// 0 B and it counts against the limit. One that has gone since keeps
+    /// its place at zero rather than failing the draft.
+    #[test]
+    fn a_reopened_draft_knows_how_big_its_files_are() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let here = root.path().join("report.pdf");
+        std::fs::write(&here, vec![0u8; 2048]).expect("write");
+        let gone = root.path().join("gone.pdf");
+        let paths = vec![
+            here.to_string_lossy().into_owned(),
+            gone.to_string_lossy().into_owned(),
+        ];
+
+        let opened = OpenedDraft::new(with_files(paths.clone()));
+
+        let files: Vec<_> = opened
+            .files
+            .iter()
+            .map(|f| (f.path.as_str(), f.name.as_str(), f.size))
+            .collect();
+        assert_eq!(
+            files,
+            [
+                (paths[0].as_str(), "report.pdf", 2048),
+                (paths[1].as_str(), "gone.pdf", 0),
+            ]
+        );
+    }
+
+    /// The window reads the record's fields where they always were, with the
+    /// files beside them.
+    #[test]
+    fn an_opened_draft_is_the_record_with_its_files() {
+        let json = serde_json::to_value(OpenedDraft::new(with_files(Vec::new()))).expect("json");
+        assert_eq!(json["id"], 7);
+        assert_eq!(json["body"], "body");
+        assert!(json["envelope"]["attachments"].is_array());
+        assert_eq!(json["files"], serde_json::json!([]));
     }
 }
 

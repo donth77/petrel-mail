@@ -2,6 +2,10 @@ import type { Draft } from '../components/Compose';
 import type { DraftRecord } from './api';
 
 export function draftFromRecord(d: DraftRecord): Draft {
+  // The envelope says which files, `files` how big each one is. Without the
+  // size a reopened file showed as 0 B and counted for nothing against the
+  // attachment limit.
+  const files = new Map(d.files.map((f) => [f.path, f]));
   return {
     to: d.to,
     cc: d.cc,
@@ -15,8 +19,8 @@ export function draftFromRecord(d: DraftRecord): Draft {
     references: d.envelope.references,
     attachments: d.envelope.attachments.map((path) => ({
       path,
-      name: path.split(/[\\/]/).pop() || path,
-      size: 0,
+      name: files.get(path)?.name ?? (path.split(/[\\/]/).pop() || path),
+      size: files.get(path)?.size ?? 0,
     })),
   };
 }
