@@ -771,11 +771,17 @@ pub struct DraftReplacement {
 /// never sees the append does not reuse the previous UID as this one.
 ///
 /// Removed: the previously recorded copy, even when its words have changed,
-/// and any older copy that says everything this push says. A copy whose
-/// words or recipients differ may be another client's revision and stays,
-/// however many there are: which of someone's edits to keep is theirs to
-/// decide. A newer UID is another push of this draft and stays too: two
-/// pushes that each removed the other's copy left the server with none.
+/// and any older copy that says everything this push says. Also any copy
+/// that was standing before this append and carries this push's own tag in
+/// a marker that still vouches for what it says ([`DRAFT_MARKER_HEADER`],
+/// the tag read from `raw`): an earlier push of this draft from this store,
+/// which it could not name at the time. A copy whose words or recipients
+/// differ and that carries no such marker may be another client's revision
+/// and stays, however many there are: which of someone's edits to keep is
+/// theirs to decide. That includes a copy another client edited and saved
+/// with this store's marker still on it. A newer UID is another push of this
+/// draft and stays too: two pushes that each removed the other's copy left
+/// the server with none.
 ///
 /// The search passes over copies already marked deleted. Without UIDPLUS
 /// they are never expunged, and every push fetched each of them again in
@@ -818,7 +824,13 @@ pub async fn replace_draft_copy(
         sent.as_ref(),
     )
     .await?;
-    let going = copies_to_remove(&mut session, &hits, new_uid, old_uid, sent.as_ref()).await?;
+    let ours = Ours {
+        old_uid,
+        sent: sent.as_ref(),
+        before: before.as_deref(),
+        tag: draft_tag_of(raw),
+    };
+    let going = copies_to_remove(&mut session, &hits, new_uid, &ours).await?;
     let mut unremoved = delete_uids(&mut session, &going, uidplus).await;
     // The command can succeed and leave the message. The search is what says
     // so. The copy is still in the folder, and the next push's own search
@@ -922,27 +934,106 @@ where
     Ok(None)
 }
 
+/// The header on this store's own server copies of a draft: `<tag> <digest>`.
+/// The tag is the store's `draft_marker` for the draft's Message-ID; the
+/// digest is of what the copy said when this store wrote it. A push that
+/// finds its own tag on an older copy whose words still match the digest
+/// knows that copy is one of its own earlier pushes, whatever it says, where
+/// the words alone could be another client's revision.
+///
+/// The digest is what keeps a client that carries unknown headers over into
+/// its own saves from passing its edit off as this store's: the tag still
+/// matches, the words no longer do, and the copy stays.
+pub const DRAFT_MARKER_HEADER: &str = "X-Petrel-Draft";
+
+/// `raw`, a draft's server copy, with the marker for `tag` ahead of its other
+/// headers. Field order carries no meaning (RFC 5322 §3.6), and servers
+/// prepend their own trace fields alike. A message that does not parse has
+/// nothing to vouch for and goes unmarked.
+pub fn mark_draft(raw: &[u8], tag: &str) -> Vec<u8> {
+    let Some(content) = draft_content(raw) else {
+        return raw.to_vec();
+    };
+    let mut marked = format!("{DRAFT_MARKER_HEADER}: {tag} {}\r\n", content.digest()).into_bytes();
+    marked.extend_from_slice(raw);
+    marked
+}
+
+/// The tag in the draft marker a message carries, if any.
+fn draft_tag_of(raw: &[u8]) -> Option<String> {
+    draft_marker_of(raw)?
+        .split_whitespace()
+        .next()
+        .map(str::to_string)
+}
+
+/// Whether `raw` carries `tag` in a marker that vouches for what it says now:
+/// a copy this store wrote and no one has changed since.
+fn marked_by(raw: &[u8], tag: &str) -> bool {
+    let Some(marker) = draft_marker_of(raw) else {
+        return false;
+    };
+    let mut words = marker.split_whitespace();
+    let (Some(theirs), Some(digest), None) = (words.next(), words.next(), words.next()) else {
+        return false;
+    };
+    theirs == tag && draft_content(raw).is_some_and(|said| said.digest() == digest)
+}
+
+/// The draft marker a message carries in its header block, if any.
+fn draft_marker_of(raw: &[u8]) -> Option<String> {
+    let end = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .or_else(|| raw.windows(2).position(|w| w == b"\n\n"))
+        .unwrap_or(raw.len());
+    let text = String::from_utf8_lossy(&raw[..end]);
+    let name = DRAFT_MARKER_HEADER.to_ascii_lowercase();
+    unfold_header(&text)
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .find(|(field, _)| field.trim().to_ascii_lowercase() == name)
+        .map(|(_, value)| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+/// What a push knows that tells its own copies from anyone else's.
+struct Ours<'a> {
+    /// The copy recorded last time.
+    old_uid: Option<u32>,
+    /// What this push says.
+    sent: Option<&'a DraftContent>,
+    /// The UIDs standing before this append; `None` when that search failed.
+    before: Option<&'a [u32]>,
+    /// This store's tag for the draft, from the marker on what this push sent.
+    tag: Option<String>,
+}
+
 /// UIDs under this Message-ID that this push should remove.
 ///
 /// The recorded copy goes even when its words changed: that is this client's
 /// previous push. So does any other copy that says everything this push
-/// says, since removing it loses nothing. A copy that says something else
-/// stays, however many there are: this client cannot tell its own old text
-/// from another client's revision, and only the second is worth keeping.
-/// A copy that cannot be read stays, and so does a UID newer than the copy
-/// just written, which another push wrote.
+/// says, since removing it loses nothing, and any copy standing before this
+/// append that carries this store's tag in a marker that still vouches for
+/// its words: an earlier push that could not name its copy. A copy that says
+/// something else and carries no such marker stays, however many there are:
+/// it may be another client's revision, another Petrel's, whose tag differs,
+/// or another client's edit saved with this store's marker carried over,
+/// whose words no longer match the digest. A copy that cannot be
+/// read stays, and so does a UID newer than the copy just written, which
+/// another push wrote. A marked copy that arrived during this push stays
+/// too: it may be this push's own, unnamed, and the next push removes it.
 async fn copies_to_remove<S>(
     session: &mut Session<S>,
     hits: &[MessageCopy],
     new_uid: Option<u32>,
-    old_uid: Option<u32>,
-    sent: Option<&DraftContent>,
+    ours: &Ours<'_>,
 ) -> Result<Vec<u32>>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
 {
     let mut going = Vec::new();
-    if let Some(old) = old_uid
+    if let Some(old) = ours.old_uid
         && Some(old) != new_uid
     {
         going.push(old);
@@ -957,7 +1048,11 @@ where
         let Some(bytes) = message_at(session, copy.uid).await? else {
             continue;
         };
-        if sent.is_some() && draft_content(&bytes).as_ref() == sent {
+        let same = ours.sent.is_some() && draft_content(&bytes).as_ref() == ours.sent;
+        let earlier_push = ours.tag.as_deref().is_some_and(|tag| {
+            ours.before.is_some_and(|before| before.contains(&copy.uid)) && marked_by(&bytes, tag)
+        });
+        if same || earlier_push {
             going.push(copy.uid);
         }
     }
@@ -983,6 +1078,44 @@ pub struct DraftContent {
     cc: Vec<String>,
     bcc: Vec<String>,
     attachments: Vec<(Option<String>, usize)>,
+}
+
+impl DraftContent {
+    /// A short digest of what the draft says, for its marker to vouch for.
+    /// Every field and list goes in behind its length, so two drafts cannot
+    /// run together into the same bytes. 96 bits, to keep the marker inside
+    /// one 78-column header line.
+    fn digest(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        let mut put = |bytes: &[u8]| {
+            hash.update((bytes.len() as u64).to_le_bytes());
+            hash.update(bytes);
+        };
+        put(self.subject.as_bytes());
+        put(self.body.as_bytes());
+        for list in [&self.to, &self.cc, &self.bcc] {
+            put(&(list.len() as u64).to_le_bytes());
+            for addr in list {
+                put(addr.as_bytes());
+            }
+        }
+        put(&(self.attachments.len() as u64).to_le_bytes());
+        for (name, size) in &self.attachments {
+            match name {
+                Some(name) => {
+                    put(b"named");
+                    put(name.as_bytes());
+                }
+                None => put(b"unnamed"),
+            }
+            put(&(*size as u64).to_le_bytes());
+        }
+        hash.finalize()[..12]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
 }
 
 /// `DraftContent` of a whole message; `None` when it does not parse.
@@ -4537,4 +4670,71 @@ where
     }
     sign_out(&mut session).await?;
     Ok(n)
+}
+
+#[cfg(test)]
+mod draft_marker_tests {
+    use super::{draft_marker_of, draft_tag_of, mark_draft, marked_by};
+
+    const TAG: &str = "0123456789abcdef0123456789abcdef";
+
+    fn letter(to: &str, body: &str) -> Vec<u8> {
+        format!(
+            "From: sam@example.com\r\nTo: {to}\r\nSubject: Plans\r\n\
+             Message-ID: <d1@example.com>\r\n\r\n{body}\r\n"
+        )
+        .into_bytes()
+    }
+
+    /// A copy this store marked is known for its own while its words are
+    /// what it wrote. Another tag is another store's. A copy another client
+    /// edited and saved with the marker carried over says something else,
+    /// recipients included, and is not passed off as this store's.
+    #[test]
+    fn a_marker_vouches_for_the_words_it_was_written_with() {
+        let marked = mark_draft(&letter("dana@example.com", "kiwi"), TAG);
+        let header = String::from_utf8_lossy(&marked);
+        let first = header.lines().next().unwrap();
+        assert!(first.starts_with(&format!("X-Petrel-Draft: {TAG} ")));
+        assert!(first.len() <= 78, "the marker runs past one line: {first}");
+        assert_eq!(draft_tag_of(&marked).as_deref(), Some(TAG));
+        assert!(marked_by(&marked, TAG));
+        assert!(!marked_by(&marked, "ffffffffffffffffffffffffffffffff"));
+
+        let reworded = String::from_utf8_lossy(&marked).replace("kiwi", "mango");
+        assert!(!marked_by(reworded.as_bytes(), TAG));
+        let readdressed =
+            String::from_utf8_lossy(&marked).replace("dana@example.com", "lee@example.com");
+        assert!(!marked_by(readdressed.as_bytes(), TAG));
+
+        // A marker with only the tag, or trailing words, vouches for nothing.
+        let mut bare = format!("X-Petrel-Draft: {TAG}\r\n").into_bytes();
+        bare.extend(letter("dana@example.com", "kiwi"));
+        assert!(!marked_by(&bare, TAG));
+        let digest = first.split_whitespace().nth(2).unwrap();
+        let mut long = format!("X-Petrel-Draft: {TAG} {digest} more\r\n").into_bytes();
+        long.extend(letter("dana@example.com", "kiwi"));
+        assert!(!marked_by(&long, TAG));
+    }
+
+    /// The marker is read from the header block only, under any case, and
+    /// folded onto a continuation line too. One in the body is words, and a
+    /// message with none has none.
+    #[test]
+    fn a_drafts_marker_is_read_from_its_header_alone() {
+        assert_eq!(
+            draft_marker_of(b"X-Petrel-Draft: abc123\r\nSubject: s\r\n\r\nbody\r\n").as_deref(),
+            Some("abc123")
+        );
+        assert_eq!(
+            draft_marker_of(b"Subject: s\r\nx-petrel-draft:\r\n abc123\r\n\r\nbody\r\n").as_deref(),
+            Some("abc123")
+        );
+        assert_eq!(
+            draft_marker_of(b"Subject: s\r\n\r\nX-Petrel-Draft: abc123\r\n"),
+            None
+        );
+        assert_eq!(draft_marker_of(b"Subject: s\r\n\r\nbody\r\n"), None);
+        assert_eq!(draft_marker_of(b"X-Petrel-Draft:\r\n\r\n"), None);
+    }
 }

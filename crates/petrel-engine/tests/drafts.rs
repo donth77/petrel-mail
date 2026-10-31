@@ -1450,3 +1450,33 @@ mod composer_owns_its_words {
         );
     }
 }
+
+/// A draft's marker is this store's and this draft's alone, and the same
+/// every time it is asked for, including after the store is closed and
+/// opened again: a push removes older copies only by that sameness.
+#[test]
+fn a_drafts_marker_is_this_stores_and_this_drafts_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("petrel.db");
+    let (first, other_draft) = {
+        let store = Store::open(&path).unwrap();
+        let first = store.draft_marker("d1@example.com").unwrap();
+        assert_eq!(first.len(), 32);
+        assert!(first.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(store.draft_marker("d1@example.com").unwrap(), first);
+        (first, store.draft_marker("d2@example.com").unwrap())
+    };
+    assert_ne!(first, other_draft, "two drafts share a marker");
+    let reopened = Store::open(&path).unwrap();
+    assert_eq!(
+        reopened.draft_marker("d1@example.com").unwrap(),
+        first,
+        "the marker changed when the store was opened again"
+    );
+    let elsewhere = Store::open_in_memory().unwrap();
+    assert_ne!(
+        elsewhere.draft_marker("d1@example.com").unwrap(),
+        first,
+        "another store writes the same marker"
+    );
+}

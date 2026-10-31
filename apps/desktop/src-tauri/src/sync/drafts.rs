@@ -34,7 +34,7 @@ async fn push_draft_using<F>(
 where
     F: FnOnce(&Store, i64) -> Option<petrel_providers::imap::ImapConfig>,
 {
-    let (account, record, msgid, old_uid, cfg, drafts_folder, identity, from_addr) = {
+    let (account, record, msgid, marker, old_uid, cfg, drafts_folder, identity, from_addr) = {
         let mut store = state.store()?;
         // The draft's own account, never the active one: a send or a save can
         // finish after the rail has been switched, and the copy must land in
@@ -116,10 +116,15 @@ where
                 minted
             }
         };
+        // What tells this store's copies of the draft from anyone else's. A
+        // store that cannot make one pushes without it, and only the copy it
+        // recorded and copies of these same words are removed, as before.
+        let marker = store.draft_marker(&msgid).ok();
         (
             account,
             record,
             msgid,
+            marker,
             old_uid,
             cfg,
             drafts_folder,
@@ -136,6 +141,7 @@ where
         from_addr,
         identity.map(|i| i.display_name).unwrap_or_default(),
         &msgid,
+        marker.as_deref(),
     );
 
     let replaced = petrel_providers::imap::replace_draft_copy(
@@ -396,11 +402,19 @@ pub(crate) fn server_copies(store: &Store, account: i64, draft_id: i64) -> Vec<S
 /// The sender's copy, Bcc header and all, as Thunderbird keeps it: a draft
 /// picked up on the phone or in webmail still has its blind copies, and a
 /// draft only ever goes to its own account's Drafts.
+///
+/// `marker` is the store's `draft_marker` for this draft, written as
+/// [`petrel_providers::imap::DRAFT_MARKER_HEADER`] with a digest of these
+/// words, so a later push knows this copy for one of its own after the draft
+/// has moved on, and an edit another client saved over it for that client's.
+/// A copy rendered only to be compared carries none: what a draft says does
+/// not include it.
 pub(crate) fn draft_copy(
     record: &petrel_engine::store::DraftRecord,
     from_addr: String,
     from_name: String,
     msgid: &str,
+    marker: Option<&str>,
 ) -> Vec<u8> {
     let msg = petrel_providers::smtp::Outgoing {
         from_addr,
@@ -419,7 +433,11 @@ pub(crate) fn draft_copy(
         // clients see the words, which is what a draft is.
         attachments: Vec::new(),
     };
-    msg.sender_copy(&msg.render_with_id(msgid))
+    let copy = msg.sender_copy(&msg.render_with_id(msgid));
+    match marker {
+        Some(marker) => petrel_providers::imap::mark_draft(&copy, marker),
+        None => copy,
+    }
 }
 
 /// Splits a recipient field as the send does (`split_recipients`), for
@@ -455,6 +473,11 @@ mod draft_copy_tests {
             "sam@example.com".into(),
             "Sam".into(),
             "d1@example.com",
+            Some("0123456789abcdef0123456789abcdef"),
+        );
+        assert!(
+            raw.starts_with(b"X-Petrel-Draft: 0123456789abcdef0123456789abcdef "),
+            "the server copy does not carry the draft's marker"
         );
         let parsed = petrel_mime::parse_message(&raw).unwrap();
         let bcc: Vec<&str> = parsed.bcc.iter().map(|(_, a)| a.as_str()).collect();
@@ -486,6 +509,7 @@ mod draft_copy_tests {
             "sam@example.com".into(),
             "Sam".into(),
             "d2@example.com",
+            None,
         );
         let parsed = petrel_mime::parse_message(&raw).unwrap();
         assert_eq!(
@@ -1148,6 +1172,169 @@ mod push_replaces_its_copy {
         assert_eq!(held.len(), 1, "copies piled up: {:?}", raws(&srv));
         assert!(String::from_utf8_lossy(&held[0].raw).contains("mango"));
         assert_eq!(recorded(&state, draft), Some(held[0].uid));
+    }
+
+    /// `letter`, carrying a draft marker as Petrel writes it.
+    fn marked(marker: &str, id: &str, body: &str) -> Vec<u8> {
+        petrel_providers::imap::mark_draft(&letter(id, "dana@example.com", "Plans", body), marker)
+    }
+
+    /// Another client edited this store's earlier copy and saved its edit
+    /// with the marker carried over, as a client that keeps unknown headers
+    /// does. The tag is this store's; the words are not the ones it wrote.
+    /// The edit is that client's revision and stays.
+    #[test]
+    fn another_clients_edit_that_kept_this_stores_marker_stays() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+        let draft = open(&state, "Plans", "kiwi");
+        let ours = {
+            let mut store = state.store.lock().unwrap();
+            store.set_draft_msgid(draft, "d-kept@example.com").unwrap();
+            store.draft_marker("d-kept@example.com").unwrap()
+        };
+        let edited = String::from_utf8(marked(&ours, "d-kept@example.com", "our earlier text"))
+            .unwrap()
+            .replace("our earlier text", "the phone's edit");
+        assert!(edited.starts_with(&format!("X-Petrel-Draft: {ours} ")));
+        let srv = Imap::new("UIDPLUS", &[("INBOX", ""), ("Drafts", "\\Drafts")]);
+        srv.put("Drafts", edited.into_bytes(), &["\\Draft"]);
+        tauri::async_runtime::block_on(async {
+            let port = serve(Arc::clone(&srv)).await;
+            push(&state, draft, port).await;
+        });
+        let raws = raws(&srv);
+        assert!(
+            raws.iter().any(|r| r.contains("the phone's edit")),
+            "another client's edit was taken for this store's copy: {raws:?}"
+        );
+        assert!(raws.iter().any(|r| r.contains("kiwi")));
+    }
+
+    /// An earlier push from this store, which says something else by now,
+    /// and another Petrel's copy of the same draft, which says something
+    /// else too. The first carries this store's marker and goes; the second
+    /// carries its own and stays, as any other client's revision does.
+    #[test]
+    fn an_earlier_push_from_this_store_goes_and_another_petrels_stays() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+        let draft = open(&state, "Plans", "kiwi");
+        let ours = {
+            let mut store = state.store.lock().unwrap();
+            store
+                .set_draft_msgid(draft, "d-marked@example.com")
+                .unwrap();
+            store.draft_marker("d-marked@example.com").unwrap()
+        };
+        let theirs = "ffffffffffffffffffffffffffffffff";
+        assert_ne!(ours, theirs);
+        let srv = Imap::new("UIDPLUS", &[("INBOX", ""), ("Drafts", "\\Drafts")]);
+        srv.put(
+            "Drafts",
+            marked(&ours, "d-marked@example.com", "our earlier text"),
+            &["\\Draft"],
+        );
+        srv.put(
+            "Drafts",
+            marked(theirs, "d-marked@example.com", "the laptop's text"),
+            &["\\Draft"],
+        );
+        tauri::async_runtime::block_on(async {
+            let port = serve(Arc::clone(&srv)).await;
+            push(&state, draft, port).await;
+        });
+        let raws = raws(&srv);
+        assert!(
+            !raws.iter().any(|r| r.contains("our earlier text")),
+            "this store's earlier push stayed: {raws:?}"
+        );
+        assert!(
+            raws.iter().any(|r| r.contains("the laptop's text")),
+            "another Petrel's copy was removed: {raws:?}"
+        );
+        assert!(
+            raws.iter()
+                .any(|r| r.contains("kiwi") && r.starts_with(&format!("X-Petrel-Draft: {ours}"))),
+            "the copy just written does not carry this store's marker: {raws:?}"
+        );
+    }
+
+    /// APPENDUID names a message that is gone and the search misses the copy
+    /// that landed, so the push records the number it was given and the copy
+    /// stays unrecorded. The next push finds it standing, with this store's
+    /// marker, and removes it: no copy is left behind to pile up.
+    #[test]
+    fn a_copy_a_push_could_not_name_goes_with_the_next_push() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+        let draft = open(&state, "Plans", "kiwi");
+        let srv = Imap::new("UIDPLUS", &[("INBOX", ""), ("Drafts", "\\Drafts")]);
+        srv.rewrite_appended.store(true, Ordering::Relaxed);
+        srv.hide_newest_message_id.store(true, Ordering::Relaxed);
+        tauri::async_runtime::block_on(async {
+            let port = serve(Arc::clone(&srv)).await;
+            push(&state, draft, port).await;
+            srv.hide_newest_message_id.store(false, Ordering::Relaxed);
+            edit(&state, draft, "mango");
+            push(&state, draft, port).await;
+        });
+        let held = srv.held("Drafts");
+        assert_eq!(held.len(), 1, "an unnamed copy stayed: {:?}", raws(&srv));
+        assert!(String::from_utf8_lossy(&held[0].raw).contains("mango"));
+        assert_eq!(recorded(&state, draft), Some(held[0].uid));
+    }
+
+    /// The same without UIDPLUS: a push that cannot name its copy leaves it
+    /// unrecorded beside another client's revision. The next push removes
+    /// its own earlier copy by the marker and leaves the revision alone.
+    #[test]
+    fn without_uidplus_an_unnamed_copy_goes_and_another_clients_revision_stays() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+        let draft = open(&state, "Plans", "kiwi");
+        {
+            let mut store = state.store.lock().unwrap();
+            store
+                .set_draft_msgid(draft, "d-unnamed@example.com")
+                .unwrap();
+        }
+        let srv = Imap::new("MOVE", &[("INBOX", ""), ("Drafts", "\\Drafts")]);
+        srv.put(
+            "Drafts",
+            letter(
+                "d-unnamed@example.com",
+                "dana@example.com",
+                "Plans",
+                "their revision",
+            ),
+            &["\\Draft"],
+        );
+        srv.hide_newest_message_id.store(true, Ordering::Relaxed);
+        tauri::async_runtime::block_on(async {
+            let port = serve(Arc::clone(&srv)).await;
+            push(&state, draft, port).await;
+            srv.hide_newest_message_id.store(false, Ordering::Relaxed);
+            edit(&state, draft, "mango");
+            push(&state, draft, port).await;
+        });
+        let held = srv.held("Drafts");
+        let deleted = |text: &str| {
+            held.iter()
+                .find(|m| String::from_utf8_lossy(&m.raw).contains(text))
+                .map(|m| m.flags.iter().any(|f| f == "\\Deleted"))
+        };
+        assert_eq!(
+            deleted("kiwi"),
+            Some(true),
+            "the unnamed copy was not removed"
+        );
+        assert_eq!(
+            deleted("their revision"),
+            Some(false),
+            "another client's revision was removed"
+        );
+        assert_eq!(deleted("mango"), Some(false), "the copy just written went");
     }
 
     /// Two pushes, then the sweep that files server UIDs the store has not

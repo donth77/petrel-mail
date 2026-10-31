@@ -277,6 +277,35 @@ impl Store {
         Ok(())
     }
 
+    /// What this store writes on its own server copies of the draft with
+    /// this Message-ID, so a later push can tell a copy it wrote from one
+    /// another client wrote.
+    ///
+    /// Every client editing a draft carries its Message-ID, and every Petrel
+    /// says `User-Agent: Petrel`, so neither tells this store's copies from
+    /// another install's. This is a keyed hash of the Message-ID under a key
+    /// made once and kept in `meta`: two stores, or two drafts, never share
+    /// one, and one draft's marker says nothing about another's, even after
+    /// another client sends that draft on with the header still in it.
+    pub fn draft_marker(&self, msgid: &str) -> Result<String> {
+        const KEY: &str = "draft_marker_key";
+        let kept = self
+            .meta(KEY)?
+            .and_then(|hex| blake3::Hash::from_hex(hex).ok());
+        let key = match kept {
+            Some(key) => *key.as_bytes(),
+            None => {
+                let mut key = [0u8; 32];
+                getrandom::fill(&mut key)
+                    .map_err(|e| StoreError::Rejected(format!("no random source: {e}")))?;
+                self.set_meta(KEY, blake3::Hash::from(key).to_hex().as_str())?;
+                key
+            }
+        };
+        let hash = blake3::keyed_hash(&key, msgid.as_bytes());
+        Ok(hash.to_hex()[..32].to_string())
+    }
+
     /// Saves a draft with everything it needs to go out, not only its text.
     #[allow(clippy::too_many_arguments)]
     pub fn save_draft_full(

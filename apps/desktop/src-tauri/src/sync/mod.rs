@@ -2287,7 +2287,7 @@ fn draft_echo(store: &Store, id: i64, message_id: &str, raw: &[u8]) -> bool {
         return false;
     };
     // The sender is not compared, so the rendering needs none.
-    let ours = drafts::draft_copy(&record, String::new(), String::new(), message_id);
+    let ours = drafts::draft_copy(&record, String::new(), String::new(), message_id, None);
     let theirs = petrel_providers::imap::draft_content(raw);
     theirs.is_some() && petrel_providers::imap::draft_content(&ours) == theirs
 }
