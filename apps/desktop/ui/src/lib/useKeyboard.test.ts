@@ -154,6 +154,8 @@ describe('every key listener on the window', () => {
     // The menu is itself the modal mailKeyAllowed refuses, so asking that
     // rule would make Escape unable to close it.
     'RecipientMenu.tsx': 'Escape dismisses the address menu',
+    // Only listens: a key means the press that dismissed the menu is over.
+    'recipient-menu.ts': 'a key lets go of the click a dismissing press held',
   };
 
   it('decides single keys through mailKeyAllowed', () => {

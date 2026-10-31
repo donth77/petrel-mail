@@ -4,6 +4,7 @@ import {
   ROLE_SLOT,
   addressesForCopy,
   addressesToCopy,
+  dismissClickRule,
   focusDismissesMenu,
   pairRecipients,
   pressDismissesMenu,
@@ -126,6 +127,123 @@ describe('dismissing the menu', () => {
     expect(focusDismissesMenu({ tagName: 'IFRAME' })).toBe(true);
     expect(focusDismissesMenu({ tagName: 'BUTTON' })).toBe(false);
     expect(focusDismissesMenu(null)).toBe(false);
+  });
+});
+
+describe('the click after a press that dismisses the menu', () => {
+  /* What the rule reads of an element: whether it sits inside a message's
+     collapse button, where the names are. */
+  const toggle = { closest: (selector: string) => (selector === '.msg-toggle' ? toggle : null) };
+  const archive = { closest: () => null };
+
+  type Seen = { target: unknown; button: number; prevented: boolean; stopped: boolean };
+  const event = (target: unknown, button = 0) => {
+    const e: Seen & { preventDefault(): void; stopPropagation(): void } = {
+      target,
+      button,
+      prevented: false,
+      stopped: false,
+      preventDefault() {
+        e.prevented = true;
+      },
+      stopPropagation() {
+        e.stopped = true;
+      },
+    };
+    return e;
+  };
+
+  /** A press the menu reports as its dismissal, seen by the window first. */
+  const dismissWith = (rule: ReturnType<typeof dismissClickRule>, press: ReturnType<typeof event>) => {
+    rule.pointerdown(press);
+    rule.dismissedBy(press);
+  };
+
+  it('takes a press on the collapse button and its click, which would close the message', () => {
+    const rule = dismissClickRule();
+    const press = event(toggle);
+    dismissWith(rule, press);
+    const click = event(toggle);
+    rule.click(click);
+    expect([press.prevented, press.stopped]).toEqual([true, true]);
+    expect([click.prevented, click.stopped]).toEqual([true, true]);
+  });
+
+  it('takes it whichever listener hears the press first', () => {
+    const rule = dismissClickRule();
+    const press = event(toggle);
+    rule.dismissedBy(press);
+    rule.pointerdown(press);
+    const click = event(toggle);
+    rule.click(click);
+    expect(click.prevented).toBe(true);
+  });
+
+  it('leaves the next click alone when the press ended without one', () => {
+    // Released over the message, or outside the window, the press brings no
+    // click here. The eater waited, and took the next click wherever it came.
+    const rule = dismissClickRule();
+    dismissWith(rule, event(toggle));
+    rule.pointerdown(event(toggle));
+    const click = event(toggle);
+    rule.click(click);
+    expect([click.prevented, click.stopped]).toEqual([false, false]);
+  });
+
+  it('leaves a click from the keyboard alone', () => {
+    const rule = dismissClickRule();
+    dismissWith(rule, event(toggle));
+    rule.keydown({ key: 'Enter' });
+    const click = event(toggle);
+    rule.click(click);
+    expect([click.prevented, click.stopped]).toEqual([false, false]);
+  });
+
+  it('still takes the click when a modifier goes down during the press', () => {
+    // Windows repeats a held Shift as it is held.
+    const rule = dismissClickRule();
+    dismissWith(rule, event(toggle));
+    rule.keydown({ key: 'Shift' });
+    const click = event(toggle);
+    rule.click(click);
+    expect(click.prevented).toBe(true);
+  });
+
+  it('never takes a click anywhere but the collapse button', () => {
+    // A press that ended elsewhere and a click with no press of its own, as
+    // VoiceOver sends: neither is the press's click on the button.
+    const rule = dismissClickRule();
+    dismissWith(rule, event(toggle));
+    const stray = event(archive);
+    rule.click(stray);
+    expect([stray.prevented, stray.stopped]).toEqual([false, false]);
+    const later = event(toggle);
+    rule.click(later);
+    expect([later.prevented, later.stopped]).toEqual([false, false]);
+  });
+
+  it('lets a press elsewhere go on, with its click', () => {
+    // As the list's menu does: the press that closes it also archives.
+    const rule = dismissClickRule();
+    const press = event(archive);
+    dismissWith(rule, press);
+    const click = event(archive);
+    rule.click(click);
+    expect([press.prevented, press.stopped, click.prevented, click.stopped]).toEqual([
+      false,
+      false,
+      false,
+      false,
+    ]);
+  });
+
+  it('lets a right-click reach the name under it', () => {
+    const rule = dismissClickRule();
+    const press = event(toggle, 2);
+    dismissWith(rule, press);
+    const click = event(toggle);
+    rule.click(click);
+    expect([press.prevented, press.stopped, click.prevented]).toEqual([false, false, false]);
   });
 });
 

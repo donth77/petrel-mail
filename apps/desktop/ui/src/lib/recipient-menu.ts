@@ -74,6 +74,77 @@ export function focusDismissesMenu(target: { tagName?: string } | null): boolean
   return target?.tagName === 'IFRAME';
 }
 
+const TOGGLE = '.msg-toggle';
+
+/** Keys that only change another key or a click, and activate nothing alone. */
+const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'AltGraph', 'Meta', 'CapsLock', 'Fn']);
+
+type Press = { target: unknown; button: number; preventDefault(): void; stopPropagation(): void };
+type Click = { target: unknown; preventDefault(): void; stopPropagation(): void };
+
+function onToggle(target: unknown): boolean {
+  const el = target as { closest?: (selector: string) => unknown } | null;
+  return typeof el?.closest === 'function' && el.closest(TOGGLE) != null;
+}
+
+/**
+ * The click that belongs to a press dismissing the menu.
+ *
+ * The names sit inside the message's collapse button, so a press there that
+ * dismisses the menu would close the message as well. That press and its click
+ * are taken. Anywhere else the press goes on to what it landed on, as it does
+ * for the list's menu and inside the message, which is another document.
+ *
+ * The click arrives after the menu has unmounted, so this outlives the menu,
+ * one per window. A press can end without a click, released over the message
+ * or outside the window, so the next press or key clears what it left. The
+ * eater that waited for "the next click" took whatever came, anywhere,
+ * Enter on Send included.
+ */
+export function dismissClickRule() {
+  let pending: unknown = null;
+  return {
+    /** From the menu: `press` dismissed it. */
+    dismissedBy(press: Press) {
+      if (press.button !== 0 || !onToggle(press.target)) return;
+      press.preventDefault();
+      press.stopPropagation();
+      pending = press;
+    },
+    // The press that arms the rule can reach this before or after the menu
+    // reports it, so only a different press clears it.
+    pointerdown(e: unknown) {
+      if (e !== pending) pending = null;
+    },
+    keydown(e: { key: string }) {
+      if (!MODIFIER_KEYS.has(e.key)) pending = null;
+    },
+    click(e: Click) {
+      if (pending === null) return;
+      pending = null;
+      // Released somewhere else, the click lands on what the two share, and
+      // closes nothing.
+      if (!onToggle(e.target)) return;
+      e.preventDefault();
+      e.stopPropagation();
+    },
+  };
+}
+
+let windowRule: ReturnType<typeof dismissClickRule> | null = null;
+
+/** The rule for this window, put in force by the first menu opened in it. */
+export function dismissClicks() {
+  if (!windowRule) {
+    const rule = dismissClickRule();
+    window.addEventListener('pointerdown', rule.pointerdown, true);
+    window.addEventListener('keydown', rule.keydown, true);
+    window.addEventListener('click', rule.click, true);
+    windowRule = rule;
+  }
+  return windowRule;
+}
+
 /** Visible text for Copy when the selection does not govern the gesture. */
 export function recipientCopyText({
   selection,
