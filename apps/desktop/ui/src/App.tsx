@@ -1941,7 +1941,6 @@ export function App() {
   const drops = useDroppedAttachments({
     getDraft: () => draftRef.current,
     setDraft,
-    composer: () => slotRef.current,
     stage: api.stageAttachment,
     onRejected: (names) =>
       setToast(
@@ -1965,7 +1964,7 @@ export function App() {
       // A chip can be on screen before its bytes are copied. The row is
       // written with the real path, so a send in that gap does not go without
       // the file.
-      const ready = await drops.finish(d, slot);
+      const ready = await drops.finish(d);
       const signature = draftSignature(ready);
       // The latest known row for this message, whichever save learned it:
       // the draft object in hand may predate an autosave that just landed.
