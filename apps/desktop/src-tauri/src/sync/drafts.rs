@@ -16,9 +16,9 @@ use std::sync::Arc;
 /// rather than a sibling — and when ordinary folder sync fetches it back, the
 /// dedupe key lands it on the local draft row instead of beside it. The copy
 /// this store recorded last time is removed even when its words have changed,
-/// and so is every older copy of this Message-ID except the newest one that
-/// says something else. That one is another client's revision and is left
-/// standing, so a conflict is never silently discarded.
+/// and so is any other copy of these same words. A copy that says something
+/// else may be another client's revision and is left standing, every one of
+/// them, so a conflict is never silently discarded.
 pub(crate) async fn push_draft_to_server(
     state: &Arc<AppState>,
     draft_id: i64,
@@ -152,9 +152,9 @@ where
     for uid in &replaced.unremoved {
         log_sync(&format!("old draft copy (uid {uid}) not removed"));
     }
-    // A UID this push could not name is left as it was. Clearing it made the
-    // next push forget the copy it had written, and every later autosave
-    // added another.
+    // A push that could not name its copy leaves the recorded UID as it was.
+    // If removing that copy failed, the next push tries again; if it worked,
+    // removing it again does nothing, since a UID is not given out twice.
     if let Some(uid) = replaced.new_uid
         && let Ok(mut store) = state.store.lock()
     {
@@ -990,20 +990,29 @@ mod push_replaces_its_copy {
         );
     }
 
-    /// Four older copies, each saying something else. One push leaves the
-    /// copy it just wrote and the newest of those older copies. The rest
-    /// are this draft's own history, not four separate revisions to keep.
+    /// The raw text of every copy in Drafts.
+    fn raws(srv: &Imap) -> Vec<String> {
+        srv.held("Drafts")
+            .iter()
+            .map(|m| String::from_utf8_lossy(&m.raw).into_owned())
+            .collect()
+    }
+
+    /// Two other clients each saved a revision of this draft, and neither
+    /// says what this push says. Nothing shows this client wrote either, so
+    /// both stay: a push does not get to choose which of someone's edits to
+    /// keep.
     #[test]
-    fn older_divergent_copies_collapse_to_the_newest() {
+    fn every_revision_another_client_saved_stays() {
         let dir = tempfile::tempdir().unwrap();
         let state = test_state(dir.path());
-        let draft = open(&state, "Plans", "five");
+        let draft = open(&state, "Plans", "kiwi");
         {
             let mut store = state.store.lock().unwrap();
             store.set_draft_msgid(draft, "d-many@example.com").unwrap();
         }
         let srv = Imap::new("UIDPLUS", &[("INBOX", ""), ("Drafts", "\\Drafts")]);
-        for body in ["one", "two", "three", "four"] {
+        for body in ["phone revision", "webmail revision"] {
             srv.put(
                 "Drafts",
                 letter("d-many@example.com", "dana@example.com", "Plans", body),
@@ -1014,26 +1023,131 @@ mod push_replaces_its_copy {
             let port = serve(Arc::clone(&srv)).await;
             push(&state, draft, port).await;
         });
-        let held = srv.held("Drafts");
-        assert_eq!(held.len(), 2, "every older copy stayed: {held:?}");
-        let raws: Vec<String> = held
-            .iter()
-            .map(|m| String::from_utf8_lossy(&m.raw).into_owned())
-            .collect();
-        assert!(
-            raws.iter().any(|r| r.contains("\r\nfour\r\n")),
-            "the newest older copy went: {raws:?}"
-        );
-        assert!(
-            raws.iter().any(|r| r.contains("five")),
-            "the copy just written went: {raws:?}"
-        );
-        for gone in ["\r\none\r\n", "\r\ntwo\r\n", "\r\nthree\r\n"] {
+        let raws = raws(&srv);
+        assert_eq!(raws.len(), 3, "a copy went: {raws:?}");
+        for kept in ["phone revision", "webmail revision", "kiwi"] {
             assert!(
-                !raws.iter().any(|r| r.contains(gone)),
-                "{gone} is still in Drafts: {raws:?}"
+                raws.iter().any(|r| r.contains(kept)),
+                "{kept} went: {raws:?}"
             );
         }
+    }
+
+    /// APPENDUID names a message that is gone, the search misses the copy
+    /// this push left, and the one arrival it does list is another client's
+    /// revision, landing while the push ran. That arrival says something
+    /// else, so it is not recorded as this push's copy, and the next push,
+    /// which removes the recorded copy whatever it says, leaves it alone.
+    #[test]
+    fn an_arrival_that_says_something_else_is_not_taken_for_this_push() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+        let draft = open(&state, "Plans", "kiwi");
+        {
+            let mut store = state.store.lock().unwrap();
+            store
+                .set_draft_msgid(draft, "d-theirs@example.com")
+                .unwrap();
+        }
+        let srv = Imap::new("UIDPLUS", &[("INBOX", ""), ("Drafts", "\\Drafts")]);
+        srv.put(
+            "Drafts",
+            letter(
+                "d-theirs@example.com",
+                "dana@example.com",
+                "Plans",
+                "their revision",
+            ),
+            &["\\Draft"],
+        );
+        srv.rewrite_appended.store(true, Ordering::Relaxed);
+        srv.hide_newest_message_id.store(true, Ordering::Relaxed);
+        tauri::async_runtime::block_on(async {
+            let port = serve(Arc::clone(&srv)).await;
+            push(&state, draft, port).await;
+            srv.hide_newest_message_id.store(false, Ordering::Relaxed);
+            edit(&state, draft, "mango");
+            push(&state, draft, port).await;
+        });
+        let raws = raws(&srv);
+        assert!(
+            raws.iter().any(|r| r.contains("their revision")),
+            "another client's revision was removed: {raws:?}"
+        );
+        assert!(
+            raws.iter().any(|r| r.contains("mango")),
+            "the copy just written went: {raws:?}"
+        );
+    }
+
+    /// Without UIDPLUS, and with a search that misses the copy just
+    /// appended, a push cannot name its copy, and that copy stays
+    /// unrecorded. The next push finds it beside another client's older
+    /// revision. Neither is known to be this client's, so neither goes.
+    #[test]
+    fn a_copy_this_client_could_not_name_costs_no_other_clients_revision() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+        let draft = open(&state, "Plans", "kiwi");
+        {
+            let mut store = state.store.lock().unwrap();
+            store
+                .set_draft_msgid(draft, "d-unnamed@example.com")
+                .unwrap();
+        }
+        let srv = Imap::new("MOVE", &[("INBOX", ""), ("Drafts", "\\Drafts")]);
+        srv.put(
+            "Drafts",
+            letter(
+                "d-unnamed@example.com",
+                "dana@example.com",
+                "Plans",
+                "their revision",
+            ),
+            &["\\Draft"],
+        );
+        srv.hide_newest_message_id.store(true, Ordering::Relaxed);
+        tauri::async_runtime::block_on(async {
+            let port = serve(Arc::clone(&srv)).await;
+            push(&state, draft, port).await;
+            srv.hide_newest_message_id.store(false, Ordering::Relaxed);
+            edit(&state, draft, "mango");
+            push(&state, draft, port).await;
+        });
+        let theirs = srv
+            .held("Drafts")
+            .into_iter()
+            .find(|m| String::from_utf8_lossy(&m.raw).contains("their revision"))
+            .expect("another client's revision was expunged");
+        assert!(
+            !theirs.flags.iter().any(|f| f == "\\Deleted"),
+            "another client's revision was marked deleted"
+        );
+    }
+
+    /// The server files each append under a later number than APPENDUID
+    /// names, and answers NO to a fetch of a UID it does not hold, so the
+    /// check of APPENDUID fails. The push still finds the copy it left and
+    /// removes the one before it, rather than failing after its APPEND had
+    /// landed and leaving that copy behind.
+    #[test]
+    fn a_refused_check_of_appenduid_does_not_fail_the_push() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+        let draft = open(&state, "Plans", "kiwi");
+        let srv = Imap::new("UIDPLUS", &[("INBOX", ""), ("Drafts", "\\Drafts")]);
+        srv.rewrite_appended.store(true, Ordering::Relaxed);
+        srv.refuse_missing_fetch.store(true, Ordering::Relaxed);
+        tauri::async_runtime::block_on(async {
+            let port = serve(Arc::clone(&srv)).await;
+            push(&state, draft, port).await;
+            edit(&state, draft, "mango");
+            push(&state, draft, port).await;
+        });
+        let held = srv.held("Drafts");
+        assert_eq!(held.len(), 1, "copies piled up: {:?}", raws(&srv));
+        assert!(String::from_utf8_lossy(&held[0].raw).contains("mango"));
+        assert_eq!(recorded(&state, draft), Some(held[0].uid));
     }
 
     /// Two pushes, then the sweep that files server UIDs the store has not

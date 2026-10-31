@@ -760,18 +760,22 @@ pub struct DraftReplacement {
 /// skipped, and every autosave left another copy in Drafts. Those copies
 /// came back through the reconcile as separate drafts of the same words.
 ///
-/// The recorded UID is a message still in the folder after the append.
-/// `APPENDUID` is that UID when a fetch of it succeeds. When the named
-/// message is already gone, it is a UID this search found that was not there
-/// before the append: the one that says what was just sent, or else the
-/// newest such arrival. A search that never sees the append does not reuse
-/// the previous UID as this one.
+/// The recorded UID is one this push can vouch for, because the next push
+/// removes the recorded copy whatever it says. `APPENDUID` is that UID when
+/// a fetch of it finds the message. When the named message is already gone,
+/// it is a UID this search found that was not there before the append and
+/// that says what was just sent. If none does, `APPENDUID` is kept: it is
+/// the only number the server gave this append, and removing a UID that is
+/// gone does nothing. An arrival that says something else is never taken
+/// for this push's copy; it may be another client's revision. A search that
+/// never sees the append does not reuse the previous UID as this one.
 ///
 /// Removed: the previously recorded copy, even when its words have changed,
-/// and every other older copy of this Message-ID except the newest whose
-/// words or recipients differ. That one is another client's revision. A
-/// newer UID is another push of this draft and stays: two pushes that each
-/// removed the other's copy left the server with none.
+/// and any older copy that says everything this push says. A copy whose
+/// words or recipients differ may be another client's revision and stays,
+/// however many there are: which of someone's edits to keep is theirs to
+/// decide. A newer UID is another push of this draft and stays too: two
+/// pushes that each removed the other's copy left the server with none.
 ///
 /// The search passes over copies already marked deleted. Without UIDPLUS
 /// they are never expunged, and every push fetched each of them again in
@@ -831,6 +835,9 @@ pub async fn replace_draft_copy(
 }
 
 /// The UID of the copy this append left in the folder, when it can be named.
+///
+/// Only a UID the server gave this append, or one that says what was sent:
+/// the next push removes whatever is recorded here.
 async fn surviving_copy<S>(
     session: &mut Session<S>,
     appended: Option<u32>,
@@ -842,30 +849,37 @@ async fn surviving_copy<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
 {
+    // A fetch that fails says no more than one that finds nothing: some
+    // servers answer NO for a UID they do not hold, and the push must not
+    // fail after its APPEND has landed.
     if let Some(uid) = appended
-        && message_at(session, uid).await?.is_some()
+        && matches!(message_at(session, uid).await, Ok(Some(_)))
     {
         return Ok(Some(uid));
     }
-    let Some(before) = before else {
-        return copy_matching(session, hits, old_uid, sent).await;
+    let found = match before {
+        Some(before) => {
+            let mut added: Vec<u32> = hits
+                .iter()
+                .map(|copy| copy.uid)
+                .filter(|uid| !before.contains(uid))
+                .collect();
+            added.sort_unstable();
+            added.dedup();
+            match newest_match(session, &added, sent).await? {
+                Some(uid) => Some(uid),
+                None if appended.is_none() => copy_matching(session, hits, old_uid, sent).await?,
+                None => None,
+            }
+        }
+        None => copy_matching(session, hits, old_uid, sent).await?,
     };
-    let mut added: Vec<u32> = hits
-        .iter()
-        .map(|copy| copy.uid)
-        .filter(|uid| !before.contains(uid))
-        .collect();
-    added.sort_unstable();
-    added.dedup();
-    if let Some(uid) = newest_match(session, &added, sent).await? {
-        return Ok(Some(uid));
-    }
-    // APPENDUID named a message that is already gone. The bytes are at a UID
-    // that was not in the folder before this append.
-    if appended.is_some() {
-        return Ok(added.last().copied());
-    }
-    copy_matching(session, hits, old_uid, sent).await
+    // APPENDUID named a message the fetch could not find, and nothing that
+    // arrived says what was sent. The number the server gave is still the
+    // only one known to be this append's; an arrival that says something
+    // else may be another client's revision, and recording it would have
+    // the next push remove it.
+    Ok(found.or(appended))
 }
 
 /// A hit newer than the copy recorded last time, whose words match `sent`.
@@ -911,9 +925,12 @@ where
 /// UIDs under this Message-ID that this push should remove.
 ///
 /// The recorded copy goes even when its words changed: that is this client's
-/// previous autosave. One older copy whose words or recipients differ stays,
-/// the newest such, because that is another client's revision. A UID newer
-/// than the copy just written stays too.
+/// previous push. So does any other copy that says everything this push
+/// says, since removing it loses nothing. A copy that says something else
+/// stays, however many there are: this client cannot tell its own old text
+/// from another client's revision, and only the second is worth keeping.
+/// A copy that cannot be read stays, and so does a UID newer than the copy
+/// just written, which another push wrote.
 async fn copies_to_remove<S>(
     session: &mut Session<S>,
     hits: &[MessageCopy],
@@ -924,61 +941,24 @@ async fn copies_to_remove<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug,
 {
-    let Some(new) = new_uid else {
-        let mut going = Vec::new();
-        if let Some(old) = old_uid {
-            going.push(old);
-        }
-        for copy in hits {
-            if going.contains(&copy.uid) {
-                continue;
-            }
-            let Some(bytes) = message_at(session, copy.uid).await? else {
-                continue;
-            };
-            if sent.is_some() && draft_content(&bytes).as_ref() == sent {
-                going.push(copy.uid);
-            }
-        }
-        return Ok(going);
-    };
-    let mut keep = vec![new];
-    for copy in hits {
-        if copy.uid > new {
-            keep.push(copy.uid);
-        }
+    let mut going = Vec::new();
+    if let Some(old) = old_uid
+        && Some(old) != new_uid
+    {
+        going.push(old);
     }
-    // The recorded copy is ours, whatever it says. It is not the one
-    // other-client revision this push is allowed to leave. A copy that
-    // cannot be read is left: deleting it would guess.
-    let mut same = Vec::new();
-    let mut divergent = Vec::new();
     for copy in hits {
-        if keep.contains(&copy.uid) || Some(copy.uid) == old_uid {
+        if Some(copy.uid) == new_uid
+            || going.contains(&copy.uid)
+            || new_uid.is_some_and(|new| copy.uid > new)
+        {
             continue;
         }
         let Some(bytes) = message_at(session, copy.uid).await? else {
             continue;
         };
         if sent.is_some() && draft_content(&bytes).as_ref() == sent {
-            same.push(copy.uid);
-        } else if sent.is_some() && draft_content(&bytes).as_ref() != sent {
-            divergent.push(copy.uid);
-        }
-    }
-    if let Some(newest) = divergent.iter().copied().max() {
-        keep.push(newest);
-    }
-    let mut going = Vec::new();
-    if let Some(old) = old_uid
-        && old != new
-        && !keep.contains(&old)
-    {
-        going.push(old);
-    }
-    for uid in same.into_iter().chain(divergent) {
-        if !keep.contains(&uid) && !going.contains(&uid) {
-            going.push(uid);
+            going.push(copy.uid);
         }
     }
     Ok(going)
