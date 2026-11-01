@@ -268,6 +268,9 @@ export type DraftRecord = {
   /** The rich half; empty for a draft written before there was one. */
   html: string;
   envelope: DraftEnvelope;
+  /** Each attached file's name and size, read from disk as the draft opens:
+   *  the envelope keeps paths only. A file that cannot be read reports 0. */
+  files: { path: string; name: string; size: number }[];
 };
 
 export type Identity = {
@@ -743,6 +746,7 @@ const mock = {
     body: '',
     html: '',
     envelope: { in_reply_to: null, references: [], attachments: [] },
+    files: [],
   }),
   deleteDraft: async () => {},
   scheduleSend: async () => {},
