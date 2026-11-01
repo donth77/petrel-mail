@@ -89,7 +89,6 @@ export function ComposeWindow({ draftId }: { draftId: number }) {
   const drops = useDroppedAttachments({
     getDraft: () => draftRef.current,
     setDraft,
-    composer: () => slotRef.current,
     stage: api.stageAttachment,
     onRejected: (names) =>
       setToast(
@@ -106,7 +105,7 @@ export function ComposeWindow({ draftId }: { draftId: number }) {
   const save = (d: Draft): Promise<number | null> => {
     const slot = slotRef.current;
     const run = saveChain.current.then(async () => {
-      const ready = await drops.finish(d, slot);
+      const ready = await drops.finish(d);
       const signature = draftSignature(ready);
       const known = slot.id ?? ready.savedId ?? null;
       const id = await api.saveDraft(known, ready.to, ready.subject, ready.body, ready.html, {
