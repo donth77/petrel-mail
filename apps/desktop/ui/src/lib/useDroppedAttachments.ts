@@ -9,8 +9,13 @@ import {
   type Copying,
 } from './attachments';
 
-/** One dropped file's copy, and whether its chip was taken off on purpose. */
-type Job = { removed: boolean; promise: Promise<Attached> };
+/** One dropped file's copy: whether its chip was taken off on purpose, and
+ *  whether the person has been told the file is not coming. */
+type Job = { removed: boolean; told: boolean; promise: Promise<Attached> };
+
+/** The message a save is to write, and the chips it was handed whose files
+ *  it does not carry. A chip taken off on purpose is not one of them. */
+export type Finished = { draft: Draft; leftOut: Copying[] };
 
 /** Chip ids only have to differ within one window, so a count does. A random
  *  id needs a secure context: in a webview that did not count as one it
@@ -59,7 +64,11 @@ export function useDroppedAttachments(opts: {
       if (!ready) return { ...cur, copying };
       return { ...cur, copying, attachments: withAttached(cur.attachments ?? [], [ready]).kept };
     });
-    if (refused.length > 0) optsRef.current.onRejected(refused);
+    if (refused.length > 0) {
+      const job = jobs.current.get(chip);
+      if (job) job.told = true;
+      optsRef.current.onRejected(refused);
+    }
   };
 
   const drop = (files: readonly File[]) => {
@@ -90,7 +99,7 @@ export function useDroppedAttachments(opts: {
         if (!staged) throw new Error('not staged');
         return staged;
       });
-      const job: Job = { removed: false, promise };
+      const job: Job = { removed: false, told: false, promise };
       jobs.current.set(chip, job);
       void promise.then(
         (ready) => {
@@ -98,6 +107,9 @@ export function useDroppedAttachments(opts: {
         },
         (error: unknown) => {
           if (job.removed) return;
+          // A file refused once its bytes were counted was named as it was
+          // refused; any other failure is said just below.
+          job.told = true;
           land(chip, null);
           if (error instanceof Error && error.message === 'rejected') return;
           // Said even when the composer has gone. The chip was on screen, and
@@ -123,11 +135,17 @@ export function useDroppedAttachments(opts: {
   };
 
   /**
-   * The message with every chip it was showing either copied or left out.
-   * Left out when the chip was taken off, or when its copy failed, which the
-   * copy reports itself, once, however many saves were waiting on it.
+   * The message with every chip it was showing either copied or left out,
+   * and the chips left out other than on purpose: a copy that failed, or a
+   * file that does not fit beside what the message carries. Send and the
+   * like stop on those (`FilesLeftOut`) rather than take the message away
+   * without a file the person saw on it.
+   *
+   * The person is told why once, however many saves were waiting: by the
+   * copy when it fails, by `land` when the file lands on screen and does not
+   * fit, and here when it landed with no message on screen to say so on.
    */
-  const finish = async (draft: Draft): Promise<Draft> => {
+  const finish = async (draft: Draft): Promise<Finished> => {
     const chips = draft.copying ?? [];
     const over = new Map<string, Attached | null>();
     const ready = await copiedDraft(draft, async (id) => {
@@ -148,7 +166,22 @@ export function useDroppedAttachments(opts: {
     // A message a failed send put back still shows chips whose copies ended
     // while it was away; the copy had no message on screen to land on then.
     for (const chip of chips) land(chip, over.get(chip.id) ?? null);
-    return ready;
+    // A copied file can still be refused for size: something attached while
+    // it copied was judged without it.
+    const carried = new Set((ready.attachments ?? []).map((a) => a.path));
+    const leftOut = chips.filter((chip) => {
+      const file = over.get(chip.id);
+      return !(file && carried.has(file.path)) && !jobs.current.get(chip)?.removed;
+    });
+    const untold: Copying[] = [];
+    for (const chip of leftOut) {
+      const job = jobs.current.get(chip);
+      if (!job || job.told) continue;
+      job.told = true;
+      untold.push(chip);
+    }
+    if (untold.length > 0) optsRef.current.onRejected(untold.map((c) => c.name));
+    return { draft: ready, leftOut };
   };
 
   return { drop, remove, finish };

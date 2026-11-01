@@ -1,7 +1,11 @@
 import type { Draft } from '../components/Compose';
 import { unsaved, type ComposerSlot } from './draft-autosave';
 
-export type Settled = { ok: true; id: number | null } | { ok: false; error: string };
+/** Whether the composer may go. A failed save says why, and hands over what
+ *  was thrown (`cause`) for a caller that tells one failure from another. */
+export type Settled =
+  | { ok: true; id: number | null }
+  | { ok: false; error: string; cause?: unknown };
 
 /**
  * Puts a composer's message away before the composer goes.
@@ -30,7 +34,7 @@ export async function settleDraft(
     try {
       id = await save(d);
     } catch (e) {
-      return { ok: false, error: String(e) };
+      return { ok: false, error: String(e), cause: e };
     }
     if (id == null) return { ok: false, error: 'no draft row' };
   }

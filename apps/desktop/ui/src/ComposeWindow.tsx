@@ -11,6 +11,7 @@ import {
   type Attached,
 } from './lib/attachments';
 import { useDroppedAttachments } from './lib/useDroppedAttachments';
+import { FilesLeftOut, keptWhole } from './lib/files-left-out';
 import { settleDraft } from './lib/close-draft';
 import { AUTOSAVE_MS, draftSignature, slotFor, unsaved } from './lib/draft-autosave';
 import type { ComposerSlot } from './lib/draft-autosave';
@@ -101,11 +102,15 @@ export function ComposeWindow({ draftId }: { draftId: number }) {
   });
 
   /** Writes the draft and remembers its row. Throws on failure, so every
-   *  chain that would go on to close the window stops here instead. */
-  const save = (d: Draft): Promise<number | null> => {
+   *  chain that would go on to close the window stops here instead. A save
+   *  for something that closes the window (`whole`) also stops, once the row
+   *  is written, when a dropped file could not come with the message: the
+   *  copy's toast says why, and the window stays to show it. */
+  const save = (d: Draft, opts: { whole?: boolean } = {}): Promise<number | null> => {
     const slot = slotRef.current;
     const run = saveChain.current.then(async () => {
-      const ready = await drops.finish(d);
+      const finished = await drops.finish(d);
+      const ready = finished.draft;
       const signature = draftSignature(ready);
       const known = slot.id ?? ready.savedId ?? null;
       const id = await api.saveDraft(known, ready.to, ready.subject, ready.body, ready.html, {
@@ -118,7 +123,7 @@ export function ComposeWindow({ draftId }: { draftId: number }) {
       slot.id = id;
       slot.signature = signature;
       setDraft((cur) => (cur ? { ...cur, savedId: id } : cur));
-      return id;
+      return keptWhole(id, finished, opts.whole === true);
     });
     // The chain must not stay rejected, or every later save would skip.
     saveChain.current = run.catch(() => null);
@@ -139,12 +144,20 @@ export function ComposeWindow({ draftId }: { draftId: number }) {
   }, [draft]);
 
   /** Puts the message away and says whether the window may go. A save that
-   *  fails keeps the window, with the reason on screen. */
+   *  fails keeps the window, with the reason on screen. So does a dropped
+   *  file that could not come: its own toast is the reason, and stays up. */
   const settle = async (): Promise<boolean> => {
     const d = draftRef.current;
     if (!d) return true;
-    const result = await settleDraft(d, slotRef.current, saveRef.current, api.pushDraft);
-    if (!result.ok) setToast(t('compose-save-failed', { error: result.error }));
+    const result = await settleDraft(
+      d,
+      slotRef.current,
+      (x) => saveRef.current(x, { whole: true }),
+      api.pushDraft,
+    );
+    if (!result.ok && !(result.cause instanceof FilesLeftOut)) {
+      setToast(t('compose-save-failed', { error: result.error }));
+    }
     return result.ok;
   };
   const settleRef = useRef(settle);
@@ -215,9 +228,13 @@ export function ComposeWindow({ draftId }: { draftId: number }) {
           })
         }
         onSaveDraft={(d) =>
-          void save(d)
+          void save(d, { whole: true })
             .then(() => setToast(t('compose-saved')))
-            .catch((e) => setToast(t('compose-save-failed', { error: String(e) })))
+            .catch((e) => {
+              // Saved without the file. "Saved" would cover the copy's toast.
+              if (e instanceof FilesLeftOut) return;
+              setToast(t('compose-save-failed', { error: String(e) }));
+            })
         }
         onNotice={setToast}
         onAttach={() => {
@@ -266,13 +283,18 @@ export function ComposeWindow({ draftId }: { draftId: number }) {
           // message still in it rather than closing over a send that never
           // reached the outbox.
           const wait = Number(settings.undoSendSeconds) || 0;
-          void save(d)
+          void save(d, { whole: true })
             .then((id) => {
               if (id == null) throw new Error('no draft row');
               return api.scheduleSend(id, Date.now() + wait * 1000);
             })
             .then(() => destroy())
-            .catch((e) => setToast(t('compose-failed', { error: String(e) })));
+            .catch((e) => {
+              // A dropped file could not come. Nothing was queued; the window
+              // stays with the message and the copy's toast.
+              if (e instanceof FilesLeftOut) return;
+              setToast(t('compose-failed', { error: String(e) }));
+            });
         }}
       />
       <Picker
@@ -293,13 +315,16 @@ export function ComposeWindow({ draftId }: { draftId: number }) {
             setToast(t('compose-bad-recipient', { addr: bad }));
             return;
           }
-          void save(draft)
+          void save(draft, { whole: true })
             .then((id) => {
               if (id == null) throw new Error('no draft row');
               return api.scheduleSend(id, at);
             })
             .then(() => destroy())
-            .catch((e) => setToast(t('compose-save-failed', { error: String(e) })));
+            .catch((e) => {
+              if (e instanceof FilesLeftOut) return;
+              setToast(t('compose-save-failed', { error: String(e) }));
+            });
         }}
       />
 

@@ -84,6 +84,7 @@ import { useDrag } from './lib/useDrag';
 import { useReferenceData } from './lib/useReferenceData';
 import { useDropGuard } from './lib/useFileDrop';
 import { useDroppedAttachments } from './lib/useDroppedAttachments';
+import { FilesLeftOut, keptWhole } from './lib/files-left-out';
 import { AppDialogs } from './components/AppDialogs';
 import { DragPreview } from './components/DragPreview';
 import { startingBody, startingHtml } from './lib/signature';
@@ -683,9 +684,9 @@ export function App() {
   // opener, declared earlier, reach the save routine declared later.
   const slotRef = useRef<ComposerSlot>({ id: null, signature: null });
   const saveChain = useRef<Promise<number | null>>(Promise.resolve(null));
-  const saveDraftRef = useRef<(d: Draft, opts?: { quiet?: boolean }) => Promise<number | null>>(
-    async () => null,
-  );
+  const saveDraftRef = useRef<
+    (d: Draft, opts?: { quiet?: boolean; whole?: boolean }) => Promise<number | null>
+  >(async () => null);
   // A message waiting out its undo window. It is held here, in the window, and
   // has not touched the network — which is the whole reason undo can cancel it
   // rather than chase it.
@@ -1955,8 +1956,14 @@ export function App() {
   /**
    * Saves the composer's contents, and remembers the id so saving again
    * updates the same draft rather than leaving a trail of near-identical ones.
+   * A save for something that takes the message out of the composer
+   * (`whole`) stops once the row is written when a dropped file could not
+   * come with it (`FilesLeftOut`).
    */
-  const saveDraft = (d: Draft, opts: { quiet?: boolean } = {}): Promise<number | null> => {
+  const saveDraft = (
+    d: Draft,
+    opts: { quiet?: boolean; whole?: boolean } = {},
+  ): Promise<number | null> => {
     // The slot of the message being saved, taken now: by the time this save
     // runs, the composer may hold another message with a row of its own.
     const slot = slotRef.current;
@@ -1964,13 +1971,15 @@ export function App() {
       // A chip can be on screen before its bytes are copied. The row is
       // written with the real path, so a send in that gap does not go without
       // the file.
-      const ready = await drops.finish(d);
+      const finished = await drops.finish(d);
+      const ready = finished.draft;
       const signature = draftSignature(ready);
       // The latest known row for this message, whichever save learned it:
       // the draft object in hand may predate an autosave that just landed.
       const known = slot.id ?? ready.savedId ?? null;
+      let id: number;
       try {
-        const id = await api.saveDraft(
+        id = await api.saveDraft(
           known,
           ready.to,
           ready.subject,
@@ -1978,27 +1987,42 @@ export function App() {
           ready.html,
           envelopeOf(ready),
         );
-        slot.id = id;
-        slot.signature = signature;
-        if (slotRef.current === slot) {
-          setDraft((cur) => (cur ? { ...cur, savedId: id } : cur));
-        }
-        if (!opts.quiet) {
-          setToast(t('compose-saved'));
-          // The Drafts view is a query, so it only changes when the list reloads.
-          if (view === 'drafts') api.threads(view, 0, LIST_PAGE).then(setItems).catch(() => {});
-        }
-        return id;
       } catch (e) {
         if (!opts.quiet) setToast(t('compose-save-failed', { error: String(e) }));
         throw e;
       }
+      slot.id = id;
+      slot.signature = signature;
+      if (slotRef.current === slot) {
+        setDraft((cur) => (cur ? { ...cur, savedId: id } : cur));
+      }
+      if (!opts.quiet) {
+        // Not over a dropped file that could not come: that toast is the one
+        // to read, and "Saved" would take its place.
+        if (finished.leftOut.length === 0) setToast(t('compose-saved'));
+        // The Drafts view is a query, so it only changes when the list reloads.
+        if (view === 'drafts') api.threads(view, 0, LIST_PAGE).then(setItems).catch(() => {});
+      }
+      return keptWhole(id, finished, opts.whole === true);
     });
     // The chain must not stay rejected, or every later save would skip.
     saveChain.current = run.catch(() => null);
     return run;
   };
   saveDraftRef.current = saveDraft;
+
+  /**
+   * A message whose Send, Send later or Pop out stopped because a dropped
+   * file could not come with it, back in the composer if it is no longer
+   * there. Send takes it away before saving, and a close or another message
+   * may have taken its place since. Opened as any message is, so whatever the
+   * composer holds now is saved first rather than lost, and in the row the
+   * stopped save wrote, so no twin of it is left in Drafts.
+   */
+  const takeBack = (stopped: FilesLeftOut) => {
+    const holds = draftRef.current != null && slotRef.current.id === stopped.draft.savedId;
+    if (!holds) openComposer(stopped.draft);
+  };
 
   // Drafts save as they are typed: a pause of AUTOSAVE_MS after the last
   // change writes the draft, quietly. The signature check means a save that
@@ -3737,6 +3761,10 @@ export function App() {
             // not been written yet is written now; what an autosave already
             // wrote only needs its server copy, which must not wait out the
             // 30-second debounce.
+            // A dropped file that could not come does not hold the close, as
+            // it holds Send and a pop-out window's close: nothing goes out,
+            // the message waits in Drafts, and the copy's toast stays up in
+            // this window, which is not going anywhere.
             const slot = slotRef.current;
             if (unsaved(draft, slot)) {
               void saveDraft(draft)
@@ -3772,10 +3800,16 @@ export function App() {
             // Saved first: the new window is given an id, and that id is also
             // what stops the two windows becoming separate unsaved copies of
             // the same message.
-            void saveDraft(d)
+            // A dropped file that could not come keeps the message here, with
+            // the copy's toast, rather than in a window that opens without the
+            // file and with nothing to say why.
+            void saveDraft(d, { whole: true })
               .then((id) => api.popoutCompose(id ?? 0))
               .then(() => setDraft(null))
-              .catch((e) => setToast(t('compose-popout-failed', { error: String(e) })));
+              .catch((e) => {
+                if (e instanceof FilesLeftOut) return takeBack(e);
+                setToast(t('compose-popout-failed', { error: String(e) }));
+              });
           }}
           onSend={(d) => {
             // To, Cc or Bcc: a message to blind copies alone can go.
@@ -3819,7 +3853,7 @@ export function App() {
             setDraft(null);
             // Through the same chain as every other save, so an autosave
             // still in flight updates this row rather than a twin of it.
-            void saveDraft(d, { quiet: true })
+            void saveDraft(d, { quiet: true, whole: true })
               .then((id) => {
                 if (id == null) throw new Error('no draft row');
                 return api.scheduleSend(id, Date.now() + wait * 1000).then(() => id);
@@ -3839,6 +3873,10 @@ export function App() {
                 setTriageEpoch((n) => n + 1);
               })
               .catch((e) => {
+                // A dropped file could not come. Nothing was queued, and the
+                // message comes back without the file's chip; the copy's
+                // toast says why.
+                if (e instanceof FilesLeftOut) return takeBack(e);
                 // Could not even queue it: the draft comes back. Losing what
                 // someone wrote is the one failure that is unforgivable.
                 setDraft(d);
@@ -3888,7 +3926,7 @@ export function App() {
             }
             // Through the save chain, so an autosave still in flight updates
             // this row rather than leaving a twin of it behind in Drafts.
-            void saveDraft(d, { quiet: true })
+            void saveDraft(d, { quiet: true, whole: true })
               .then((saved) => {
                 if (saved == null) throw new Error('no draft row');
                 return api.scheduleSend(saved, id);
@@ -3898,7 +3936,11 @@ export function App() {
                 setTriageEpoch((n) => n + 1);
                 setToast(t('compose-scheduled', { when: new Date(id).toLocaleString() }));
               })
-              .catch((e) => setToast(t('compose-save-failed', { error: String(e) })));
+              .catch((e) => {
+                // A dropped file could not come: nothing was scheduled.
+                if (e instanceof FilesLeftOut) return takeBack(e);
+                setToast(t('compose-save-failed', { error: String(e) }));
+              });
             return;
           }
           // Whatever the picker was opened for, as one batch. Acting on the
