@@ -3165,6 +3165,7 @@ name = "petrel-engine"
 version = "1.0.0"
 dependencies = [
  "blake3",
+ "getrandom 0.3.4",
  "petrel-engine",
  "petrel-mime",
  "petrel-testkit",

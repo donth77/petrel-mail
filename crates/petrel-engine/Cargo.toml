@@ -13,6 +13,9 @@ blake3.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# The key behind a draft's marker (`draft_marker`). Already in the tree,
+# through petrel-providers.
+getrandom = "0.3"
 petrel-mime = { path = "../petrel-mime" }
 
 # Helpers that exist only so a test can stage a broken store. Off by default,
