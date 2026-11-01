@@ -51,6 +51,10 @@ pub(crate) struct Imap {
     /// following UID: a server that accepts the append and then files a
     /// rewritten copy under a new number.
     pub(crate) rewrite_appended: AtomicBool,
+    /// A UID FETCH that names no stored message is answered NO. RFC 3501 has
+    /// it answer OK with nothing; a server that does not made a draft push
+    /// that checked APPENDUID fail after its APPEND had already landed.
+    pub(crate) refuse_missing_fetch: AtomicBool,
 }
 
 impl Imap {
@@ -79,6 +83,7 @@ impl Imap {
             hide_newest_message_id: AtomicBool::new(false),
             twin_next_append: AtomicBool::new(false),
             rewrite_appended: AtomicBool::new(false),
+            refuse_missing_fetch: AtomicBool::new(false),
         })
     }
 
@@ -526,8 +531,12 @@ fn answer(srv: &Imap, selected: &mut Option<String>, line: &str) -> (Vec<u8>, bo
                         item.extend(b")\r\n");
                         out.extend(item);
                     }
-                    out.extend(ok("OK fetched"));
-                    (out, false)
+                    if uid && out.is_empty() && srv.refuse_missing_fetch.load(Ordering::Relaxed) {
+                        (ok("NO no such message"), false)
+                    } else {
+                        out.extend(ok("OK fetched"));
+                        (out, false)
+                    }
                 }
                 "STORE" => {
                     let mut parts = args.splitn(3, ' ');
