@@ -2,7 +2,12 @@ import { useEffect, useRef } from 'react';
 import { Menu, MenuItem, MenuProvider, useMenuStore } from '@ariakit/react';
 import { AtSign, Copy } from 'lucide-react';
 import { t } from '../lib/strings';
-import { focusDismissesMenu, pressDismissesMenu, writeClipboard } from '../lib/recipient-menu';
+import {
+  dismissClicks,
+  focusDismissesMenu,
+  pressDismissesMenu,
+  writeClipboard,
+} from '../lib/recipient-menu';
 import { Icon } from './Icon';
 
 type Props = {
@@ -20,9 +25,10 @@ type Props = {
  *
  * A system menu leaves when you press anywhere else, including the message,
  * which is another document and never delivers that click to this window.
- * Escape leaves too. Both are listened for here. The press that dismisses is
- * eaten, because the name sits inside the collapse button and the press would
- * otherwise close the message as well.
+ * Escape leaves too. Both are listened for here. A dismissing press on the
+ * collapse button is eaten with its click, because the name sits inside that
+ * button and the press would otherwise close the message as well. Anywhere
+ * else the press goes on to what it landed on.
  */
 export function RecipientMenu({ at, copyText, addressText, onClose }: Props) {
   const menu = useMenuStore({
@@ -39,6 +45,7 @@ export function RecipientMenu({ at, copyText, addressText, onClose }: Props) {
   }, [menu, at.x, at.y]);
 
   useEffect(() => {
+    const clicks = dismissClicks();
     // Auto-focus moves into the menu on the next microtask. A blur in that
     // same turn is that move, not the reader leaving the menu.
     let armed = false;
@@ -54,22 +61,10 @@ export function RecipientMenu({ at, copyText, addressText, onClose }: Props) {
     const onPointerDown = (event: PointerEvent) => {
       if (!pressDismissesMenu(targetOf(event.target))) return;
       // A right-click still has to reach the name under it, so that menu can
-      // move. A left click is the dismiss itself and must not activate the
-      // collapse button underneath. The click arrives after this menu has
-      // already unmounted, so the eater is registered on its own and stays
-      // for that one click.
-      if (event.button === 0) {
-        event.preventDefault();
-        event.stopPropagation();
-        window.addEventListener(
-          'click',
-          (click) => {
-            click.preventDefault();
-            click.stopPropagation();
-          },
-          { capture: true, once: true },
-        );
-      }
+      // move. A left press on the collapse button must not close the message
+      // too. The click arrives after this menu has unmounted, so the window's
+      // rule holds it, and lets it go with the next press or key.
+      clicks.dismissedBy(event);
       dismiss();
     };
     const onKeyDown = (event: KeyboardEvent) => {
@@ -109,10 +104,13 @@ export function RecipientMenu({ at, copyText, addressText, onClose }: Props) {
         getAnchorRect={() => ({ x: at.x, y: at.y, width: 0, height: 0 })}
         onClose={onClose}
       >
+        {/* An item closes the menu itself once its click is handled. Closing
+            again when the clipboard settles would close the next menu opened
+            on this message. */}
         <MenuItem
           className="menu-item"
           onClick={() => {
-            void writeClipboard(copyText).finally(onClose);
+            void writeClipboard(copyText);
           }}
         >
           <Icon icon={Copy} size={14} />
@@ -121,7 +119,7 @@ export function RecipientMenu({ at, copyText, addressText, onClose }: Props) {
         <MenuItem
           className="menu-item"
           onClick={() => {
-            void writeClipboard(addressText).finally(onClose);
+            void writeClipboard(addressText);
           }}
         >
           <Icon icon={AtSign} size={14} />
