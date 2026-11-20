@@ -162,8 +162,9 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
   // real OS window; this is for nudging it off whatever it is covering.
   // A pane composer already has a place; dragging it would leave the slot.
   const drag = useDragWindow();
-  // チップの当たり判定はこの作成画面の section に限る。窓をドラッグするときだけ
-  // 同じ要素を窓ドラッグの ref にも渡す。ペインの作成画面は枠の中にあり、窓としては動かさない。
+  // Chip hits stay inside this composer's section, so a drag cannot land on
+  // another one. The same node is the window-drag target only for a window:
+  // a pane already sits in its frame and must not move as one.
   const sectionRef = useRef<HTMLElement | null>(null);
   const bindSection = useCallback(
     (el: HTMLElement | null) => {
@@ -172,11 +173,12 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
     },
     [pane, drag.ref],
   );
-  // 落とした先が隠れている Cc / Bcc なら、その行だけ開く。ボタンがフォーカスを
-  // 奪う経路は使わず、入力欄へも移さない。移動は一つの patch にまとめる。
-  // 欄ごとに二度更新すると、自動保存が片方だけ移った下書きを拾う。
-  // 戻りが null のときは今の文字列をそのまま残し、行も開かない。届かない
-  // ドロップで空の欄が出ると、入力していない Cc / Bcc が現れてしまう。
+  // A drop onto a hidden Cc or Bcc opens only that row. Not through the
+  // button, which would take focus, and not by moving into the field. One
+  // patch carries both sides of the move: two updates let autosave persist
+  // a draft that has only one of them. A null move leaves the strings and
+  // the rows alone. Opening an empty field for a drop that did not land
+  // would show a Cc or Bcc the typist never asked for.
   const onRecipientMove = (move: RecipientMove) => {
     const next = moveRecipient(
       { to: draft.to, cc: draft.cc, bcc: draft.bcc ?? '' },
@@ -198,9 +200,9 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 作成画面を開くたびに一度だけ候補を温める。To / Cc / Bcc の欄ごとに呼ぶと
-  // 同じ集計が三本走る。失敗しても作成は開き、打ち始めたときの補完が
-  // その場で同じ構築を引き取る。
+  // Warm once per open. Once from each of To, Cc, and Bcc would scan the
+  // same mailbox three times. Failure still leaves compose open; the first
+  // keystroke waits on the build already running, or starts it if none is.
   useEffect(() => {
     void api.warmAddressCompletion().catch(() => {});
   }, []);

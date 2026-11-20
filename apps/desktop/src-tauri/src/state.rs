@@ -11,38 +11,46 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, TryLockError};
 
-/// 宛先補完の集計。プロセスのメモリだけで、起動のたびに空になる。
-/// ディスクに残すと、消したメールやスパムへ移したメールが次の起動まで候補に残る。
-/// `after_id` は既に読んだ `messages.id` の最大で、次のウォームはこの水位より後だけを足す。
+/// Correspondent totals for address completion. Process memory only, empty
+/// at every launch. Writing them to disk would leave a deleted message, or
+/// one filed as spam, as a suggestion until the next start.
+///
+/// `after_id` is the highest `messages.id` already read. The next warm adds
+/// only rows past that watermark.
 struct AccountAddressStats {
     stats: Vec<CorrespondentStats>,
     after_id: i64,
     own_email: String,
 }
 
-/// アカウントにつき構築は1本。`Arc` で共有するため、完了フラグは `Mutex` に入れる。
-/// プレーンな `bool` は共有先から書き換えられず、キャッシュのロックで待つと
-/// 構築側が結果を書けなくなる。待ちはこのロックで行い、SQL のあいだはキャッシュを握らない。
+/// One build per account. The done flag is a `Mutex` because the `Arc` is
+/// shared: a plain `bool` cannot be written by the other holder, and waiting
+/// on the cache lock would keep the builder from publishing its result.
+/// Waiters block on this lock. The cache is not held while SQL runs.
 struct AddressBuild {
     done: Mutex<bool>,
     wait: Arc<Condvar>,
 }
 
-/// アカウントごとの集計と、いま走っている構築。フィールドはクレート内に出し、
-/// 中身はここに閉じる。`lib.rs` は型名を書かず、スロットを作る関数だけを呼ぶ。
+/// Per-account totals, and the build that is running now. The fields are
+/// visible inside the crate; what they hold stays in this file. `lib.rs`
+/// never names the type. It only calls the function that makes the slot.
 #[derive(Default)]
 pub(crate) struct AddressCompletionCache {
     accounts: HashMap<i64, AccountAddressStats>,
     building: HashMap<i64, Arc<AddressBuild>>,
 }
 
-/// キー入力とウォームが、同じアカウントの構築を取り合わないための分岐。
+/// How a keystroke and a warm share one account's build, so the two do
+/// not both scan.
 enum AddressSlot {
-    /// 集計が既にあり、誰も更新していない。呼び出し側はメモリで絞る。
+    /// Totals are already there and nobody is updating them. The caller
+    /// filters in memory.
     Ready,
-    /// この呼び出しが読む。`Some` は増分の水位、`None` は全件。
+    /// This call does the read. `Some` is the incremental watermark;
+    /// `None` reads every row.
     Started(Arc<AddressBuild>, Option<i64>),
-    /// 進行中の構築がある。走査は始めず、終わるまで待つ。
+    /// A build is already running. Do not start a scan; wait for it.
     Waiting(Arc<AddressBuild>),
 }
 
@@ -551,13 +559,17 @@ impl AppState {
         }
     }
 
-    /// 宛先補完のスロット。`lib.rs` の初期化は型名を書かず、この関数だけを呼ぶ。
+    /// The address-completion slot. `lib.rs` sets one up without naming
+    /// the type; it only calls this.
     pub(crate) fn address_completion_slot() -> Mutex<AddressCompletionCache> {
         Mutex::new(AddressCompletionCache::default())
     }
 
-    /// そのアカウントの集計を、渡された文字列で絞る。ロックを持ったまま SQL は走らせない。
-    /// 集計がまだ無ければ空を返す。別アカウントの行は見ない。
+    /// Ranks this account's totals against the prefix. SQL does not run under
+    /// this lock: the build publishes through it, and a query here would hold
+    /// that publish off while a keystroke waits.
+    /// Nothing stored yet is an empty list. Another account's rows are not
+    /// this one's suggestions.
     fn address_completion_rank(
         &self,
         account: i64,
@@ -581,9 +593,10 @@ impl AppState {
         ))
     }
 
-    /// このアカウントの構築を1本だけ始める。既に走っていれば待ち側を返す。
-    /// 集計があり、増分でなければ読みに行かない。ウォームで集計があるときは、
-    /// その水位より後だけを読む構築を始める。
+    /// One build for this account, or the waiter if one is already running.
+    /// A second scan of the same mailbox is what this exists to avoid.
+    /// Totals already stored are not reread unless this is a warm, and a
+    /// warm reads only past the watermark.
     fn begin_address_completion(
         &self,
         account: i64,
@@ -617,8 +630,11 @@ impl AppState {
         }
     }
 
-    /// 全件の集計をそのアカウントの欄へ置く。自分のアドレスは小文字にしない。絞る側がする。
-    /// 自分が始めた構築の印だけを外す。後から始まった別の構築は外さない。
+    /// Stores a full snapshot for this account. The address stays as read.
+    /// Ranking lowercases when it compares, and a folded copy here would be
+    /// a second one to keep in step.
+    /// Only this build's mark is cleared. It comes off before waiters wake,
+    /// and a build that has taken the slot since must keep it.
     fn publish_address_completion(
         &self,
         account: i64,
@@ -643,8 +659,12 @@ impl AppState {
         Ok(())
     }
 
-    /// 増分を既存の集計へ足す。水位は差分の最大ではなく、スナップショットが返した全体の最大にする。
-    /// スナップショットのメールが空白だけのときは、以前の自分のアドレスを残す。
+    /// Folds an incremental read into the totals already stored. The watermark
+    /// is the snapshot's highest message id, not the highest id in the delta:
+    /// deleted mail and spam move that id without appearing there, and the
+    /// next warm would reread them.
+    /// A blank address leaves the one already stored. Wiping it would start
+    /// offering the account's own address.
     fn merge_published_stats(
         &self,
         account: i64,
@@ -682,7 +702,10 @@ impl AppState {
         }
     }
 
-    /// 読みに失敗しても、待っている入力を起こして構築の印を外す。待っている側はここで待たない。
+    /// Wakes whoever is blocked on this build and clears its mark, even when
+    /// the read failed. A mark left set would pin the account to a build
+    /// that never finishes. This does not wait. The caller that started the
+    /// build is the one with the result.
     fn finish_address_build(&self, account: i64, build: &Arc<AddressBuild>) {
         match self.address_completion.lock() {
             Ok(mut cache) => Self::clear_own_build(&mut cache, account, build),
@@ -703,7 +726,10 @@ impl AppState {
         }
     }
 
-    /// 読み取り接続でスナップショットを1回取る。キャッシュのロックは持たない。
+    /// One snapshot on a read connection, and not under the cache lock.
+    /// That lock covers every account, so a scan held there would stall
+    /// everyone else's completion. The write store stays free for the same
+    /// reason: this read can be the whole mailbox.
     fn load_address_completion(
         &self,
         account: i64,
@@ -730,8 +756,13 @@ impl AppState {
         }
     }
 
-    /// キー入力の補完。集計があればメモリで絞る。無ければ全件を1回だけ読み、後続はそれを待つ。
-    /// 空白の入力は走査しない。始めた側は待たず、失敗しても待ちを起こす。
+    /// Suggestions for a keystroke. Stored totals are filtered in memory.
+    /// The first miss reads the mailbox once; a keystroke that arrives during
+    /// it waits, instead of scanning again.
+    /// A blank prefix is not a search and must not start that read.
+    /// The starter does not wait: it is what marks the build done, so waiting
+    /// would deadlock. Finish runs before an error returns, or a failed read
+    /// would leave the others blocked.
     pub(crate) fn ensure_address_completion(
         &self,
         account: i64,
@@ -761,8 +792,10 @@ impl AppState {
         }
     }
 
-    /// 作成画面を開いたときと、同期のあとに呼ぶ。アカウントが無ければ何もしない。
-    /// 未構築なら全件、構築済みなら水位より後だけを足す。既に構築中なら走査しない。
+    /// Called when compose opens and after a sync. No account returns without
+    /// reading: there is nothing to warm, and that is not a failed build.
+    /// Unbuilt reads every row. Already stored adds only past the watermark,
+    /// and a build already running is left to finish rather than scanned again.
     pub(crate) fn warm_address_completion(&self) -> Result<(), String> {
         let account = {
             let store = self.store_read()?;
