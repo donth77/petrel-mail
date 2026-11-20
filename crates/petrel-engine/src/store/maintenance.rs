@@ -131,10 +131,10 @@ fn correspondent_prefix_matches(addr: &str, display: &str, needle: &str) -> bool
     // only the second field, so `a@b@c` would be tested against `b` and a
     // needle of `b@c` would miss. One '@' agrees with the old
     // `LIKE '%@needle%'` check: `example.com` does not start with `ample.com`.
-    if let Some((_, domain)) = addr.split_once('@') {
-        if domain.starts_with(needle) {
-            return true;
-        }
+    if let Some((_, domain)) = addr.split_once('@')
+        && domain.starts_with(needle)
+    {
+        return true;
     }
     if display_l.starts_with(needle) {
         return true;
