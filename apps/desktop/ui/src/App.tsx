@@ -2040,6 +2040,22 @@ export function App() {
     return () => window.clearTimeout(timer);
   }, [draft]);
 
+  // Hydration also delivers a last_sync_ms, including while a draft is already
+  // open, and that is not a sync that just finished. Remember the first one and
+  // warm only when a later timestamp arrives with compose still open, so people
+  // who arrived in that sync can be offered. A missing timestamp is not an
+  // observation. Reopening compose is warmed on mount, not from here.
+  const seenSyncMs = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    const at = status?.last_sync_ms;
+    if (at == null) return;
+    const seen = seenSyncMs.current;
+    seenSyncMs.current = at;
+    if (seen === undefined || seen === at) return;
+    if (draftRef.current == null) return;
+    void api.warmAddressCompletion().catch(() => {});
+  }, [status?.last_sync_ms]);
+
   /**
    * Attaches files the user picks.
    *

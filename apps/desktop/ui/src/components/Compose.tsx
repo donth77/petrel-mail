@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Paperclip, X } from 'lucide-react';
 import { fileSize } from '../lib/format';
 import type { Attached, Copying } from '../lib/attachments';
@@ -8,9 +8,12 @@ import { RichText, type RichTextHandle } from './RichText';
 import { plainTextFromDoc } from '../lib/plain-text';
 import { isBccKey, key } from '../lib/keys';
 import { t } from '../lib/strings';
+import { api } from '../lib/api';
 import { useDragWindow } from '../lib/drag-window';
+import { moveRecipient, type RecipientMove } from '../lib/recipients';
 import { useFileDropZone } from '../lib/useFileDrop';
 import { dialogOpen } from '../lib/useKeyboard';
+import { useRecipientDrag } from '../lib/useRecipientDrag';
 
 export type Draft = {
   to: string;
@@ -159,6 +162,32 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
   // real OS window; this is for nudging it off whatever it is covering.
   // A pane composer already has a place; dragging it would leave the slot.
   const drag = useDragWindow();
+  // チップの当たり判定はこの作成画面の section に限る。窓をドラッグするときだけ
+  // 同じ要素を窓ドラッグの ref にも渡す。ペインの作成画面は枠の中にあり、窓としては動かさない。
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const bindSection = useCallback(
+    (el: HTMLElement | null) => {
+      sectionRef.current = el;
+      if (!pane) (drag.ref as React.RefObject<HTMLElement | null>).current = el;
+    },
+    [pane, drag.ref],
+  );
+  // 落とした先が隠れている Cc / Bcc なら、その行だけ開く。ボタンがフォーカスを
+  // 奪う経路は使わず、入力欄へも移さない。移動は一つの patch にまとめる。
+  // 欄ごとに二度更新すると、自動保存が片方だけ移った下書きを拾う。
+  // 戻りが null のときは今の文字列をそのまま残し、行も開かない。届かない
+  // ドロップで空の欄が出ると、入力していない Cc / Bcc が現れてしまう。
+  const onRecipientMove = (move: RecipientMove) => {
+    const next = moveRecipient(
+      { to: draft.to, cc: draft.cc, bcc: draft.bcc ?? '' },
+      move,
+    );
+    if (!next) return;
+    if (move.to === 'cc' && !showCc) setShowCc(true);
+    if (move.to === 'bcc' && !showBcc) setShowBcc(true);
+    onChange((current) => patchDraft(current, { to: next.to, cc: next.cc, bcc: next.bcc }));
+  };
+  const startRecipientDrag = useRecipientDrag(sectionRef, onRecipientMove);
 
   // Focus where the work is: a fresh message needs a recipient, a reply already
   // has one and needs words. The body half is the editor's own autoFocus, which
@@ -167,6 +196,13 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
     if (!draft.to) toRef.current?.focus();
     // Once, on open — moving focus as the draft changes would fight the typist.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 作成画面を開くたびに一度だけ候補を温める。To / Cc / Bcc の欄ごとに呼ぶと
+  // 同じ集計が三本走る。失敗しても作成は開き、打ち始めたときの補完が
+  // その場で同じ構築を引き取る。
+  useEffect(() => {
+    void api.warmAddressCompletion().catch(() => {});
   }, []);
 
   /** The composer's own shortcuts. True when the key was one of them. */
@@ -236,7 +272,7 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
   return (
     <section
       className="compose"
-      ref={pane ? undefined : (drag.ref as React.RefObject<HTMLElement>)}
+      ref={bindSection}
       style={pane ? undefined : drag.style}
       // ⌥⌘B on the Mac, as in Apple Mail; Ctrl+Shift+B elsewhere, as in
       // Gmail, and never with AltGr held (`isBccKey`). Taken in the capture
@@ -289,7 +325,7 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
         <span className="clip compose-from-value">{account}</span>
       </div>
 
-      <div className="hdrow">
+      <div className="hdrow" data-recipient-drop="to">
         <span className="lab">{t('compose-to')}</span>
         <Recipients
           label={t('compose-to')}
@@ -297,11 +333,13 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
           onChange={(v) => field('to', v)}
           inputRef={toRef}
           handle={toField}
+          onChipPointerDown={(event, index, addr) => startRecipientDrag(event, 'to', index, addr)}
         />
         {!showCc && (
           <button
             type="button"
             className="compose-cc-toggle"
+            data-recipient-drop="cc"
             onClick={() => {
               ccAsked.current = true;
               setShowCc(true);
@@ -314,6 +352,7 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
           <button
             type="button"
             className="compose-cc-toggle"
+            data-recipient-drop="bcc"
             title={t('compose-bcc-hint', { key: key('bcc') })}
             onClick={askForBcc}
           >
@@ -323,7 +362,7 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
       </div>
 
       {showCc && (
-        <div className="hdrow">
+        <div className="hdrow" data-recipient-drop="cc">
           <span className="lab">{t('compose-cc')}</span>
           <Recipients
             label={t('compose-cc')}
@@ -331,12 +370,13 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
             onChange={(v) => field('cc', v)}
             inputRef={ccRef}
             handle={ccField}
+            onChipPointerDown={(event, index, addr) => startRecipientDrag(event, 'cc', index, addr)}
           />
         </div>
       )}
 
       {showBcc && (
-        <div className="hdrow">
+        <div className="hdrow" data-recipient-drop="bcc">
           <span className="lab">{t('compose-bcc')}</span>
           <Recipients
             label={t('compose-bcc')}
@@ -344,6 +384,7 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
             onChange={(v) => field('bcc', v)}
             inputRef={bccRef}
             handle={bccField}
+            onChipPointerDown={(event, index, addr) => startRecipientDrag(event, 'bcc', index, addr)}
           />
         </div>
       )}

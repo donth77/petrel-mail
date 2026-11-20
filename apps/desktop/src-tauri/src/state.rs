@@ -3,10 +3,48 @@
 use crate::diag::log_sync;
 use crate::message_view::ViewTokens;
 use petrel_engine::blob::BlobStore;
-use petrel_engine::store::{Store, WalCheckpoint};
+use petrel_engine::store::{
+    Correspondent, CorrespondentStats, Store, WalCheckpoint, merge_correspondent_stats,
+    rank_correspondents,
+};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, TryLockError};
+use std::sync::{Arc, Condvar, Mutex, TryLockError};
+
+/// 宛先補完の集計。プロセスのメモリだけで、起動のたびに空になる。
+/// ディスクに残すと、消したメールやスパムへ移したメールが次の起動まで候補に残る。
+/// `after_id` は既に読んだ `messages.id` の最大で、次のウォームはこの水位より後だけを足す。
+struct AccountAddressStats {
+    stats: Vec<CorrespondentStats>,
+    after_id: i64,
+    own_email: String,
+}
+
+/// アカウントにつき構築は1本。`Arc` で共有するため、完了フラグは `Mutex` に入れる。
+/// プレーンな `bool` は共有先から書き換えられず、キャッシュのロックで待つと
+/// 構築側が結果を書けなくなる。待ちはこのロックで行い、SQL のあいだはキャッシュを握らない。
+struct AddressBuild {
+    done: Mutex<bool>,
+    wait: Arc<Condvar>,
+}
+
+/// アカウントごとの集計と、いま走っている構築。フィールドはクレート内に出し、
+/// 中身はここに閉じる。`lib.rs` は型名を書かず、スロットを作る関数だけを呼ぶ。
+#[derive(Default)]
+pub(crate) struct AddressCompletionCache {
+    accounts: HashMap<i64, AccountAddressStats>,
+    building: HashMap<i64, Arc<AddressBuild>>,
+}
+
+/// キー入力とウォームが、同じアカウントの構築を取り合わないための分岐。
+enum AddressSlot {
+    /// 集計が既にあり、誰も更新していない。呼び出し側はメモリで絞る。
+    Ready,
+    /// この呼び出しが読む。`Some` は増分の水位、`None` は全件。
+    Started(Arc<AddressBuild>, Option<i64>),
+    /// 進行中の構築がある。走査は始めず、終わるまで待つ。
+    Waiting(Arc<AddressBuild>),
+}
 
 pub(crate) struct AppState {
     pub(crate) store: Mutex<Store>,
@@ -168,6 +206,10 @@ pub(crate) struct AppState {
     pub(crate) tokens: Arc<ViewTokens>,
     pub(crate) account_id: i64,
     pub(crate) data_dir: String,
+    /// Correspondent stats for address completion, per account, in this
+    /// process only. Typing ranks the vec instead of scanning the mailbox,
+    /// and a second open of the composer must not load it all again.
+    pub(crate) address_completion: Mutex<AddressCompletionCache>,
 }
 
 /// The wake-ups for one account's outbox: its send worker and its clock.
@@ -508,6 +550,240 @@ impl AppState {
             *g = empty;
         }
     }
+
+    /// 宛先補完のスロット。`lib.rs` の初期化は型名を書かず、この関数だけを呼ぶ。
+    pub(crate) fn address_completion_slot() -> Mutex<AddressCompletionCache> {
+        Mutex::new(AddressCompletionCache::default())
+    }
+
+    /// そのアカウントの集計を、渡された文字列で絞る。ロックを持ったまま SQL は走らせない。
+    /// 集計がまだ無ければ空を返す。別アカウントの行は見ない。
+    fn address_completion_rank(
+        &self,
+        account: i64,
+        prefix: &str,
+        now_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<Correspondent>, String> {
+        let cache = self
+            .address_completion
+            .lock()
+            .map_err(|_| "address cache lock poisoned".to_string())?;
+        let Some(entry) = cache.accounts.get(&account) else {
+            return Ok(Vec::new());
+        };
+        Ok(rank_correspondents(
+            &entry.stats,
+            prefix,
+            now_ms,
+            &entry.own_email,
+            limit,
+        ))
+    }
+
+    /// このアカウントの構築を1本だけ始める。既に走っていれば待ち側を返す。
+    /// 集計があり、増分でなければ読みに行かない。ウォームで集計があるときは、
+    /// その水位より後だけを読む構築を始める。
+    fn begin_address_completion(
+        &self,
+        account: i64,
+        incremental: bool,
+    ) -> Result<AddressSlot, String> {
+        let mut cache = self
+            .address_completion
+            .lock()
+            .map_err(|_| "address cache lock poisoned".to_string())?;
+        if let Some(existing) = cache.building.get(&account) {
+            return Ok(AddressSlot::Waiting(Arc::clone(existing)));
+        }
+        if let Some(entry) = cache.accounts.get(&account) {
+            if !incremental {
+                return Ok(AddressSlot::Ready);
+            }
+            let after_id = entry.after_id;
+            let build = Arc::new(Self::new_address_build());
+            cache.building.insert(account, Arc::clone(&build));
+            return Ok(AddressSlot::Started(build, Some(after_id)));
+        }
+        let build = Arc::new(Self::new_address_build());
+        cache.building.insert(account, Arc::clone(&build));
+        Ok(AddressSlot::Started(build, None))
+    }
+
+    fn new_address_build() -> AddressBuild {
+        AddressBuild {
+            done: Mutex::new(false),
+            wait: Arc::new(Condvar::new()),
+        }
+    }
+
+    /// 全件の集計をそのアカウントの欄へ置く。自分のアドレスは小文字にしない。絞る側がする。
+    /// 自分が始めた構築の印だけを外す。後から始まった別の構築は外さない。
+    fn publish_address_completion(
+        &self,
+        account: i64,
+        build: &Arc<AddressBuild>,
+        stats: Vec<CorrespondentStats>,
+        after_id: i64,
+        own_email: String,
+    ) -> Result<(), String> {
+        let mut cache = self
+            .address_completion
+            .lock()
+            .map_err(|_| "address cache lock poisoned".to_string())?;
+        cache.accounts.insert(
+            account,
+            AccountAddressStats {
+                stats,
+                after_id,
+                own_email,
+            },
+        );
+        Self::clear_own_build(&mut cache, account, build);
+        Ok(())
+    }
+
+    /// 増分を既存の集計へ足す。水位は差分の最大ではなく、スナップショットが返した全体の最大にする。
+    /// スナップショットのメールが空白だけのときは、以前の自分のアドレスを残す。
+    fn merge_published_stats(
+        &self,
+        account: i64,
+        build: &Arc<AddressBuild>,
+        delta: Vec<CorrespondentStats>,
+        watermark: i64,
+        email: String,
+    ) -> Result<(), String> {
+        let mut cache = self
+            .address_completion
+            .lock()
+            .map_err(|_| "address cache lock poisoned".to_string())?;
+        if let Some(entry) = cache.accounts.get_mut(&account) {
+            merge_correspondent_stats(&mut entry.stats, delta);
+            entry.after_id = watermark;
+            if !email.trim().is_empty() {
+                entry.own_email = email;
+            }
+        }
+        Self::clear_own_build(&mut cache, account, build);
+        Ok(())
+    }
+
+    fn clear_own_build(
+        cache: &mut AddressCompletionCache,
+        account: i64,
+        build: &Arc<AddressBuild>,
+    ) {
+        if cache
+            .building
+            .get(&account)
+            .is_some_and(|current| Arc::ptr_eq(current, build))
+        {
+            cache.building.remove(&account);
+        }
+    }
+
+    /// 読みに失敗しても、待っている入力を起こして構築の印を外す。待っている側はここで待たない。
+    fn finish_address_build(&self, account: i64, build: &Arc<AddressBuild>) {
+        match self.address_completion.lock() {
+            Ok(mut cache) => Self::clear_own_build(&mut cache, account, build),
+            Err(poisoned) => {
+                let mut cache = poisoned.into_inner();
+                Self::clear_own_build(&mut cache, account, build);
+            }
+        }
+        let mut done = build.done.lock().unwrap_or_else(|p| p.into_inner());
+        *done = true;
+        build.wait.notify_all();
+    }
+
+    fn wait_address_build(build: &AddressBuild) {
+        let mut done = build.done.lock().unwrap_or_else(|p| p.into_inner());
+        while !*done {
+            done = build.wait.wait(done).unwrap_or_else(|p| p.into_inner());
+        }
+    }
+
+    /// 読み取り接続でスナップショットを1回取る。キャッシュのロックは持たない。
+    fn load_address_completion(
+        &self,
+        account: i64,
+        since: Option<i64>,
+    ) -> Result<(Vec<CorrespondentStats>, i64, String), String> {
+        let store = self.store_read()?;
+        store
+            .read_correspondent_cache(account, since)
+            .map_err(|e| e.to_string())
+    }
+
+    fn store_loaded_address_completion(
+        &self,
+        account: i64,
+        build: &Arc<AddressBuild>,
+        since: Option<i64>,
+        loaded: (Vec<CorrespondentStats>, i64, String),
+    ) -> Result<(), String> {
+        let (stats, watermark, email) = loaded;
+        if since.is_some() {
+            self.merge_published_stats(account, build, stats, watermark, email)
+        } else {
+            self.publish_address_completion(account, build, stats, watermark, email)
+        }
+    }
+
+    /// キー入力の補完。集計があればメモリで絞る。無ければ全件を1回だけ読み、後続はそれを待つ。
+    /// 空白の入力は走査しない。始めた側は待たず、失敗しても待ちを起こす。
+    pub(crate) fn ensure_address_completion(
+        &self,
+        account: i64,
+        prefix: &str,
+        now_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<Correspondent>, String> {
+        if prefix.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        match self.begin_address_completion(account, false)? {
+            AddressSlot::Ready => self.address_completion_rank(account, prefix, now_ms, limit),
+            AddressSlot::Waiting(build) => {
+                Self::wait_address_build(&build);
+                self.address_completion_rank(account, prefix, now_ms, limit)
+            }
+            AddressSlot::Started(build, since) => {
+                let stored = self
+                    .load_address_completion(account, since)
+                    .and_then(|loaded| {
+                        self.store_loaded_address_completion(account, &build, since, loaded)
+                    });
+                self.finish_address_build(account, &build);
+                stored?;
+                self.address_completion_rank(account, prefix, now_ms, limit)
+            }
+        }
+    }
+
+    /// 作成画面を開いたときと、同期のあとに呼ぶ。アカウントが無ければ何もしない。
+    /// 未構築なら全件、構築済みなら水位より後だけを足す。既に構築中なら走査しない。
+    pub(crate) fn warm_address_completion(&self) -> Result<(), String> {
+        let account = {
+            let store = self.store_read()?;
+            match store.active_account().map_err(|e| e.to_string())? {
+                Some(account) => account,
+                None => return Ok(()),
+            }
+        };
+        match self.begin_address_completion(account, true)? {
+            AddressSlot::Ready | AddressSlot::Waiting(_) => Ok(()),
+            AddressSlot::Started(build, since) => {
+                let stored = self
+                    .load_address_completion(account, since)
+                    .and_then(|loaded| {
+                        self.store_loaded_address_completion(account, &build, since, loaded)
+                    });
+                self.finish_address_build(account, &build);
+                stored
+            }
+        }
+    }
 }
 
 /// Resolves once the account has been told to stop — at once, if it already
@@ -670,6 +946,7 @@ pub(crate) fn test_state(dir: &std::path::Path) -> Arc<AppState> {
         tokens: Arc::new(ViewTokens::new()),
         account_id: account,
         data_dir: dir.display().to_string(),
+        address_completion: Mutex::new(AddressCompletionCache::default()),
     })
 }
 

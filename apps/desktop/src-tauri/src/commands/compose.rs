@@ -402,19 +402,29 @@ pub fn delete_draft(id: i64, state: State<Arc<AppState>>) -> Result<(), String> 
     store.delete_draft(id).map_err(|e| e.to_string())
 }
 
-/// Addresses to offer while a recipient is being typed.
+/// 宛先の補完。集計はプロセス内のキャッシュから絞る。
+/// 読み取りロックを持ったまま構築に入ると、未構築のときに同じロックを
+/// 取り直して止まる。アカウントを読んだら先に離す。
 #[tauri::command(async)]
 pub fn complete_addresses(
     prefix: String,
     state: State<Arc<AppState>>,
 ) -> Result<Vec<petrel_engine::store::Correspondent>, String> {
-    let store = state.store()?;
-    let Some(account) = store.active_account().map_err(|e| e.to_string())? else {
-        return Ok(Vec::new());
+    let account = {
+        let store = state.store_read()?;
+        let Some(account) = store.active_account().map_err(|e| e.to_string())? else {
+            return Ok(Vec::new());
+        };
+        account
     };
-    store
-        .complete_addresses(account, &prefix, now_ms(), 8)
-        .map_err(|e| e.to_string())
+    state.ensure_address_completion(account, &prefix, now_ms(), 8)
+}
+
+/// 作成画面を開いたときと、同期のあとに宛先の集計を温める。
+/// アカウントが無いときも成功にする。失敗は呼び出し側が無視する。
+#[tauri::command(async)]
+pub fn warm_address_completion(state: State<Arc<AppState>>) -> Result<(), String> {
+    state.warm_address_completion()
 }
 
 /// Issues a one-message URL for the reading pane. The UI never receives the

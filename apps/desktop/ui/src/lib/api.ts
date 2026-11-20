@@ -824,6 +824,7 @@ const mock = {
       { addr: 'nadia@example.com', display: 'Nadia Okafor', written_to: true },
       { addr: 'news@example.com', display: 'News Digest', written_to: false },
     ].filter((c) => c.addr.startsWith(prefix) || c.display.toLowerCase().includes(prefix)),
+  warmAddressCompletion: async () => {},
   remoteStatus: async (): Promise<RemoteStatus> => ({
     from_addr: 'sam@example.com', allowed: false, because_written_to: false,
   }),
@@ -1068,6 +1069,7 @@ const real = {
   quoteMessage: (messageId: number) => invoke<Quoted>('quote_message', { messageId }),
   completeAddresses: (prefix: string) =>
     invoke<Correspondent[]>('complete_addresses', { prefix }),
+  warmAddressCompletion: () => invoke<void>('warm_address_completion'),
   remoteStatus: (messageId: number) => invoke<RemoteStatus>('remote_status', { messageId }),
   showRemoteOnce: (messageId: number) => invoke<void>('show_remote_once', { messageId }),
   trustSender: (messageId: number) => invoke<string>('trust_sender', { messageId }),

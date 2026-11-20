@@ -23,6 +23,8 @@
   background: var(--hair2);
   font-size: 12.5px;
   line-height: 1.5;
+  /* Confirmed chips move between To, Cc and Bcc. The × keeps its own pointer. */
+  cursor: grab;
 }
 
 /* Not an error — a doubt. The address may be perfectly good and merely
@@ -51,6 +53,15 @@
 .rcpt-x:hover {
   background: var(--hair);
   color: var(--ink);
+}
+
+/* A chip is over a field that will take it. The row, and the button that
+   stands in for a Cc or Bcc row that is still closed. Opening that row while
+   the pointer is still down would move the place it is aiming at. */
+.hdrow[data-drop-over],
+.compose-cc-toggle[data-drop-over] {
+  outline: 1.5px solid var(--accent);
+  outline-offset: -2px;
 }
 
 /* The entry is positioned so the completion list can hang off it. It keeps a

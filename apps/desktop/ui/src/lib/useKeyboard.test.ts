@@ -151,6 +151,8 @@ describe('every key listener on the window', () => {
   const EXEMPT: Record<string, string> = {
     'Compose.tsx': 'the composer\'s own ⌘ shortcuts',
     'useDrag.ts': 'Escape abandons a drag',
+    // Only while a recipient chip is pressed, and only to put that chip back.
+    'useRecipientDrag.ts': 'Escape abandons a recipient drag',
     // The menu is itself the modal mailKeyAllowed refuses, so asking that
     // rule would make Escape unable to close it.
     'RecipientMenu.tsx': 'Escape dismisses the address menu',

@@ -493,6 +493,7 @@ pub fn run() {
         tokens: Arc::new(ViewTokens::new()),
         account_id: account,
         data_dir: dir.display().to_string(),
+        address_completion: AppState::address_completion_slot(),
     });
 
     // Maintenance never stands between launch and the window. This ran
@@ -879,6 +880,7 @@ pub fn run() {
             commands::triage::reorder_folders,
             commands::triage::reorder_tags,
             commands::compose::complete_addresses,
+            commands::compose::warm_address_completion,
             commands::compose::quote_message,
             commands::compose::save_draft,
             commands::compose::push_draft,
