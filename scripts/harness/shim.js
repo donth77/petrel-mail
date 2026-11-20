@@ -1301,6 +1301,11 @@
         return p.addr.indexOf(q) === 0 || p.display.toLowerCase().indexOf(q) === 0;
       });
     },
+    // The composer warms completion on open. There is no mailbox here to
+    // scan, and a missing command would reject that call.
+    warm_address_completion: function () {
+      return null;
+    },
     // No filesystem in a browser, so the staged path is a stand-in. The point
     // is that the command exists and answers with the shape the composer
     // expects — a missing one made a dropped file look like a broken feature

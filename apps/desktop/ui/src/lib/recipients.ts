@@ -151,3 +151,49 @@ export function firstUnsendable(d: { to: string; cc: string; bcc?: string }): st
 export function hasRecipient(d: { to: string; cc: string; bcc?: string }): boolean {
   return [d.to, d.cc, d.bcc ?? ''].some((field) => splitRecipients(field).length > 0);
 }
+
+/** Which recipient field a chip is dragged between. */
+export type RecipientField = 'to' | 'cc' | 'bcc';
+
+/** One confirmed chip moving from one field to another.
+ *
+ * `addr` is the chip string itself, not a normalised address. The field is a
+ * list of those strings, and two writings of one person are two chips. */
+export type RecipientMove = {
+  from: RecipientField;
+  to: RecipientField;
+  index: number;
+  addr: string;
+};
+
+/** Moves one confirmed chip from one field to another.
+ *
+ * Returns null when there is nothing to do: the same field (chips are not
+ * reordered, and the strings are not rebuilt), an index that is not a chip,
+ * or a chip string that is no longer the one at that index. The caller then
+ * leaves the draft alone, so a rejected move keeps whatever spacing the field
+ * already had — a double space and all.
+ *
+ * Otherwise that one index leaves the source. It is appended to the
+ * destination unless that exact string is already there; the source still
+ * loses it. A chip that does not look like an address moves too. It was
+ * confirmed, and the dashed outline is only a doubt. The two fields that
+ * changed are joined the same way a committed chip is. The field that was
+ * not touched is returned as it stood. */
+export function moveRecipient(
+  fields: { to: string; cc: string; bcc: string },
+  move: RecipientMove,
+): { to: string; cc: string; bcc: string } | null {
+  if (move.from === move.to) return null;
+  const source = splitRecipients(fields[move.from]);
+  if (move.index < 0 || move.index >= source.length) return null;
+  if (source[move.index] !== move.addr) return null;
+  const dest = splitRecipients(fields[move.to]);
+  const kept = source.filter((_, i) => i !== move.index);
+  const nextDest = dest.includes(move.addr) ? dest : [...dest, move.addr];
+  return {
+    ...fields,
+    [move.from]: kept.join(', '),
+    [move.to]: nextDest.join(', '),
+  };
+}

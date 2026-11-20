@@ -12,6 +12,9 @@ type Props = {
   inputRef?: React.Ref<HTMLInputElement>;
   /** The composer's way of asking for what is still being typed. */
   handle?: React.Ref<RecipientsHandle>;
+  /** Begins a drag of one confirmed chip. The composer knows which field
+   *  this is. A press on the × is still a click: the drag refuses a button. */
+  onChipPointerDown?: (event: React.PointerEvent, index: number, addr: string) => void;
 };
 
 /** What the composer can ask of a field it does not own the state of. */
@@ -36,7 +39,7 @@ export type RecipientsHandle = {
  * array type would mean converting at every boundary and getting it wrong at
  * one of them.
  */
-export function Recipients({ label, value, onChange, inputRef, handle }: Props) {
+export function Recipients({ label, value, onChange, inputRef, handle, onChipPointerDown }: Props) {
   const [typed, setTyped] = useState('');
   const [options, setOptions] = useState<Correspondent[]>([]);
   const [highlight, setHighlight] = useState(0);
@@ -126,6 +129,9 @@ export function Recipients({ label, value, onChange, inputRef, handle }: Props) 
         <span
           className={looksLikeAddress(addr) ? 'rcpt-chip' : 'rcpt-chip suspect'}
           key={`${addr}-${i}`}
+          // The × is a button inside this span, and the drag refuses a press
+          // that began there, so every press on the chip can be offered.
+          onPointerDown={(event) => onChipPointerDown?.(event, i, addr)}
         >
           <span className="clip">{addr}</span>
           <button

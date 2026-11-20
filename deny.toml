@@ -34,18 +34,25 @@ yanked = "deny"
 unmaintained = "workspace"
 # zip's extraction advisories: SUID/SGID bits kept (0367), symlinks that
 # point outside the destination (0368), permissions applied through them
-# (0369). zip arrives only as tauri-plugin-updater's Windows unpacker for a
-# zipped installer. Petrel installs through `download_and_install`, which
-# checks the release signature against the key built into the app before
-# anything is unpacked, so an archive that gets that far was signed by
-# whoever cuts releases, who could ship any program anyway; and
-# scripts/release.sh publishes updates for macOS alone, so nothing reaches
-# that unpacker today. The fix is zip 9, which no updater release takes
-# yet: drop these when one does.
+# (0369), a symlink target whose declared size aborts the process (0429),
+# an AES authentication code skipped when the entry ends early (0545), and
+# a stream reader that trusts the local header's name over the central
+# directory (0548). zip arrives only as tauri-plugin-updater's Windows
+# unpacker for a zipped installer. Petrel installs through
+# `download_and_install`, which checks the release signature against the
+# key built into the app before anything is unpacked, so an archive that
+# gets that far was signed by whoever cuts releases, who could ship any
+# program anyway; and scripts/release.sh publishes updates for macOS
+# alone, so nothing reaches that unpacker today. None of the fixes is in
+# a zip 4 release that updater's `^4` accepts (0429 shipped in 9.0.0).
+# Drop these when an updater release takes that zip.
 ignore = [
     { id = "RUSTSEC-2026-0367", reason = "zip via tauri-plugin-updater: signed updates only, none for Windows" },
     { id = "RUSTSEC-2026-0368", reason = "zip via tauri-plugin-updater: signed updates only, none for Windows" },
     { id = "RUSTSEC-2026-0369", reason = "zip via tauri-plugin-updater: signed updates only, none for Windows" },
+    { id = "RUSTSEC-2026-0429", reason = "zip via tauri-plugin-updater: signed updates only, none for Windows" },
+    { id = "RUSTSEC-2026-0545", reason = "zip via tauri-plugin-updater: signed updates only, none for Windows" },
+    { id = "RUSTSEC-2026-0548", reason = "zip via tauri-plugin-updater: signed updates only, none for Windows" },
 ]
 
 [bans]

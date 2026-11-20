@@ -20,7 +20,10 @@ mod maintenance;
 mod saved_search;
 mod search;
 
-pub use maintenance::{ReindexProgress, WalCheckpoint};
+pub use maintenance::{
+    CorrespondentStats, ReindexProgress, WalCheckpoint, merge_correspondent_stats,
+    rank_correspondents,
+};
 pub use saved_search::SavedSearch;
 
 pub const SCHEMA_VERSION: i64 = 28;

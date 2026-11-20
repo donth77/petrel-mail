@@ -402,19 +402,30 @@ pub fn delete_draft(id: i64, state: State<Arc<AppState>>) -> Result<(), String> 
     store.delete_draft(id).map_err(|e| e.to_string())
 }
 
-/// Addresses to offer while a recipient is being typed.
+/// Suggestions from the in-process totals.
+/// Drop the read guard before building. Still holding it, an unbuilt cache
+/// takes that lock again and the command never returns.
 #[tauri::command(async)]
 pub fn complete_addresses(
     prefix: String,
     state: State<Arc<AppState>>,
 ) -> Result<Vec<petrel_engine::store::Correspondent>, String> {
-    let store = state.store()?;
-    let Some(account) = store.active_account().map_err(|e| e.to_string())? else {
-        return Ok(Vec::new());
+    let account = {
+        let store = state.store_read()?;
+        let Some(account) = store.active_account().map_err(|e| e.to_string())? else {
+            return Ok(Vec::new());
+        };
+        account
     };
-    store
-        .complete_addresses(account, &prefix, now_ms(), 8)
-        .map_err(|e| e.to_string())
+    state.ensure_address_completion(account, &prefix, now_ms(), 8)
+}
+
+/// Warms correspondent totals when compose opens and after a sync.
+/// No account is still success: there is nothing to read, and that is not
+/// a failed build. The caller ignores a real error so compose still opens.
+#[tauri::command(async)]
+pub fn warm_address_completion(state: State<Arc<AppState>>) -> Result<(), String> {
+    state.warm_address_completion()
 }
 
 /// Issues a one-message URL for the reading pane. The UI never receives the
