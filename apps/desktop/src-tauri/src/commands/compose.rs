@@ -420,12 +420,19 @@ pub fn complete_addresses(
     state.ensure_address_completion(account, &prefix, now_ms(), 8)
 }
 
-/// Warms correspondent totals when compose opens and after a sync.
+/// Reads correspondent totals ahead of the keystrokes. `rebuild` when a
+/// composer opens: every row again, so mail filed as spam or deleted since
+/// the last read stops being offered. Otherwise, after a sync while one is
+/// open, only the mail that arrived.
 /// No account is still success: there is nothing to read, and that is not
 /// a failed build. The caller ignores a real error so compose still opens.
 #[tauri::command(async)]
-pub fn warm_address_completion(state: State<Arc<AppState>>) -> Result<(), String> {
-    state.warm_address_completion()
+pub fn warm_address_completion(rebuild: bool, state: State<Arc<AppState>>) -> Result<(), String> {
+    state.warm_address_completion(if rebuild {
+        crate::state::AddressWarm::Rebuild
+    } else {
+        crate::state::AddressWarm::Arrivals
+    })
 }
 
 /// Issues a one-message URL for the reading pane. The UI never receives the

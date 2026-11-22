@@ -131,6 +131,7 @@ fn person(addr: &str, display: &str, written: bool, seen: i64, last_ms: i64) -> 
     CorrespondentStats {
         addr: addr.into(),
         display: display.into(),
+        names: vec![display.into()],
         written,
         seen,
         last_ms,
@@ -354,4 +355,46 @@ fn incremental_merge_matches_a_fresh_full_load() {
         "merge and a full load should have the same addresses"
     );
     assert_eq!(by_addr(&merged), by_addr(&fresh));
+}
+
+#[test]
+fn every_name_an_address_has_been_seen_under_still_finds_it() {
+    let mut store = Store::open_in_memory().unwrap();
+    let account = store.ensure_test_account().unwrap();
+    let now = 1_700_000_000_000;
+    let inbox = store.ensure_folder(account, "inbox", "INBOX").unwrap();
+    // One person, two names: what their own client calls them, and what
+    // someone else's calls them. "Mom" sorts after "Jane Doe", so it is the
+    // one kept for display. "doe" must still find her: when every keystroke
+    // asked the database, the WHERE clause saw each message's name.
+    place(
+        &mut store,
+        inbox,
+        note(
+            account,
+            now - DAY,
+            "jane@example.com",
+            "Jane Doe",
+            "me@example.com",
+        ),
+    );
+    place(
+        &mut store,
+        inbox,
+        note(account, now, "jane@example.com", "Mom", "me@example.com"),
+    );
+
+    let found = store.complete_addresses(account, "doe", now, 10).unwrap();
+    assert_eq!(
+        found.iter().map(|c| c.addr.as_str()).collect::<Vec<_>>(),
+        vec!["jane@example.com"],
+        "a name the address was seen under is a name it can be found by"
+    );
+    assert_eq!(
+        store
+            .complete_addresses(account, "mom", now, 10)
+            .unwrap()
+            .len(),
+        1
+    );
 }

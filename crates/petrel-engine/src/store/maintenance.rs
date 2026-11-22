@@ -30,7 +30,13 @@ pub struct ReindexProgress {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct CorrespondentStats {
     pub addr: String,
+    /// The name shown: the highest of `names`, as `max()` chose it in SQL.
     pub display: String,
+    /// Every non-empty name this address has been seen under, sorted and
+    /// without repeats. Typing matches any of them. Keeping only the one
+    /// shown lost people: "Mom" sorts after "Jane Doe", and "doe" stopped
+    /// finding her once the WHERE clause no longer saw each message's name.
+    pub names: Vec<String>,
     pub written: bool,
     pub seen: i64,
     pub last_ms: i64,
@@ -39,6 +45,10 @@ pub struct CorrespondentStats {
 /// One grouped read of every address on the account. `GROUP BY` is appended
 /// by the loader so the incremental read can add `m.id > ?2` in the same
 /// `WHERE` clause.
+///
+/// Grouped by address *and* name, then folded per address in Rust, so every
+/// name survives the aggregation. A name repeated on many messages is still
+/// one row.
 ///
 /// `flagged` is one row per message, so `count(*)` counts address rows and
 /// does not multiply when a message sits in two folders. A message placed in
@@ -56,7 +66,7 @@ WITH flagged AS (
     GROUP BY p.message_id
 )
 SELECT ma.addr_norm,
-       coalesce(max(nullif(ma.display, '')), ''),
+       coalesce(ma.display, ''),
        max(CASE WHEN ma.role IN ('to', 'cc', 'bcc') AND coalesce(fl.sent, 0) = 1
                 THEN 1 ELSE 0 END),
        count(*),
@@ -69,35 +79,47 @@ WHERE m.account_id = ?1
   AND ma.addr_norm <> ''
   AND coalesce(fl.spam, 0) = 0";
 
+const CORRESPONDENT_STATS_GROUP: &str = " GROUP BY ma.addr_norm, coalesce(ma.display, '')";
+
 fn load_correspondent_stats(
     conn: &Connection,
     account_id: i64,
     since: Option<i64>,
 ) -> Result<Vec<CorrespondentStats>> {
     let sql = match since {
-        None => format!("{CORRESPONDENT_STATS_SQL} GROUP BY ma.addr_norm"),
-        Some(_) => format!("{CORRESPONDENT_STATS_SQL} AND m.id > ?2 GROUP BY ma.addr_norm"),
+        None => format!("{CORRESPONDENT_STATS_SQL}{CORRESPONDENT_STATS_GROUP}"),
+        Some(_) => format!("{CORRESPONDENT_STATS_SQL} AND m.id > ?2{CORRESPONDENT_STATS_GROUP}"),
     };
     let mut stmt = conn.prepare(&sql)?;
+    // One row per (address, name), each read as a one-name entry. The fold
+    // below combines an address's rows the same way an incremental read is
+    // merged into a snapshot.
     let map = |r: &rusqlite::Row<'_>| {
+        let name: String = r.get(1)?;
         Ok(CorrespondentStats {
             addr: r.get(0)?,
-            display: r.get(1)?,
+            display: name.clone(),
+            names: if name.is_empty() {
+                Vec::new()
+            } else {
+                vec![name]
+            },
             written: r.get::<_, i64>(2)? != 0,
             seen: r.get(3)?,
             last_ms: r.get(4)?,
         })
     };
-    match since {
-        None => {
-            let rows = stmt.query_map(params![account_id], map)?;
-            Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
-        }
-        Some(id) => {
-            let rows = stmt.query_map(params![account_id, id], map)?;
-            Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
-        }
-    }
+    let rows = match since {
+        None => stmt
+            .query_map(params![account_id], map)?
+            .collect::<std::result::Result<Vec<_>, _>>()?,
+        Some(id) => stmt
+            .query_map(params![account_id, id], map)?
+            .collect::<std::result::Result<Vec<_>, _>>()?,
+    };
+    let mut folded = Vec::new();
+    merge_correspondent_stats(&mut folded, rows);
+    Ok(folded)
 }
 
 fn account_email(conn: &Connection, account_id: i64) -> Result<String> {
@@ -121,9 +143,14 @@ fn max_message_id_conn(conn: &Connection, account_id: i64) -> Result<i64> {
     )?)
 }
 
-fn correspondent_prefix_matches(addr: &str, display: &str, needle: &str) -> bool {
-    let addr = addr.to_lowercase();
-    let display_l = display.to_lowercase();
+/// `addr` is already lowercase and `word` is `" " + needle`: both are made
+/// once per keystroke by the caller, not once per row.
+fn correspondent_prefix_matches(
+    addr: &str,
+    stats: &CorrespondentStats,
+    needle: &str,
+    word: &str,
+) -> bool {
     if addr.starts_with(needle) {
         return true;
     }
@@ -136,13 +163,19 @@ fn correspondent_prefix_matches(addr: &str, display: &str, needle: &str) -> bool
     {
         return true;
     }
-    if display_l.starts_with(needle) {
-        return true;
-    }
     // The old SQL matched `instr(lower(display), ' ' || needle)`, an ASCII
     // space. Splitting on Unicode whitespace would treat a fragment in the
     // middle of a word as its own word.
-    display_l.contains(&format!(" {needle}"))
+    let name_matches = |name: &str| {
+        let name = name.to_lowercase();
+        name.starts_with(needle) || name.contains(word)
+    };
+    // A row built by hand may carry only `display`. One read from the
+    // store always lists it among `names`.
+    if stats.names.is_empty() {
+        return name_matches(&stats.display);
+    }
+    stats.names.iter().any(|name| name_matches(name))
 }
 
 fn correspondent_recency_bonus(last_ms: i64, now_ms: i64) -> i64 {
@@ -169,12 +202,14 @@ pub fn rank_correspondents(
     if needle.is_empty() {
         return Vec::new();
     }
+    let word = format!(" {needle}");
     let own = own_addr.trim().to_lowercase();
     let mut hits: Vec<&CorrespondentStats> = stats
         .iter()
         .filter(|s| {
-            (own.is_empty() || s.addr.to_lowercase() != own)
-                && correspondent_prefix_matches(&s.addr, &s.display, &needle)
+            let addr = s.addr.to_lowercase();
+            (own.is_empty() || addr != own)
+                && correspondent_prefix_matches(&addr, s, &needle, &word)
         })
         .collect();
     // Same order as the SQL this replaced: written, then the capped
@@ -199,37 +234,54 @@ pub fn rank_correspondents(
         .collect()
 }
 
-fn merge_display(a: &str, b: &str) -> String {
-    match (a.is_empty(), b.is_empty()) {
-        (true, true) => String::new(),
-        (true, false) => b.to_string(),
-        (false, true) => a.to_string(),
-        (false, false) => {
-            if a >= b {
-                a.to_string()
-            } else {
-                b.to_string()
+/// Folds `other` into `into`, both for the same address.
+///
+/// Names are a sorted set, so a merge in any order gives the same vec, and
+/// the name shown is its last: the highest, as SQL's `max()` chose it.
+fn absorb_correspondent(into: &mut CorrespondentStats, other: CorrespondentStats) {
+    into.seen += other.seen;
+    into.last_ms = into.last_ms.max(other.last_ms);
+    into.written = into.written || other.written;
+    for name in other.names {
+        if let Err(at) = into.names.binary_search(&name) {
+            into.names.insert(at, name);
+        }
+    }
+    if let Some(highest) = into.names.last() {
+        into.display.clone_from(highest);
+    }
+}
+
+/// Combines incremental correspondent stats into a base snapshot.
+///
+/// Indexed by address first. A linear search per delta row made one sync's
+/// worth of new correspondents cost base × delta string compares, under the
+/// lock every keystroke ranks through.
+pub fn merge_correspondent_stats(
+    base: &mut Vec<CorrespondentStats>,
+    delta: Vec<CorrespondentStats>,
+) {
+    let mut at: std::collections::HashMap<String, usize> = base
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.addr.clone(), i))
+        .collect();
+    for mut d in delta {
+        match at.get(&d.addr) {
+            Some(&i) => absorb_correspondent(&mut base[i], d),
+            None => {
+                d.names.sort();
+                d.names.dedup();
+                if let Some(highest) = d.names.last() {
+                    d.display.clone_from(highest);
+                }
+                at.insert(d.addr.clone(), base.len());
+                base.push(d);
             }
         }
     }
 }
 
-/// Combines incremental correspondent stats into a base snapshot.
-pub fn merge_correspondent_stats(
-    base: &mut Vec<CorrespondentStats>,
-    delta: Vec<CorrespondentStats>,
-) {
-    for d in delta {
-        if let Some(b) = base.iter_mut().find(|b| b.addr == d.addr) {
-            b.seen += d.seen;
-            b.last_ms = b.last_ms.max(d.last_ms);
-            b.written = b.written || d.written;
-            b.display = merge_display(&b.display, &d.display);
-        } else {
-            base.push(d);
-        }
-    }
-}
 impl Store {
     pub fn delete_message(&mut self, id: i64) -> Result<()> {
         let tx = self.conn.transaction()?;

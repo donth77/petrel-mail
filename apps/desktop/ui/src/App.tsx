@@ -2053,7 +2053,8 @@ export function App() {
     seenSyncMs.current = at;
     if (seen === undefined || seen === at) return;
     if (draftRef.current == null) return;
-    void api.warmAddressCompletion().catch(() => {});
+    // Only what arrived: the composer rebuilt everything when it opened.
+    void api.warmAddressCompletion(false).catch(() => {});
   }, [status?.last_sync_ms]);
 
   /**

@@ -12,24 +12,30 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, TryLockError};
 
 /// Correspondent totals for address completion. Process memory only, empty
-/// at every launch. Writing them to disk would leave a deleted message, or
-/// one filed as spam, as a suggestion until the next start.
+/// at every launch.
 ///
-/// `after_id` is the highest `messages.id` already read. The next warm adds
-/// only rows past that watermark.
+/// A snapshot, not a mirror. Mail filed as spam or deleted after the read,
+/// a draft whose recipients changed, a sent copy that landed on a row
+/// already read: none of that reaches rows past `after_id`, so it is not
+/// seen by [`AddressWarm::Arrivals`]. Each composer that opens rebuilds
+/// from scratch ([`AddressWarm::Rebuild`]), so anything that drifted lasts
+/// for one compose at most, not until the next launch.
+///
+/// `after_id` is the highest `messages.id` the snapshot read. Message ids
+/// are never handed out twice, so a later read past it finds only new mail.
 struct AccountAddressStats {
     stats: Vec<CorrespondentStats>,
     after_id: i64,
     own_email: String,
 }
 
-/// One build per account. The done flag is a `Mutex` because the `Arc` is
-/// shared: a plain `bool` cannot be written by the other holder, and waiting
-/// on the cache lock would keep the builder from publishing its result.
-/// Waiters block on this lock. The cache is not held while SQL runs.
+/// One build per account. Waiters block on `done`, not on the cache lock,
+/// so the builder can still publish through that lock. [`AddressBuildGuard`]
+/// sets `done` and wakes them however the build ends, panic included.
+#[derive(Default)]
 struct AddressBuild {
     done: Mutex<bool>,
-    wait: Arc<Condvar>,
+    wait: Condvar,
 }
 
 /// Per-account totals, and the build that is running now. The fields are
@@ -41,17 +47,53 @@ pub(crate) struct AddressCompletionCache {
     building: HashMap<i64, Arc<AddressBuild>>,
 }
 
+/// Why the totals are being read ahead of a keystroke.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AddressWarm {
+    /// A composer opened. Every row is read again, so what changed under
+    /// the last snapshot (spam, deletions, edited drafts) stops counting.
+    Rebuild,
+    /// A sync landed while a composer is open. Only mail past the
+    /// watermark is read and added.
+    Arrivals,
+}
+
 /// How a keystroke and a warm share one account's build, so the two do
 /// not both scan.
 enum AddressSlot {
-    /// Totals are already there and nobody is updating them. The caller
-    /// filters in memory.
+    /// Totals are already there. A keystroke ranks them at once, even while
+    /// a warm refreshes them: it can answer from what is stored, and waiting
+    /// on a rebuild of the whole mailbox would be the stall this cache is
+    /// here to remove.
     Ready,
     /// This call does the read. `Some` is the incremental watermark;
     /// `None` reads every row.
     Started(Arc<AddressBuild>, Option<i64>),
-    /// A build is already running. Do not start a scan; wait for it.
+    /// A build is already running. Do not start another scan. A keystroke
+    /// gets this only when nothing is stored yet, and waits for it.
     Waiting(Arc<AddressBuild>),
+}
+
+/// Ends a build when dropped: clears the account's mark if it is still this
+/// build's, then wakes everyone waiting on it. On drop and not by a call, so
+/// a read that panics cannot leave every later keystroke for the account
+/// blocked on a build that will never finish.
+struct AddressBuildGuard<'a> {
+    state: &'a AppState,
+    account: i64,
+    build: Arc<AddressBuild>,
+}
+
+impl Drop for AddressBuildGuard<'_> {
+    fn drop(&mut self) {
+        {
+            let mut cache = self.state.address_cache();
+            AppState::clear_own_build(&mut cache, self.account, &self.build);
+        }
+        let mut done = self.build.done.lock().unwrap_or_else(|p| p.into_inner());
+        *done = true;
+        self.build.wait.notify_all();
+    }
 }
 
 pub(crate) struct AppState {
@@ -565,6 +607,15 @@ impl AppState {
         Mutex::new(AddressCompletionCache::default())
     }
 
+    /// The cache, poisoned or not. Every section under this lock leaves it
+    /// whole, so a panic elsewhere while it was held is no reason to stop
+    /// offering addresses.
+    fn address_cache(&self) -> std::sync::MutexGuard<'_, AddressCompletionCache> {
+        self.address_completion
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+
     /// Ranks this account's totals against the prefix. SQL does not run under
     /// this lock: the build publishes through it, and a query here would hold
     /// that publish off while a keystroke waits.
@@ -576,116 +627,41 @@ impl AppState {
         prefix: &str,
         now_ms: i64,
         limit: usize,
-    ) -> Result<Vec<Correspondent>, String> {
-        let cache = self
-            .address_completion
-            .lock()
-            .map_err(|_| "address cache lock poisoned".to_string())?;
+    ) -> Vec<Correspondent> {
+        let cache = self.address_cache();
         let Some(entry) = cache.accounts.get(&account) else {
-            return Ok(Vec::new());
+            return Vec::new();
         };
-        Ok(rank_correspondents(
-            &entry.stats,
-            prefix,
-            now_ms,
-            &entry.own_email,
-            limit,
-        ))
+        rank_correspondents(&entry.stats, prefix, now_ms, &entry.own_email, limit)
     }
 
-    /// One build for this account, or the waiter if one is already running.
-    /// A second scan of the same mailbox is what this exists to avoid.
-    /// Totals already stored are not reread unless this is a warm, and a
-    /// warm reads only past the watermark.
-    fn begin_address_completion(
-        &self,
-        account: i64,
-        incremental: bool,
-    ) -> Result<AddressSlot, String> {
-        let mut cache = self
-            .address_completion
-            .lock()
-            .map_err(|_| "address cache lock poisoned".to_string())?;
+    /// One build for this account, or the one already running. `warm` is
+    /// `None` for a keystroke, which reads only when nothing is stored.
+    fn begin_address_completion(&self, account: i64, warm: Option<AddressWarm>) -> AddressSlot {
+        let mut cache = self.address_cache();
+        let stored = cache.accounts.get(&account).map(|entry| entry.after_id);
         if let Some(existing) = cache.building.get(&account) {
-            return Ok(AddressSlot::Waiting(Arc::clone(existing)));
-        }
-        if let Some(entry) = cache.accounts.get(&account) {
-            if !incremental {
-                return Ok(AddressSlot::Ready);
+            if warm.is_none() && stored.is_some() {
+                return AddressSlot::Ready;
             }
-            let after_id = entry.after_id;
-            let build = Arc::new(Self::new_address_build());
-            cache.building.insert(account, Arc::clone(&build));
-            return Ok(AddressSlot::Started(build, Some(after_id)));
+            return AddressSlot::Waiting(Arc::clone(existing));
         }
-        let build = Arc::new(Self::new_address_build());
+        let since = match (warm, stored) {
+            (None, Some(_)) => return AddressSlot::Ready,
+            (Some(AddressWarm::Arrivals), Some(after_id)) => Some(after_id),
+            // Nothing stored, or a composer opening: every row.
+            _ => None,
+        };
+        let build = Arc::new(AddressBuild::default());
         cache.building.insert(account, Arc::clone(&build));
-        Ok(AddressSlot::Started(build, None))
+        AddressSlot::Started(build, since)
     }
 
-    fn new_address_build() -> AddressBuild {
-        AddressBuild {
-            done: Mutex::new(false),
-            wait: Arc::new(Condvar::new()),
-        }
-    }
-
-    /// Stores a full snapshot for this account. The address stays as read.
-    /// Ranking lowercases when it compares, and a folded copy here would be
-    /// a second one to keep in step.
-    /// Only this build's mark is cleared. It comes off before waiters wake,
-    /// and a build that has taken the slot since must keep it.
-    fn publish_address_completion(
-        &self,
-        account: i64,
-        build: &Arc<AddressBuild>,
-        stats: Vec<CorrespondentStats>,
-        after_id: i64,
-        own_email: String,
-    ) -> Result<(), String> {
-        let mut cache = self
-            .address_completion
-            .lock()
-            .map_err(|_| "address cache lock poisoned".to_string())?;
-        cache.accounts.insert(
-            account,
-            AccountAddressStats {
-                stats,
-                after_id,
-                own_email,
-            },
-        );
-        Self::clear_own_build(&mut cache, account, build);
-        Ok(())
-    }
-
-    /// Folds an incremental read into the totals already stored. The watermark
-    /// is the snapshot's highest message id, not the highest id in the delta:
-    /// deleted mail and spam move that id without appearing there, and the
-    /// next warm would reread them.
-    /// A blank address leaves the one already stored. Wiping it would start
-    /// offering the account's own address.
-    fn merge_published_stats(
-        &self,
-        account: i64,
-        build: &Arc<AddressBuild>,
-        delta: Vec<CorrespondentStats>,
-        watermark: i64,
-        email: String,
-    ) -> Result<(), String> {
-        let mut cache = self
-            .address_completion
-            .lock()
-            .map_err(|_| "address cache lock poisoned".to_string())?;
-        if let Some(entry) = cache.accounts.get_mut(&account) {
-            merge_correspondent_stats(&mut entry.stats, delta);
-            entry.after_id = watermark;
-            if !email.trim().is_empty() {
-                entry.own_email = email;
-            }
-        }
-        Self::clear_own_build(&mut cache, account, build);
-        Ok(())
+    fn owns_build(cache: &AddressCompletionCache, account: i64, build: &Arc<AddressBuild>) -> bool {
+        cache
+            .building
+            .get(&account)
+            .is_some_and(|current| Arc::ptr_eq(current, build))
     }
 
     fn clear_own_build(
@@ -693,30 +669,9 @@ impl AppState {
         account: i64,
         build: &Arc<AddressBuild>,
     ) {
-        if cache
-            .building
-            .get(&account)
-            .is_some_and(|current| Arc::ptr_eq(current, build))
-        {
+        if Self::owns_build(cache, account, build) {
             cache.building.remove(&account);
         }
-    }
-
-    /// Wakes whoever is blocked on this build and clears its mark, even when
-    /// the read failed. A mark left set would pin the account to a build
-    /// that never finishes. This does not wait. The caller that started the
-    /// build is the one with the result.
-    fn finish_address_build(&self, account: i64, build: &Arc<AddressBuild>) {
-        match self.address_completion.lock() {
-            Ok(mut cache) => Self::clear_own_build(&mut cache, account, build),
-            Err(poisoned) => {
-                let mut cache = poisoned.into_inner();
-                Self::clear_own_build(&mut cache, account, build);
-            }
-        }
-        let mut done = build.done.lock().unwrap_or_else(|p| p.into_inner());
-        *done = true;
-        build.wait.notify_all();
     }
 
     fn wait_address_build(build: &AddressBuild) {
@@ -726,43 +681,82 @@ impl AppState {
         }
     }
 
-    /// One snapshot on a read connection, and not under the cache lock.
-    /// That lock covers every account, so a scan held there would stall
-    /// everyone else's completion. The write store stays free for the same
-    /// reason: this read can be the whole mailbox.
-    fn load_address_completion(
-        &self,
-        account: i64,
-        since: Option<i64>,
-    ) -> Result<(Vec<CorrespondentStats>, i64, String), String> {
-        let store = self.store_read()?;
-        store
-            .read_correspondent_cache(account, since)
-            .map_err(|e| e.to_string())
-    }
-
-    fn store_loaded_address_completion(
+    /// Stores what one build read: the whole snapshot, or an incremental read
+    /// folded into the totals already there.
+    ///
+    /// Only while the account still owns this build. One that was forgotten
+    /// during the read (the account removed, its id free for the next one)
+    /// read mail that is no longer this id's, and drops it.
+    ///
+    /// The watermark is the snapshot's highest message id, not the highest
+    /// in the delta: deleted mail and spam move that id without appearing
+    /// there, and the next warm would reread them. A blank address leaves the
+    /// one already stored; wiping it would start offering the account's own.
+    fn publish_address_completion(
         &self,
         account: i64,
         build: &Arc<AddressBuild>,
         since: Option<i64>,
         loaded: (Vec<CorrespondentStats>, i64, String),
-    ) -> Result<(), String> {
+    ) {
         let (stats, watermark, email) = loaded;
-        if since.is_some() {
-            self.merge_published_stats(account, build, stats, watermark, email)
-        } else {
-            self.publish_address_completion(account, build, stats, watermark, email)
+        let mut cache = self.address_cache();
+        if !Self::owns_build(&cache, account, build) {
+            return;
         }
+        match since {
+            None => {
+                cache.accounts.insert(
+                    account,
+                    AccountAddressStats {
+                        stats,
+                        after_id: watermark,
+                        own_email: email,
+                    },
+                );
+            }
+            Some(_) => {
+                if let Some(entry) = cache.accounts.get_mut(&account) {
+                    merge_correspondent_stats(&mut entry.stats, stats);
+                    entry.after_id = watermark;
+                    if !email.trim().is_empty() {
+                        entry.own_email = email;
+                    }
+                }
+            }
+        }
+        cache.building.remove(&account);
     }
 
-    /// Suggestions for a keystroke. Stored totals are filtered in memory.
-    /// The first miss reads the mailbox once; a keystroke that arrives during
-    /// it waits, instead of scanning again.
-    /// A blank prefix is not a search and must not start that read.
-    /// The starter does not wait: it is what marks the build done, so waiting
-    /// would deadlock. Finish runs before an error returns, or a failed read
-    /// would leave the others blocked.
+    /// Reads and publishes one build. One snapshot on a read connection, and
+    /// not under the cache lock: that lock covers every account, so a scan
+    /// held there would stall everyone else's completion. The write store
+    /// stays free for the same reason: this read can be the whole mailbox.
+    fn run_address_build(
+        &self,
+        account: i64,
+        build: Arc<AddressBuild>,
+        since: Option<i64>,
+    ) -> Result<(), String> {
+        let _finish = AddressBuildGuard {
+            state: self,
+            account,
+            build: Arc::clone(&build),
+        };
+        let loaded = {
+            let store = self.store_read()?;
+            store
+                .read_correspondent_cache(account, since)
+                .map_err(|e| e.to_string())?
+        };
+        self.publish_address_completion(account, &build, since, loaded);
+        Ok(())
+    }
+
+    /// Suggestions for a keystroke, ranked from memory. Only when nothing is
+    /// stored for the account does it read the mailbox, once; a keystroke
+    /// that arrives during that first read waits for it instead of scanning
+    /// again. A blank prefix is not a search and must not start that read.
     pub(crate) fn ensure_address_completion(
         &self,
         account: i64,
@@ -773,30 +767,20 @@ impl AppState {
         if prefix.trim().is_empty() {
             return Ok(Vec::new());
         }
-        match self.begin_address_completion(account, false)? {
-            AddressSlot::Ready => self.address_completion_rank(account, prefix, now_ms, limit),
-            AddressSlot::Waiting(build) => {
-                Self::wait_address_build(&build);
-                self.address_completion_rank(account, prefix, now_ms, limit)
-            }
-            AddressSlot::Started(build, since) => {
-                let stored = self
-                    .load_address_completion(account, since)
-                    .and_then(|loaded| {
-                        self.store_loaded_address_completion(account, &build, since, loaded)
-                    });
-                self.finish_address_build(account, &build);
-                stored?;
-                self.address_completion_rank(account, prefix, now_ms, limit)
-            }
+        match self.begin_address_completion(account, None) {
+            AddressSlot::Ready => {}
+            AddressSlot::Waiting(build) => Self::wait_address_build(&build),
+            AddressSlot::Started(build, since) => self.run_address_build(account, build, since)?,
         }
+        Ok(self.address_completion_rank(account, prefix, now_ms, limit))
     }
 
-    /// Called when compose opens and after a sync. No account returns without
-    /// reading: there is nothing to warm, and that is not a failed build.
-    /// Unbuilt reads every row. Already stored adds only past the watermark,
-    /// and a build already running is left to finish rather than scanned again.
-    pub(crate) fn warm_address_completion(&self) -> Result<(), String> {
+    /// Reads ahead of the keystrokes: [`AddressWarm::Rebuild`] when a
+    /// composer opens, [`AddressWarm::Arrivals`] after a sync while one is
+    /// open. No account returns without reading: there is nothing to warm,
+    /// and that is not a failed build. A build already running is left to
+    /// finish rather than scanned again.
+    pub(crate) fn warm_address_completion(&self, warm: AddressWarm) -> Result<(), String> {
         let account = {
             let store = self.store_read()?;
             match store.active_account().map_err(|e| e.to_string())? {
@@ -804,18 +788,20 @@ impl AppState {
                 None => return Ok(()),
             }
         };
-        match self.begin_address_completion(account, true)? {
+        match self.begin_address_completion(account, Some(warm)) {
             AddressSlot::Ready | AddressSlot::Waiting(_) => Ok(()),
-            AddressSlot::Started(build, since) => {
-                let stored = self
-                    .load_address_completion(account, since)
-                    .and_then(|loaded| {
-                        self.store_loaded_address_completion(account, &build, since, loaded)
-                    });
-                self.finish_address_build(account, &build);
-                stored
-            }
+            AddressSlot::Started(build, since) => self.run_address_build(account, build, since),
         }
+    }
+
+    /// Drops everything completion knows about an account. Ids are reused,
+    /// so the next account given this one must not be offered its
+    /// correspondents. A build still reading for it loses the slot here and
+    /// discards what it read.
+    pub(crate) fn forget_address_completion(&self, account: i64) {
+        let mut cache = self.address_cache();
+        cache.accounts.remove(&account);
+        cache.building.remove(&account);
     }
 }
 
@@ -1126,5 +1112,200 @@ mod worker_switch_tests {
         state.mark_surveyed(1);
         assert!(state.surveyed(1));
         assert!(!state.surveyed(2), "one account's survey is not another's");
+    }
+}
+
+#[cfg(test)]
+mod address_completion_tests {
+    use super::*;
+    use petrel_engine::store::NewMessage;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    const NOW: i64 = 1_700_000_000_000;
+
+    /// One message from `from` into `folder`, by role. Returns its id.
+    fn arrive(state: &AppState, folder_role: &str, from: &str, display: &str) -> i64 {
+        let mut store = state.store().unwrap();
+        let account = state.account_id;
+        let folder = store
+            .ensure_folder(account, folder_role, folder_role)
+            .unwrap();
+        let id = store
+            .insert_messages(&[NewMessage {
+                account_id: account,
+                date_ms: NOW,
+                from_addr: from.into(),
+                from_display: display.into(),
+                to_addr: "test@example.com".into(),
+                subject: "hello".into(),
+                body_text: "…".into(),
+            }])
+            .unwrap()[0];
+        store.place_message(id, folder).unwrap();
+        id
+    }
+
+    fn offered(state: &AppState, prefix: &str) -> Vec<String> {
+        state
+            .ensure_address_completion(state.account_id, prefix, NOW, 8)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.addr)
+            .collect()
+    }
+
+    fn started(state: &AppState, warm: Option<AddressWarm>) -> (Arc<AddressBuild>, Option<i64>) {
+        match state.begin_address_completion(state.account_id, warm) {
+            AddressSlot::Started(build, since) => (build, since),
+            _ => panic!("expected this call to start the build"),
+        }
+    }
+
+    /// The cache reads past a watermark, so mail filed as spam after the read
+    /// is still counted there. A composer opening reads everything again;
+    /// before it did, a spammer stayed on offer until the next launch.
+    #[test]
+    fn a_composer_opening_stops_offering_mail_filed_as_spam_since() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+        let id = arrive(&state, "inbox", "nina@example.com", "Nina");
+        assert_eq!(offered(&state, "ni"), vec!["nina@example.com"]);
+
+        let spam = {
+            let store = state.store().unwrap();
+            store
+                .ensure_folder(state.account_id, "spam", "Spam")
+                .unwrap()
+        };
+        state.store().unwrap().place_message(id, spam).unwrap();
+
+        state.warm_address_completion(AddressWarm::Rebuild).unwrap();
+        assert!(offered(&state, "ni").is_empty(), "spam was still offered");
+    }
+
+    #[test]
+    fn a_sync_while_composing_adds_the_people_who_arrived() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+        arrive(&state, "inbox", "nina@example.com", "Nina");
+        state.warm_address_completion(AddressWarm::Rebuild).unwrap();
+        arrive(&state, "inbox", "oscar@example.com", "Oscar Diaz");
+        arrive(&state, "inbox", "nina@example.com", "Nina Park");
+
+        state
+            .warm_address_completion(AddressWarm::Arrivals)
+            .unwrap();
+        assert_eq!(offered(&state, "diaz"), vec!["oscar@example.com"]);
+        assert_eq!(
+            offered(&state, "park"),
+            vec!["nina@example.com"],
+            "a new name for someone already stored is a name they can be found by"
+        );
+    }
+
+    /// A keystroke while a composer's rebuild runs answers from the totals
+    /// already stored. It used to wait for the read of the whole mailbox.
+    #[test]
+    fn a_keystroke_ranks_what_is_stored_while_a_rebuild_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+        arrive(&state, "inbox", "nina@example.com", "Nina");
+        assert_eq!(offered(&state, "ni"), vec!["nina@example.com"]);
+
+        // A rebuild has started and not finished.
+        let (build, since) = started(&state, Some(AddressWarm::Rebuild));
+        assert_eq!(since, None, "a composer opening reads every row");
+
+        let (tx, rx) = mpsc::channel();
+        let typing = Arc::clone(&state);
+        std::thread::spawn(move || {
+            let _ = tx.send(offered(&typing, "ni"));
+        });
+        let got = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the keystroke waited on the rebuild");
+        assert_eq!(got, vec!["nina@example.com"]);
+
+        state
+            .run_address_build(state.account_id, build, since)
+            .unwrap();
+    }
+
+    /// With nothing stored there is nothing to rank, and the keystroke waits
+    /// for the build already reading instead of starting a second scan.
+    #[test]
+    fn a_first_keystroke_waits_for_the_build_already_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+        arrive(&state, "inbox", "nina@example.com", "Nina");
+        let (build, since) = started(&state, Some(AddressWarm::Rebuild));
+
+        let (tx, rx) = mpsc::channel();
+        let typing = Arc::clone(&state);
+        std::thread::spawn(move || {
+            let _ = tx.send(offered(&typing, "ni"));
+        });
+        assert!(
+            rx.recv_timeout(Duration::from_millis(150)).is_err(),
+            "answered before anything was stored"
+        );
+        state
+            .run_address_build(state.account_id, build, since)
+            .unwrap();
+        let got = rx.recv_timeout(Duration::from_secs(5)).expect("never woke");
+        assert_eq!(got, vec!["nina@example.com"]);
+    }
+
+    /// A build that dies, by error or by panic, still wakes whoever waits on
+    /// it and frees the account for the next build. Left marked, every later
+    /// keystroke for the account would block on a build that never finishes.
+    #[test]
+    fn a_build_that_panics_leaves_nobody_waiting() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+        arrive(&state, "inbox", "nina@example.com", "Nina");
+        let (build, _) = started(&state, None);
+
+        let (tx, rx) = mpsc::channel();
+        let typing = Arc::clone(&state);
+        std::thread::spawn(move || {
+            let _ = tx.send(offered(&typing, "ni"));
+        });
+        std::thread::sleep(Duration::from_millis(50));
+
+        let died = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _finish = AddressBuildGuard {
+                state: &state,
+                account: state.account_id,
+                build: Arc::clone(&build),
+            };
+            panic!("the read failed halfway");
+        }));
+        assert!(died.is_err());
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("a waiter stayed blocked on a build that had died");
+        assert!(state.address_cache().building.is_empty());
+        // And the next keystroke builds afresh.
+        assert_eq!(offered(&state, "ni"), vec!["nina@example.com"]);
+    }
+
+    /// Account ids are reused. A build that was reading when its account was
+    /// removed must not hand that account's correspondents to the next one.
+    #[test]
+    fn a_build_for_a_forgotten_account_publishes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+        arrive(&state, "inbox", "nina@example.com", "Nina");
+        let (build, since) = started(&state, None);
+
+        state.forget_address_completion(state.account_id);
+        state
+            .run_address_build(state.account_id, build, since)
+            .unwrap();
+
+        let cache = state.address_cache();
+        assert!(!cache.accounts.contains_key(&state.account_id));
+        assert!(cache.building.is_empty());
     }
 }

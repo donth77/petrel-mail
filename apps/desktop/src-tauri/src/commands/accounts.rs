@@ -276,8 +276,10 @@ pub fn add_account(setup: AccountSetup, state: State<Arc<AppState>>) -> Result<i
     // *and* the flipped switch that stopped the old one's workers. Without
     // this the new account's sync would stand down the moment it started.
     state.reset_workers(id);
-    // Nor does it inherit the old one's "sign in again".
+    // Nor does it inherit the old one's "sign in again", or the people it
+    // wrote to.
     state.clear_signin(id);
+    state.forget_address_completion(id);
     // Syncing starts now, not at the next launch: step 3 of onboarding is
     // "Getting your mail", and it is watching.
     if let Some(cfg) = imap_config(&state, id) {
@@ -339,6 +341,7 @@ fn forget_account(state: &AppState, account_id: i64) -> Result<(), String> {
     state.clear_signin(account_id);
     state.forget_server(account_id);
     let _ = state.take_held(account_id);
+    state.forget_address_completion(account_id);
     let store = state.store()?;
     store.remove_account(account_id).map_err(|e| e.to_string())
 }
@@ -975,7 +978,35 @@ mod sign_in_again_tests {
             },
         );
         state.hold_draft(id, 7);
+        {
+            let mut store = state.store().unwrap();
+            let msg = store
+                .insert_messages(&[petrel_engine::store::NewMessage {
+                    account_id: id,
+                    date_ms: 1_700_000_000_000,
+                    from_addr: "nina@example.com".into(),
+                    from_display: "Nina".into(),
+                    to_addr: "me@old.example".into(),
+                    subject: "hello".into(),
+                    body_text: "…".into(),
+                }])
+                .unwrap()[0];
+            let inbox = store.ensure_folder(id, "inbox", "INBOX").unwrap();
+            store.place_message(msg, inbox).unwrap();
+        }
+        let offered = |state: &AppState| {
+            state
+                .ensure_address_completion(id, "ni", 1_700_000_000_000, 8)
+                .unwrap()
+                .len()
+        };
+        assert_eq!(offered(&state), 1, "completion has read the account");
         forget_account(&state, id).unwrap();
+        assert_eq!(
+            offered(&state),
+            0,
+            "the next account given the id is not offered this one's people"
+        );
         assert_eq!(cached_password(id), None);
         assert_eq!(state.signin(id), None);
         assert!(

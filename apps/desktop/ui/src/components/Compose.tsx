@@ -201,10 +201,13 @@ export function Compose({ draft, account, onChange, onClose, onSend, onAttach, o
   }, []);
 
   // Warm once per open. Once from each of To, Cc, and Bcc would scan the
-  // same mailbox three times. Failure still leaves compose open; the first
+  // same mailbox three times. A rebuild, not a top-up: mail filed as spam
+  // or deleted since the last compose must stop being offered, and only a
+  // full read sees that. Keystrokes rank what is already stored meanwhile.
+  // Failure still leaves compose open; with nothing stored, the first
   // keystroke waits on the build already running, or starts it if none is.
   useEffect(() => {
-    void api.warmAddressCompletion().catch(() => {});
+    void api.warmAddressCompletion(true).catch(() => {});
   }, []);
 
   /** The composer's own shortcuts. True when the key was one of them. */
