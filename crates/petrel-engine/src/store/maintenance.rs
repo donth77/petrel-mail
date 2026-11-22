@@ -26,6 +26,210 @@ pub struct ReindexProgress {
     pub finished: bool,
 }
 
+/// Aggregated correspondent row from [`Store::load_correspondent_stats`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct CorrespondentStats {
+    pub addr: String,
+    pub display: String,
+    pub written: bool,
+    pub seen: i64,
+    pub last_ms: i64,
+}
+
+/// One grouped read of every address on the account. `GROUP BY` is appended
+/// by the loader so the incremental read can add `m.id > ?2` in the same
+/// `WHERE` clause.
+///
+/// `flagged` is one row per message, so `count(*)` counts address rows and
+/// does not multiply when a message sits in two folders. A message placed in
+/// spam is left out. The account's own address is not: ranking drops it, and
+/// a cache of these rows stays valid after that email changes. There is no
+/// prefix predicate here. A keystroke filters this vec in memory.
+const CORRESPONDENT_STATS_SQL: &str = "
+WITH flagged AS (
+    SELECT p.message_id,
+           max(CASE WHEN f.role = 'sent' THEN 1 ELSE 0 END) AS sent,
+           max(CASE WHEN f.role = 'spam' THEN 1 ELSE 0 END) AS spam
+    FROM placements p
+    JOIN folders f ON f.id = p.folder_id
+    WHERE f.account_id = ?1 AND f.role IN ('sent', 'spam')
+    GROUP BY p.message_id
+)
+SELECT ma.addr_norm,
+       coalesce(max(nullif(ma.display, '')), ''),
+       max(CASE WHEN ma.role IN ('to', 'cc', 'bcc') AND coalesce(fl.sent, 0) = 1
+                THEN 1 ELSE 0 END),
+       count(*),
+       max(m.date_ms)
+FROM message_addresses ma
+JOIN messages m ON m.id = ma.message_id
+LEFT JOIN flagged fl ON fl.message_id = m.id
+WHERE m.account_id = ?1
+  AND m.deleted_at_ms IS NULL
+  AND ma.addr_norm <> ''
+  AND coalesce(fl.spam, 0) = 0";
+
+fn load_correspondent_stats(
+    conn: &Connection,
+    account_id: i64,
+    since: Option<i64>,
+) -> Result<Vec<CorrespondentStats>> {
+    let sql = match since {
+        None => format!("{CORRESPONDENT_STATS_SQL} GROUP BY ma.addr_norm"),
+        Some(_) => format!("{CORRESPONDENT_STATS_SQL} AND m.id > ?2 GROUP BY ma.addr_norm"),
+    };
+    let mut stmt = conn.prepare(&sql)?;
+    let map = |r: &rusqlite::Row<'_>| {
+        Ok(CorrespondentStats {
+            addr: r.get(0)?,
+            display: r.get(1)?,
+            written: r.get::<_, i64>(2)? != 0,
+            seen: r.get(3)?,
+            last_ms: r.get(4)?,
+        })
+    };
+    match since {
+        None => {
+            let rows = stmt.query_map(params![account_id], map)?;
+            Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        }
+        Some(id) => {
+            let rows = stmt.query_map(params![account_id, id], map)?;
+            Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        }
+    }
+}
+
+fn account_email(conn: &Connection, account_id: i64) -> Result<String> {
+    match conn.query_row(
+        "SELECT coalesce(email, '') FROM accounts WHERE id = ?1",
+        params![account_id],
+        |r| r.get(0),
+    ) {
+        Ok(email) => Ok(email),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(String::new()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn max_message_id_conn(conn: &Connection, account_id: i64) -> Result<i64> {
+    // `query_row` returns rusqlite's error. Callers use the store's Result.
+    Ok(conn.query_row(
+        "SELECT coalesce(max(id), 0) FROM messages WHERE account_id = ?1",
+        params![account_id],
+        |r| r.get(0),
+    )?)
+}
+
+fn correspondent_prefix_matches(addr: &str, display: &str, needle: &str) -> bool {
+    let addr = addr.to_lowercase();
+    let display_l = display.to_lowercase();
+    if addr.starts_with(needle) {
+        return true;
+    }
+    // The domain is everything after the first '@'. `split('@').nth(1)` is
+    // only the second field, so `a@b@c` would be tested against `b` and a
+    // needle of `b@c` would miss. One '@' agrees with the old
+    // `LIKE '%@needle%'` check: `example.com` does not start with `ample.com`.
+    if let Some((_, domain)) = addr.split_once('@')
+        && domain.starts_with(needle)
+    {
+        return true;
+    }
+    if display_l.starts_with(needle) {
+        return true;
+    }
+    // The old SQL matched `instr(lower(display), ' ' || needle)`, an ASCII
+    // space. Splitting on Unicode whitespace would treat a fragment in the
+    // middle of a word as its own word.
+    display_l.contains(&format!(" {needle}"))
+}
+
+fn correspondent_recency_bonus(last_ms: i64, now_ms: i64) -> i64 {
+    let month = now_ms - 30 * crate::retention::MS_PER_DAY;
+    let quarter = now_ms - 90 * crate::retention::MS_PER_DAY;
+    if last_ms > month {
+        25
+    } else if last_ms > quarter {
+        10
+    } else {
+        0
+    }
+}
+
+/// Ranks loaded stats for recipient completion without touching the database.
+pub fn rank_correspondents(
+    stats: &[CorrespondentStats],
+    prefix: &str,
+    now_ms: i64,
+    own_addr: &str,
+    limit: usize,
+) -> Vec<Correspondent> {
+    let needle = prefix.trim().to_lowercase();
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    let own = own_addr.trim().to_lowercase();
+    let mut hits: Vec<&CorrespondentStats> = stats
+        .iter()
+        .filter(|s| {
+            (own.is_empty() || s.addr.to_lowercase() != own)
+                && correspondent_prefix_matches(&s.addr, &s.display, &needle)
+        })
+        .collect();
+    // Same order as the SQL this replaced: written, then the capped
+    // frequency plus the recency bonus, then the newest. No further
+    // tiebreak — equal rows have no defined order.
+    hits.sort_by(|a, b| {
+        let score = |s: &CorrespondentStats| {
+            std::cmp::min(s.seen, 20) + correspondent_recency_bonus(s.last_ms, now_ms)
+        };
+        b.written
+            .cmp(&a.written)
+            .then_with(|| score(b).cmp(&score(a)))
+            .then_with(|| b.last_ms.cmp(&a.last_ms))
+    });
+    hits.truncate(limit);
+    hits.into_iter()
+        .map(|s| Correspondent {
+            addr: s.addr.clone(),
+            display: s.display.clone(),
+            written_to: s.written,
+        })
+        .collect()
+}
+
+fn merge_display(a: &str, b: &str) -> String {
+    match (a.is_empty(), b.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => b.to_string(),
+        (false, true) => a.to_string(),
+        (false, false) => {
+            if a >= b {
+                a.to_string()
+            } else {
+                b.to_string()
+            }
+        }
+    }
+}
+
+/// Combines incremental correspondent stats into a base snapshot.
+pub fn merge_correspondent_stats(
+    base: &mut Vec<CorrespondentStats>,
+    delta: Vec<CorrespondentStats>,
+) {
+    for d in delta {
+        if let Some(b) = base.iter_mut().find(|b| b.addr == d.addr) {
+            b.seen += d.seen;
+            b.last_ms = b.last_ms.max(d.last_ms);
+            b.written = b.written || d.written;
+            b.display = merge_display(&b.display, &d.display);
+        } else {
+            base.push(d);
+        }
+    }
+}
 impl Store {
     pub fn delete_message(&mut self, id: i64) -> Result<()> {
         let tx = self.conn.transaction()?;
@@ -1011,6 +1215,57 @@ impl Store {
         Ok(self.sender_trusted(account_id, &from)? || self.has_written_to(account_id, &from)?)
     }
 
+    /// Every correspondent on this account, one row per address.
+    ///
+    /// Spam is left out. The account's own address stays in: ranking drops
+    /// it, so these rows can be cached and still be right after that email
+    /// changes. Nothing here filters by prefix. Typing narrows the vec.
+    pub fn load_correspondent_stats(&self, account_id: i64) -> Result<Vec<CorrespondentStats>> {
+        load_correspondent_stats(&self.conn, account_id, None)
+    }
+
+    /// Correspondents on messages with an id greater than `after_id`.
+    ///
+    /// Same aggregation as [`Self::load_correspondent_stats`]. `after_id` is
+    /// the highest message id already merged, so a later pass adds only what
+    /// arrived after that read.
+    pub fn load_correspondent_stats_since(
+        &self,
+        account_id: i64,
+        after_id: i64,
+    ) -> Result<Vec<CorrespondentStats>> {
+        load_correspondent_stats(&self.conn, account_id, Some(after_id))
+    }
+
+    /// Highest message id on this account, or zero when there is no mail.
+    ///
+    /// Deleted rows and spam count. The number is a watermark for the next
+    /// incremental read, not a count of addresses worth suggesting.
+    pub fn max_message_id(&self, account_id: i64) -> Result<i64> {
+        max_message_id_conn(&self.conn, account_id)
+    }
+
+    /// Stats, the highest message id, and the account email, one snapshot.
+    ///
+    /// `since` is `None` for the full aggregation and `Some(after_id)` for
+    /// the incremental one. The id comes from that same snapshot, so a
+    /// message committed after it has a higher id and the next read finds
+    /// it. Two separate queries would each see their own snapshot, and a
+    /// sync landing between them would either skip that message or count
+    /// it twice.
+    pub fn read_correspondent_cache(
+        &self,
+        account_id: i64,
+        since: Option<i64>,
+    ) -> Result<(Vec<CorrespondentStats>, i64, String)> {
+        let tx = self.conn.unchecked_transaction()?;
+        let max_id = max_message_id_conn(&tx, account_id)?;
+        let stats = load_correspondent_stats(&tx, account_id, since)?;
+        let own = account_email(&tx, account_id)?;
+        drop(tx);
+        Ok((stats, max_id, own))
+    }
+
     /// Addresses to offer while a recipient is being typed, best first.
     ///
     /// Harvested from mail already synced — there is no lookup anywhere else,
@@ -1040,64 +1295,21 @@ impl Store {
         now_ms: i64,
         limit: u32,
     ) -> Result<Vec<Correspondent>> {
-        let needle = prefix.trim().to_lowercase();
-        if needle.is_empty() {
+        // A blank prefix matches every address. The field never asks, and
+        // reading the mailbox only to discard the rows is the scan this
+        // split exists to stop.
+        if prefix.trim().is_empty() {
             return Ok(Vec::new());
         }
-        // Matched at the start of the address, of its domain, or of any word in
-        // the display name — the three places people begin typing. Not a bare
-        // substring: "an" should not offer everyone with "an" mid-surname.
-        let starts = format!("{needle}%");
-        let word = format!("% {needle}%");
-        let at = format!("%@{needle}%");
-        let month = now_ms - 30 * crate::retention::MS_PER_DAY;
-        let quarter = now_ms - 90 * crate::retention::MS_PER_DAY;
-
-        let mut stmt = self.conn.prepare_cached(
-            "SELECT ma.addr_norm,
-                    coalesce(max(nullif(ma.display, '')), '') AS display,
-                    max(CASE WHEN EXISTS (
-                          SELECT 1 FROM placements p
-                          JOIN folders f ON f.id = p.folder_id
-                          WHERE p.message_id = m.id AND f.role = 'sent')
-                        AND ma.role IN ('to', 'cc', 'bcc')
-                        THEN 1 ELSE 0 END) AS written,
-                    count(*) AS seen,
-                    max(m.date_ms) AS last_ms
-             FROM message_addresses ma
-             JOIN messages m ON m.id = ma.message_id
-             WHERE m.account_id = ?1
-               AND m.deleted_at_ms IS NULL
-               AND ma.addr_norm <> ''
-               AND NOT EXISTS (SELECT 1 FROM placements p
-                               JOIN folders f ON f.id = p.folder_id
-                               WHERE p.message_id = m.id AND f.role = 'spam')
-               AND ma.addr_norm <> coalesce(
-                     (SELECT lower(email) FROM accounts WHERE id = ?1), '')
-               AND (ma.addr_norm LIKE ?2
-                    OR lower(ma.display) LIKE ?2
-                    OR lower(ma.display) LIKE ?3
-                    OR ma.addr_norm LIKE ?4)
-             GROUP BY ma.addr_norm
-             ORDER BY written DESC,
-                      min(seen, 20)
-                        + CASE WHEN last_ms > ?5 THEN 25
-                               WHEN last_ms > ?6 THEN 10
-                               ELSE 0 END DESC,
-                      last_ms DESC
-             LIMIT ?7",
-        )?;
-        let rows = stmt.query_map(
-            params![account_id, starts, word, at, month, quarter, limit],
-            |r| {
-                Ok(Correspondent {
-                    addr: r.get(0)?,
-                    display: r.get(1)?,
-                    written_to: r.get::<_, i64>(2)? != 0,
-                })
-            },
-        )?;
-        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        let stats = load_correspondent_stats(&self.conn, account_id, None)?;
+        let own = account_email(&self.conn, account_id)?;
+        Ok(rank_correspondents(
+            &stats,
+            prefix,
+            now_ms,
+            &own,
+            limit as usize,
+        ))
     }
 
     /// Who sent a message, normalised the way the trust list stores addresses.

@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { addressOf, firstUnsendable, looksLikeAddress, sendable, splitRecipients } from './recipients';
+import {
+  addressOf,
+  firstUnsendable,
+  looksLikeAddress,
+  moveRecipient,
+  sendable,
+  splitRecipients,
+} from './recipients';
 
 describe('splitRecipients', () => {
   it('takes the separators people actually type', () => {
@@ -204,5 +211,78 @@ describe('firstUnsendable', () => {
 
   it('lets a column of addresses go, one recipient a line', () => {
     expect(firstUnsendable({ to: 'ann@example.com\nbob@example.com', cc: '', bcc: 'cy@example.com\n' })).toBeNull();
+  });
+});
+
+describe('moveRecipient', () => {
+  it('appends to the other field and removes only that chip', () => {
+    // The ones left behind keep their order. The chip joins the end of the
+    // field it landed in, rather than being inserted where the pointer was.
+    expect(
+      moveRecipient(
+        { to: 'a@x.com, b@y.com, c@z.com', cc: 'd@w.com', bcc: '' },
+        { from: 'to', to: 'cc', index: 1, addr: 'b@y.com' },
+      ),
+    ).toEqual({ to: 'a@x.com, c@z.com', cc: 'd@w.com, b@y.com', bcc: '' });
+  });
+
+  it('moves a quoted comma as one chip', () => {
+    const chip = '"Wu, Dana" <dana@example.com>';
+    expect(
+      moveRecipient(
+        { to: `${chip}, sam@example.com`, cc: '', bcc: '' },
+        { from: 'to', to: 'cc', index: 0, addr: chip },
+      ),
+    ).toEqual({ to: 'sam@example.com', cc: chip, bcc: '' });
+  });
+
+  it('drops an exact duplicate from the source and does not add it again', () => {
+    expect(
+      moveRecipient(
+        { to: 'a@x.com, b@y.com', cc: 'b@y.com', bcc: '' },
+        { from: 'to', to: 'cc', index: 1, addr: 'b@y.com' },
+      ),
+    ).toEqual({ to: 'a@x.com', cc: 'b@y.com', bcc: '' });
+  });
+
+  it('returns null for the same field, a missing index, or a different chip', () => {
+    // Null rather than a rebuilt string: the double space is the field as the
+    // person left it, and a rejected move must not tidy it.
+    const spaced = { to: 'a@x.com,  b@y.com', cc: '', bcc: '' };
+    expect(moveRecipient(spaced, { from: 'to', to: 'to', index: 0, addr: 'a@x.com' })).toBeNull();
+    expect(moveRecipient(spaced, { from: 'to', to: 'cc', index: 5, addr: 'a@x.com' })).toBeNull();
+    expect(moveRecipient(spaced, { from: 'to', to: 'cc', index: -1, addr: 'a@x.com' })).toBeNull();
+    expect(moveRecipient(spaced, { from: 'to', to: 'cc', index: 0, addr: 'b@y.com' })).toBeNull();
+    expect(spaced).toEqual({ to: 'a@x.com,  b@y.com', cc: '', bcc: '' });
+  });
+
+  it('leaves an empty string when the last chip moves', () => {
+    expect(
+      moveRecipient(
+        { to: 'a@x.com', cc: '', bcc: '' },
+        { from: 'to', to: 'cc', index: 0, addr: 'a@x.com' },
+      ),
+    ).toEqual({ to: '', cc: 'a@x.com', bcc: '' });
+  });
+
+  it('can land in an empty bcc', () => {
+    expect(
+      moveRecipient(
+        { to: 'a@x.com', cc: 'b@y.com', bcc: '' },
+        { from: 'to', to: 'bcc', index: 0, addr: 'a@x.com' },
+      ),
+    ).toEqual({ to: '', cc: 'b@y.com', bcc: 'a@x.com' });
+  });
+
+  it('moves a suspicious string', () => {
+    // The dashed chip is still a confirmed recipient. Looking unlike an
+    // address only paints it; it does not pin it to the field.
+    expect(looksLikeAddress('Nadia Okafor')).toBe(false);
+    expect(
+      moveRecipient(
+        { to: 'Nadia Okafor, a@x.com', cc: '', bcc: '' },
+        { from: 'to', to: 'cc', index: 0, addr: 'Nadia Okafor' },
+      ),
+    ).toEqual({ to: 'a@x.com', cc: 'Nadia Okafor', bcc: '' });
   });
 });

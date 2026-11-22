@@ -27,7 +27,7 @@ publish = false
 license = "MIT"
 
 [workspace.dependencies]
-rusqlite = { version = "0.40", features = ["bundled", "functions"] }
+rusqlite = { version = "0.41", features = ["bundled", "functions"] }
 zstd = "0.14.3"
 blake3 = "1"
 serde = { version = "1", features = ["derive"] }
